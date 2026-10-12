@@ -3,11 +3,13 @@
 Engine 在独立仓库实施持续主体宿主。已批准的职责与验收要求见
 [重构契约](docs/refactor/contract.md)，实施状态见 [计划](docs/refactor/plan.md)。
 
-当前交付正在实施 M1：配置校验、单实例锁、SQLite/BLOB 输入接管与资源收尾。
-主体、行动、内置插件及 WebUI 尚未装配；当前运行入口仅提供核心存储宿主，
-不将最终模型文字或已接管输入自动当成对外回答。
+当前已接入配置、单实例锁、SQLite/BLOB、模型资源、纯插件装配及 Windows
+受限行动执行。主体、内置设备及 WebUI 仍在实施；已接管输入保持待处理，
+不能把核心就绪视为完整主体就绪。
 
-维护入口为 `app/cli.py` → `app/config.py` → `app/host.py` → `storage`。
+维护入口为 `app/cli.py` → `app/config.py` → `app/host.py`。插件纯声明在
+`plugins/base.py`，装配在 `app/assembly.py`；行动从 `execution/service.py`
+进入独立 `worker.py`，`storage/execution.py` 保存独立真实回执。
 宿主先取得数据目录锁，正式输入原文、媒体与待处理状态同事务保存。
 关闭的调用者超时或取消不撤销后台收尾，也不提前释放目录锁。
 
@@ -17,6 +19,7 @@ Engine 在独立仓库实施持续主体宿主。已批准的职责与验收要�
 ```powershell
 uv run purrcept-engine init
 uv run purrcept-engine check
+uv run purrcept-engine catalog
 uv run purrcept-engine run
 ```
 
@@ -55,3 +58,8 @@ uv run python -m build
 开发时可以引用兄弟 SDK 工作区。已验证非 editable Engine wheel 的导入、
 包内模板和纯配置 CLI；完整独立依赖安装仍在后续交付验收范围。
 真实模型、QQ、音频与设备验收尚未运行。
+
+嵌入调用者可用 `EngineHost.execute` 明确执行行动，结果包括逐次调用回执。
+取消等待不会撤销已开始行动；未知结果不能自动重放。插件与替换执行器的
+契约分别见 `plugins/base.py` 与 `execution/ports.py`。本机示例为
+`examples/action.py`，需要配置启用控制台输出。

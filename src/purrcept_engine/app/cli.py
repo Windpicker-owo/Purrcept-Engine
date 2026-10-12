@@ -25,7 +25,7 @@ def main() -> int:
     """解析命令并返回退出码；库入口不安装信号处理器或调用进程退出。"""
     parser = argparse.ArgumentParser(prog="purrcept-engine")
     parser.add_argument("--config", type=Path, default=Path("purrcept.toml"))
-    parser.add_argument("command", choices=("init", "check", "run"))
+    parser.add_argument("command", choices=("init", "check", "catalog", "run"))
     args = parser.parse_args()
     config_path: Path = args.config
     try:
@@ -36,8 +36,11 @@ def main() -> int:
                 output.write(template)
             print(f"配置示例已写入 {config_path}；请填写实际模型契约。")
         elif args.command == "check":
-            load_config(config_path)
+            EngineHost(load_config(config_path))
             print("配置结构与引用校验通过；模型及设备尚未探测。")
+        elif args.command == "catalog":
+            host = EngineHost(load_config(config_path))
+            print(f"目录版本：{host.catalog.version}\n{host.catalog.instructions}")
         else:
             logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
             asyncio.run(_run(config_path))

@@ -9,19 +9,31 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Literal
 from uuid import uuid4
 
 from purrcept_engine.errors import HostStateError
-from purrcept_engine.storage import Admission, InputRecord, InputSubmission, Store
+from purrcept_engine.execution.catalog import Catalog
+from purrcept_engine.execution.ports import ActionExecutor, ExecutionJournal
+from purrcept_engine.execution.protocol import JsonObject
+from purrcept_engine.execution.providers import CapabilityImplementation
+from purrcept_engine.plugins.base import PluginFactory, PluginPorts, PluginRuntime
+from purrcept_engine.storage import ActionRecord, Admission, InputRecord, InputSubmission, Store
 
-from .config import EngineConfig, GenerationModelSettings
+from .assembly import prepare_plugins
+from .config import EngineConfig, ExecutionSettings, GenerationModelSettings
 from .locking import InstanceLock
 from .models import OpenAIGenerationResource, TypeSafeDecisionResource
 
 _logger = logging.getLogger(__name__)
 type HostPhase = Literal["new", "starting", "running", "closing", "closed", "failed"]
+type ExecutorFactory = Callable[
+    [Catalog, tuple[CapabilityImplementation, ...], ExecutionJournal, ExecutionSettings, Path],
+    ActionExecutor,
+]
 
 
 @dataclass(frozen=True, slots=True)
@@ -42,17 +54,38 @@ class EngineHost:
     进程退出属于 CLI，库入口始终保留调用者对进程的处置权。
     """
 
-    def __init__(self, config: EngineConfig) -> None:
-        """保存不可变、已解析的配置；构造不打开库、设备或模型。"""
+    def __init__(
+        self,
+        config: EngineConfig,
+        *,
+        plugin_factories: Mapping[str, PluginFactory] | None = None,
+        executor_factory: ExecutorFactory | None = None,
+        console_output: Callable[[str], None] = print,
+    ) -> None:
+        """保存配置并核验纯声明；具体资源与可替换执行器仅在 start 装配。
+
+        plugin_factories 显式登记可信工厂，不触发自动扫描。executor_factory
+        可替换平台执行器，但仍借用有限 ExecutionJournal 并满足 ActionExecutor
+        的资格、真实效果与资源寿命契约，不能降级成宿主 exec。
+        """
         if not config.host.data_dir.is_absolute():
             raise HostStateError("创建宿主前必须显式解析数据目录。")
         self._config = config
+        self._prepared = prepare_plugins(
+            config.plugins,
+            base_dir=config.plugin_base_dir,
+            factories={} if plugin_factories is None else plugin_factories,
+            console_output=console_output if config.console else None,
+        )
+        self._executor_factory = executor_factory
         self._instance_id = str(uuid4())
         self._phase: HostPhase = "new"
         self._version = 0
         self._lock = InstanceLock(config.host.data_dir)
         self._store: Store | None = None
         self._models: dict[str, OpenAIGenerationResource | TypeSafeDecisionResource] = {}
+        self._plugins: dict[str, PluginRuntime] = {}
+        self._execution: ActionExecutor | None = None
         self._start_task: asyncio.Task[None] | None = None
         self._close_task: asyncio.Task[None] | None = None
         self._close_deadline: float | None = None
@@ -62,6 +95,11 @@ class EngineHost:
     def config(self) -> EngineConfig:
         """返回本实例启动快照；运行期间不能替换它来改变资源和关闭边界。"""
         return self._config
+
+    @property
+    def catalog(self) -> Catalog:
+        """返回同一冻结能力目录；查询不开始插件、网络或 Worker。"""
+        return self._prepared.catalog
 
     async def start(self) -> HostSnapshot:
         """取得单实例与核心存储；失败清理自身资源，重复调用等待同次启动。"""
@@ -101,6 +139,41 @@ class EngineHost:
                 )
                 # 资源取得后立即归属宿主，不等后续主体装配成功才登记。
                 self._models[name] = resource
+            ports = PluginPorts(self, self._projection)
+            for instance_id, blueprint in self._prepared.blueprints:
+                runtime = await blueprint.build(ports)
+                self._plugins[instance_id] = runtime
+            implementations = tuple(
+                capability
+                for runtime in self._plugins.values()
+                for capability in runtime.capabilities
+            )
+            if self._executor_factory is None:
+                from purrcept_engine.execution.service import ExecutionService
+
+                self._execution = ExecutionService(
+                    self.catalog,
+                    implementations,
+                    self._store,
+                    self.config.execution,
+                    scratch_root=self.config.host.data_dir / "scratch",
+                )
+            else:
+                self._execution = self._executor_factory(
+                    self.catalog,
+                    implementations,
+                    self._store,
+                    self.config.execution,
+                    self.config.host.data_dir / "scratch",
+                )
+
+            # Ordering: 目录、实现和输入端口就绪后才放行外部 start；同步输入
+            # 可以在插件启动中接管。关闭已到达时不再启动任何接入。
+            if self._phase == "starting":
+                self._transition("running")
+            for runtime in self._plugins.values():
+                if self._phase == "running" and runtime.start is not None:
+                    await runtime.start()
         except BaseException as startup_error:
             # 部分启动失败沿同一资源逆序清理。清理失败保留所有权，并与原始
             # 启动错误一起报告，不能解锁后另起宿主覆盖未释放的资源。
@@ -130,6 +203,31 @@ class EngineHost:
             raise HostStateError("宿主没有可查询的权威存储。")
         return await store.get_input(input_id)
 
+    async def execute(
+        self,
+        source: str,
+        *,
+        input_id: str | None = None,
+        can_start: Callable[[], bool] | None = None,
+    ) -> ActionRecord:
+        """程序式执行明确行动，接管后的观察取消不撤销真实效果。
+
+        主脑 play_action 使用同一入口和冻结目录，不另建平行执行路径。
+        input_id 表示因果来源，不授予能力权限；can_start 撤销未派发生成。
+        """
+        self._running_store()
+        execution = self._execution
+        if execution is None:
+            raise HostStateError("执行服务尚未装配。")
+        return await execution.execute(source, input_id=input_id, can_start=can_start)
+
+    async def query_action(self, action_id: str) -> ActionRecord | None:
+        """读取包括迟到调用结论的权威事实，关闭收尾期间仍可查询。"""
+        store = self._store
+        if store is None:
+            raise HostStateError("宿主没有可查询的权威存储。")
+        return await store.get_action(action_id)
+
     def query(self) -> HostSnapshot:
         """返回生命周期快照，不触发存储读取、设备或模型调用。"""
         resources: list[str] = []
@@ -138,6 +236,9 @@ class EngineHost:
                 resources.append("startup")
             if self._store is not None:
                 resources.append("storage")
+            if self._execution is not None:
+                resources.append(f"execution:{self._execution.pending_resources}")
+            resources.extend(f"plugin:{name}" for name in self._plugins)
             resources.extend(f"model:{name}" for name in self._models)
             if self._owns_lock:
                 resources.append("data_directory_lock")
@@ -190,7 +291,18 @@ class EngineHost:
         self._transition("closed")
 
     async def _release_resources(self) -> None:
-        """逆序收回模型资源，再收回权威库；失败保留剩余所有者与目录锁。"""
+        """停止接入、等待执行借用，再逆序释放插件和核心；失败保留所有者。"""
+        for runtime in reversed(tuple(self._plugins.values())):
+            if runtime.stop_inputs is not None:
+                await runtime.stop_inputs()
+        if self._execution is not None:
+            await self._execution.close()
+            self._execution = None
+        for name in reversed(tuple(self._plugins)):
+            runtime = self._plugins[name]
+            if runtime.close is not None:
+                await runtime.close()
+            del self._plugins[name]
         for name in reversed(tuple(self._models)):
             await self._models[name].close()
             del self._models[name]
@@ -199,6 +311,16 @@ class EngineHost:
             self._store = None
         self._lock.release()
         self._owns_lock = False
+
+    def _projection(self) -> JsonObject:
+        """插件借用提交后的宿主状态，不取得主脑会话或可变配置。"""
+        snapshot = self.query()
+        return {
+            "instance_id": snapshot.instance_id,
+            "version": snapshot.version,
+            "phase": snapshot.phase,
+            "pending_resources": list(snapshot.pending_resources),
+        }
 
     def _running_store(self) -> Store:
         if self._phase != "running" or self._store is None:

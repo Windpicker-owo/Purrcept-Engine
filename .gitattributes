@@ -2,4 +2,5 @@
 *.py text eol=lf
 *.toml text eol=lf
 *.md text eol=lf
-patches/*.patch -text
+# 补丁保留上游换行及必需的空白上下文，不能按源码行清理。
+patches/*.patch -text whitespace=-blank-at-eol,cr-at-eol

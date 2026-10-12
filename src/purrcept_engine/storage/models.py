@@ -43,6 +43,7 @@ class InputSource:
     display_name: str | None = None
 
     def __post_init__(self) -> None:
+        """在接入边界核验来源身份；显示名不提供身份认证。"""
         _nonempty(self.adapter_id, "adapter_id")
         _nonempty(self.account_id, "account_id")
         _nonempty(self.conversation_id, "conversation_id")
@@ -65,6 +66,7 @@ class MediaAsset:
     name: str | None = None
 
     def __post_init__(self) -> None:
+        """确认完整字节的不可变所有权及引用信息。"""
         if not isinstance(self.content, bytes):
             raise ValueError("content 必须是不可变 bytes。")
         _nonempty(self.media_type, "media_type")
@@ -86,6 +88,7 @@ class InputSubmission:
     media: tuple[MediaAsset, ...] = ()
 
     def __post_init__(self) -> None:
+        """校验接管信封，确保传给数据库线程的事实不可变且带时区。"""
         if not isinstance(self.source, InputSource):
             raise ValueError("source 必须是 InputSource。")
         if not isinstance(self.text, str):

@@ -23,6 +23,10 @@ def test_init_check_and_repeat_init_preserve_existing_config(
     assert main() == 0
     assert not config.host.data_dir.exists()
 
+    monkeypatch.setattr("sys.argv", ["purrcept-engine", "--config", str(config_path), "catalog"])
+    assert main() == 0
+    assert not config.host.data_dir.exists()
+
     monkeypatch.setattr("sys.argv", ["purrcept-engine", "--config", str(config_path), "init"])
     assert main() == 1
     assert config_path.read_bytes() == original

@@ -7,10 +7,20 @@ EngineHost 拥有显式生命周期；接管输入不等于已经产生对外输
 from .app.config import EngineConfig, load_config
 from .app.host import EngineHost, HostSnapshot
 from .errors import ConfigError, EngineError, HostStateError, InstanceLocked, StorageError
-from .storage import Admission, InputRecord, InputSource, InputSubmission, MediaAsset
+from .storage import (
+    ActionRecord,
+    Admission,
+    CallRecord,
+    InputRecord,
+    InputSource,
+    InputSubmission,
+    MediaAsset,
+)
 
 __all__ = [
+    "ActionRecord",
     "Admission",
+    "CallRecord",
     "ConfigError",
     "EngineConfig",
     "EngineError",

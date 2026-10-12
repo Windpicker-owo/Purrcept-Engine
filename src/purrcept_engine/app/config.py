@@ -2,7 +2,8 @@
 
 TOML 与程序式调用共同经过 ``EngineConfig.validate``；交叉引用和额度关系
 在配置边界核验，再以显式基准目录解析路径。模型名称不决定容量规则或媒体支持，
-规则标识由后续模型适配边界核对。插件声明登记属于应用装配，当前仅接受零插件配置。
+规则标识由后续模型适配边界核对。插件配置保留为不可变 JSON，纯声明与依赖
+核验由 app.assembly 完成，配置本身不构造资源。
 """
 
 from __future__ import annotations
@@ -11,13 +12,14 @@ import tomllib
 from collections.abc import Mapping
 from pathlib import Path
 from types import MappingProxyType
-from typing import Annotated, Literal, Self
+from typing import Annotated, Literal, Self, TypeGuard
 from urllib.parse import urlsplit
 
 from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
+    PrivateAttr,
     SecretStr,
     StringConstraints,
     ValidationError,
@@ -27,6 +29,7 @@ from pydantic import (
 )
 
 from purrcept_engine.errors import ConfigError
+from purrcept_engine.execution.protocol import JsonObject, decode_object, encode_json
 
 __all__ = [
     "ActivitySettings",
@@ -36,6 +39,7 @@ __all__ = [
     "ExecutionSettings",
     "GenerationModelSettings",
     "HostSettings",
+    "PluginSettings",
     "RetrySettings",
     "SubjectSettings",
     "TurnSettings",
@@ -46,6 +50,10 @@ NonEmptyString = Annotated[str, StringConstraints(strip_whitespace=True, min_len
 PositiveInt = Annotated[int, Field(gt=0)]
 PositiveSeconds = Annotated[float, Field(gt=0, allow_inf_nan=False)]
 Fraction = Annotated[float, Field(gt=0, lt=1, allow_inf_nan=False)]
+
+
+def _is_list(value: object) -> TypeGuard[list[object]]:
+    return isinstance(value, list)
 
 
 class _Settings(BaseModel):
@@ -241,6 +249,36 @@ class ActivitySettings(_Settings):
         return self
 
 
+class PluginSettings(_Settings):
+    """唯一实例与显式工厂入口；插件原配置以不可变规范 JSON 保存。
+
+    外部 TOML/Python 的 config 字段必须是对象。configuration 返回新的副本
+    供纯工厂解析，调用者不能通过修改嵌套容器改变启动快照。插件凭据由具体
+    配置模型拥有；根配置展示排除这份尚未解析的原始配置，避免回显秘密。
+    """
+
+    # 所有字段都是已校验不可变值；复用实例不能再把内部 JSON 文本误作
+    # 外部 config 对象解析。原始容器只在首次构造边界取得并规范化。
+    model_config = ConfigDict(revalidate_instances="never")
+
+    instance_id: NonEmptyString
+    entry: NonEmptyString
+    enabled: bool = True
+    config_json: str = Field(default="{}", alias="config", repr=False, exclude=True)
+
+    @field_validator("config_json", mode="before")
+    @classmethod
+    def _freeze_configuration(cls, value: object) -> str:
+        """规范化对象并拒绝非 JSON 材料，不借用外部可变配置容器。"""
+        encoded = encode_json(value)
+        decode_object(encoded)
+        return encoded.decode("utf-8")
+
+    def configuration(self) -> JsonObject:
+        """返回插件配置副本，纯声明阶段必须经其 Pydantic 配置模型校验。"""
+        return decode_object(self.config_json.encode("utf-8"))
+
+
 class EngineConfig(_Settings):
     """供宿主装配使用的配置快照；相对路径必须经显式基准目录解析。
 
@@ -257,15 +295,14 @@ class EngineConfig(_Settings):
     activities: ActivitySettings = Field(default_factory=ActivitySettings)
     console: bool = True
     web: bool = False
-    plugins: tuple[object, ...] = ()
+    plugins: tuple[PluginSettings, ...] = ()
+    _plugin_base_dir: Path | None = PrivateAttr(default=None)
 
     @field_validator("plugins", mode="before")
     @classmethod
-    def _only_declared_plugins(cls, value: object) -> tuple[object, ...]:
-        """零插件可纯校验；尚未登记的启用项不能被静默忽略。"""
-        if isinstance(value, (tuple, list)) and not value:
-            return ()
-        raise ValueError("插件声明尚未登记，当前配置只接受空插件列表")
+    def _plugin_list(cls, value: object) -> object:
+        """TOML 数组转为不可变实例序列，具体项仍经严格字段校验。"""
+        return tuple(value) if _is_list(value) else value
 
     @model_validator(mode="after")
     def _check_model_references(self) -> Self:
@@ -281,6 +318,9 @@ class EngineConfig(_Settings):
                 raise ValueError(f"subject.{purpose}: 必须引用已声明的生成模型")
         if self.subject.attention is not None and self.subject.attention not in self.models:
             raise ValueError("subject.attention: 必须引用已声明的模型")
+        instance_ids = [item.instance_id for item in self.plugins]
+        if len(set(instance_ids)) != len(instance_ids):
+            raise ValueError("plugins: 插件实例身份重复")
 
         object.__setattr__(self, "models", MappingProxyType(dict(self.models)))
         return self
@@ -313,7 +353,7 @@ class EngineConfig(_Settings):
             data_dir = base_dir / data_dir
 
         # 重新构造经过完整校验的快照，不能用 model_copy(update=...) 绕过边界。
-        return type(self)(
+        resolved = type(self)(
             host=HostSettings(data_dir=data_dir.resolve(), close_seconds=self.host.close_seconds),
             models=self.models,
             subject=self.subject,
@@ -324,6 +364,20 @@ class EngineConfig(_Settings):
             web=self.web,
             plugins=self.plugins,
         )
+        plugin_base_dir = base_dir if base_dir is not None else self._plugin_base_dir
+        if plugin_base_dir is not None and not plugin_base_dir.is_absolute():
+            raise ConfigError("plugins: base_dir 必须是绝对路径")
+        if self.plugins and plugin_base_dir is None:
+            raise ConfigError("plugins: 程序式插件配置必须提供绝对 base_dir")
+        resolved._plugin_base_dir = plugin_base_dir
+        return resolved
+
+    @property
+    def plugin_base_dir(self) -> Path:
+        """返回已固定的配置基准目录；空插件配置无需额外路径信息。"""
+        if self._plugin_base_dir is not None:
+            return self._plugin_base_dir
+        return self.host.data_dir
 
 
 def load_config(path: Path) -> EngineConfig:

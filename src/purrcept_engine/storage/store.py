@@ -1,4 +1,4 @@
-"""在专属 SQLite 线程上保存输入事实、待办和去重媒体。
+"""在专属 SQLite 线程上保存输入、媒体、行动意图和逐次真实回执。
 
 ``Store.open`` 创建单连接所有者；宿主须先持有数据目录实例锁。接管事务同时
 检查额度并保存原文、媒体引用和待办。普通请求与处置提交使用独立有界队列，
@@ -8,6 +8,7 @@
 执行一次，停止新的写入后排空已受理操作；连接收回前仍可接管有限只读查询。
 权威故障阻止后续写入，保留原库和可读取事实；本模块不调度模型或插件，
 不以空库或内存状态替代提交失败。
+线程内程序异常原样交回当前和排队的等待者，并停止派发、关闭连接。
 """
 
 import asyncio
@@ -26,9 +27,11 @@ from uuid import uuid4
 
 from purrcept_engine.errors import StorageError
 
+from . import execution as execution_storage
+from .execution import ActionOutcome, ActionRecord, CallOutcome, CallRecord
 from .models import Admission, InputRecord, InputSource, InputSubmission, MediaReference
 
-_FORMAT_VERSION = 1
+_FORMAT_VERSION = 2
 _APPLICATION_ID = 0x50555245
 _INPUT_COLUMNS = (
     "input_id, adapter_id, account_id, conversation_id, event_kind, native_event_id, "
@@ -49,6 +52,7 @@ _SCHEMA = (
     "CREATE TABLE pending_inputs ("
     "sequence INTEGER PRIMARY KEY AUTOINCREMENT, "
     "input_id TEXT UNIQUE NOT NULL REFERENCES inputs(input_id))",
+    *execution_storage.SCHEMA,
 )
 
 
@@ -61,6 +65,7 @@ class _QueuedJob(Protocol):
     """
 
     logical_bytes: int
+    writing: bool
 
     def run(self, connection: sqlite3.Connection) -> None:
         """执行已接管操作，将成功结果送回事件循环；错误留给线程边界分类。"""
@@ -79,6 +84,7 @@ class _Job[Result]:
     future: asyncio.Future[Result]
     loop: asyncio.AbstractEventLoop
     logical_bytes: int
+    writing: bool
 
     def run(self, connection: sqlite3.Connection) -> None:
         """取得结果后在所属循环完成 Future，保持跨线程所有权。"""
@@ -159,6 +165,7 @@ class Store:
         self._ordinary_count = 0
         self._ordinary_bytes = 0
         self._control_count = 0
+        self._control_bytes = 0
         self._closing = False
         self._connection_closing = False
         self._failure: StorageError | None = None
@@ -247,6 +254,131 @@ class Store:
         self._validate_id(media_id)
         return await self._submit(lambda connection: self._get_media(connection, media_id))
 
+    async def begin_action(self, action_id: str, *, catalog_version: str, source: str) -> None:
+        """执行所有者先保存代码与目录版本；确认返回前不得启动该行动。"""
+        self._validate_id(action_id)
+        self._validate_id(catalog_version)
+        if not isinstance(source, str):
+            raise ValueError("行动源码必须是字符串。")
+        size = execution_storage.payload_bytes(action_id, catalog_version, source)
+        await self._submit(
+            lambda connection: execution_storage.begin_action(
+                connection, action_id, catalog_version, source
+            ),
+            control=True,
+            writing=True,
+            logical_bytes=size,
+        )
+
+    async def begin_call(
+        self,
+        call_id: str,
+        *,
+        action_id: str,
+        sequence: int,
+        path: str,
+        target_id: str,
+        arguments_json: str,
+    ) -> None:
+        """派发前接管完整调用意图；prepared 不证明已进入 Provider。"""
+        for identity in (call_id, action_id, path, target_id):
+            self._validate_id(identity)
+        if isinstance(sequence, bool) or not isinstance(sequence, int) or sequence < 0:
+            raise ValueError("调用顺序必须是非负整数。")
+        size = execution_storage.payload_bytes(call_id, action_id, path, target_id, arguments_json)
+        execution_storage.validate_json(arguments_json, arguments=True)
+        await self._submit(
+            lambda connection: execution_storage.begin_call(
+                connection, call_id, action_id, sequence, path, target_id, arguments_json
+            ),
+            control=True,
+            writing=True,
+            logical_bytes=size,
+        )
+
+    async def mark_call_started(self, call_id: str) -> None:
+        """提交进入 Provider 前的门槛；执行方返回后仍须在锁内核验资格。
+
+        等待取消不撤销已提交门槛；不得把再次调用此方法当作执行许可或重发。
+        """
+        self._validate_id(call_id)
+        size = execution_storage.payload_bytes(call_id)
+        await self._submit(
+            lambda connection: execution_storage.mark_call_started(connection, call_id),
+            control=True,
+            writing=True,
+            logical_bytes=size,
+        )
+
+    async def record_call_result(
+        self,
+        call_id: str,
+        *,
+        state: CallOutcome,
+        result_json: str | None,
+        error_type: str | None,
+        error: str | None,
+    ) -> CallRecord:
+        """独立提交真实结果、回执历史和可靠待办，不依赖会话提交。
+
+        重复相同结果返回同版本；未知可由迟到真实确认或失败澄清，其旧版本仍
+        保留并分别待交接。调用者取消等待不取消结果事务，查询可取回事实。
+        """
+        self._validate_id(call_id)
+        if state not in ("confirmed", "failed", "unknown", "not_started"):
+            raise ValueError("调用结果状态无效。")
+        size = execution_storage.payload_bytes(call_id, result_json, error_type, error)
+        execution_storage.validate_json(result_json)
+        return await self._submit(
+            lambda connection: execution_storage.record_call_result(
+                connection, call_id, state, result_json, error_type, error
+            ),
+            control=True,
+            writing=True,
+            logical_bytes=size,
+        )
+
+    async def finish_action(
+        self,
+        action_id: str,
+        *,
+        state: ActionOutcome,
+        result_json: str | None,
+        output: str,
+        error: str | None,
+    ) -> None:
+        """保存行动结束事实，失败与取消都不回滚或覆盖逐次真实回执。"""
+        self._validate_id(action_id)
+        if state not in ("completed", "failed", "timed_out", "cancelled"):
+            raise ValueError("行动结果状态无效。")
+        if not isinstance(output, str):
+            raise ValueError("行动输出必须是字符串。")
+        size = execution_storage.payload_bytes(action_id, result_json, output, error)
+        execution_storage.validate_json(result_json)
+        await self._submit(
+            lambda connection: execution_storage.finish_action(
+                connection, action_id, state, result_json, output, error
+            ),
+            control=True,
+            writing=True,
+            logical_bytes=size,
+        )
+
+    async def get_action(self, action_id: str) -> ActionRecord | None:
+        """查询行动、当前调用及完整回执版本；读取不启动或确认任何工作。"""
+        self._validate_id(action_id)
+        return await self._submit(
+            lambda connection: execution_storage.get_action(connection, action_id)
+        )
+
+    async def pending_call_receipts(self, *, limit: int = 16) -> tuple[CallRecord, ...]:
+        """读取有限可靠交接版本；消费确认须由实际主体接管事务另行提交。"""
+        _positive(limit, "limit")
+        bounded_limit = min(limit, self._max_inputs)
+        return await self._submit(
+            lambda connection: execution_storage.pending_call_receipts(connection, bounded_limit)
+        )
+
     async def close(self) -> None:
         """禁止新的写入并等待同一排空与关闭过程。
 
@@ -278,19 +410,23 @@ class Store:
         self._check_loop()
         future: asyncio.Future[Result] = self._loop.create_future()
         future.add_done_callback(_observe_result)
-        job = _Job(operation, future, self._loop, logical_bytes)
+        job = _Job(operation, future, self._loop, logical_bytes, writing)
         with self._condition:
             if self._connection_closing or (self._closing and writing):
                 raise StorageError("存储已开始关闭。", code="store_closed")
             if writing and self._failure is not None:
                 raise StorageError("权威存储已故障，拒绝新的写入。") from self._failure
 
-            # 队列条数来自接管上限，载荷同时受逻辑字节额度约束。控制只传身份，
-            # 有独立的同等条数位置，不借普通输入容量完成处置。
+            # 控制有独立的条数和字节位置，真实回执不借普通输入容量收尾；
+            # 参数与结果也须计量，不能在控制路径绕过有界载荷。
             if control:
-                if self._control_count >= self._max_inputs:
+                if (
+                    self._control_count >= self._max_inputs
+                    or self._control_bytes + logical_bytes > self._max_input_bytes
+                ):
                     raise StorageError("存储控制提交已满。", code="store_busy")
                 self._control_count += 1
+                self._control_bytes += logical_bytes
                 self._control.append(job)
             else:
                 if (
@@ -355,6 +491,11 @@ class Store:
                 control = bool(self._control)
                 job = self._control.popleft() if control else self._ordinary.popleft()
             try:
+                # 权威故障也撤销尚未开始的已排队写入资格，防止前一提交失败后
+                # 后续派发意图仍被接管并成为能力启动许可；只读事实继续可查询。
+                with self._condition:
+                    if job.writing and self._failure is not None:
+                        raise StorageError("权威存储已故障，拒绝排队写入。") from self._failure
                 job.run(connection)
             except StorageError as error:
                 if error.code in {"invalid_record", "unsupported_format"}:
@@ -372,6 +513,7 @@ class Store:
                 with self._condition:
                     if control:
                         self._control_count -= 1
+                        self._control_bytes -= job.logical_bytes
                     else:
                         self._ordinary_count -= 1
                         self._ordinary_bytes -= job.logical_bytes
@@ -383,6 +525,7 @@ class Store:
             self._connection_closing = True
             pending = (*self._control, *self._ordinary)
             self._control_count -= len(self._control)
+            self._control_bytes -= sum(queued.logical_bytes for queued in self._control)
             self._ordinary_count -= len(self._ordinary)
             self._ordinary_bytes -= sum(queued.logical_bytes for queued in self._ordinary)
             self._control.clear()
@@ -442,6 +585,7 @@ class Store:
             "SELECT input_id, ordinal, media_id, media_type, name FROM input_media LIMIT 0"
         )
         connection.execute("SELECT sequence, input_id FROM pending_inputs LIMIT 0")
+        execution_storage.initialize(connection)
 
     def _admit(
         self, connection: sqlite3.Connection, submission: InputSubmission, logical_bytes: int
