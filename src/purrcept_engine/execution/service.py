@@ -26,7 +26,6 @@ from tempfile import TemporaryDirectory
 from typing import Literal
 from uuid import uuid4
 
-from purrcept_engine.app.config import ExecutionSettings
 from purrcept_engine.errors import ConfigError, EngineError
 from purrcept_engine.storage.execution import ActionOutcome, ActionRecord, CallRecord
 
@@ -40,6 +39,7 @@ from .providers import (
     CapabilityInputError,
     bind_implementations,
 )
+from .settings import ExecutionSettings
 from .windows import WindowsProcess
 
 

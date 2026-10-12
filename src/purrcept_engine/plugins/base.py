@@ -17,6 +17,9 @@ from pydantic import BaseModel
 from purrcept_engine.execution.catalog import CapabilityDeclaration, ObjectDeclaration
 from purrcept_engine.execution.protocol import JsonObject
 from purrcept_engine.execution.providers import CallContext, CallOutcome, CapabilityImplementation
+from purrcept_engine.plugins.audio.ports import AudioOutputPort
+from purrcept_engine.plugins.live2d.ports import BodyPort
+from purrcept_engine.storage.audio_port import AudioPort
 from purrcept_engine.storage.execution import CallRecord
 from purrcept_engine.storage.knowledge import EvidencePage, EvidenceSnapshot
 from purrcept_engine.storage.models import Admission, InputRecord, InputSubmission, MediaAsset
@@ -109,6 +112,8 @@ class PluginPorts:
     inputs 用于接管与查询；snapshot 读取宿主提交后的只读投影。设备客户端
     和通用数据库不在端口中。evidence 为共享原文/分页服务，仅实际需要的
     组件借用；认识写入不在此门面内。
+    audio 是同库阶段事实端口，不是播放器；native_audio_enabled只表示前台
+    模型显式声明音频能力，真实材料仍须通过完整请求的容量预检。
     """
 
     inputs: InputPort
@@ -116,6 +121,8 @@ class PluginPorts:
     evidence: EvidencePort | None = None
     time: TimePort | None = None
     late_results: LateResultPort | None = None
+    audio: AudioPort | None = None
+    native_audio_enabled: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -129,6 +136,8 @@ class PluginRuntime:
     prepare_request 在每个逻辑模型请求发送前异步刷新技能等读取材料；返回
     只读 JSON 加入动态 user 尾部，不能修改固定能力目录、执行技能或发外部消息。
     panel 只列出已批准的面板快捷控制，不把全部模型能力变成页面入口。
+    audio_output和body是具体所有者交回的有限运行借用，app在全部build之后
+    一次绑定音频到可选身体，再执行start；关闭仍归各自Runtime。
     """
 
     capabilities: tuple[CapabilityImplementation, ...]
@@ -138,6 +147,8 @@ class PluginRuntime:
     snapshot: Callable[[], JsonObject] | None = None
     prepare_request: Callable[[], Awaitable[JsonObject]] | None = None
     panel: DevicePanel | None = None
+    audio_output: AudioOutputPort | None = None
+    body: BodyPort | None = None
 
 
 @dataclass(frozen=True, slots=True)

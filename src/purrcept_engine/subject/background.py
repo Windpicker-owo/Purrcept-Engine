@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from typing import Protocol
 from uuid import uuid4
 
+import httpx
 from purrcept_core.models import (
     ContentBlock,
     Message,
@@ -45,6 +46,7 @@ from .coordinator import SubjectModel
 from .knowledge import KnowledgeService, KnowledgeStore
 from .model_requests import RequestEvidenceSink
 from .reflection import EvidenceDeliveries, ReflectionTools
+from .semantic import EmbeddingProtocolError
 from .session import ContinuousSession, PrepareHistory, RefreshState, SessionStore
 
 
@@ -352,6 +354,8 @@ class BackgroundService:
             UnsupportedMaterial,
             ToolLoopLimitError,
             TimeoutError,
+            httpx.HTTPError,
+            EmbeddingProtocolError,
         ) as error:
             await self._commit(
                 self.knowledge_store.abandon_reflection(

@@ -263,6 +263,8 @@ class RecallResult:
     reranked: bool
     index_pending: int
     index_pending_is_lower_bound: bool
+    embedding_pending: int = 0
+    embedding_pending_is_lower_bound: bool = False
 
 
 def recall_payload(result: RecallResult) -> str:
@@ -279,6 +281,8 @@ def recall_payload(result: RecallResult) -> str:
                 "reranker": "enabled" if result.reranked else "disabled",
                 "index_pending": result.index_pending,
                 "index_pending_is_lower_bound": result.index_pending_is_lower_bound,
+                "embedding_pending": result.embedding_pending,
+                "embedding_pending_is_lower_bound": result.embedding_pending_is_lower_bound,
             },
         },
         ensure_ascii=False,
@@ -442,10 +446,17 @@ class KnowledgeService:
             if len(result) == limit:
                 break
         pending = await self.store.pending_index(route="keyword", limit=100)
+        embedding_pending = (
+            await self.store.pending_index(route="semantic", limit=100)
+            if self.semantic is not None
+            else ()
+        )
         return RecallResult(
             tuple(result),
             self.semantic is not None,
             self.reranker is not None,
             len(pending),
             len(pending) == 100,
+            len(embedding_pending),
+            len(embedding_pending) == 100,
         )

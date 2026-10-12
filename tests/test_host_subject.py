@@ -9,6 +9,7 @@ from collections import deque
 from datetime import UTC, datetime
 from pathlib import Path
 
+import httpx
 import pytest
 from purrcept_core.models import (
     Message,
@@ -22,6 +23,7 @@ from purrcept_core.models import (
 )
 
 from purrcept_engine import EngineConfig, EngineHost, InputSource, InputSubmission
+from purrcept_engine.app.config import GenerationModelSettings
 from purrcept_engine.execution.protocol import decode_object
 
 
@@ -82,6 +84,69 @@ async def wait_processed(host: EngineHost, identity: str) -> None:
             if record.state == "processed":
                 return
             await asyncio.sleep(0.01)
+
+
+async def test_configured_embedding_failure_ends_one_turn_and_preserves_host(
+    tmp_path: Path,
+) -> None:
+    """配置语义路径保留真实失败，新输入仍可处理；未把关键词当替代结果。"""
+    request = httpx.Request("POST", "http://127.0.0.1:9999/v1/embeddings")
+    failure = httpx.ConnectError("synthetic unavailable", request=request)
+
+    class Embedding:
+        model_id = "explicit-test-space"
+
+        async def embed(self, texts: tuple[str, ...]) -> tuple[tuple[float, ...], ...]:
+            raise failure
+
+    class Reflection:
+        async def generate(
+            self, request: ModelRequest, *, model: str, emit: ModelEventSink | None = None
+        ) -> ModelResponse:
+            return ModelResponse(Message.assistant("本批没有结构化完成回执。"))
+
+    original = config(tmp_path)
+    raw = original.model_dump()
+    main = original.models["main"]
+    assert isinstance(main, GenerationModelSettings)
+    raw["models"]["reflection"] = main.model_dump()
+    raw["subject"]["reflection"] = "reflection"
+    raw["knowledge"] = {
+        "embedding": {
+            "model": "openai/synthetic",
+            "model_id": "explicit-test-space",
+            "api_base": "http://127.0.0.1:9999/v1",
+        }
+    }
+    backend = Backend(
+        (
+            proposal("recall", "recall", {"query": "needle"}),
+            ModelResponse(Message.assistant("新输入正常结束。")),
+        )
+    )
+    host = EngineHost(
+        EngineConfig.validate(raw),
+        generation_backends={"main": backend, "reflection": Reflection()},
+        embedding_provider=Embedding(),
+    )
+    await host.start()
+    try:
+        now = datetime.now(UTC)
+        first = await host.submit(
+            InputSubmission(InputSource("test", "a", "c", "text", "first"), "先检索", now, now)
+        )
+        await wait_processed(host, first.input_id)
+        failed = await host.query_processing(first.input_id)
+        assert failed is not None and failed.stage == "failed"
+        second = await host.submit(
+            InputSubmission(InputSource("test", "a", "c", "text", "second"), "新独立输入", now, now)
+        )
+        await wait_processed(host, second.input_id)
+        completed = await host.query_processing(second.input_id)
+        assert completed is not None and completed.stage == "processed"
+        assert host.query().phase == "running" and len(backend.requests) == 2
+    finally:
+        await host.close()
 
 
 @pytest.mark.asyncio

@@ -67,6 +67,7 @@ def build_subject(
     can_start: Callable[[], None],
     rules: Mapping[str, CapacityRule],
     wakeup_committed: Callable[[], None],
+    knowledge: KnowledgeService,
 ) -> SubjectAssembly:
     """按配置 discriminator 选择命名资源，构造不查询库或发起模型请求。
 
@@ -117,8 +118,7 @@ def build_subject(
         return measure
 
     ledger = store.knowledge
-    knowledge = KnowledgeService(ledger, page_chars=config.context.page_chars)
-    diagnostic_bytes = config.execution.result_bytes
+    diagnostic_bytes = config.diagnostics.max_bytes
     maintenance = HistoryMaintenance(
         store,
         store,

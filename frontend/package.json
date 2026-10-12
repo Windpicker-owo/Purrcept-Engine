@@ -1,0 +1,10 @@
+{
+  "name": "purrcept-engine-panel",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node ../scripts/build_web.mjs",
+    "typecheck": "node ../../purrcept_design/react/node_modules/typescript/bin/tsc -p tsconfig.json",
+    "test": "node run-tests.mjs"
+  }
+}

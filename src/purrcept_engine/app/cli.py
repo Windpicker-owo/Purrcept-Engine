@@ -14,12 +14,17 @@ import signal
 import sys
 from importlib.resources import files
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from purrcept_engine.errors import ConfigError, EngineError
 
 from .config import load_config
-from .host import EngineHost
+from .host import EngineHost, HostSnapshot
+from .logging import CliLogging
 from .stdin import ConsoleIngress, WindowsLineReader
+
+if TYPE_CHECKING:
+    from .web import WebServer
 
 
 def main() -> int:
@@ -43,7 +48,6 @@ def main() -> int:
             host = EngineHost(load_config(config_path))
             print(f"目录版本：{host.catalog.version}\n{host.catalog.instructions}")
         else:
-            logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
             asyncio.run(_run(config_path))
     except (ConfigError, EngineError) as error:
         print(str(error), file=sys.stderr)
@@ -57,8 +61,6 @@ def main() -> int:
 async def _run(config_path: Path) -> None:
     """常驻拥有宿主，信号只向本进程提出退出，不触碰外部服务。"""
     config = load_config(config_path)
-    if config.web:
-        raise ConfigError("WebUI 尚未装配；当前配置请关闭 web。")
     host = EngineHost(config)
     loop = asyncio.get_running_loop()
     requested = asyncio.Event()
@@ -78,9 +80,33 @@ async def _run(config_path: Path) -> None:
     previous = signal.signal(signal.SIGINT, request_close)
     previous_term = signal.signal(signal.SIGTERM, request_close)
     ingress: ConsoleIngress | None = None
+    web: WebServer | None = None
+    logs: CliLogging | None = None
+    log_maintenance: asyncio.Task[None] | None = None
     observers: set[asyncio.Task[bool | None]] = set()
     try:
         await host.start()
+        try:
+            logs = CliLogging.open(
+                config.host.data_dir,
+                retention_days=config.logging.retention_days,
+                max_bytes=config.logging.max_bytes,
+                max_files=config.logging.max_files,
+            )
+        except (OSError, UnicodeError) as error:
+            # 普通日志是诊断，文件不可用不改变已装配业务或权威存储资格。
+            print(f"普通日志文件不可用：{type(error).__name__}。", file=sys.stderr)
+        if logs is not None:
+            log_maintenance = asyncio.create_task(_maintain_logs(logs, requested))
+            logging.getLogger(__name__).info(
+                "宿主已就绪。", extra={"host_instance": host.query().instance_id}
+            )
+        if config.web.enabled:
+            from .web import WebServer
+
+            web = WebServer(host, port=config.web.port)
+            await web.start()
+            print(f"本机面板：{web.url}", flush=True)
         print(f"Engine 已就绪，实例 {host.query().instance_id}。", flush=True)
         if config.console:
             ingress = ConsoleIngress(
@@ -104,10 +130,47 @@ async def _run(config_path: Path) -> None:
                 await asyncio.gather(*observers, return_exceptions=True)
             if ingress is not None:
                 await ingress.close()
-            snapshot = await host.close()
+            # 同时关闭页面观察与宿主入口，不先为HTTP等待花一份新期限。
+            # HTTP取消不撤销PanelController已接管的独立业务所有者。
+            closes = [host.close()]
+            if web is not None:
+                results = await asyncio.gather(*closes, web.close(), return_exceptions=True)
+            else:
+                results = await asyncio.gather(*closes, return_exceptions=True)
+            errors = [result for result in results if isinstance(result, BaseException)]
+            if errors:
+                raise BaseExceptionGroup("应用接入与宿主收尾失败。", errors)
+            snapshot = results[0]
+            if not isinstance(snapshot, HostSnapshot):
+                raise TypeError("宿主关闭没有返回生命周期快照。")
             if snapshot.phase != "closed":
                 print(f"关闭未完成：{', '.join(snapshot.pending_resources)}。", flush=True)
                 await host.wait_closed()
         finally:
-            signal.signal(signal.SIGINT, previous)
-            signal.signal(signal.SIGTERM, previous_term)
+            try:
+                requested.set()
+                if log_maintenance is not None:
+                    await log_maintenance
+            finally:
+                try:
+                    if logs is not None:
+                        logs.close()
+                finally:
+                    signal.signal(signal.SIGINT, previous)
+                    signal.signal(signal.SIGTERM, previous_term)
+
+
+async def _maintain_logs(logs: CliLogging, stopped: asyncio.Event) -> None:
+    """CLI的一个固定维护所有者清普通日志，不把日志失败当作业务失败。"""
+    while not stopped.is_set():
+        try:
+            result = logs.cleanup()
+            delay = 1.0 if result.has_more else 3600.0
+        except (OSError, UnicodeError) as error:
+            print(f"普通日志清理未完成：{type(error).__name__}。", file=sys.stderr)
+            delay = 3600.0
+        try:
+            async with asyncio.timeout(delay):
+                await stopped.wait()
+        except TimeoutError:
+            continue

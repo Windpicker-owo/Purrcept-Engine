@@ -11,6 +11,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import logging
 import math
 import sqlite3
 import time
@@ -20,6 +21,10 @@ from enum import Enum
 from typing import Literal, cast
 
 from purrcept_engine.errors import StorageError
+
+from . import retention
+
+_logger = logging.getLogger(__name__)
 
 RequestKind = Literal["generation", "decision"]
 RequestOutcome = Literal["succeeded", "failed", "timed_out", "cancelled", "interrupted"]
@@ -95,7 +100,9 @@ class AttemptEvidence:
 
     response_json 是完整取得的 Core 响应。argument_events_json 保存参数修复前
     的可用事件，diagnostic_events_json 保存有限预览。诊断超限只更新覆盖标记，
-    不删除响应或改变其业务结论。timed_out 不证明服务端已经停止计算。
+    不删除响应或改变其业务结论。diagnostics_expired_at 单独说明正文淘汰；
+    diagnostics_unavailable 表示诊断保存/读取缺口，两者不改原采集覆盖。
+    timed_out 不证明服务端已经停止计算。
     """
 
     start: AttemptStart
@@ -108,6 +115,8 @@ class AttemptEvidence:
     omitted_events: int
     # 这是已安排的等待额度；取消或截止可缩短实际等待，不声称已经等待完毕。
     retry_wait_seconds: float | None = None
+    diagnostics_expired_at: float | None = None
+    diagnostics_unavailable: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -148,6 +157,7 @@ SCHEMA = (
     "CREATE TABLE model_attempt_media ("
     "attempt_id TEXT NOT NULL REFERENCES model_attempts(attempt_id), "
     "media_id TEXT NOT NULL REFERENCES media(media_id), PRIMARY KEY(attempt_id,media_id))",
+    *retention.SCHEMA,
 )
 
 
@@ -203,7 +213,7 @@ def finish_attempt(connection: sqlite3.Connection, result: AttemptEvidence) -> N
         response = result.response_json
         if response is not None:
             response, media = intern_core_media(connection, response)
-        encoded = encode(replace(result, response_json=response))
+        encoded = _encode_authority_attempt(replace(result, response_json=response))
         row: tuple[object, ...] | None = connection.execute(
             "SELECT start_json,result_json FROM model_attempts WHERE attempt_id=?",
             (result.start.attempt_id,),
@@ -222,6 +232,47 @@ def finish_attempt(connection: sqlite3.Connection, result: AttemptEvidence) -> N
             "INSERT INTO model_attempt_media VALUES (?, ?)",
             ((result.start.attempt_id, media_id) for media_id in media),
         )
+    # 诊断是可淘汰的副本；权威结果先提交，独立诊断故障不能抹去已取得的响应。
+    # 原正文摘要留在权威行，过期或诊断写失败后仍能拒绝身份冲突的重复提交。
+    try:
+        with connection:
+            connection.execute("BEGIN IMMEDIATE")
+            connection.execute(
+                "INSERT INTO model_attempt_diagnostics VALUES (?,?,?,?,?,?,NULL)",
+                (
+                    result.start.attempt_id,
+                    result.diagnostic_events_json,
+                    retention.diagnostic_events_digest(result.diagnostic_events_json),
+                    int(result.diagnostics_complete),
+                    result.omitted_events,
+                    time.time(),
+                ),
+            )
+    except sqlite3.Error as error:
+        _logger.warning(
+            "模型诊断未保存；权威尝试结果已提交。",
+            extra={"attempt_id": result.start.attempt_id, "error_type": type(error).__name__},
+        )
+
+
+def _encode_authority_attempt(result: AttemptEvidence) -> str:
+    """冻结结果及原诊断摘要，诊断正文与查询时的淘汰标记不写入权威结果。"""
+    value = dict(
+        _object(
+            encode(
+                replace(
+                    result,
+                    diagnostic_events_json="[]",
+                    diagnostics_expired_at=None,
+                    diagnostics_unavailable=False,
+                )
+            )
+        )
+    )
+    value["diagnostic_events_digest"] = retention.diagnostic_events_digest(
+        result.diagnostic_events_json
+    )
+    return encode(value)
 
 
 def finish_request(connection: sqlite3.Connection, request_id: str, state: RequestOutcome) -> None:
@@ -303,7 +354,7 @@ def initialize(connection: sqlite3.Connection) -> None:
             )
             connection.execute(
                 "UPDATE model_attempts SET result_json=?,finished_at=? WHERE attempt_id=?",
-                (encode(result), time.time(), start.attempt_id),
+                (_encode_authority_attempt(result), time.time(), start.attempt_id),
             )
         connection.execute(
             "UPDATE model_requests SET state='interrupted',finished_at=? WHERE state='running'",
@@ -384,10 +435,37 @@ def restore_core_media(connection: sqlite3.Connection, encoded: str) -> str:
 
 
 def _restore_attempt(connection: sqlite3.Connection, encoded: str) -> AttemptEvidence:
+    """还原权威响应，再读取可过期诊断；诊断缺口不阻断权威查询。"""
     result = decode_attempt(encoded)
     if result.response_json is not None:
         result = replace(result, response_json=restore_core_media(connection, result.response_json))
-    return result
+    try:
+        row: tuple[object, ...] | None = connection.execute(
+            "SELECT events_json,original_events_digest,diagnostics_complete,omitted_events,"
+            "expired_at "
+            "FROM model_attempt_diagnostics WHERE attempt_id=?",
+            (result.start.attempt_id,),
+        ).fetchone()
+        if row is None:
+            return replace(result, diagnostics_unavailable=True)
+        events, digest = _text(row[0]), _text(row[1])
+        complete, omitted = _integer(row[2]), _integer(row[3])
+        expired = _optional_number(row[4])
+        if (
+            digest != _text(_object(encoded)["diagnostic_events_digest"])
+            or complete != int(result.diagnostics_complete)
+            or omitted != result.omitted_events
+            or (expired is None and retention.diagnostic_events_digest(events) != digest)
+            or (expired is not None and events != "[]")
+        ):
+            raise StorageError("模型诊断材料不匹配。", code="invalid_diagnostics")
+        return replace(result, diagnostic_events_json=events, diagnostics_expired_at=expired)
+    except (sqlite3.Error, StorageError) as error:
+        _logger.warning(
+            "模型诊断不可读取；保留权威响应及原始参数。",
+            extra={"attempt_id": result.start.attempt_id, "error_type": type(error).__name__},
+        )
+        return replace(result, diagnostics_unavailable=True)
 
 
 def _mapping(value: object) -> Mapping[str, object]:
@@ -685,7 +763,8 @@ def decode_attempt(encoded: str) -> AttemptEvidence:
             _optional_number(item["retry_after_seconds"]),
         )
     complete = row["diagnostics_complete"]
-    if not isinstance(complete, bool):
+    unavailable = row["diagnostics_unavailable"]
+    if not isinstance(complete, bool) or not isinstance(unavailable, bool):
         raise StorageError("诊断覆盖标记损坏。", code="invalid_record")
     return AttemptEvidence(
         decode_start(encode(row["start"])),
@@ -697,4 +776,6 @@ def decode_attempt(encoded: str) -> AttemptEvidence:
         complete,
         _integer(row["omitted_events"]),
         _optional_number(row["retry_wait_seconds"]),
+        _optional_number(row["diagnostics_expired_at"]),
+        unavailable,
     )

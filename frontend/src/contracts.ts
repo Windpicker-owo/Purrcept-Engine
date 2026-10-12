@@ -1,0 +1,211 @@
+/**
+ * 本机 HTTP 的展示契约与浏览器恢复边界。
+ * 只读取 Host 有限投影；unknown 必须经过形状/有限数值校验后才能进入页面。
+ * 状态字符串保留原值，展示层对未认识的状态明确告警，不补成空闲或成功。
+ */
+export type Json = null | boolean | number | string | Json[] | { [key: string]: Json };
+export type ObjectValue = { [key: string]: Json };
+
+export interface Budget { max_requests: number; used_requests: number; remaining_seconds: number }
+export interface Session { scope: string; generation: number; busy: boolean; closing: boolean; budgets: Budget[] }
+export interface PreviewText { text: string; truncated: boolean; original_chars: number }
+export interface Call {
+  call_id: string; path: string; state: string; receipt_revision: number;
+  started_at: number | null; finished_at: number | null; error_type: string | null;
+  error: PreviewText | null; result: PreviewText | null; media_count: number;
+}
+export interface Action {
+  action_id: string; state: string; created_at: number; finished_at: number | null;
+  error: PreviewText | null; calls: Call[];
+}
+export interface Activity {
+  activity_id: string; definition: string; goal: string; state: string; version: number;
+  run_generation: number; remaining_seconds: number; budget_basis: string;
+  needs_reconciliation: boolean; timing_incomplete: boolean; last_command_id: string;
+  progress_preview: PreviewText | null;
+  last_command: { command_id: string; command: string; status: string; actual_state: string | null; applied: boolean | null; error: PreviewText | null } | null;
+}
+export interface DeviceControl { key: string; title: string; fields: string[] }
+export interface Device {
+  instance_id: string; kind: string | null; revision: string | null; state: ObjectValue;
+  controls: DeviceControl[]; has_preview: boolean;
+}
+export interface Snapshot {
+  instance_id: string; host_version: number; phase: string; pending_resources: string[];
+  authority_available: boolean; devices: Device[]; foreground: Session | null; reflection: Session | null;
+  knowledge: ObjectValue | null; pending_limits: { count: number; logical_bytes: number };
+  pending_inputs: { stage: string; count: number; logical_bytes: number }[];
+  sessions: { scope: string; version: number; active_turn: string | null }[];
+  recent_actions: Action[]; activities: Activity[];
+}
+export interface ControlRequest {
+  request_id: string; instance_id: string; target: string; operation: string;
+  expected_revision: string; arguments: ObjectValue;
+}
+export interface ActivityCommand {
+  command_id: string; activity_id: string; status: string; actual_state: string | null;
+  applied: boolean | null; error: string | null;
+}
+export interface ControlResult {
+  request_id: string; instance_id: string; request: ObjectValue; state: string;
+  admitted_at: number; action_id: string | null; command_id: string | null;
+  finished_at: number | null; error_code: string | null; error: string | null;
+  action?: Action | null; activity_command?: ActivityCommand | null;
+}
+
+/** 错误指出失效字段，不回显未知网络正文或凭据。 */
+export class ContractError extends Error {
+  constructor(field: string) { super(`数据格式无效：${field}。旧状态不能用于控制。`); }
+}
+
+function object(value: unknown, field: string): Record<string, unknown> {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) throw new ContractError(field);
+  return Object.fromEntries(Object.entries(value));
+}
+function text(value: unknown, field: string): string {
+  if (typeof value !== "string") throw new ContractError(field);
+  return value;
+}
+function number(value: unknown, field: string): number {
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 0) throw new ContractError(field);
+  return value;
+}
+function integer(value: unknown, field: string): number {
+  const result = number(value, field);
+  if (!Number.isSafeInteger(result)) throw new ContractError(field);
+  return result;
+}
+function bool(value: unknown, field: string): boolean {
+  if (typeof value !== "boolean") throw new ContractError(field);
+  return value;
+}
+function nullable<T>(value: unknown, field: string, read: (value: unknown, field: string) => T): T | null {
+  return value === null ? null : read(value, field);
+}
+function list<T>(value: unknown, field: string, read: (value: unknown, field: string) => T): T[] {
+  if (!Array.isArray(value) || value.length > 256) throw new ContractError(field);
+  return value.map((item: unknown, index: number) => read(item, `${field}[${index}]`));
+}
+
+/** 插件状态保留嵌套 JSON，但限制深度和节点数以守住浏览器入口。 */
+export function jsonObject(value: unknown, field = "state"): ObjectValue {
+  let nodes = 0;
+  function read(item: unknown, depth: number): Json {
+    if (++nodes > 16384 || depth > 16) throw new ContractError(field);
+    if (item === null || typeof item === "string" || typeof item === "boolean") return item;
+    if (typeof item === "number" && Number.isFinite(item)) return item;
+    if (Array.isArray(item)) return item.map((entry: unknown) => read(entry, depth + 1));
+    const record = object(item, field);
+    return Object.fromEntries(Object.entries(record).map(([key, entry]) => [key, read(entry, depth + 1)]));
+  }
+  const record = object(value, field);
+  return Object.fromEntries(Object.entries(record).map(([key, item]) => [key, read(item, 1)]));
+}
+function preview(value: unknown, field: string): PreviewText {
+  const v = object(value, field);
+  return { text: text(v.text, field), truncated: bool(v.truncated, field), original_chars: integer(v.original_chars, field) };
+}
+function session(value: unknown, field: string): Session {
+  const v = object(value, field);
+  return {
+    scope: text(v.scope, field), generation: integer(v.generation, field), busy: bool(v.busy, field), closing: bool(v.closing, field),
+    budgets: list(v.budgets, field, (entry, at) => {
+      const b = object(entry, at);
+      return { max_requests: integer(b.max_requests, at), used_requests: integer(b.used_requests, at), remaining_seconds: number(b.remaining_seconds, at) };
+    }),
+  };
+}
+function call(value: unknown, field: string): Call {
+  const v = object(value, field);
+  return {
+    call_id: text(v.call_id, field), path: text(v.path, field), state: text(v.state, field), receipt_revision: integer(v.receipt_revision, field),
+    started_at: nullable(v.started_at, field, number), finished_at: nullable(v.finished_at, field, number),
+    error_type: nullable(v.error_type, field, text), error: nullable(v.error, field, preview), result: nullable(v.result, field, preview),
+    media_count: integer(v.media_count, field),
+  };
+}
+/** 逐调用状态不由行动 completed 推导，部分未知会一直保留。 */
+export function action(value: unknown, field = "action"): Action {
+  const v = object(value, field);
+  return {
+    action_id: text(v.action_id, field), state: text(v.state, field), created_at: number(v.created_at, field),
+    finished_at: nullable(v.finished_at, field, number), error: nullable(v.error, field, preview), calls: list(v.calls, field, call),
+  };
+}
+function activity(value: unknown, field: string): Activity {
+  const v = object(value, field);
+  return {
+    activity_id: text(v.activity_id, field), definition: text(v.definition, field), goal: text(v.goal, field), state: text(v.state, field),
+    version: integer(v.version, field), run_generation: integer(v.run_generation, field), remaining_seconds: number(v.remaining_seconds, field),
+    budget_basis: text(v.budget_basis, field), needs_reconciliation: bool(v.needs_reconciliation, field),
+    timing_incomplete: bool(v.timing_incomplete, field), last_command_id: text(v.last_command_id, field),
+    progress_preview: nullable(v.progress_preview, field, preview),
+    last_command: nullable(v.last_command, field, (entry, at) => {
+      const c = object(entry, at);
+      return { command_id: text(c.command_id, at), command: text(c.command, at), status: text(c.status, at), actual_state: nullable(c.actual_state, at, text), applied: nullable(c.applied, at, bool), error: nullable(c.error, at, preview) };
+    }),
+  };
+}
+function device(value: unknown, field: string): Device {
+  const v = object(value, field);
+  return {
+    instance_id: text(v.instance_id, field), kind: nullable(v.kind, field, text), revision: nullable(v.revision, field, text),
+    state: jsonObject(v.state, field), has_preview: bool(v.has_preview, field),
+    controls: list(v.controls, field, (entry, at) => {
+      const c = object(entry, at);
+      return { key: text(c.key, at), title: text(c.title, at), fields: list(c.fields, at, text) };
+    }),
+  };
+}
+
+/** GET /api/snapshot 的唯一入口；缺失字段不能用展示默认值掩盖。 */
+export function snapshot(value: unknown): Snapshot {
+  const v = object(value, "snapshot");
+  const limits = object(v.pending_limits, "pending_limits");
+  return {
+    instance_id: text(v.instance_id, "instance_id"), host_version: integer(v.host_version, "host_version"), phase: text(v.phase, "phase"),
+    pending_resources: list(v.pending_resources, "pending_resources", text), authority_available: bool(v.authority_available, "authority_available"),
+    devices: list(v.devices, "devices", device), foreground: nullable(v.foreground, "foreground", session), reflection: nullable(v.reflection, "reflection", session),
+    knowledge: nullable(v.knowledge, "knowledge", jsonObject), pending_limits: { count: integer(limits.count, "pending_limits.count"), logical_bytes: integer(limits.logical_bytes, "pending_limits.logical_bytes") },
+    pending_inputs: list(v.pending_inputs, "pending_inputs", (entry, at) => {
+      const p = object(entry, at);
+      return { stage: text(p.stage, at), count: integer(p.count, at), logical_bytes: integer(p.logical_bytes, at) };
+    }),
+    sessions: list(v.sessions, "sessions", (entry, at) => {
+      const s = object(entry, at);
+      return { scope: text(s.scope, at), version: integer(s.version, at), active_turn: nullable(s.active_turn, at, text) };
+    }),
+    recent_actions: list(v.recent_actions, "recent_actions", action), activities: list(v.activities, "activities", activity),
+  };
+}
+/** 令牌只用于当前同源宿主，不写入持久化页面记录。 */
+export function credentials(value: unknown): { token: string; instance_id: string } {
+  const v = object(value, "session");
+  return { token: text(v.token, "token"), instance_id: text(v.instance_id, "instance_id") };
+}
+/** 网络控制观察保留原业务关联；HTTP 状态本身不是效果。 */
+export function controlResult(value: unknown): ControlResult {
+  const v = object(value, "control");
+  const result: ControlResult = {
+    request_id: text(v.request_id, "request_id"), instance_id: text(v.instance_id, "instance_id"), request: jsonObject(v.request, "request"),
+    state: text(v.state, "control.state"), admitted_at: number(v.admitted_at, "admitted_at"), action_id: nullable(v.action_id, "action_id", text),
+    command_id: nullable(v.command_id, "command_id", text), finished_at: nullable(v.finished_at, "finished_at", number),
+    error_code: nullable(v.error_code, "error_code", text), error: nullable(v.error, "error", text),
+  };
+  if ("action" in v) result.action = nullable(v.action, "action", action);
+  if ("activity_command" in v) result.activity_command = nullable(v.activity_command, "activity_command", (entry, at) => {
+    const c = object(entry, at);
+    return { command_id: text(c.command_id, at), activity_id: text(c.activity_id, at), status: text(c.status, at), actual_state: nullable(c.actual_state, at, text), applied: nullable(c.applied, at, bool), error: nullable(c.error, at, text) };
+  });
+  return result;
+}
+/** 刷新恢复只接受完整原请求，重传绝不重建身份或改写参数。 */
+export function controlRequest(value: unknown): ControlRequest {
+  const v = object(value, "saved_request");
+  const request = {
+    request_id: text(v.request_id, "request_id"), instance_id: text(v.instance_id, "instance_id"), target: text(v.target, "target"),
+    operation: text(v.operation, "operation"), expected_revision: text(v.expected_revision, "expected_revision"), arguments: jsonObject(v.arguments, "arguments"),
+  };
+  if (!/^[A-Za-z0-9_-]{1,128}$/.test(request.request_id) || !request.target || !request.instance_id || !request.operation || !request.expected_revision) throw new ContractError("saved_request");
+  return request;
+}

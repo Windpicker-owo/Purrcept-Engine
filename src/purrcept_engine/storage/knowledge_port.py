@@ -331,6 +331,34 @@ class KnowledgeLedger:
             lambda connection: sql.pending_index(connection, route=route, limit=limit)
         )
 
+    async def queue_semantic_rebuild(self, model_id: str, *, limit: int = 32) -> int:
+        """先只读检查空间缺口，真正有候选才申请有界写入；空扫描不发布通知。"""
+        if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 32:
+            raise ValueError("向量重建一次最多扫描 32 个版本。")
+        references = await self._submit(
+            lambda connection: sql.semantic_rebuild_candidates(connection, model_id, limit=limit),
+            logical_bytes=_bytes(model_id),
+        )
+        if not references:
+            return 0
+        return await self._submit(
+            lambda connection: sql.queue_semantic_rebuild(connection, model_id, references),
+            logical_bytes=_bytes(
+                model_id, tuple(item.model_dump(mode="json") for item in references)
+            ),
+            control=True,
+            writing=True,
+        )
+
+    async def discard_stale_index(self, reference: sql.KnowledgeReference, *, route: str) -> bool:
+        """在同事务复查后只确认已经失效的确切版本任务，不安装任何猜测向量。"""
+        return await self._submit(
+            lambda connection: sql.discard_stale_index(connection, reference, route=route),
+            logical_bytes=_bytes(reference.model_dump(mode="json"), route),
+            control=True,
+            writing=True,
+        )
+
     async def apply_index(
         self,
         reference: sql.KnowledgeReference,

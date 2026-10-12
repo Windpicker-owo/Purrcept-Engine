@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from typing import Protocol, cast
 from uuid import uuid4
 
+import httpx
 from purrcept_core.models import (
     ChoiceAnswer,
     ContentBlock,
@@ -60,6 +61,7 @@ from .model_requests import (
     RequestEvidenceSink,
     RetryPolicy,
 )
+from .semantic import EmbeddingProtocolError
 from .session import CapacityCheck, ContinuousSession, PrepareHistory, RefreshState, SessionStore
 
 
@@ -637,6 +639,8 @@ class SubjectCoordinator:
                 UnsupportedMaterial,
                 ToolLoopLimitError,
                 TimeoutError,
+                httpx.HTTPError,
+                EmbeddingProtocolError,
             ):
                 # Session 已保存失败并结案输入；没有新来源不会自动重启预算。
                 pass

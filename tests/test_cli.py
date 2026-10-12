@@ -16,7 +16,7 @@ def test_init_check_and_repeat_init_preserve_existing_config(
     assert main() == 0
     original = config_path.read_bytes()
     config = load_config(config_path)
-    assert not config.console and not config.web
+    assert not config.console and not config.web.enabled
     assert not config.host.data_dir.exists()
 
     monkeypatch.setattr("sys.argv", ["purrcept-engine", "--config", str(config_path), "check"])

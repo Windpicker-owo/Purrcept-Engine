@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>声线调音室 · Purrcept</title>
+  <link rel="stylesheet" href="/assets/purrcept.css">
+  <link rel="stylesheet" href="/assets/studio.css">
+  <script src="/assets/studio.js" defer></script>
+</head>
+<body>
+  <header><a href="/">PURRCEPT / 声线调音室</a><span>本机处理 · 独立工具</span></header>
+  <main>
+    <div class="intro"><h1>听见声线的变化</h1><p>同一段声音，原声与处理版对比。保存的预设用于下一段语音。</p></div>
+    <div class="workspace">
+      <section aria-labelledby="source-title">
+        <h2 id="source-title">试听素材</h2>
+        <label class="upload" id="drop"><strong id="filename">选择或拖入一段语音</strong><span>WAV / MP3 / FLAC · 最长 90 秒 · 最大 20 MiB</span><input id="audio-file" type="file" accept=".wav,.mp3,.flac,audio/wav,audio/mpeg,audio/flac"></label>
+        <div id="waveform" aria-label="原声波形" role="img"></div>
+        <div class="actions" role="group" aria-label="对比版本"><button id="original" disabled title="请先上传素材" aria-pressed="true">A 原声</button><button id="processed" disabled title="请先生成处理版" aria-pressed="false">B 处理后</button></div>
+        <audio id="player" controls preload="metadata"></audio>
+        <div class="actions"><label><input id="loop" type="checkbox" checked>循环试听</label><span id="duration">尚未载入素材</span></div>
+        <p id="preview-status" class="status" data-state="idle" role="status">素材只用于本机试听，关闭服务后释放。</p>
+        <div class="actions"><button id="render" class="primary" disabled title="请先上传素材">更新试听</button><button id="download" disabled title="请先生成处理版">导出处理后 WAV</button></div>
+        <p>切换 A / B 尽量保持播放位置。调参会更新处理版，预设保存前不会改变现场声音。</p>
+      </section>
+      <section aria-labelledby="tune-title">
+        <h2 id="tune-title">调音参数</h2>
+        <label class="switch"><span>启用后处理</span><input id="enabled" type="checkbox" role="switch"></label>
+        <div id="sliders"></div>
+        <label class="switch"><span>峰值限制</span><input id="limiter" type="checkbox" checked role="switch"></label>
+        <p>变调保持语速；参数与现场音频使用同一处理规则。</p>
+      </section>
+    </div>
+    <section class="preset" aria-labelledby="preset-title">
+      <div><h2 id="preset-title">声线预设</h2><p id="save-message" class="status" data-state="idle" role="status">正在载入已保存设置。</p><p>保存只包含参数，不含素材、凭据或主体数据。</p></div>
+      <div class="actions"><button id="reset">恢复平直</button><button id="reload">载入已保存</button><button id="save" class="primary" disabled title="正在载入预设">保存并应用</button></div>
+      <div class="actions"><button id="export-profile">导出预设</button><label class="file-button">导入预设<input id="import-profile" type="file" accept=".json,application/json"></label></div>
+    </section>
+  </main>
+</body>
+</html>

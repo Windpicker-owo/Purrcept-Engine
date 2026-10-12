@@ -30,14 +30,36 @@ uv run purrcept-engine run
 示例中的模型/凭据/计量规则是需要替换的显式字段。`check` 不连接模型或设备；
 结构通过不能证明端点容量、媒体支持或实际重试行为。`console = true` 时每行
 文字经同一正式接管入口处理；空行忽略，EOF 只结束控制台输入，宿主继续运行。
-Ctrl+C 请求关闭，关闭期间第二次 Ctrl+C 强退本 CLI。Web 页面尚在实施，
-当前启动保持 `web = false`。
+Ctrl+C 请求关闭，关闭期间第二次 Ctrl+C 强退本 CLI。安装 `web` extra 后可在
+`[web]` 设置 `enabled = true`，启动时打印本机面板地址；默认端口 8765，
+端口 0 由系统分配。页面刷新只查询已装配宿主，控制经同库身份去重。
 
-内置插件显式启用：`notebook`、`clock`、`bed`、`computer`、`qq`。
+内置插件显式启用：`notebook`、`clock`、`bed`、`computer`、`browser`、`qq`、
+`microphone`（输出）、`voice_input`（收音）和 `live2d`。
 可选依赖通过对应 extra 安装，例如 `uv sync --extra qq --extra computer`；
 纯配置声明不打开设备，电脑仍须明确连接。Notebook 覆盖写入必须提供读取或
 先前写入返回的版本，已有文件不能以省略版本覆盖。QQ 恢复不重发未知消息，
 cursor 续读已保存快照，QZone feed 不支持深翻页。
+
+声音输出需要已安装的 FFmpeg/FFplay，配置使用明确程序路径；不会自动安装
+或开启声音设备。收音需要 `voice-input` extra、明确的设备/模式、固定版本
+VAD 文件及 ASR 端点；[收音配置](src/purrcept_engine/plugins/voice_input/README.md)
+说明显式下载与校验步骤，运行宿主不会自动下载。原生音频还须配置实际适用的
+模型容量规则，支持音频声明本身不证明计量依据。
+
+Live2D 使用 `live2d` extra、VTS模型校准与人工参数绑定；可选 OVR DLL 只在
+独立分析进程加载。音频不借用身体连接，声音开始/终止与视觉采用分别记账。
+VTS 自动有限恢复规则仍待决定，真实声音与视觉效果待实机确认。
+
+独立调音室安装 `web` extra 和 FFmpeg后运行 `purrcept-voice-studio --help`，
+具体使用见[调音室说明](src/purrcept_engine/app/studio/README.md)。面板与调音室
+静态资源均在Python包内，不需Node；面板源码重建见[前端说明](frontend/README.md)。
+
+CLI的普通日志位于数据目录 `logs`，默认七天、每文件10MiB、最多七文件，
+通过 `[logging]` 调整。模型流诊断默认七天与1MiB，通过 `[diagnostics]` 调整；
+过期查询带独立标记，不删除原始参数、完整请求响应、输入、媒体或业务回执。
+嵌入入口保留调用者日志配置。关闭故障仍报告原错：已释放的独立资源继续清理，
+无法确认归还的资源、权威库和目录锁继续持有。
 
 当前候选组合固定 Python 3.12、OpenAI 2.49.0 和
 `LiteLLM 1.105.0+purrcept.1`。官方 1.105.0 在 TypeSafe 连接错误下仍隐式重发；

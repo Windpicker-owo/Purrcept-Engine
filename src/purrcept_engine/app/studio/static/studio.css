@@ -1,0 +1,39 @@
+/* 调音室只引用 Purrcept Cel Token，状态颜色在这一处语义映射。 */
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--pc-color-canvas); color: var(--pc-color-ink); font: var(--pc-font-body); }
+header { display: flex; justify-content: space-between; gap: var(--pc-space-md); padding: var(--pc-space-lg) var(--pc-space-xl); }
+a { color: var(--pc-color-ink); font-weight: 600; text-decoration: none; }
+main { max-width: 1200px; margin: auto; padding: var(--pc-space-xl); }
+h1 { margin: 0; font: var(--pc-font-headline); }
+h2 { margin: 0 0 var(--pc-space-lg); font: var(--pc-font-title); }
+p, header span { color: var(--pc-color-ink-secondary); }
+.intro { margin-bottom: var(--pc-space-xl); }
+.workspace { display: grid; grid-template-columns: 1fr 1fr; gap: var(--pc-space-xl); }
+section { padding: var(--pc-space-xl); background: var(--pc-color-surface); border-radius: var(--pc-radius-lg); }
+.upload { display: grid; gap: var(--pc-space-sm); padding: var(--pc-space-lg); background: var(--pc-color-surface-sunken); border-radius: var(--pc-radius-md); }
+.actions { display: flex; align-items: center; gap: var(--pc-space-sm); flex-wrap: wrap; margin-top: var(--pc-space-md); }
+button, .file-button { min-height: var(--pc-space-touch-target); border: 1px solid var(--pc-color-outline); border-radius: var(--pc-radius-md); padding: var(--pc-space-xs) var(--pc-space-md); font: inherit; color: var(--pc-color-ink); background: var(--pc-color-surface); cursor: pointer; }
+button:hover, .file-button:hover { background: var(--pc-color-surface-selected); }
+button.primary { background: var(--pc-color-ink); color: var(--pc-color-on-ink); border-color: var(--pc-color-ink); }
+button.primary:hover { background: var(--pc-color-ink-hover); }
+button[aria-pressed="true"] { border-color: var(--pc-color-ink); background: var(--pc-color-surface-selected); }
+button:disabled { color: var(--pc-color-ink-muted); cursor: default; }
+button.primary:disabled { background: var(--pc-color-surface-sunken); border-color: var(--pc-color-outline); }
+:focus-visible { outline: 2px solid var(--pc-color-focus-ring); outline-offset: 2px; }
+audio { width: 100%; margin-top: var(--pc-space-lg); }
+input { accent-color: var(--pc-color-ink); }
+input[type="number"] { width: 100px; min-height: var(--pc-space-touch-target); padding: var(--pc-space-xs); border: 1px solid var(--pc-color-outline); border-radius: var(--pc-radius-sm); background: var(--pc-color-surface); color: var(--pc-color-ink); font: inherit; }
+.switch { display: flex; justify-content: space-between; align-items: center; min-height: var(--pc-space-touch-target); }
+.parameter { display: grid; grid-template-columns: 1fr 100px; align-items: center; gap: var(--pc-space-sm); margin: var(--pc-space-md) 0; }
+.parameter input[type="range"] { width: 100%; grid-column: 1 / -1; }
+.status { display: flex; align-items: baseline; gap: var(--pc-space-xs); min-height: 2em; }
+.status::before { content: "●"; color: var(--pc-color-ink); }
+.status[data-state="active"]::before { color: var(--pc-color-active); }
+.status[data-state="completed"]::before { color: var(--pc-color-success); }
+.status[data-state="failed"]::before { content: "!"; font-weight: 700; color: var(--pc-color-failed); }
+.status[data-state="waiting-user"]::before { content: "?"; color: var(--pc-color-waiting); }
+.preset { margin-top: var(--pc-space-xl); }
+.file-button input { max-width: 200px; }
+#waveform { display: flex; align-items: center; height: 120px; gap: 2px; margin-top: var(--pc-space-lg); background: var(--pc-color-surface-sunken); }
+#waveform i { display: block; flex: 1; background: var(--pc-color-ink-secondary); }
+@media (max-width: 760px) { .workspace { grid-template-columns: 1fr; } main { padding: var(--pc-space-md); } section { padding: var(--pc-space-lg); } header { flex-wrap: wrap; padding: var(--pc-space-lg); } }

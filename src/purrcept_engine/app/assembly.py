@@ -29,6 +29,10 @@ _BUILTIN_ENTRIES = {
     "bed": "purrcept_engine.plugins.rest:factory",
     "qq": "purrcept_engine.plugins.qq:factory",
     "computer": "purrcept_engine.plugins.computer:factory",
+    "browser": "purrcept_engine.plugins.browser.plugin:factory",
+    "microphone": "purrcept_engine.plugins.audio.plugin:factory",
+    "live2d": "purrcept_engine.plugins.live2d.plugin:factory",
+    "voice_input": "purrcept_engine.plugins.voice_input:factory",
 }
 
 

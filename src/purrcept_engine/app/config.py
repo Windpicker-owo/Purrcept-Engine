@@ -30,20 +30,27 @@ from pydantic import (
 
 from purrcept_engine.errors import ConfigError
 from purrcept_engine.execution.protocol import JsonObject, decode_object, encode_json
+from purrcept_engine.execution.settings import ExecutionSettings
+
+from .knowledge_resources import EmbeddingSettings
 
 __all__ = [
     "ActivitySettings",
     "CharacterSettings",
     "ContextSettings",
     "DecisionModelSettings",
+    "DiagnosticSettings",
     "EngineConfig",
     "ExecutionSettings",
     "GenerationModelSettings",
     "HostSettings",
+    "KnowledgeSettings",
+    "LoggingSettings",
     "PluginSettings",
     "RetrySettings",
     "SubjectSettings",
     "TurnSettings",
+    "WebSettings",
     "load_config",
 ]
 
@@ -101,6 +108,21 @@ class HostSettings(_Settings):
         return value
 
 
+class DiagnosticSettings(_Settings):
+    """控制详细模型流诊断的容量与时间，权威请求和原始参数不受此清理。"""
+
+    retention_days: PositiveInt = 7
+    max_bytes: Annotated[int, Field(ge=0)] = 1_048_576
+
+
+class LoggingSettings(_Settings):
+    """独立CLI普通文本日志的有限轮转，嵌入宿主不配置调用者handlers。"""
+
+    retention_days: PositiveInt = 7
+    max_bytes: Annotated[int, Field(ge=64)] = 10_485_760
+    max_files: PositiveInt = 7
+
+
 class _ModelSettings(_Settings):
     """显式选择端点、凭据及计量依据；实际传输来源由适配验证。"""
 
@@ -148,6 +170,7 @@ class GenerationModelSettings(_ModelSettings):
     context_window: PositiveInt
     max_output_tokens: PositiveInt
     input_limit: PositiveInt | None = None
+    supports_audio: bool = False
 
     @model_validator(mode="after")
     def _output_fits_window(self) -> Self:
@@ -243,37 +266,6 @@ class ContextSettings(_Settings):
         return self
 
 
-class ExecutionSettings(_Settings):
-    """拥有脚本、IPC、普通派发及输入接管额度，模型不能提高这些上限。"""
-
-    action_seconds: PositiveSeconds = 180.0
-    worker_cpu_seconds: PositiveSeconds = 15.0
-    worker_memory_bytes: PositiveInt = 512 * 1024 * 1024
-    max_calls: PositiveInt = 64
-    source_bytes: PositiveInt = 64 * 1024
-    output_bytes: PositiveInt = 64 * 1024
-    result_bytes: PositiveInt = 1024 * 1024
-    call_arguments_bytes: PositiveInt = 1024 * 1024
-    call_result_bytes: PositiveInt = 1024 * 1024
-    frame_bytes: PositiveInt = 2 * 1024 * 1024
-    max_workers: PositiveInt = 4
-    max_provider_calls: PositiveInt = 16
-    max_pending_inputs: PositiveInt = 1024
-    pending_input_bytes: PositiveInt = 256 * 1024 * 1024
-
-    @model_validator(mode="after")
-    def _frame_carries_payload(self) -> Self:
-        """帧还需容纳协议信封，不能把有效负载上限直接当成帧上限。"""
-        largest_payload = max(
-            self.result_bytes,
-            self.call_arguments_bytes,
-            self.call_result_bytes,
-        )
-        if self.frame_bytes <= largest_payload:
-            raise ValueError("协议帧必须大于最大单条 JSON 负载并为信封留出空间")
-        return self
-
-
 class ActivitySettings(_Settings):
     """约束未结束活动数及未来运行额度；暂停和离线时间不扣减。"""
 
@@ -320,6 +312,23 @@ class PluginSettings(_Settings):
         return decode_object(self.config_json.encode("utf-8"))
 
 
+class KnowledgeSettings(_Settings):
+    """可选向量资源；缺省只使用本地检索，不隐含选择 embedding 模型。"""
+
+    embedding: EmbeddingSettings | None = None
+
+
+class WebSettings(_Settings):
+    """CLI 本机面板接入配置，绑定范围固定为回环且不启动第二个宿主。
+
+    port=0 可供嵌入测试明确选择系统分配端口，实际 URL 在启动后取得。
+    不声明公网/代理或人员权限；原始主配置仍只由文件及纯构造边界取得。
+    """
+
+    enabled: bool = False
+    port: Annotated[int, Field(ge=0, le=65535)] = 8765
+
+
 class EngineConfig(_Settings):
     """供宿主装配使用的配置快照；相对路径必须经显式基准目录解析。
 
@@ -334,8 +343,11 @@ class EngineConfig(_Settings):
     context: ContextSettings = Field(default_factory=ContextSettings)
     execution: ExecutionSettings = Field(default_factory=ExecutionSettings)
     activities: ActivitySettings = Field(default_factory=ActivitySettings)
+    knowledge: KnowledgeSettings = Field(default_factory=KnowledgeSettings)
+    diagnostics: DiagnosticSettings = Field(default_factory=DiagnosticSettings)
+    logging: LoggingSettings = Field(default_factory=LoggingSettings)
     console: bool = True
-    web: bool = False
+    web: WebSettings = Field(default_factory=WebSettings)
     plugins: tuple[PluginSettings, ...] = ()
     _plugin_base_dir: Path | None = PrivateAttr(default=None)
 
@@ -401,6 +413,9 @@ class EngineConfig(_Settings):
             context=self.context,
             execution=self.execution,
             activities=self.activities,
+            knowledge=self.knowledge,
+            diagnostics=self.diagnostics,
+            logging=self.logging,
             console=self.console,
             web=self.web,
             plugins=self.plugins,

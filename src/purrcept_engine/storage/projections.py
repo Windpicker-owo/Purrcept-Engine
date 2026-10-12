@@ -42,6 +42,7 @@ def runtime(connection: sqlite3.Connection) -> JsonObject:
         recent.append(action_projection(action))
     active: list[JsonValue] = []
     for activity in activities.activity_records(connection):
+        command = activities.get_activity_command(connection, activity.last_command_id)
         active.append(
             {
                 "activity_id": activity.activity_id,
@@ -55,6 +56,17 @@ def runtime(connection: sqlite3.Connection) -> JsonObject:
                 "needs_reconciliation": activity.needs_reconciliation,
                 "timing_incomplete": activity.timing_incomplete,
                 "last_command_id": activity.last_command_id,
+                "progress_preview": _preview(activity.progress_json),
+                "last_command": None
+                if command is None
+                else {
+                    "command_id": command.command_id,
+                    "command": command.command,
+                    "status": command.status,
+                    "actual_state": command.actual_state,
+                    "applied": command.applied,
+                    "error": _preview(command.error),
+                },
             }
         )
     return {

@@ -9,5 +9,6 @@ build/
 .purrcept/
 .purrcept-engine/
 .test-tmp*/
+.pytest-*/
 .validation/
 purrcept.toml

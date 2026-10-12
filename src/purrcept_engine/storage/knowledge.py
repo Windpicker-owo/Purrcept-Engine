@@ -1351,7 +1351,11 @@ def get_candidate(
     include_inactive: bool = False,
     at: float | None = None,
 ) -> EvidenceSnapshot | MemoryRecord | None:
-    """索引候选必须重新核验确切版本与来源，当前查询拒绝迟到的旧版本。"""
+    """当前索引只采用最新有效版本；显式历史保留原快照和真实撤销标记。
+
+    原文历史自身的 valid 不等于授权当前索引继续使用旧向量。历史查询不修改
+    保存事实，默认安装/排名入口仍会再次核验最新版本和来源状态。
+    """
     if reference.kind == "memory":
         current = get_memory(
             connection,
@@ -1364,7 +1368,96 @@ def get_candidate(
     snapshot = get_evidence(
         connection, reference.id, version=reference.version, include_inactive=include_inactive
     )
+    if snapshot is not None and not include_inactive:
+        latest = _one(
+            connection,
+            "SELECT MAX(version) FROM knowledge_evidence WHERE evidence_id=?",
+            (reference.id,),
+        )
+        if latest != (reference.version,):
+            return None
     return snapshot
+
+
+def semantic_rebuild_candidates(
+    connection: sqlite3.Connection, model_id: str, *, limit: int = 32
+) -> tuple[KnowledgeReference, ...]:
+    """有限扫描当前空间缺少的版本；旧模型向量保留，不成为当前排名的依据。"""
+    _page_limit(limit)
+    if not model_id.strip():
+        raise ValueError("向量重建需要明确空间版本。")
+    cursor = connection.execute(
+        "SELECT 'evidence' AS kind,e.evidence_id AS id,e.version AS version "
+        "FROM knowledge_evidence e "
+        "LEFT JOIN knowledge_index i ON i.kind='evidence' AND i.id=e.evidence_id AND "
+        "i.version=e.version WHERE e.valid=1 AND e.version=(SELECT MAX(version) FROM "
+        "knowledge_evidence WHERE evidence_id=e.evidence_id) AND "
+        "(i.model IS NULL OR i.model<>? OR i.vector_json IS NULL) AND NOT EXISTS "
+        "(SELECT 1 FROM pending_knowledge_index p WHERE p.kind='evidence' AND p.id=e.evidence_id "
+        "AND p.version=e.version AND p.route='semantic') UNION ALL "
+        "SELECT 'memory',m.memory_id,m.version FROM memories m LEFT JOIN knowledge_index i "
+        "ON i.kind='memory' AND i.id=m.memory_id AND i.version=m.version WHERE "
+        "m.retired IS NULL AND m.version=(SELECT MAX(version) FROM memories WHERE "
+        "memory_id=m.memory_id) AND (i.model IS NULL OR i.model<>? OR i.vector_json IS NULL) "
+        "AND NOT EXISTS(SELECT 1 FROM pending_knowledge_index p WHERE p.kind='memory' AND "
+        "p.id=m.memory_id AND p.version=m.version AND p.route='semantic') ORDER BY kind,id,version",
+        (model_id, model_id),
+    )
+    result: list[KnowledgeReference] = []
+    while rows := cursor.fetchmany(32):
+        for row in cast(list[tuple[object, ...]], rows):
+            reference = KnowledgeReference(
+                kind=_kind(row[0]), id=_text(row[1]), version=_integer(row[2])
+            )
+            if get_candidate(connection, reference) is not None:
+                result.append(reference)
+                if len(result) == limit:
+                    return tuple(result)
+    return tuple(result)
+
+
+def queue_semantic_rebuild(
+    connection: sqlite3.Connection, model_id: str, references: tuple[KnowledgeReference, ...]
+) -> int:
+    """原子补齐有限派生任务，等待期间已经失效或被安装的候选不再重复排队。"""
+    if not model_id.strip() or not 1 <= len(references) <= 32:
+        raise ValueError("向量重建需要明确空间版本和至多 32 个候选。")
+    with connection:
+        connection.execute("BEGIN IMMEDIATE")
+        count = 0
+        for reference in references:
+            if get_candidate(connection, reference) is None:
+                continue
+            installed = _one(
+                connection,
+                "SELECT model,vector_json FROM knowledge_index WHERE kind=? AND id=? AND version=?",
+                (reference.kind, reference.id, reference.version),
+            )
+            if installed is not None and installed[0] == model_id and installed[1] is not None:
+                continue
+            cursor = connection.execute(
+                "INSERT OR IGNORE INTO pending_knowledge_index VALUES(?,?,?,?,'semantic')",
+                (reference.kind, reference.id, reference.version, time.time()),
+            )
+            count += cursor.rowcount
+        return count
+
+
+def discard_stale_index(
+    connection: sqlite3.Connection, reference: KnowledgeReference, *, route: str
+) -> bool:
+    """只确认当前仍失效的原版本任务；不向 apply_index 填入合成向量。"""
+    if route not in ("keyword", "semantic"):
+        raise ValueError("未知索引路线。")
+    with connection:
+        connection.execute("BEGIN IMMEDIATE")
+        if get_candidate(connection, reference) is not None:
+            return False
+        result = connection.execute(
+            "DELETE FROM pending_knowledge_index WHERE kind=? AND id=? AND version=? AND route=?",
+            (reference.kind, reference.id, reference.version, route),
+        )
+        return result.rowcount > 0
 
 
 def _install_index(

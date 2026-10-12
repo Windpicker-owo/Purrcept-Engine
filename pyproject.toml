@@ -23,13 +23,23 @@ time = ["tzdata==2026.5"]
 computer = ["pillow>=11,<13"]
 browser = ["patchright>=1.50,<2", "trafilatura>=2,<3", "pillow>=11,<13"]
 web = ["starlette==0.49.3", "uvicorn==0.39.0"]
+voice-input = [
+  "numpy==2.5.1",
+  "av==16.1.0",
+  "sounddevice==0.5.6",
+  "onnxruntime==1.30.0",
+  "websockets==15.0.1",
+]
+live2d = ["websockets==15.0.1"]
 
 [project.scripts]
 purrcept-engine = "purrcept_engine.app.cli:main"
+purrcept-voice-studio = "purrcept_engine.app.studio.cli:main"
 
 [dependency-groups]
 dev = [
   "build==1.6.0",
+  "hatchling==1.32.4",
   "pyright==1.1.411",
   "pytest==9.1.1",
   "pytest-asyncio==1.4.0",

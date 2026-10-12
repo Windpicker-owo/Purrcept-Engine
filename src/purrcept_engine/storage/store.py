@@ -14,6 +14,7 @@
 import asyncio
 import hashlib
 import json
+import logging
 import os
 import sqlite3
 import threading
@@ -35,6 +36,7 @@ from purrcept_engine.errors import StorageError
 from purrcept_engine.execution.protocol import ActionProtocolError, decode_object
 
 from . import activities as activity_storage
+from . import audio as audio_storage
 from . import controls as control_storage
 from . import execution as execution_storage
 from . import feedback as feedback_storage
@@ -42,9 +44,11 @@ from . import knowledge as knowledge_storage
 from . import maintenance as maintenance_storage
 from . import model_requests as model_storage
 from . import projections as projection_storage
+from . import retention as retention_storage
 from . import subject as subject_storage
 from . import time as time_storage
 from .activities import ActivityCommand, ActivityFeedback, ActivityRecord
+from .audio_port import AudioLedger
 from .controls import ControlLedger
 from .execution import ActionOutcome, ActionRecord, CallOutcome, CallRecord
 from .feedback_port import FeedbackLedger
@@ -75,7 +79,8 @@ from .subject import (
 )
 from .time_port import TimeLedger
 
-_FORMAT_VERSION = 10
+_FORMAT_VERSION = 12
+_logger = logging.getLogger(__name__)
 _APPLICATION_ID = 0x50555245
 _INPUT_COLUMNS = (
     "input_id, adapter_id, account_id, conversation_id, event_kind, native_event_id, "
@@ -105,6 +110,7 @@ _SCHEMA = (
     *time_storage.SCHEMA,
     *feedback_storage.SCHEMA,
     *control_storage.SCHEMA,
+    *audio_storage.SCHEMA,
 )
 
 
@@ -382,9 +388,42 @@ class Store:
         """借出同连接的页面控制身份账本，不增加设备执行入口。"""
         return ControlLedger(self._submit)
 
+    @property
+    def audio(self) -> AudioLedger:
+        """借出同连接音频阶段事实，不取得或恢复播放器/合成器。"""
+        return AudioLedger(self._submit)
+
     async def runtime_projection(self) -> projection_storage.JsonObject:
         """读取同连接的有限运行概况，不消耗待办或暴露完整模型材料。"""
         return await self._submit(projection_storage.runtime)
+
+    async def expire_diagnostics(
+        self, *, before: float, expired_at: float, limit: int = 128
+    ) -> projection_storage.JsonObject:
+        """在同连接淘汰一批诊断，明确返回非权威清理故障，不修改业务资格。
+
+        SQL或诊断材料损坏只表示本轮清理未完成；原文、参数、响应及媒体仍
+        保留。提交队列/连接本身失效继续保持权威故障，不能在这里吞掉。
+        """
+
+        def cleanup(connection: sqlite3.Connection) -> projection_storage.JsonObject:
+            try:
+                result = retention_storage.expire_diagnostics(
+                    connection, before=before, expired_at=expired_at, limit=limit
+                )
+            except (sqlite3.Error, StorageError) as error:
+                if isinstance(error, StorageError) and error.code != "invalid_diagnostics":
+                    raise
+                return {"state": "failed", "error_type": type(error).__name__}
+            return {
+                "state": "confirmed",
+                "expired_attempts": result.expired_attempts,
+                "removed_events": result.removed_events,
+                "removed_bytes": result.removed_bytes,
+                "has_more": result.has_more,
+            }
+
+        return await self._submit(cleanup, writing=True)
 
     def _admit_business(
         self, connection: sqlite3.Connection, submission: InputSubmission
@@ -462,11 +501,14 @@ class Store:
         logical_bytes = input_logical_bytes(submission)
         if logical_bytes > self._max_input_bytes:
             raise StorageError("单条输入超过逻辑负载额度。", code="input_capacity")
-        return await self._submit(
+        admission = await self._submit(
             lambda connection: self._admit(connection, submission, logical_bytes),
             logical_bytes=logical_bytes,
             writing=True,
         )
+        if not admission.duplicate:
+            _logger.info("输入已正式接管。", extra={"input_id": admission.input_id})
+        return admission
 
     async def get_input(self, input_id: str) -> InputRecord | None:
         """读取接管事实及当前处置状态，查询不会改变待办。"""
@@ -677,6 +719,10 @@ class Store:
             writing=True,
             logical_bytes=size,
         )
+        _logger.info(
+            "行动意图已接管，尚不证明能力效果。",
+            extra={"action_id": action_id, "input_id": input_id},
+        )
 
     @property
     def authority_available(self) -> bool:
@@ -696,6 +742,14 @@ class Store:
             control=True,
             writing=True,
         )
+        _logger.info(
+            "逻辑模型请求已冻结。",
+            extra={
+                "request_id": request.request_id,
+                "turn_id": request.scope.turn_id,
+                "scope": request.scope.owner_id,
+            },
+        )
 
     async def begin_attempt(self, start: AttemptStart) -> None:
         """保存本次真实尝试身份，模型所有者在等待后重验资格和截止。"""
@@ -707,12 +761,21 @@ class Store:
         )
 
     async def finish_attempt(self, result: AttemptEvidence) -> None:
-        """响应、原参数及有限诊断覆盖同事务保存，不覆盖另一次尝试。"""
+        """提交权威响应/原参数，再独立保存有限诊断，不覆盖另一次尝试。"""
         await self._submit(
             lambda connection: model_storage.finish_attempt(connection, result),
             logical_bytes=len(model_storage.encode(result).encode("utf-8")),
             control=True,
             writing=True,
+        )
+        _logger.info(
+            "模型尝试已结束。",
+            extra={
+                "request_id": result.start.request_id,
+                "attempt_id": result.start.attempt_id,
+                "outcome": result.state,
+                "error_type": None if result.failure is None else result.failure.error_type,
+            },
         )
 
     async def finish_request(self, request_id: str, state: RequestOutcome) -> None:
@@ -800,6 +863,15 @@ class Store:
             control=True,
             writing=True,
         )
+        if command is not None:
+            _logger.info(
+                "活动控制已入账，实际状态见确认。",
+                extra={
+                    "activity_id": record.activity_id,
+                    "command_id": command.command_id,
+                    "outcome": command.status,
+                },
+            )
 
     async def recover_activities(self) -> tuple[ActivityRecord, ...]:
         """登记上次运行中断；保留累计，离线时间不扣，不构造驱动。"""
@@ -896,7 +968,7 @@ class Store:
         size = execution_storage.payload_bytes(call_id, result_json, error_type, error)
         size += len(model_storage.encode(media).encode())
         execution_storage.validate_json(result_json)
-        return await self._submit(
+        record = await self._submit(
             lambda connection: execution_storage.record_call_result(
                 connection, call_id, state, result_json, error_type, error, media
             ),
@@ -904,6 +976,18 @@ class Store:
             writing=True,
             logical_bytes=size,
         )
+        _logger.info(
+            "能力回执已入账。",
+            extra={
+                "action_id": record.action_id,
+                "call_id": record.call_id,
+                "path": record.path,
+                "outcome": record.state,
+                "receipt_revision": record.receipt_revision,
+                "error_type": record.error_type,
+            },
+        )
+        return record
 
     async def finish_action(
         self,
@@ -929,6 +1013,10 @@ class Store:
             control=True,
             writing=True,
             logical_bytes=size,
+        )
+        _logger.info(
+            "行动已结束；逐调用回执分别保留确认、未知与失败。",
+            extra={"action_id": action_id, "outcome": state},
         )
 
     async def get_action(self, action_id: str) -> ActionRecord | None:
@@ -1207,6 +1295,10 @@ class Store:
         time_storage.initialize(connection)
         feedback_storage.initialize(connection)
         control_storage.initialize(connection)
+        connection.execute(
+            "SELECT sequence,plugin_id,identity,fact,occurred_at,payload_json "
+            "FROM audio_facts LIMIT 0"
+        )
         activity_storage.activity_records(connection)
 
     def _admit(
