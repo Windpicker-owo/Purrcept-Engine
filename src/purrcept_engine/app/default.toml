@@ -1,0 +1,79 @@
+# Purrcept Engine 内置零插件配置模板。校验不会连接端点或打开设备。
+# 以下模型名、窗口和计量标识均为占位值，使用前应替换为已核对的实际配置。
+# reference-text-only-v1 明确只描述文本参考计量；不允许接入原生图片或音频。
+# 接入媒体须先配置并验证适用的媒体计量规则，不能把 unsupported 当作零占用。
+console = false
+web = false
+plugins = []
+
+[host]
+data_dir = ".purrcept-engine"
+close_seconds = 30.0
+
+[models.foreground]
+kind = "generation"
+model = "openai/replace-with-local-generation-model"
+api_base = "http://127.0.0.1:4000/v1"
+api_key = "replace-with-explicit-local-key"
+context_window = 32000
+max_output_tokens = 4096
+capacity_rule = "reference-text-only-v1"
+media_rule = "unsupported"
+
+[models.attention]
+kind = "decision"
+model = "typesafe/replace-with-decision-model"
+api_base = "http://127.0.0.1:4001/v1"
+api_key = "replace-with-explicit-decision-key"
+input_limit = 8192
+capacity_rule = "reference-text-only-v1"
+media_rule = "unsupported"
+
+[subject]
+foreground = "foreground"
+reflection = "foreground"
+summary = "foreground"
+attention = "attention"
+
+[subject.foreground_retry]
+attempts = 2
+attempt_seconds = 120.0
+total_seconds = 180.0
+
+[subject.attention_retry]
+attempts = 2
+attempt_seconds = 5.0
+total_seconds = 8.0
+
+[subject.foreground_turn]
+max_requests = 8
+total_seconds = 600.0
+
+[context]
+summary_trigger = 0.8
+summary_target = 0.5
+input_reserve_fraction = 0.1
+protected_turns = 2
+page_chars = 8000
+
+[execution]
+action_seconds = 180.0
+worker_cpu_seconds = 15.0
+worker_memory_bytes = 536870912
+max_calls = 64
+source_bytes = 65536
+output_bytes = 65536
+result_bytes = 1048576
+call_arguments_bytes = 1048576
+call_result_bytes = 1048576
+frame_bytes = 2097152
+max_workers = 4
+max_provider_calls = 16
+max_pending_inputs = 1024
+pending_input_bytes = 268435456
+
+[activities]
+max_active = 8
+initial_seconds = 3600.0
+max_remaining_seconds = 3600.0
+checkpoint_seconds = 5.0
