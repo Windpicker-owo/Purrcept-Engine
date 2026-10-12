@@ -16,8 +16,9 @@ from uuid import uuid4
 from purrcept_engine.errors import HostStateError
 from purrcept_engine.storage import Admission, InputRecord, InputSubmission, Store
 
-from .config import EngineConfig
+from .config import EngineConfig, GenerationModelSettings
 from .locking import InstanceLock
+from .models import OpenAIGenerationResource, TypeSafeDecisionResource
 
 _logger = logging.getLogger(__name__)
 type HostPhase = Literal["new", "starting", "running", "closing", "closed", "failed"]
@@ -51,6 +52,7 @@ class EngineHost:
         self._version = 0
         self._lock = InstanceLock(config.host.data_dir)
         self._store: Store | None = None
+        self._models: dict[str, OpenAIGenerationResource | TypeSafeDecisionResource] = {}
         self._start_task: asyncio.Task[None] | None = None
         self._close_task: asyncio.Task[None] | None = None
         self._close_deadline: float | None = None
@@ -83,13 +85,33 @@ class EngineHost:
                 max_inputs=self.config.execution.max_pending_inputs,
                 max_input_bytes=self.config.execution.pending_input_bytes,
             )
-        except BaseException:
-            # 获取库失败时 Store.open 负责其线程/连接，宿主只释放自己的锁。
-            # 终止信号仍传播，不能被翻译成外围离线或正常就绪。
-            self._lock.release()
-            self._owns_lock = False
+            model_names = {
+                self.config.subject.foreground,
+                self.config.subject.reflection,
+                self.config.subject.summary,
+            }
+            if self.config.subject.attention is not None:
+                model_names.add(self.config.subject.attention)
+            for name in sorted(model_names):
+                settings = self.config.models[name]
+                resource = (
+                    OpenAIGenerationResource.create(settings)
+                    if isinstance(settings, GenerationModelSettings)
+                    else TypeSafeDecisionResource.create(settings)
+                )
+                # 资源取得后立即归属宿主，不等后续主体装配成功才登记。
+                self._models[name] = resource
+        except BaseException as startup_error:
+            # 部分启动失败沿同一资源逆序清理。清理失败保留所有权，并与原始
+            # 启动错误一起报告，不能解锁后另起宿主覆盖未释放的资源。
             if self._phase != "closing":
                 self._transition("failed")
+            try:
+                await self._release_resources()
+            except BaseException as cleanup_error:
+                raise BaseExceptionGroup(
+                    "宿主启动及收尾失败。", [startup_error, cleanup_error]
+                ) from None
             raise
 
         if self._phase == "starting":
@@ -111,11 +133,12 @@ class EngineHost:
     def query(self) -> HostSnapshot:
         """返回生命周期快照，不触发存储读取、设备或模型调用。"""
         resources: list[str] = []
-        if self._phase == "closing":
+        if self._phase in ("closing", "failed"):
             if self._start_task is not None and not self._start_task.done():
                 resources.append("startup")
             if self._store is not None:
                 resources.append("storage")
+            resources.extend(f"model:{name}" for name in self._models)
             if self._owns_lock:
                 resources.append("data_directory_lock")
         return HostSnapshot(self._instance_id, self._version, self._phase, tuple(resources))
@@ -163,12 +186,19 @@ class EngineHost:
                 if self._store is not None or self._owns_lock:
                     raise
 
+        await self._release_resources()
+        self._transition("closed")
+
+    async def _release_resources(self) -> None:
+        """逆序收回模型资源，再收回权威库；失败保留剩余所有者与目录锁。"""
+        for name in reversed(tuple(self._models)):
+            await self._models[name].close()
+            del self._models[name]
         if self._store is not None:
             await self._store.close()
             self._store = None
         self._lock.release()
         self._owns_lock = False
-        self._transition("closed")
 
     def _running_store(self) -> Store:
         if self._phase != "running" or self._store is None:

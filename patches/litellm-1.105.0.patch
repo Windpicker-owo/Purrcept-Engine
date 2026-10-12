@@ -1,0 +1,85 @@
+--- a/litellm/decisions/main.py
++++ b/litellm/decisions/main.py
+@@ -17,6 +17,7 @@
+     send,
+ )
+ from litellm.types.decisions import DecisionsJSON, DecisionsResponse, OpenAIDecisionInput, OpenAIDecisionResponse
++from litellm.llms.custom_httpx.http_handler import AsyncHTTPHandler
+ from litellm.utils import client
+ 
+ _STATE_ADAPTER: Final[TypeAdapter[DecisionsJSON | None]] = TypeAdapter(DecisionsJSON | None)
+@@ -83,6 +84,7 @@
+     timeout: float | httpx.Timeout | None = None,
+     custom_llm_provider: str | None = None,
+     extra_headers: Mapping[str, str] | None = None,
++    http_client: AsyncHTTPHandler | None = None,
+     **kwargs: object,
+ ) -> OpenAIDecisionResponse | DecisionsResponse:
+     call: Final = _prepare_decisions_call(
+@@ -97,7 +99,8 @@
+         extra_headers=extra_headers,
+         kwargs=kwargs,
+     )
+-    return await asend(call)
++    # The caller owns a supplied client and closes it after all borrowed calls finish.
++    return await asend(call, http_client=http_client)
+ 
+ 
+ @client
+--- a/litellm/decisions/call.py
++++ b/litellm/decisions/call.py
+@@ -15,6 +15,7 @@
+     ir_to_systemone_response,
+     systemone_request_to_ir,
+ )
++from litellm.llms.custom_httpx.http_handler import AsyncHTTPHandler
+ from litellm.llms.custom_httpx.llm_http_handler import BaseLLMHTTPHandler
+ from litellm.llms.openai.decisions.transformation import ir_to_openai_response, openai_request_to_ir
+ from litellm.types.decisions import (
+@@ -297,7 +298,9 @@
+     )
+ 
+ 
+-async def asend(call: DecisionsCall) -> DecisionsResponse | OpenAIDecisionResponse:
++async def asend(
++    call: DecisionsCall, *, http_client: AsyncHTTPHandler | None = None
++) -> DecisionsResponse | OpenAIDecisionResponse:
+     try:
+         response: Final = await _HANDLER.adecisions(
+             model=call.model,
+@@ -311,6 +314,7 @@
+             headers=call.headers,
+             timeout=call.timeout,
+             litellm_params=call.litellm_params,
++            client=http_client,
+         )
+     except Exception as error:
+         raise _map_upstream_exception(error, call) from error
+--- a/litellm/llms/custom_httpx/http_handler.py
++++ b/litellm/llms/custom_httpx/http_handler.py
+@@ -616,6 +616,7 @@
+         shared_session: Optional["ClientSession"] = None,
+         transport: httpx.AsyncBaseTransport | None = None,
+         follow_redirects: bool = True,
++        retry_connection_errors: bool = True,
+     ):
+         self.timeout = timeout
+         self.event_hooks = event_hooks
+@@ -623,6 +624,7 @@
+         self.shared_session = shared_session
+         self.transport = transport
+         self.follow_redirects = follow_redirects
++        self.retry_connection_errors = retry_connection_errors
+         self._owns_client = True
+         self._client = self.create_client(
+             timeout=timeout,
+@@ -834,6 +836,9 @@
+             response.raise_for_status()
+             return response
+         except (httpx.RemoteProtocolError, httpx.ConnectError):
++            # A caller-owned POST retry policy must not trigger a hidden second send.
++            if not self.retry_connection_errors:
++                raise
+             # Retry the request with a new session if there is a connection error
+             new_client: Final = self.create_client(timeout=timeout, event_hooks=self.event_hooks)
+             try:

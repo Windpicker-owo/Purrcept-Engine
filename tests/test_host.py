@@ -18,6 +18,7 @@ from purrcept_engine import (
     StorageError,
 )
 from purrcept_engine.app.locking import InstanceLock
+from purrcept_engine.app.models import OpenAIGenerationResource
 from purrcept_engine.storage import Store
 
 
@@ -169,6 +170,27 @@ async def test_start_failure_does_not_hold_directory_lock(tmp_path: Path) -> Non
     with pytest.raises(StorageError):
         await host.start()
     assert host.query().phase == "failed"
+    unlocked = InstanceLock(tmp_path)
+    unlocked.acquire()
+    unlocked.release()
+    assert (await host.close()).phase == "closed"
+
+
+async def test_model_assembly_failure_closes_storage_before_unlock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def fail_creation(*args: object, **kwargs: object) -> OpenAIGenerationResource:
+        del args, kwargs
+        raise ArithmeticError("synthetic assembly failure")
+
+    monkeypatch.setattr(OpenAIGenerationResource, "create", fail_creation)
+    host = EngineHost(_config(tmp_path))
+    with pytest.raises(ArithmeticError, match="synthetic assembly failure"):
+        await host.start()
+    assert host.query().phase == "failed"
+    assert host.query().pending_resources == ()
+    reopened = await Store.open(tmp_path / "engine.sqlite3")
+    await reopened.close()
     unlocked = InstanceLock(tmp_path)
     unlocked.acquire()
     unlocked.release()
