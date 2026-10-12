@@ -138,6 +138,9 @@ class PluginRuntime:
     panel 只列出已批准的面板快捷控制，不把全部模型能力变成页面入口。
     audio_output和body是具体所有者交回的有限运行借用，app在全部build之后
     一次绑定音频到可选身体，再执行start；关闭仍归各自Runtime。
+    resources_released是可选的明确释放明证：只有全部真实借用、客户端与设备
+    已归还才为True。close报告旧业务故障时app可据此继续释放依赖，仍保留
+    原异常；没有此明证的关闭故障不能靠快照或任务数猜成资源已经释放。
     """
 
     capabilities: tuple[CapabilityImplementation, ...]
@@ -149,6 +152,7 @@ class PluginRuntime:
     panel: DevicePanel | None = None
     audio_output: AudioOutputPort | None = None
     body: BodyPort | None = None
+    resources_released: Callable[[], bool] | None = None
 
 
 @dataclass(frozen=True, slots=True)

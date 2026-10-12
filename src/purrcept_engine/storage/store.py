@@ -18,9 +18,10 @@ import logging
 import os
 import sqlite3
 import threading
+import time
 from collections import deque
-from collections.abc import Callable
-from dataclasses import dataclass
+from collections.abc import Callable, Iterator
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal, Protocol
@@ -33,7 +34,12 @@ from purrcept_engine.context.maintenance import (
     SummarySource,
 )
 from purrcept_engine.errors import StorageError
-from purrcept_engine.execution.protocol import ActionProtocolError, decode_object
+from purrcept_engine.execution.protocol import (
+    ActionProtocolError,
+    JsonObject,
+    JsonValue,
+    decode_object,
+)
 
 from . import activities as activity_storage
 from . import audio as audio_storage
@@ -198,6 +204,268 @@ def _timestamp(value: datetime) -> str:
 def _positive(value: int, field: str) -> None:
     if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
         raise ValueError(f"{field} 必须是正整数。")
+
+
+def _active_supervision(
+    connection: sqlite3.Connection,
+) -> Iterator[knowledge_storage.SupervisionRecord]:
+    """分块扫描全部未回应意见，逐项核验来源、期限及活动版本。
+
+    32 只是数据库读取块大小，不是主体当前材料的选择上限。此迭代在一个
+    Store 作业内结束；不跨异步等待持有游标，也不确认或再次投递意见。
+    """
+    cursor = connection.execute(
+        "SELECT id FROM knowledge_supervision WHERE state='open' ORDER BY created_at,id"
+    )
+    while rows := cursor.fetchmany(32):
+        for row in rows:
+            record = knowledge_storage.get_supervision(connection, _text(row[0]))
+            if record is None:
+                raise StorageError("监管投影引用缺失意见。", code="invalid_record")
+            if record.active:
+                yield record
+
+
+def _action_snapshot(
+    connection: sqlite3.Connection,
+    snapshot: knowledge_storage.EvidenceSnapshot,
+    *,
+    current: ActionRecord | None = None,
+) -> ActionRecord:
+    """只采用与真实行动及历史回执逐字一致的内部即时快照关系。
+
+    play_action 的即时快照可能早于迟到真实回执；按已保存的回执版本还原
+    当时结果，不能要求它与最新结果相等或靠 action_result 身份前缀猜关系。
+    原文、类型或来源不符属于权威记录损坏，不静默制造来源资格。
+    """
+    source = decode_object(snapshot.source_json.encode("utf-8"))
+    action_id = source.get("action_id")
+    if (
+        snapshot.version != 1
+        or not isinstance(action_id, str)
+        or source != {"source": "actual_action_result", "action_id": action_id}
+    ):
+        raise StorageError("即时行动快照缺少确切内部来源。", code="invalid_record")
+    action = current if current is not None else execution_storage.get_action(connection, action_id)
+    if action is None:
+        raise StorageError("即时行动快照引用缺失行动。", code="invalid_record")
+    if action.action_id != action_id:
+        raise StorageError("即时行动快照与给定行动身份不一致。", code="invalid_record")
+    payload = decode_object(snapshot.text.encode("utf-8"))
+    raw_calls = payload.get("calls")
+    if not isinstance(raw_calls, list) or len(raw_calls) != len(action.calls):
+        raise StorageError("即时行动快照与实际调用不一致。", code="invalid_record")
+    frozen: list[CallRecord] = []
+    for original, call in zip(raw_calls, action.calls, strict=True):
+        if not isinstance(original, dict):
+            raise StorageError("即时行动快照调用形状无效。", code="invalid_record")
+        revision = original.get("receipt_revision")
+        if (
+            isinstance(revision, bool)
+            or not isinstance(revision, int)
+            or not (1 <= revision <= len(call.history))
+        ):
+            raise StorageError("即时行动快照回执版本无效。", code="invalid_record")
+        receipt = call.history[revision - 1]
+        frozen.append(
+            replace(
+                call,
+                state=receipt.state,
+                receipt_revision=revision,
+                finished_at=receipt.finished_at,
+                result_json=receipt.result_json,
+                error_type=receipt.error_type,
+                error=receipt.error,
+                history=call.history[:revision],
+                media=receipt.media,
+            )
+        )
+    candidate = replace(action, calls=tuple(frozen))
+    if (
+        snapshot.text != model_storage.encode(candidate)
+        or snapshot.occurred_at != action.finished_at
+        or snapshot.media
+        != tuple(dict.fromkeys(reference for call in candidate.calls for reference in call.media))
+    ):
+        raise StorageError("即时行动快照与冻结实际结果不一致。", code="invalid_record")
+    return candidate
+
+
+def _call_original_refs(
+    connection: sqlite3.Connection, action: ActionRecord
+) -> dict[str, JsonObject]:
+    """只给出当前完整调用版本确实匹配的已存原文引用。
+
+    即时行动快照先于可靠反馈桥接即可存在，优先使用它。旧快照仍是有效
+    历史，但迟到回执改变版本或实际值后不能用它代替当前结果。次选原文须
+    已通过宿主反馈登记；尚未桥接时不返回引用，不手造将来可能出现的身份。
+    一份完整行动快照只核验一次，不为每项调用重复重建整份历史。
+    """
+    originals: dict[str, JsonObject] = {}
+    calls = {call.call_id: call for call in action.calls}
+    cursor = connection.execute(
+        "SELECT evidence_id,version FROM knowledge_evidence WHERE valid=1 AND "
+        "json_extract(payload_json,'$.kind')='action_result' AND "
+        "json_extract(json_extract(payload_json,'$.source_json'),'$.action_id')=? "
+        "ORDER BY created_at,evidence_id,version",
+        (action.action_id,),
+    )
+    while rows := cursor.fetchmany(32):
+        for row in rows:
+            snapshot = knowledge_storage.get_evidence(
+                connection, _text(row[0]), version=_integer(row[1])
+            )
+            if snapshot is None:
+                raise StorageError("调用原文引用缺失有效即时快照。", code="invalid_record")
+            frozen = _action_snapshot(connection, snapshot, current=action)
+            for original in frozen.calls:
+                if original == calls[original.call_id]:
+                    originals.setdefault(
+                        original.call_id, {"id": snapshot.evidence_id, "version": snapshot.version}
+                    )
+    for call in action.calls:
+        if call.call_id not in originals:
+            reference = _call_receipt_ref(connection, action, call)
+            if reference is not None:
+                originals[call.call_id] = reference
+    return originals
+
+
+def _call_receipt_ref(
+    connection: sqlite3.Connection, action: ActionRecord, call: CallRecord
+) -> JsonObject | None:
+    """核验已由可靠反馈桥接产生的确切当前原文，旧版只保持历史事实。"""
+
+    rows: list[tuple[object, ...]] = connection.execute(
+        "SELECT e.evidence_id,e.version FROM knowledge_evidence e "
+        "JOIN feedback_sources f USING(evidence_id,version) WHERE e.valid=1 AND "
+        "json_extract(e.payload_json,'$.kind')='call_receipt' AND "
+        "json_extract(json_extract(e.payload_json,'$.source_json'),'$.call_id')=? AND "
+        "json_extract(json_extract(e.payload_json,'$.source_json'),'$.action_id')=? AND "
+        "json_extract(json_extract(e.payload_json,'$.source_json'),'$.receipt_revision')=? "
+        "ORDER BY e.created_at,e.evidence_id,e.version",
+        (call.call_id, action.action_id, call.receipt_revision),
+    ).fetchall()
+    for row in rows:
+        snapshot = knowledge_storage.get_evidence(
+            connection, _text(row[0]), version=_integer(row[1])
+        )
+        if snapshot is None:
+            raise StorageError("调用原文引用缺失可靠反馈快照。", code="invalid_record")
+        expected_source = {
+            "call_id": call.call_id,
+            "action_id": action.action_id,
+            "receipt_revision": call.receipt_revision,
+        }
+        expected_text = model_storage.encode(
+            {
+                "source": "actual_call_receipt",
+                "call": feedback_storage.call_material(call),
+                "causal_input_id": action.input_id,
+            }
+        )
+        if (
+            snapshot.version != 1
+            or snapshot.source_json != model_storage.encode(expected_source)
+            or snapshot.text != expected_text
+            or snapshot.occurred_at != call.finished_at
+            or snapshot.media != call.media
+        ):
+            raise StorageError("可靠调用原文与当前完整回执不一致。", code="invalid_record")
+        return {"id": snapshot.evidence_id, "version": snapshot.version}
+    return None
+
+
+def _evidence_inputs(connection: sqlite3.Connection, references: tuple[str, ...]) -> frozenset[str]:
+    """沿真实原文、片段和宿主回执记录取得输入关系，不解析正文中的身份。
+
+    call_receipt 只有带可靠反馈登记的来源才关联行动；即时 action_result 则
+    重新核验完整行动快照。这里仅用于未决保护，不授予行动或认识写入资格。
+    """
+    encoded = json.dumps(references)
+    roots = (
+        "WITH roots(evidence_id,version) AS ("
+        "SELECT e.evidence_id,max(e.version) FROM knowledge_evidence e WHERE e.evidence_id IN "
+        "(SELECT value FROM json_each(?)) GROUP BY e.evidence_id UNION "
+        "SELECT evidence_id,version FROM knowledge_slices WHERE slice_ref IN "
+        "(SELECT value FROM json_each(?))) "
+    )
+    rows: list[tuple[object, ...]] = connection.execute(
+        roots + "SELECT i.input_id FROM roots r JOIN inputs i ON i.input_id=r.evidence_id UNION "
+        "SELECT a.input_id FROM roots r JOIN knowledge_evidence e USING(evidence_id,version) "
+        "JOIN feedback_sources f USING(evidence_id,version) "
+        "JOIN actions a ON a.action_id=json_extract("
+        "json_extract(e.payload_json,'$.source_json'),'$.action_id') "
+        "WHERE json_extract(e.payload_json,'$.kind')='call_receipt' AND a.input_id IS NOT NULL",
+        (encoded, encoded),
+    ).fetchall()
+    identities = {_text(row[0]) for row in rows}
+    snapshots: list[tuple[object, ...]] = connection.execute(
+        roots + "SELECT evidence_id,version FROM roots JOIN knowledge_evidence "
+        "USING(evidence_id,version) WHERE json_extract(payload_json,'$.kind')='action_result'",
+        (encoded, encoded),
+    ).fetchall()
+    for row in snapshots:
+        snapshot = knowledge_storage.get_evidence(
+            connection, _text(row[0]), version=_integer(row[1]), include_inactive=True
+        )
+        if snapshot is None:
+            raise StorageError("未决来源引用缺失即时快照。", code="invalid_record")
+        identity = _action_snapshot(connection, snapshot).input_id
+        if identity is not None:
+            identities.add(identity)
+    return frozenset(identities)
+
+
+def _protected_inputs(
+    connection: sqlite3.Connection, selected: tuple[str, ...] | None
+) -> frozenset[str]:
+    """从业务关系选择仍需保护的输入，不从正文、自然语言或身份前缀猜测。
+
+    selected 为历史中的来源时只返回其子集；None 用于完整当前状态投影。
+    监管保护同时包含已投递的派生输入及原文片段关联的真实来源。意见已回应
+    或失效即不再授予保护，未知调用则须由新的真实回执改变状态。
+    """
+    selection = (
+        "SELECT input_id FROM inputs" if selected is None else "SELECT value FROM json_each(?)"
+    )
+    rows: list[tuple[object, ...]] = connection.execute(
+        "WITH selected(id) AS (" + selection + ") "
+        "SELECT DISTINCT s.id FROM selected s WHERE "
+        "EXISTS(SELECT 1 FROM actions a JOIN calls c ON c.action_id=a.action_id "
+        "WHERE a.input_id=s.id AND c.state IN ('prepared','started','unknown')) OR "
+        "EXISTS(SELECT 1 FROM actions a JOIN calls c ON c.action_id=a.action_id "
+        "JOIN activity_commands cmd ON cmd.command_id=c.call_id "
+        "JOIN activities act ON act.activity_id=cmd.activity_id "
+        "WHERE a.input_id=s.id AND act.state NOT IN ('ended','completed')) OR "
+        "EXISTS(SELECT 1 FROM failed_turns f JOIN turn_inputs i ON i.turn_id=f.turn_id "
+        "WHERE i.input_id=s.id AND f.presented_in IS NULL)",
+        () if selected is None else (json.dumps(selected),),
+    ).fetchall()
+    protected = {_text(row[0]) for row in rows}
+    selected_ids = None if selected is None else frozenset(selected)
+    cursor = connection.execute(
+        "SELECT json_extract(payload_json,'$.evidence') FROM knowledge_plans WHERE "
+        "json_extract(payload_json,'$.state')='pending'"
+    )
+    while plans := cursor.fetchmany(32):
+        plan_inputs = _evidence_inputs(connection, tuple(_text(row[0]) for row in plans))
+        protected.update(
+            identity for identity in plan_inputs if selected_ids is None or identity in selected_ids
+        )
+    for record in _active_supervision(connection):
+        linked: list[tuple[object, ...]] = connection.execute(
+            "SELECT input_id FROM feedback_deliveries WHERE kind='supervision' AND identity=? "
+            "AND input_id IS NOT NULL",
+            (record.notice.id,),
+        ).fetchall()
+        for identity in (
+            *(_text(row[0]) for row in linked),
+            *_evidence_inputs(connection, record.notice.evidence),
+        ):
+            if selected_ids is None or identity in selected_ids:
+                protected.add(identity)
+    return frozenset(protected)
 
 
 def input_logical_bytes(submission: InputSubmission) -> int:
@@ -595,7 +863,7 @@ class Store:
         return await self._submit(lambda connection: subject_storage.session(connection, scope))
 
     async def protected_input_ids(self, input_ids: tuple[str, ...]) -> frozenset[str]:
-        """查询真实未决调用、活动、计划和未承接失败，供旧历史摘要保护使用。
+        """查询真实未决调用、活动、计划、有效监管和未承接失败。
 
         来源是 Engine 保存的明确身份关系；不从正文或任意工具 JSON 猜测
         承诺完成，不读取全部历史建立另一份内存状态。
@@ -603,29 +871,109 @@ class Store:
         for identity in input_ids:
             self._validate_id(identity)
 
-        def query(connection: sqlite3.Connection) -> frozenset[str]:
-            rows: list[tuple[object, ...]] = connection.execute(
-                "WITH selected(id) AS (SELECT value FROM json_each(?)) "
-                "SELECT DISTINCT s.id FROM selected s WHERE "
-                "EXISTS(SELECT 1 FROM actions a JOIN calls c ON c.action_id=a.action_id "
-                "WHERE a.input_id=s.id AND c.state IN ('prepared','started','unknown')) OR "
-                "EXISTS(SELECT 1 FROM actions a JOIN calls c ON c.action_id=a.action_id "
-                "JOIN activity_commands cmd ON cmd.command_id=c.call_id "
-                "JOIN activities act ON act.activity_id=cmd.activity_id "
-                "WHERE a.input_id=s.id AND act.state NOT IN ('ended','completed')) OR "
-                "EXISTS(SELECT 1 FROM knowledge_plans p LEFT JOIN knowledge_slices sl "
-                "ON sl.slice_ref=json_extract(p.payload_json,'$.evidence') "
-                "WHERE json_extract(p.payload_json,'$.state')='pending' "
-                "AND (json_extract(p.payload_json,'$.evidence')=s.id OR sl.evidence_id=s.id)) OR "
-                "EXISTS(SELECT 1 FROM failed_turns f JOIN turn_inputs i ON i.turn_id=f.turn_id "
-                "WHERE i.input_id=s.id AND f.presented_in IS NULL)",
-                (json.dumps(input_ids),),
-            ).fetchall()
-            return frozenset(_text(row[0]) for row in rows)
-
         return await self._submit(
-            query, logical_bytes=sum(len(value.encode()) for value in input_ids)
+            lambda connection: _protected_inputs(connection, input_ids),
+            logical_bytes=sum(len(value.encode()) for value in input_ids),
         )
+
+    async def subject_work(self) -> JsonObject:
+        """取得完整当前未决材料，由实际请求容量门槛决定能否交付。
+
+        一个存储作业读取当前前台版本、全部未完成计划、仍有效未回应监管、
+        活动及必要调用事实。数据库分块不限制最终选材；这里不裁剪正文、
+        退役未知效果或执行控制。注意背景使用另一份明确有限的投影。
+        """
+
+        def query(connection: sqlite3.Connection) -> JsonObject:
+            session = subject_storage.session(connection, "foreground")
+            turn = (
+                None
+                if session.active_turn is None
+                else subject_storage.get_turn(connection, session.active_turn)
+            )
+            if session.active_turn is not None and turn is None:
+                raise StorageError("当前会话引用缺失轮次。", code="invalid_record")
+            count = _integer(
+                connection.execute(
+                    "SELECT count(*) FROM knowledge_plans WHERE "
+                    "json_extract(payload_json,'$.state')='pending'"
+                ).fetchone()[0]
+            )
+            plans = () if count == 0 else knowledge_storage.pending_plans(connection, limit=count)
+            supervision = tuple(_active_supervision(connection))
+            activities = activity_storage.activity_records(connection)
+            protected = _protected_inputs(connection, None)
+            cursor = connection.execute(
+                "SELECT action_id FROM actions a WHERE a.state='running' OR "
+                "EXISTS(SELECT 1 FROM calls c WHERE c.action_id=a.action_id AND "
+                "c.state IN ('prepared','started','unknown')) OR "
+                "a.input_id IN (SELECT value FROM json_each(?)) ORDER BY created_at,action_id",
+                (json.dumps(tuple(sorted(protected))),),
+            )
+            calls: list[JsonValue] = []
+            while rows := cursor.fetchmany(32):
+                for row in rows:
+                    action = execution_storage.get_action(connection, _text(row[0]))
+                    if action is None:
+                        raise StorageError("当前调用投影引用缺失行动。", code="invalid_record")
+                    original_refs = _call_original_refs(connection, action)
+                    for call in action.calls:
+                        # 已成功的效果只在其关联事项仍未结案时保持当前保护；未知
+                        # 调用不靠时间、行动已结束或邮箱已交付自动退役。
+                        if call.state not in ("prepared", "started", "unknown") and (
+                            action.state != "running" and action.input_id not in protected
+                        ):
+                            continue
+                        calls.append(
+                            {
+                                "action_id": action.action_id,
+                                "action_state": action.state,
+                                "input_id": action.input_id,
+                                "call_id": call.call_id,
+                                "path": call.path,
+                                "target_id": call.target_id,
+                                "arguments_json": call.arguments_json,
+                                "state": call.state,
+                                "receipt_revision": call.receipt_revision,
+                                "started_at": call.started_at,
+                                "finished_at": call.finished_at,
+                                "result_json": call.result_json,
+                                "error_type": call.error_type,
+                                "error": call.error,
+                                "original_ref": original_refs.get(call.call_id),
+                            }
+                        )
+            return {
+                "coverage": "all_current_pending_plans; active_supervision; active_activities; "
+                "unresolved_calls_and_effects_linked_to_unfinished_work",
+                "assembled_at": time.time(),
+                "foreground_session_version": session.version,
+                "current_turn": None
+                if turn is None
+                else {
+                    "turn_id": turn.turn_id,
+                    "input_ids": list(turn.input_ids),
+                    "started_at": turn.started_at,
+                    "generation": turn.generation,
+                },
+                "plans": [item.model_dump(mode="json") for item in plans],
+                "supervision": [item.model_dump(mode="json") for item in supervision],
+                "activities": [
+                    {
+                        "activity_id": item.activity_id,
+                        "version": item.version,
+                        "goal": item.goal,
+                        "state": item.state,
+                        "run_generation": item.run_generation,
+                        "remaining_seconds": item.remaining_seconds,
+                        "reconciliation_required": item.needs_reconciliation,
+                    }
+                    for item in activities
+                ],
+                "calls": calls,
+            }
+
+        return await self._submit(query)
 
     async def reserve_summary(self, source: SummarySource) -> Reservation:
         """在无工具摘要请求前原子保留同覆盖尝试，失败不会自动重新计预算。"""

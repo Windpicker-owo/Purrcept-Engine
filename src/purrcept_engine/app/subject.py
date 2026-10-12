@@ -22,7 +22,6 @@ from purrcept_engine.context.materials import media_blocks
 from purrcept_engine.execution.catalog import Catalog
 from purrcept_engine.execution.protocol import JsonObject
 from purrcept_engine.plugins.base import PluginRuntime
-from purrcept_engine.storage.model_requests import encode
 from purrcept_engine.storage.models import MediaReference
 from purrcept_engine.storage.store import Store
 from purrcept_engine.subject.attention import AttentionModel
@@ -160,7 +159,8 @@ def build_subject(
     async def native(media: tuple[MediaReference, ...]) -> tuple[ContentBlock, ...]:
         return await media_blocks(store, media)
 
-    async def committed_work() -> JsonObject:
+    async def attention_work() -> JsonObject:
+        """注意只取得有限相关背景，完整未决状态保留给前台/反思真实请求。"""
         session = await store.get_session("foreground")
         turn = None if session.active_turn is None else await store.get_turn(session.active_turn)
         plans = await ledger.pending_plans(limit=32)
@@ -193,7 +193,9 @@ def build_subject(
 
     async def refresh(budget: RequestBudget) -> DynamicState:
         budget.check()
-        work = await committed_work()
+        # Ordering: 当前未决材料全部重新核验，不能用注意的有限背景或已投递
+        # 邮箱代替仍有效监管、未完成计划和真实调用事实。超额由完整请求拒绝。
+        work = await store.subject_work()
         snapshots: JsonObject = {}
         skills: JsonObject = {}
         for name, runtime in plugins.items():
@@ -204,20 +206,18 @@ def build_subject(
                 # 这份已完成材料，同一次传输重试不会再次扫文件或改变请求。
                 skills[name] = await runtime.prepare_request()
         budget.check()
-        return DynamicState(
-            encode(
-                {
-                    "material_kind": "engine_committed_state",
-                    "work": work,
-                    "plugin_states": snapshots,
-                    "request_materials": skills,
-                    "budget": {
-                        "used_requests": budget.used,
-                        "max_requests": budget.max_requests,
-                        "deadline_monotonic": budget.deadline,
-                    },
-                }
-            )
+        return DynamicState.from_payload(
+            {
+                "material_kind": "engine_committed_state",
+                "work": work,
+                "plugin_states": snapshots,
+                "request_materials": skills,
+                "budget": {
+                    "used_requests": budget.used,
+                    "max_requests": budget.max_requests,
+                    "deadline_monotonic": budget.deadline,
+                },
+            }
         )
 
     attention: AttentionModel | None = None
@@ -266,7 +266,7 @@ def build_subject(
         execute=execute,
         media=native,
         refresh=refresh,
-        attention_context=committed_work,
+        attention_context=attention_work,
         wakeup_committed=wakeup_committed,
         can_start=can_start,
         prepare_history=history,

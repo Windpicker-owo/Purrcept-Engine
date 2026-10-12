@@ -4,13 +4,15 @@
 独占工具循环和完整轮次边界。失败或取消丢弃本轮临时 facade，真实行动和
 模型尝试已经独立入账。动态尾部由同步 ReminderSource 投影内存值，在实际
 请求边界异步刷新后重投影一次；同一逻辑请求的重试不再次刷新。
+Engine 工具原文在完整下一请求首发前经过交付 Gate；之后请求和最终检查点
+保留同一实际交付，不能把容量回执重新展开为未经呈现的正文。
 """
 
 from __future__ import annotations
 
 import asyncio
 from collections.abc import Awaitable, Callable, Iterable
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from typing import Protocol
 
 from purrcept_core import AgentDriver, InlineExecutor
@@ -41,6 +43,7 @@ from purrcept_engine.execution.protocol import JsonObject, decode_object
 from purrcept_engine.storage.model_requests import RequestScope, encode
 from purrcept_engine.storage.subject import SessionRecord, SessionScope, TurnOutcome, TurnRecord
 
+from .delivery import ToolDeliveryGate
 from .model_requests import (
     ModelGenerationBackend,
     RequestBudget,
@@ -93,9 +96,27 @@ class SessionStore(Protocol):
 
 @dataclass(frozen=True, slots=True)
 class DynamicState:
-    """已提交状态的内存 JSON；其中嵌入原文须保留明确来源标签。"""
+    """已提交尾部的内存表示；只有宿主结构化入口允许调用回执投影。
+
+    普通 text 可表示预算或独立调用方的说明，不从文字中的相似 JSON 标记
+    推断宿主权限。from_payload 冻结 Engine 的完整状态对象，请求边界只投影
+    其中明确声明的 work.calls；原文、关键参数及当前真实状态仍有来源。
+    """
 
     text: str
+    _structured: bool = field(default=False, kw_only=True, repr=False)
+
+    @classmethod
+    def from_payload(cls, payload: JsonObject) -> DynamicState:
+        """冻结宿主状态对象，不保留调用方可变字典或读取外部资料。"""
+        if payload.get("material_kind") != "engine_committed_state":
+            raise ValueError("结构化尾部必须是 Engine 已提交状态。")
+        return cls(encode(payload), _structured=True)
+
+    @property
+    def host_payload(self) -> JsonObject | None:
+        """为本次请求返回独立宿主对象；普通 text 不参加结构化投影。"""
+        return decode_object(self.text.encode("utf-8")) if self._structured else None
 
 
 class DynamicReminder:
@@ -167,6 +188,7 @@ class PreparedGenerationBackend:
         refresh: RefreshState,
         capacity: CapacityCheck,
         presented: PresentedGate | None = None,
+        delivery: ToolDeliveryGate | None = None,
     ) -> None:
         """借用本轮所有者和纯计量入口；不取得客户端或持久化连接。"""
         self.backend = backend
@@ -174,6 +196,7 @@ class PreparedGenerationBackend:
         self.refresh = refresh
         self.capacity = capacity
         self.presented = presented
+        self.delivery = delivery
         self.last_capacity: CapacityAssessment | None = None
 
     async def generate(
@@ -196,6 +219,16 @@ class PreparedGenerationBackend:
                 self.reminder.reminder(),
             ),
         )
+        if self.delivery is not None:
+            # Ordering: Core 已执行同响应全部工具，真实动态尾部也已经刷新。
+            # 只在首次派发前选择尚未呈现原文；历史和真实效果不参与容量裁剪。
+            current = self.delivery.prepare(
+                current,
+                model=model,
+                capacity=self.capacity,
+                host_state=self.reminder.state.host_payload,
+                reminder_key=self.reminder.source_id,
+            )
         materials, _ = compile_materials(current, model=model)
         envelope = decode_object(materials.encode("utf-8"))
         payload = envelope["payload"]
@@ -214,6 +247,8 @@ class PreparedGenerationBackend:
         )
         if self.presented is not None:
             await self.presented(current)
+        if self.delivery is not None:
+            self.delivery.sent(current)
         self.backend.budget.check()
         if emit is not None:
             for event in events:
@@ -314,6 +349,7 @@ class ContinuousSession:
         refresh: RefreshState,
         capacity: CapacityCheck,
         presented: PresentedGate | None = None,
+        delivery: ToolDeliveryGate | None = None,
         accepted_failures: tuple[str, ...] = (),
         prepare_history: PrepareHistory | None = None,
     ) -> SessionResult:
@@ -345,6 +381,7 @@ class ContinuousSession:
                 refresh=refresh,
                 capacity=capacity,
                 presented=presented,
+                delivery=delivery,
                 accepted_failures=accepted_failures,
                 prepare_history=prepare_history,
             ),
@@ -371,6 +408,7 @@ class ContinuousSession:
         refresh: RefreshState,
         capacity: CapacityCheck,
         presented: PresentedGate | None,
+        delivery: ToolDeliveryGate | None,
         accepted_failures: tuple[str, ...],
         prepare_history: PrepareHistory | None,
     ) -> SessionResult:
@@ -415,7 +453,12 @@ class ContinuousSession:
             self._backends.add(wrapped)
             reminder = DynamicReminder(dynamic)
             prepared = PreparedGenerationBackend(
-                wrapped, reminder, refresh=refresh, capacity=capacity, presented=presented
+                wrapped,
+                reminder,
+                refresh=refresh,
+                capacity=capacity,
+                presented=presented,
+                delivery=delivery,
             )
             conversation = Model(prepared, model).conversation(
                 instructions=instructions,
@@ -435,6 +478,16 @@ class ContinuousSession:
                 )
             budget.check()
             checkpoint = conversation.snapshot()
+            if delivery is not None:
+                # Core 保留的是工具取得的候选。权威连续历史只保存真实派发的
+                # 交付选择，下一轮不能恢复此前容量拒绝的正文或媒体。
+                checkpoint = replace(
+                    checkpoint,
+                    history=replace(
+                        checkpoint.history,
+                        messages=delivery.project(checkpoint.history.messages),
+                    ),
+                )
             committed = await self._commit(
                 self.store.finish_turn(
                     turn,

@@ -41,6 +41,8 @@ from .tts import SpeechSource
 
 _LOG = logging.getLogger(__name__)
 
+type _OwnedTask = asyncio.Task[None] | asyncio.Task[CallOutcome]
+
 
 @dataclass(slots=True)
 class _Speech:
@@ -113,6 +115,7 @@ class AudioRuntime:
         self._active: _Speech | None = None
         self._runner: asyncio.Task[None] | None = None
         self._close_task: asyncio.Task[None] | None = None
+        self._resources_released = False
         self._stopping, self._ready = False, False
         self._last: JsonObject | None = None
         self._last_control: JsonObject | None = None
@@ -121,6 +124,17 @@ class AudioRuntime:
         self._records: set[asyncio.Task[CallOutcome]] = set()
         self._cleanup: set[asyncio.Task[None]] = set()
         self._controls: set[asyncio.Task[CallOutcome]] = set()
+        self._admissions: set[asyncio.Task[None]] = set()
+
+    @property
+    def resources_released(self) -> bool:
+        """明确证明任务借用结束且播放器、合成连接均已实际关闭。
+
+        宿主仅在 close 报错时读取此明证，区分已释放后的旧任务故障与
+        真正关闭失败。开始关闭、空候播队列或任务数为零均不能使它为真。
+        重复 close 等待同一所有者任务，不重试或覆盖首次关闭的结果。
+        """
+        return self._resources_released
 
     def bind_body(self, body: BodyPort | None) -> None:
         """app 在全部 build 后一次明确接线；无身体用 None 表达。"""
@@ -197,6 +211,7 @@ class AudioRuntime:
         speech.admission = asyncio.create_task(
             self._accepted(speech), name="audio-admit:" + context.call_id
         )
+        self._admissions.add(speech.admission)
         speech.admission.add_done_callback(self._admission_done)
         speech.expiration = asyncio.get_running_loop().call_later(
             max(0.0, context.deadline - self._clock()), self._expire, speech
@@ -215,6 +230,8 @@ class AudioRuntime:
         """接管短事务异常由队列和close继续报告，不留无人观察的Future。"""
         if not task.cancelled() and (error := task.exception()) is not None:
             self._failure = error
+        else:
+            self._admissions.discard(task)
 
     def _expire(self, speech: _Speech) -> None:
         """期限撤资格并立即释放候播位置，不等前一项同步合成返回。"""
@@ -464,6 +481,8 @@ class AudioRuntime:
             speech.cancellation = asyncio.create_task(
                 self._finish_cancel(speech), name="audio-cancel:" + speech.context.call_id
             )
+            self._cleanup.add(speech.cancellation)
+            speech.cancellation.add_done_callback(self._cleanup_done)
         await asyncio.shield(speech.cancellation)
 
     async def _finish_cancel(self, speech: _Speech) -> None:
@@ -491,6 +510,8 @@ class AudioRuntime:
         清理等待不保留队列锁，因此停止后新接管的 speak 仍可排队；旧活动
         合成完成只归入原身份，不能重新取得新请求的播放资格。
         """
+        if self._close_task is not None:
+            raise HostStateError("音频正在释放资源，不再接管新的输出控制。")
         if len(self._controls) >= 16:
             return CallOutcome(
                 "failed",
@@ -730,11 +751,20 @@ class AudioRuntime:
         for speech in affected:
             if speech.revoked is None:
                 speech.revoked = "HostClosing"
+        failures: list[BaseException] = []
         if self._active is not None:
-            await asyncio.shield(self._stop_player(self._active))
+            try:
+                await asyncio.shield(self._stop_player(self._active))
+            except BaseException as error:
+                failures.append(error)
         for speech in affected:
             if speech is not self._active and not speech.result.done():
-                await self._cancel_queued(speech)
+                try:
+                    await self._cancel_queued(speech)
+                except BaseException as error:
+                    failures.append(error)
+        if failures:
+            raise BaseExceptionGroup("音频停止接入失败。", failures)
 
     async def close(self) -> None:
         """重复调用等同一收尾，未结束合成/导出不能冒充 closed。"""
@@ -745,27 +775,43 @@ class AudioRuntime:
         await asyncio.shield(self._close_task)
 
     async def _close(self) -> None:
-        """资源收尾聚合原异常，失败引用仍保留，不能启动另一实例替代。"""
+        """先归还全部任务借用，再取得实际关闭明证，最后报告历史故障。"""
         failures: list[BaseException] = []
-        operations = [self.stop_inputs()]
-        for operation in operations:
-            try:
-                await operation
-            except BaseException as error:
-                failures.append(error)
-        tasks: list[Awaitable[object]] = []
-        tasks.extend(self._records)
-        tasks.extend(self._cleanup)
-        tasks.extend(self._controls)
-        if self._runner is not None:
-            tasks.append(self._runner)
-        if tasks:
-            results = await asyncio.gather(*tasks, return_exceptions=True)
+        try:
+            await self.stop_inputs()
+        except BaseException as error:
+            failures.append(error)
+
+        # 队列故障可能已经移除候播，但它们的入库和取消任务仍借用 Store。
+        # 收尾任务还可产生迟到回执，所以每轮等待后复核新的真实任务。
+        observed: set[_OwnedTask] = set()
+        while tasks := [task for task in self._owned_tasks() if task not in observed]:
+            observed.update(tasks)
+            operations: list[Awaitable[object]] = list(tasks)
+            results = await asyncio.gather(*operations, return_exceptions=True)
             failures.extend(result for result in results if isinstance(result, BaseException))
+
+        closed = 0
         for operation in (self._player.close(), self._source.close()):
             try:
                 await operation
             except BaseException as error:
                 failures.append(error)
+            else:
+                closed += 1
+        # 实际 close 成功是独立证据；原 runner/control 错误不推翻它，也不能
+        # 用已结束任务数量替代播放器/连接的关闭确认。
+        self._resources_released = closed == 2 and all(task.done() for task in self._owned_tasks())
         if failures:
             raise BaseExceptionGroup("音频资源收尾失败。", failures)
+
+    def _owned_tasks(self) -> tuple[_OwnedTask, ...]:
+        """列出仍归本资源所有者的任务，包括已脱离候播列表的事务。"""
+        tasks: list[_OwnedTask] = []
+        tasks.extend(self._admissions)
+        tasks.extend(self._records)
+        tasks.extend(self._cleanup)
+        tasks.extend(self._controls)
+        if self._runner is not None:
+            tasks.append(self._runner)
+        return tuple(tasks)

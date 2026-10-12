@@ -52,6 +52,7 @@ from purrcept_engine.storage.subject import (
 )
 
 from .attention import AttentionModel, NativeMedia, attention_request
+from .delivery import ToolDeliveryGate
 from .foreground import ForegroundTools
 from .knowledge import KnowledgeService, KnowledgeStore
 from .model_requests import (
@@ -656,11 +657,13 @@ class SubjectCoordinator:
             records[0].input_id,
             lambda: self._turn_eligible(generation),
         )
+        delivery = ToolDeliveryGate()
         tools = ForegroundTools(
             self.knowledge,
             self.knowledge_store,
             ports,
             check=lambda: self._check_turn(generation),
+            delivery=delivery,
         )
         await self.session.run(
             lambda: self._foreground_message(records, failures),
@@ -679,6 +682,7 @@ class SubjectCoordinator:
             diagnostic_bytes=self.settings.diagnostic_bytes,
             refresh=self.refresh,
             capacity=self.subject.capacity,
+            delivery=delivery,
             prepare_history=self.prepare_history,
         )
 

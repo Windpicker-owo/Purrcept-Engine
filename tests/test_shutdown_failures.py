@@ -130,9 +130,14 @@ class _Plugin:
         stop_failure: Exception | None = None,
         close_failure: Exception | None = None,
         synchronous_close_failure: bool = False,
+        released_after_close: bool | None = None,
+        release_proof_failure: Exception | None = None,
     ) -> None:
         self.held, self.stop_failure, self.close_failure = held, stop_failure, close_failure
         self.synchronous_close_failure = synchronous_close_failure
+        self.released_after_close = released_after_close
+        self.release_proof_failure = release_proof_failure
+        self.released = False
         self.entered, self.release = asyncio.Event(), asyncio.Event()
         self.returned = False
         self.stop_count, self.close_count = 0, 0
@@ -160,6 +165,7 @@ class _Plugin:
                     # 生命周期可在构造 Awaitable 前失败，这仍是唯一关闭的结果。
                     if self.synchronous_close_failure:
                         self.close_count += 1
+                        self.released = self.released_after_close is True
                         assert self.close_failure is not None
                         raise self.close_failure
                     return self.close()
@@ -168,6 +174,9 @@ class _Plugin:
                     (FunctionCapability(declaration, self.invoke),),
                     stop_inputs=self.stop_inputs,
                     close=close,
+                    resources_released=(
+                        self.release_proof if self.released_after_close is not None else None
+                    ),
                 )
 
             return PluginBlueprint(
@@ -197,8 +206,15 @@ class _Plugin:
         """没有归还的 Provider 借用时拒绝关闭；指定故障保留资源未确认。"""
         self.close_count += 1
         assert not self.held or self.returned
+        self.released = self.released_after_close is True
         if self.close_failure is not None:
             raise self.close_failure
+
+    def release_proof(self) -> bool:
+        """只报告本替身实际关闭后的明证，损坏的明证保持原始错误。"""
+        if self.release_proof_failure is not None:
+            raise self.release_proof_failure
+        return self.released
 
 
 def _config(
@@ -392,6 +408,64 @@ async def test_failed_plugin_owner_preserves_store_but_independent_plugin_closes
     with pytest.raises(ArithmeticError) as repeated:
         await host.close()
     assert repeated.value is failure and broken.close_count == 1
+
+
+@pytest.mark.parametrize("synchronous_failure", [False, True])
+async def test_plugin_reports_original_failure_after_release_without_holding_store(
+    tmp_path: Path, resources: _Resources, synchronous_failure: bool
+) -> None:
+    failure = ArithmeticError("synthetic completed plugin failure")
+    plugin = _Plugin(
+        close_failure=failure,
+        synchronous_close_failure=synchronous_failure,
+        released_after_close=True,
+    )
+    host = EngineHost(
+        _config(tmp_path, ("local",)),
+        generation_backends={"main": _Backend()},
+        plugin_factories={"local": plugin.factory()},
+    )
+    await host.start()
+    with pytest.raises(ArithmeticError) as reported:
+        await host.close()
+    assert reported.value is failure and plugin.released
+    assert host.query().phase == "failed" and host.query().pending_resources == ()
+    assert plugin.close_count == resources.store_closes == 1
+    await resources.assert_released(tmp_path)
+    with pytest.raises(ArithmeticError) as repeated:
+        await host.close()
+    assert repeated.value is failure and plugin.close_count == resources.store_closes == 1
+
+
+@pytest.mark.parametrize("broken_proof", [False, True])
+async def test_unconfirmed_plugin_release_preserves_store_and_original_errors(
+    tmp_path: Path, resources: _Resources, broken_proof: bool
+) -> None:
+    failure = ArithmeticError("synthetic unconfirmed plugin close")
+    proof_failure = LookupError("synthetic release proof failure") if broken_proof else None
+    plugin = _Plugin(
+        close_failure=failure,
+        released_after_close=False,
+        release_proof_failure=proof_failure,
+    )
+    host = EngineHost(
+        _config(tmp_path, ("local",)),
+        generation_backends={"main": _Backend()},
+        plugin_factories={"local": plugin.factory()},
+    )
+    await host.start()
+    with pytest.raises(BaseException) as reported:
+        await host.close()
+    expected = (failure, proof_failure) if proof_failure is not None else (failure,)
+    assert _leaves(reported.value) == expected
+    assert set(host.query().pending_resources) == {"storage", "plugin:local", "data_directory_lock"}
+    assert resources.store_closes == 0 and not plugin.released
+    assert all(thread.is_alive() for thread in resources.threads)
+    with pytest.raises(InstanceLocked):
+        InstanceLock(tmp_path).acquire()
+    with pytest.raises(BaseException) as repeated:
+        await host.close()
+    assert repeated.value is reported.value and plugin.close_count == 1
 
 
 async def test_knowledge_reported_failure_after_real_release_does_not_hold_store(

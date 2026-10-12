@@ -43,6 +43,7 @@ from purrcept_engine.storage.models import MediaReference
 
 from .attention import NativeMedia
 from .coordinator import SubjectModel
+from .delivery import ToolDeliveryGate
 from .knowledge import KnowledgeService, KnowledgeStore
 from .model_requests import RequestEvidenceSink
 from .reflection import EvidenceDeliveries, ReflectionTools
@@ -298,6 +299,7 @@ class BackgroundService:
                 tuple(findings),
             )
         )
+        delivery = ToolDeliveryGate()
         tools = ReflectionTools(
             self.knowledge_store,
             batch,
@@ -305,6 +307,7 @@ class BackgroundService:
             knowledge=self.knowledge,
             page_chars=self.settings.page_chars,
             deliveries=self.deliveries,
+            delivery=delivery,
         )
 
         async def message() -> Message:
@@ -345,6 +348,7 @@ class BackgroundService:
                 refresh=self.refresh,
                 capacity=self.reflection.capacity,
                 presented=presented,
+                delivery=delivery,
                 prepare_history=self.prepare_history,
             )
         except (

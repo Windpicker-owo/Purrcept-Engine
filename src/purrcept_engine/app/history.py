@@ -27,6 +27,7 @@ from purrcept_engine.context.maintenance import SummaryError, freeze_summary_sou
 from purrcept_engine.execution.protocol import decode_object
 from purrcept_engine.storage.store import Store
 from purrcept_engine.storage.subject import SessionRecord
+from purrcept_engine.subject.delivery import ToolDeliveryGate
 from purrcept_engine.subject.history import HistoryMaintenance
 from purrcept_engine.subject.model_requests import RequestBudget, compile_materials
 from purrcept_engine.subject.session import CapacityCheck, DynamicReminder, DynamicState
@@ -112,7 +113,7 @@ class HistoryPreparation:
         )
 
         def layout(candidate: ConversationCheckpoint | None) -> ModelRequest:
-            return preview_request(
+            preview = preview_request(
                 self.backend,
                 self.model,
                 candidate,
@@ -122,6 +123,15 @@ class HistoryPreparation:
                 settings=settings,
                 dynamic=dynamic,
                 max_requests=budget.max_requests,
+            )
+            # 首发预览与真实请求使用同一尾部投影，不能因已经完整交付的回执
+            # 正文副本提前触发摘要；没有待工具结果，因此这里只复用纯投影。
+            return ToolDeliveryGate().prepare(
+                preview,
+                model=self.model,
+                capacity=self.assess,
+                host_state=dynamic.host_payload,
+                reminder_key=DynamicReminder.source_id,
             )
 
         materials, _ = compile_materials(layout(checkpoint), model=self.model)

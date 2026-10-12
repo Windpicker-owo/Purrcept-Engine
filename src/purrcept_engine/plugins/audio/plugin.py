@@ -157,6 +157,7 @@ def make_factory(
                     revision,
                 ),
                 audio_output=runtime,
+                resources_released=lambda: runtime.resources_released,
             )
 
         return PluginBlueprint(

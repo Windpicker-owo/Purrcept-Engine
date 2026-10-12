@@ -89,6 +89,7 @@ class Live2DRuntime:
         self._error: JsonObject | None = None
         self._loop: asyncio.Task[None] | None = None
         self._close_task: asyncio.Task[None] | None = None
+        self._resources_released = False
         self._connection_lock = asyncio.Lock()
         self._wake = asyncio.Event()
         self._adopted = asyncio.Event()
@@ -115,6 +116,15 @@ class Live2DRuntime:
             "smile": 0.0,
             **{"viseme_" + name: 0.0 for name in VISEMES},
         }
+
+    @property
+    def resources_released(self) -> bool:
+        """证明连接/分析器实际关闭，且连接与后台任务已结束借用。
+
+        只在唯一 close 任务取得全部释放确认后为真。旧帧任务的内部异常
+        仍由 close 报告；关闭操作失败保持假，不能以离线快照推断释放。
+        """
+        return self._resources_released
 
     async def connect(self) -> CallOutcome:
         """明确连接不恢复旧姿态，部分失败也必须收回已取得连接。"""
@@ -544,25 +554,36 @@ class Live2DRuntime:
         await asyncio.shield(self._close_task)
 
     async def _close(self) -> None:
-        """后台内部故障仍继续释放连接，然后原样聚合报告。"""
+        """等启动归还资源后取得真实关闭明证，历史任务故障仍原样报告。"""
         await self.stop_inputs()
         results: list[object] = []
-        if self._driver is not None:
-            try:
-                await self._driver.close()
-                self._driver = None
-            except BaseException as error:
-                results.append(error)
-        if self._loop is not None:
-            results.extend(await asyncio.gather(self._loop, return_exceptions=True))
-        if self._analyzer is not None:
-            try:
-                await self._analyzer.close()
-                self._analyzer = None
-            except BaseException as error:
-                results.append(error)
-        if self._analysis_task is not None:
-            results.extend(await asyncio.gather(self._analysis_task, return_exceptions=True))
+        # connect/disconnect持有此锁借用真实资源；关闭不能在启动尚未结束
+        # 时提前收回连接，或把暂未登记分析器误当成全部资源已经释放。
+        async with self._connection_lock:
+            if self._driver is not None:
+                try:
+                    await self._driver.close()
+                    self._driver = None
+                except BaseException as error:
+                    results.append(error)
+            if self._loop is not None:
+                results.extend(await asyncio.gather(self._loop, return_exceptions=True))
+            if self._analyzer is not None:
+                try:
+                    await self._analyzer.close()
+                    self._analyzer = None
+                except BaseException as error:
+                    results.append(error)
+            if self._analysis_task is not None:
+                results.extend(await asyncio.gather(self._analysis_task, return_exceptions=True))
+            # 只有实际close成功才清资源引用；任务原错保留在results，不能让
+            # 宿主因此把仍存活的视觉连接当作已归还。
+            self._resources_released = (
+                self._driver is None
+                and self._analyzer is None
+                and (self._loop is None or self._loop.done())
+                and (self._analysis_task is None or self._analysis_task.done())
+            )
         failures = [result for result in results if isinstance(result, BaseException)]
         if failures:
             raise BaseExceptionGroup("身体资源收尾失败。", failures)

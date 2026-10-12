@@ -138,7 +138,7 @@ def test_pure_declaration_does_not_build_and_config_is_an_immutable_snapshot(
 def test_disabled_plugin_is_not_imported_and_bad_settings_are_sanitized(tmp_path: Path) -> None:
     disabled = PluginSettings(instance_id="unused", entry="does.not.exist:factory", enabled=False)
     catalog = prepare_plugins((disabled,), base_dir=tmp_path, factories={}).catalog
-    assert set(catalog.bindings) == {"me.activity"}
+    assert set(catalog.bindings) == {"me.activity", "me.view_image"}
     invalid = PluginSettings.model_validate(
         {"instance_id": "bad", "entry": "fixture", "config": {"prefix": 2, "secret": "hidden"}}
     )

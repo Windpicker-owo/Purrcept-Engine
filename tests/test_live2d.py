@@ -15,6 +15,7 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
+from purrcept_engine.errors import HostStateError
 from purrcept_engine.execution.providers import CallContext
 from purrcept_engine.plugins.live2d import analyzer as analyzer_module
 from purrcept_engine.plugins.live2d.analyzer import AnalyzerProcess, VisemeFrame
@@ -215,6 +216,138 @@ class Analyzer:
     async def close(self) -> None:
         self.closed += 1
         self.release.set()
+
+
+@pytest.mark.parametrize("failed_task", ["frames", "analysis"])
+async def test_old_body_task_error_still_reports_after_actual_resources_released(
+    failed_task: str,
+) -> None:
+    """两个后台任务的原错误都不能冒充连接或本机分析器关闭失败。"""
+
+    class FailedDriver(Driver):
+        async def send(self, channels: dict[str, float]) -> None:
+            if failed_task == "frames":
+                self.entered.set()
+                raise RuntimeError("原身体帧故障")
+            await super().send(channels)
+
+    class FailedAnalyzer(Analyzer):
+        async def analyze(self, pcm: bytes, sample: int) -> VisemeFrame:
+            self.entered.set()
+            raise RuntimeError("原身体分析故障")
+
+    driver, analyzer = FailedDriver(), FailedAnalyzer()
+    body = Live2DRuntime("body", lambda: driver, analyzer_factory=lambda: analyzer)
+    assert body.resources_released is False
+    await body.connect()
+    if failed_task == "frames":
+        await driver.entered.wait()
+    else:
+        body.playback_pcm("voice", 32000, 0, bytes(1280))
+        await analyzer.entered.wait()
+    with pytest.raises(BaseExceptionGroup) as first:
+        await body.close()
+    assert first.value.subgroup(RuntimeError) is not None
+    assert body.resources_released is True
+    assert driver.closed == analyzer.closed == 1
+    with pytest.raises(BaseExceptionGroup) as second:
+        await body.close()
+    assert second.value is first.value
+    assert driver.closed == analyzer.closed == 1
+
+
+@pytest.mark.parametrize("failing_resource", ["driver", "analyzer"])
+async def test_actual_body_close_failure_keeps_release_evidence_false(
+    failing_resource: str,
+) -> None:
+    """任务完成与离线快照均不能替代两份独立资源的实际关闭确认。"""
+
+    class CloseDriver(Driver):
+        async def close(self) -> None:
+            await super().close()
+            if failing_resource == "driver":
+                raise RuntimeError("视觉连接实际关闭失败")
+
+    class CloseAnalyzer(Analyzer):
+        async def close(self) -> None:
+            await super().close()
+            if failing_resource == "analyzer":
+                raise RuntimeError("分析器实际关闭失败")
+
+    driver, analyzer = CloseDriver(), CloseAnalyzer()
+    body = Live2DRuntime("body", lambda: driver, analyzer_factory=lambda: analyzer)
+    await body.connect()
+    with pytest.raises(BaseExceptionGroup) as first:
+        await body.close()
+    assert body.resources_released is False
+    assert driver.closed == analyzer.closed == 1
+    with pytest.raises(BaseExceptionGroup) as second:
+        await body.close()
+    assert second.value is first.value
+    assert driver.closed == analyzer.closed == 1
+
+
+async def test_body_close_waits_for_resource_borrowed_by_connect() -> None:
+    """关闭先撤启动资格，等待已开始连接交回资源后才取得明证。"""
+
+    class StartingDriver(Driver):
+        async def connect(self) -> None:
+            self.entered.set()
+            await self.release.wait()
+
+    driver = StartingDriver()
+    body = Live2DRuntime("body", lambda: driver)
+    connecting = asyncio.create_task(body.connect())
+    await driver.entered.wait()
+    closing = asyncio.create_task(body.close())
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+    assert not closing.done()
+    assert body.resources_released is False
+    assert driver.closed == 0
+    driver.release.set()
+    with pytest.raises(HostStateError, match="启动期间已撤销"):
+        await connecting
+    await closing
+    assert body.resources_released is True
+    assert driver.closed == 1
+
+
+@pytest.mark.parametrize("waiting_resource", ["driver", "analyzer"])
+async def test_body_release_evidence_waits_for_actual_resource_close(
+    waiting_resource: str,
+) -> None:
+    """后台任务停止之后，资源close的真实确认仍是独立门槛。"""
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    class ClosingDriver(Driver):
+        async def close(self) -> None:
+            if waiting_resource == "driver":
+                entered.set()
+                await release.wait()
+            await super().close()
+
+    class ClosingAnalyzer(Analyzer):
+        async def close(self) -> None:
+            if waiting_resource == "analyzer":
+                entered.set()
+                await release.wait()
+            await super().close()
+
+    driver, analyzer = ClosingDriver(), ClosingAnalyzer()
+    body = Live2DRuntime("body", lambda: driver, analyzer_factory=lambda: analyzer)
+    await body.connect()
+    closing = asyncio.create_task(body.close())
+    await entered.wait()
+    assert body.resources_released is False
+    closing.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await closing
+    assert body.resources_released is False
+    release.set()
+    await body.close()
+    assert body.resources_released is True
+    assert driver.closed == analyzer.closed == 1
 
 
 async def test_ovr_prepared_pcm_does_not_adopt_until_actual_playback_clock() -> None:

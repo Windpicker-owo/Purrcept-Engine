@@ -360,7 +360,7 @@ def bridge(
             payload = encode(
                 {
                     "source": "actual_call_receipt",
-                    "call": _call_material(call),
+                    "call": call_material(call),
                     "causal_input_id": row[0],
                 }
             )
@@ -491,9 +491,11 @@ def _foreground_failure_priority(turn: TurnRecord) -> bool:
     )
 
 
-def _call_material(call: execution.CallRecord) -> dict[str, object]:
+def call_material(call: execution.CallRecord) -> dict[str, object]:
     """保存这一版本完整参数和结果，以确切引用关联旧回执而不复制其原文。
 
+    同连接的可靠反馈桥接与当前请求原文核验共用本表示。调用方提供从执行
+    账本取得的冻结 CallRecord；函数不解析外部正文、不决定效果或呈现资格。
     这是事实投影，不伪造一个 history 为空的 CallRecord；原始历史仍属于执行
     账本，各版反思原文身份来自已经核验的真实 CallResultRecord。
     """

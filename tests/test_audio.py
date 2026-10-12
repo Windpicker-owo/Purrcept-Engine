@@ -39,7 +39,7 @@ from purrcept_engine.plugins.audio.player import FFplayPlayer
 from purrcept_engine.plugins.audio.runtime import AudioRuntime
 from purrcept_engine.plugins.audio.tts import FishSource
 from purrcept_engine.plugins.live2d.models import BodyIntent
-from purrcept_engine.storage.audio import make_fact
+from purrcept_engine.storage.audio import AudioFact, make_fact
 from purrcept_engine.storage.store import Store
 
 
@@ -67,7 +67,7 @@ class Source:
         self.block = block
         self.entered, self.release = asyncio.Event(), asyncio.Event()
         self.calls: list[str] = []
-        self.closed = 0
+        self.closed: int = 0
 
     async def synthesize(
         self, parameters: SpeechParameters | RecordParameters, identity: str
@@ -97,7 +97,7 @@ class Player:
         self.entered, self.release = asyncio.Event(), asyncio.Event()
         self.played: list[bytes] = []
         self.interrupted = False
-        self.closed = 0
+        self.closed: int = 0
 
     def check_available(self) -> None:
         return
@@ -322,11 +322,189 @@ async def test_close_waits_unrevokable_synthesis_and_never_plays_late_audio(
     await asyncio.sleep(0)
     await asyncio.sleep(0)
     assert not close.done()
+    assert owner.resources_released is False
+    assert source.closed == player.closed == 0
     source.release.set()
     await close
     assert payload(await speech)["started"] is False
     assert player.played == []
     await owner.close()
+    assert source.closed == player.closed == 1
+    assert owner.resources_released is True
+
+
+@pytest.mark.parametrize("operation", ["speak", "record"])
+async def test_old_audio_task_failure_still_reports_after_actual_resources_released(
+    store: Store, tmp_path: Path, operation: str
+) -> None:
+    """原任务异常不妨碍明证；重复关闭仍报告原错误且不重复回收。"""
+
+    class FailedSource(Source):
+        async def synthesize(
+            self, parameters: SpeechParameters | RecordParameters, identity: str
+        ) -> SpeechAudio:
+            del parameters, identity
+            raise RuntimeError("原音频任务故障")
+
+    source, player = FailedSource(), Player()
+    owner = await runtime(store, tmp_path, source, player)
+    assert owner.resources_released is False
+    with pytest.raises(RuntimeError, match="原音频任务故障"):
+        if operation == "speak":
+            await owner.speak(SpeechParameters(text="原故障"), context("failed"))
+        else:
+            await owner.record(RecordParameters(text="原故障"), context("failed"))
+    with pytest.raises(BaseExceptionGroup) as first:
+        await owner.close()
+    assert first.value.subgroup(RuntimeError) is not None
+    assert owner.resources_released is True
+    assert source.closed == player.closed == 1
+    with pytest.raises(BaseExceptionGroup) as second:
+        await owner.close()
+    assert second.value is first.value
+    assert source.closed == player.closed == 1
+
+
+async def test_failed_old_control_does_not_claim_actual_player_close_failed(
+    store: Store, tmp_path: Path
+) -> None:
+    """已失败控制保留原型，独立设备关闭确认仍允许宿主释放依赖。"""
+
+    class FailedControlPlayer(Player):
+        async def interrupt(self, playback_id: str | None = None) -> None:
+            del playback_id
+            raise RuntimeError("原停止控制故障")
+
+        async def close(self) -> None:
+            self.closed += 1
+
+    source, player = Source(block=True), FailedControlPlayer()
+    owner = await runtime(store, tmp_path, source, player)
+    speech = asyncio.create_task(owner.speak(SpeechParameters(text="控制故障"), context("voice")))
+    await source.entered.wait()
+    with pytest.raises(RuntimeError, match="原停止控制故障"):
+        await owner.interrupt(context("stop"))
+    source.release.set()
+    assert payload(await speech)["started"] is False
+    with pytest.raises(BaseExceptionGroup):
+        await owner.close()
+    assert owner.resources_released is True
+    assert source.closed == player.closed == 1
+
+
+@pytest.mark.parametrize("failing_resource", ["player", "source"])
+async def test_actual_audio_close_failure_keeps_release_evidence_false(
+    store: Store, tmp_path: Path, failing_resource: str
+) -> None:
+    """没有任务也不能替代真实close；独立资源仍全部尝试收尾。"""
+
+    class CloseSource(Source):
+        async def close(self) -> None:
+            self.closed += 1
+            if failing_resource == "source":
+                raise RuntimeError("合成连接实际关闭失败")
+
+    class ClosePlayer(Player):
+        async def close(self) -> None:
+            self.closed += 1
+            if failing_resource == "player":
+                raise RuntimeError("播放器实际关闭失败")
+
+    source, player = CloseSource(), ClosePlayer()
+    owner = await runtime(store, tmp_path, source, player)
+    with pytest.raises(BaseExceptionGroup) as first:
+        await owner.close()
+    assert owner.resources_released is False
+    assert source.closed == player.closed == 1
+    with pytest.raises(BaseExceptionGroup) as second:
+        await owner.close()
+    assert second.value is first.value
+    assert source.closed == player.closed == 1
+
+
+@pytest.mark.parametrize("waiting_resource", ["player", "source"])
+async def test_audio_release_evidence_waits_for_actual_resource_close(
+    store: Store, tmp_path: Path, waiting_resource: str
+) -> None:
+    """空任务集合也不能提前确认设备/连接关闭，取消等待不会撤销收尾。"""
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    class ClosingSource(Source):
+        async def close(self) -> None:
+            if waiting_resource == "source":
+                entered.set()
+                await release.wait()
+            await super().close()
+
+    class ClosingPlayer(Player):
+        async def close(self) -> None:
+            if waiting_resource == "player":
+                entered.set()
+                await release.wait()
+            await super().close()
+
+    source, player = ClosingSource(), ClosingPlayer()
+    owner = await runtime(store, tmp_path, source, player)
+    closing = asyncio.create_task(owner.close())
+    await entered.wait()
+    assert owner.resources_released is False
+    closing.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await closing
+    assert owner.resources_released is False
+    release.set()
+    await owner.close()
+    assert owner.resources_released is True
+    assert source.closed == player.closed == 1
+
+
+async def test_close_keeps_admission_ownership_after_runner_drops_failed_queue(
+    store: Store, tmp_path: Path
+) -> None:
+    """原runner失败清空候播列表后，其已接管的入库事务仍必须等待。"""
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    class PendingAdmission:
+        async def append(self, fact: AudioFact) -> None:
+            if fact.fact == "accepted" and fact.payload()["call_id"] == "queued":
+                entered.set()
+                await release.wait()
+            await store.audio.append(fact)
+
+        async def facts(self, plugin_id: str, identity: str) -> tuple[AudioFact, ...]:
+            return await store.audio.facts(plugin_id, identity)
+
+    class FailedSource(Source):
+        async def synthesize(
+            self, parameters: SpeechParameters | RecordParameters, identity: str
+        ) -> SpeechAudio:
+            await super().synthesize(parameters, identity)
+            raise RuntimeError("原runner移除候播")
+
+    source, player = FailedSource(block=True), Player()
+    owner = AudioRuntime(
+        "audio", AudioSettings(), source, player, PendingAdmission(), tmp_path, None, decode=False
+    )
+    owner.bind_body(None)
+    await owner.start()
+    first = asyncio.create_task(owner.speak(SpeechParameters(text="阻塞故障"), context("first")))
+    await source.entered.wait()
+    queued = asyncio.create_task(owner.speak(SpeechParameters(text="候播入库"), context("queued")))
+    await entered.wait()
+    source.release.set()
+    results = await asyncio.gather(first, queued, return_exceptions=True)
+    assert all(isinstance(result, RuntimeError) for result in results)
+    assert owner.snapshot()["queued"] == []
+    closing = asyncio.create_task(owner.close())
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+    assert not closing.done()
+    assert owner.resources_released is False
+    assert source.closed == player.closed == 0
+    release.set()
+    with pytest.raises(BaseExceptionGroup):
+        await closing
+    assert owner.resources_released is True
     assert source.closed == player.closed == 1
 
 

@@ -869,7 +869,15 @@ class EngineHost:
                         await asyncio.shield(task)
                     except BaseException as error:
                         errors.append(error)
-                        continue
+                        if runtime.resources_released is None:
+                            continue
+                        try:
+                            released = runtime.resources_released()
+                        except BaseException as release_error:
+                            errors.append(release_error)
+                            continue
+                        if released is not True:
+                            continue
                 del self._plugins[name]
         if not self._plugins:
             self._audio_output = None

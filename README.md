@@ -36,19 +36,26 @@ Ctrl+C 请求关闭，关闭期间第二次 Ctrl+C 强退本 CLI。安装 `web` 
 
 内置插件显式启用：`notebook`、`clock`、`bed`、`computer`、`browser`、`qq`、
 `microphone`（输出）、`voice_input`（收音）和 `live2d`。
-可选依赖通过对应 extra 安装，例如 `uv sync --extra qq --extra computer`；
+可选依赖通过对应 extra 安装，例如 `uv sync --extra qq --extra browser`；
 纯配置声明不打开设备，电脑仍须明确连接。Notebook 覆盖写入必须提供读取或
 先前写入返回的版本，已有文件不能以省略版本覆盖。QQ 恢复不重发未知消息，
 cursor 续读已保存快照，QZone feed 不支持深翻页。
 
+主体默认装配 `me.view_image(source=...)`，支持URL或本地图像（8MiB以内的
+PNG/JPEG/GIF/WebP）；像素完整保存到同库，后续请求通过原生媒体取得。
+TOML相对路径沿配置目录，程序式调用未给base_dir时沿数据目录。文字参考容量
+规则不支持媒体，不能把看图回执当作模型已经看过像素。
+
 声音输出需要已安装的 FFmpeg/FFplay，配置使用明确程序路径；不会自动安装
-或开启声音设备。收音需要 `voice-input` extra、明确的设备/模式、固定版本
+或开启声音设备，最小配置见[声音输出](src/purrcept_engine/plugins/audio/README.md)。
+收音需要 `voice-input` extra、明确的设备/模式、固定版本
 VAD 文件及 ASR 端点；[收音配置](src/purrcept_engine/plugins/voice_input/README.md)
 说明显式下载与校验步骤，运行宿主不会自动下载。原生音频还须配置实际适用的
 模型容量规则，支持音频声明本身不证明计量依据。
 
 Live2D 使用 `live2d` extra、VTS模型校准与人工参数绑定；可选 OVR DLL 只在
 独立分析进程加载。音频不借用身体连接，声音开始/终止与视觉采用分别记账。
+配置和校准结构见[身体说明](src/purrcept_engine/plugins/live2d/README.md)。
 VTS 自动有限恢复规则仍待决定，真实声音与视觉效果待实机确认。
 
 独立调音室安装 `web` extra 和 FFmpeg后运行 `purrcept-voice-studio --help`，
@@ -76,7 +83,42 @@ uv sync --locked --all-groups
 
 产物在 `build/litellm-patched`，同目录清单保存输入、补丁与输出摘要。已有不同
 产物不会被覆盖。原生扩展逐字节保留，wheel 的版本及 RECORD 重新生成。
-`uv.lock` 固定开发组合；发布验收还须提供可引用的 Core/LiteLLM 产物和安装步骤。
+`uv.lock` 固定开发组合。独立安装使用同一份 Core/LiteLLM 工作区冻结产物，
+不能只凭版本号换成其他源码或公开索引上的同名包；本轮没有提交它们原有修改。
+
+以下命令从 Engine 目录构建 wheel 并导出带哈希依赖清单；兄弟 SDK 只作为只读
+构建输入，包和清单写入 Engine 的 `build/verified-distribution`：
+
+```powershell
+uv run python -m build --wheel --no-isolation --outdir build/verified-distribution ../purrcept_core
+uv run python -m build --wheel --no-isolation --outdir build/verified-distribution ../purrcept_litellm
+uv run python -m build --wheel --no-isolation --outdir build/verified-distribution
+uv export --quiet --locked --no-dev --no-emit-project --no-emit-local --no-annotate --no-header --output-file build/verified-distribution/requirements-minimal.txt
+```
+
+把已校验的补丁 wheel 放入该目录。`--all-extras` 导出全部可选依赖；只装所需
+extra 时应导出对应清单。先按清单安装第三方依赖，再安装四个本地 wheel：
+
+```powershell
+uv venv --python .venv/Scripts/python.exe --no-python-downloads build/install-minimal
+uv pip install --python build/install-minimal/Scripts/python.exe --require-hashes -r build/verified-distribution/requirements-minimal.txt
+uv pip install --python build/install-minimal/Scripts/python.exe --no-deps build/verified-distribution/litellm-1.105.0+purrcept.1-cp310-abi3-win_amd64.whl build/verified-distribution/purrcept_core-0.6.0-py3-none-any.whl build/verified-distribution/purrcept_litellm-0.2.0-py3-none-any.whl build/verified-distribution/purrcept_engine-0.1.0-py3-none-any.whl
+uv pip check --python build/install-minimal/Scripts/python.exe
+```
+
+安装后可使用该环境的 `purrcept-engine.exe` 运行 init/check/catalog/run。
+本轮分发目录的机器清单记录 wheel、SDK 源文件及锁文件摘要，产物保留在本机，
+未发布。Core/LiteLLM wheel 的输入字节已核对，升级 SDK 应重新构建并验收。
+
+在验收用的临时 PowerShell 进程中运行下面的离线冒烟。此开关只选择冻结
+LiteLLM 的包内价格表，避免 SDK 导入下载在线元数据；不会给 Engine 注入模型
+凭据，也不替代窗口和媒体计量声明。脚本拒绝 editable，检查八份静态资源、
+真实 Windows Worker、临时同库图片保存/重开和目录锁收回，不调用模型或设备：
+
+```powershell
+$env:LITELLM_LOCAL_MODEL_COST_MAP = "True"
+build/install-minimal/Scripts/python.exe -I -X utf8 scripts/verify_installation.py
+```
 
 开发检查沿用 pytest、Ruff、strict Pyright 与 build：
 
@@ -89,8 +131,8 @@ uv run python -m compileall -q src tests examples
 uv run python -m build
 ```
 
-开发时可以引用兄弟 SDK 工作区。已验证非 editable Engine wheel 的导入、
-包内模板和纯配置 CLI；完整独立依赖安装仍在后续交付验收范围。
+开发时可以引用兄弟 SDK 工作区。minimal/all 两种非 editable 安装候选已验证
+依赖一致、SDK/Engine 导入、八份静态资源和 CLI；最终分发验证状态见实施计划。
 真实模型、QQ、音频与设备验收尚未运行。
 
 嵌入调用者可用 `EngineHost.execute` 明确执行行动，结果包括逐次调用回执。

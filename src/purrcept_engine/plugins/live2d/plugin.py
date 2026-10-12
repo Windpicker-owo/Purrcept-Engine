@@ -143,6 +143,7 @@ def make_factory(
                 snapshot=runtime.snapshot,
                 panel=DevicePanel("live2d", (), revision),
                 body=runtime,
+                resources_released=lambda: runtime.resources_released,
             )
 
         return PluginBlueprint(

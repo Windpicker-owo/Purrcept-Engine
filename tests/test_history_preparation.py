@@ -1,5 +1,6 @@
 """在实际连续会话入口核对完整请求预览、idle安装和准备失败结案。"""
 
+import time
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 from pathlib import Path
@@ -10,21 +11,32 @@ from purrcept_core.models import (
     ConversationCheckpoint,
     ConversationState,
     Message,
+    MessageRole,
     ModelEventSink,
     ModelRequest,
     ModelResponse,
     ModelSettings,
     ReminderState,
     SystemInstruction,
+    TextBlock,
+    ToolCallBlock,
+    ToolResultBlock,
     ToolSet,
 )
 
 from purrcept_engine.app.config import ContextSettings, RetrySettings
 from purrcept_engine.app.history import HistoryPreparation, preview_request
-from purrcept_engine.context.capacity import GenerationCapacity, assess_capacity, check_capacity
+from purrcept_engine.context.capacity import (
+    CapacityAssessment,
+    GenerationCapacity,
+    assess_capacity,
+    check_capacity,
+)
 from purrcept_engine.context.checkpoints import encode_checkpoint
 from purrcept_engine.execution.protocol import JsonObject
 from purrcept_engine.storage import InputContext, InputSource, InputSubmission
+from purrcept_engine.storage.knowledge import EvidenceSnapshot, WakeupPlan
+from purrcept_engine.storage.model_requests import encode
 from purrcept_engine.storage.store import Store
 from purrcept_engine.storage.subject import SessionRecord
 from purrcept_engine.subject.history import HistoryMaintenance
@@ -89,6 +101,112 @@ def check(payload: JsonObject):
 async def refresh(budget: RequestBudget) -> DynamicState:
     """冻结相同动态材料使前后布局可比较，不注册额外任务。"""
     return DynamicState("已提交来源状态与当前预算")
+
+
+async def test_history_preview_uses_actual_tool_tail_projection(store: Store) -> None:
+    """摘要准备与真实发送共用完整已交付事实，不计两份相同大正文。"""
+    identity = await admit(store, "source", "实际来源")
+    await store.begin_action(
+        "action", catalog_version="catalog", source="return 1", input_id=identity
+    )
+    await store.begin_call(
+        "call",
+        action_id="action",
+        sequence=0,
+        path="me.browser.read",
+        target_id="browser",
+        arguments_json="{}",
+    )
+    await store.mark_call_started("call")
+    body = "原文标记：" + "x" * 16000
+    await store.record_call_result(
+        "call", state="confirmed", result_json=encode({"body": body}), error_type=None, error=None
+    )
+    await store.finish_action("action", state="completed", result_json=None, output="", error=None)
+    action = await store.get_action("action")
+    assert action is not None and action.finished_at is not None
+    await store.knowledge.put_evidence(
+        EvidenceSnapshot(
+            evidence_id="immediate",
+            version=1,
+            kind="action_result",
+            text=encode(action),
+            source_json=encode({"source": "actual_action_result", "action_id": "action"}),
+            occurred_at=action.finished_at,
+        ),
+        needs_reflection=False,
+    )
+    await store.knowledge.plan_wakeup(
+        WakeupPlan(id="plan", due=time.time() + 3600, reason="后续处理未完", evidence="immediate")
+    )
+    checkpoint = ConversationCheckpoint(
+        ConversationState(
+            (
+                Message.user("实际来源", metadata={"evidence": (identity,)}),
+                Message(
+                    MessageRole.ASSISTANT,
+                    (ToolCallBlock("tool", "play_action", arguments={"action_code": "return 1"}),),
+                ),
+                Message(
+                    MessageRole.TOOL,
+                    (ToolResultBlock("tool", content=(TextBlock(encode(action)),)),),
+                    name="play_action",
+                ),
+                Message.assistant("内部结束"),
+            ),
+            turn_index=1,
+            turn_boundaries=(4,),
+        ),
+        ReminderState(),
+    )
+    turn = await store.begin_turn("old", "foreground", 0, 1, (identity,))
+    await store.finish_turn(turn, "succeeded", checkpoint_json=encode_checkpoint(checkpoint))
+    captured: list[JsonObject] = []
+
+    def measure(payload: JsonObject) -> CapacityAssessment:
+        captured.append(payload)
+        return assess_capacity(payload, GenerationCapacity(100_000, 100, "reference-text-only-v1"))
+
+    backend = Backend("不应调用")
+    maintenance = HistoryMaintenance(
+        store,
+        store,
+        backend,
+        model="openai/summary",
+        retry=RetrySettings(attempts=1),
+        summary_capacity=measure,
+        output_tokens=100,
+        diagnostic_bytes=1024,
+    )
+    preparation = HistoryPreparation(
+        store,
+        maintenance,
+        backend=backend,
+        model="openai/main",
+        assess=measure,
+        context=ContextSettings(),
+    )
+    session = await store.get_session("foreground")
+    try:
+        actual = await preparation(
+            session,
+            Message.user("后续输入"),
+            instructions=(),
+            tools=ToolSet(),
+            settings=ModelSettings(max_output_tokens=100),
+            dynamic=DynamicState.from_payload(
+                {"material_kind": "engine_committed_state", "work": await store.subject_work()}
+            ),
+            budget=RequestBudget(max_requests=8, deadline=time.monotonic() + 30),
+        )
+        assert actual == session and backend.requests == [] and len(captured) == 1
+        messages = captured[0]["messages"]
+        assert isinstance(messages, list)
+        tail = encode(messages[-1])
+        assert body not in tail and "result_delivery" in tail and "full_tool_message" in tail
+        assert "原文标记：" in encode(messages[:-1])
+    finally:
+        await preparation.close()
 
 
 @pytest.mark.asyncio

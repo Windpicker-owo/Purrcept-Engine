@@ -1,7 +1,7 @@
 """独立反思的五个 Core 工具及实际材料呈现追踪，不另写模型循环。
 
-工具创建原文片段与请求实际呈现分开：read_evidence 只登记已发出的完整工具
-结果，后端成功门槛通过 presented_refs 对照真实 ModelRequest，再由 Store
+工具创建原文片段与请求实际呈现分开：read_evidence 只登记完整工具候选，
+容量 Gate 选择交付后，成功门槛通过 presented_refs 对照真实 ModelRequest，再由 Store
 mark_presented 提交资格。同一响应先读后修订不能引用尚未送入下一请求的片段。
 认识和监管逐次生效，批次完成只由 finish_reflection 的原子提交确认。
 """
@@ -46,6 +46,7 @@ from purrcept_engine.storage.knowledge import (
 )
 from purrcept_engine.storage.models import MediaReference
 
+from .delivery import ToolDelivery, ToolDeliveryGate, evidence_fallback
 from .knowledge import KnowledgeService, KnowledgeStore, recall_payload
 
 Nonnegative = Annotated[int, Field(ge=0, strict=True)]
@@ -69,9 +70,9 @@ REFLECTION_INSTRUCTIONS = (
     "unread_evidence 表示尚未纳入本轮材料，必须 read_evidence 后才能引用其具体内容。"
     "每批必须调用 finish_reflection 提交结构化完成记录，最终自然语言不确认复核。"
     "reviews 必须限定具体问题和证据；deferred 明确材料不足、未查看媒体等缺口。"
-    "每项已复核材料都须给 memory_decisions：临时闲聊可 no_change 并说明原因；"
+    "每项已复核材料都须给 memory_decision：临时闲聊可 no_change 并说明原因；"
     "明确偏好、被纠正的认识、可复用执行经验应先查重，再 revise_memory，"
-    "最后以 written 引用真实版本。"
+    "最后以 written 报告已写入，真实修订 ID/版本由宿主关联。"
     "程序 findings 是本批可观察异常，必须逐项回应；前台没有发错消息不能证明感知或调度健康。"
     "对历史中无覆盖依据的正面评价保持审慎，它们不是新的外部证据。"
 )
@@ -112,7 +113,7 @@ class _Delivery:
 
 
 class EvidenceDeliveries:
-    """会话所有者持有的已发出材料登记，连续反思批次可共享同一实例。
+    """会话所有者持有的完整材料候选登记，连续反思批次可共享同一实例。
 
     只登记 Engine 真正创建的初始 Message 和 read_evidence ToolResult。对照
     完整 block 值而非字符串标记；普通外部文字、不同 tool_call_id、缺媒体或
@@ -133,7 +134,7 @@ class EvidenceDeliveries:
     def register_result(
         self, tool_call_id: str, result: ToolResult, slice_refs: tuple[str, ...]
     ) -> None:
-        """登记真实工具结果，复用调用 ID 时仍按完整内容区分原始交付。"""
+        """登记真实工具候选，复用调用 ID 时仍按完整内容区分原始交付。"""
         if result.is_error:
             raise ValueError("错误工具结果不能登记原文交付。")
         delivery = _Delivery(result.content, slice_refs)
@@ -242,6 +243,7 @@ class ReflectionTools:
         page_chars: int = 8000,
         knowledge: KnowledgeService | None = None,
         deliveries: EvidenceDeliveries | None = None,
+        delivery: ToolDeliveryGate | None = None,
     ) -> None:
         """借用账本和外围端口，连续会话应复用同一个材料登记实例。"""
         self.store = store
@@ -249,6 +251,7 @@ class ReflectionTools:
         self.ports = ports
         self.knowledge = knowledge or KnowledgeService(store, page_chars=page_chars)
         self.deliveries = deliveries or EvidenceDeliveries()
+        self.delivery = delivery
         self._toolset = ToolSet(
             (
                 FunctionTool(self.recall),
@@ -435,6 +438,12 @@ class ReflectionTools:
             return _input_error(error)
         if page.slice is not None:
             self.deliveries.register_result(context.call.id, result, (page.slice.slice_ref,))
+        if self.delivery is not None:
+            # 原候选登记不会赋予已读资格。Gate 若改为容量回执，实际请求与
+            # 这里完整正文/媒体不匹配，presented_refs 就不会授予该范围。
+            return self.delivery.stage(
+                context.call, ToolDelivery(result, evidence_fallback(page, cursor=cursor))
+            )
         return result
 
     async def revise_memory(

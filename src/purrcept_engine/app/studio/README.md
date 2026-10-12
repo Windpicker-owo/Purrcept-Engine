@@ -1,6 +1,6 @@
 # 独立声线调音室
 
-调音室不启动 Engine 主体、ASR、TTS 或扬声器。安装 `voice-studio` extra，
+调音室不启动 Engine 主体、ASR、TTS 或扬声器。安装 `web` extra，
 并显式提供可用的 FFmpeg 程序；安装后页面静态资源随同一个 Python 包提供，
 无需 Node 开发服务器。
 

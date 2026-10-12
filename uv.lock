@@ -889,6 +889,7 @@ dependencies = [
     { name = "httpx", marker = "sys_platform == 'win32'" },
     { name = "litellm", marker = "sys_platform == 'win32'" },
     { name = "openai", marker = "sys_platform == 'win32'" },
+    { name = "pillow", marker = "sys_platform == 'win32'" },
     { name = "purrcept-core", marker = "sys_platform == 'win32'" },
     { name = "purrcept-litellm", marker = "sys_platform == 'win32'" },
     { name = "pydantic", marker = "sys_platform == 'win32'" },
@@ -897,11 +898,7 @@ dependencies = [
 [package.optional-dependencies]
 browser = [
     { name = "patchright", marker = "sys_platform == 'win32'" },
-    { name = "pillow", marker = "sys_platform == 'win32'" },
     { name = "trafilatura", marker = "sys_platform == 'win32'" },
-]
-computer = [
-    { name = "pillow", marker = "sys_platform == 'win32'" },
 ]
 live2d = [
     { name = "websockets", marker = "sys_platform == 'win32'" },
@@ -943,8 +940,7 @@ requires-dist = [
     { name = "onnxruntime", marker = "extra == 'voice-input'", specifier = "==1.30.0" },
     { name = "openai", specifier = "==2.49.0" },
     { name = "patchright", marker = "extra == 'browser'", specifier = ">=1.50,<2" },
-    { name = "pillow", marker = "extra == 'browser'", specifier = ">=11,<13" },
-    { name = "pillow", marker = "extra == 'computer'", specifier = ">=11,<13" },
+    { name = "pillow", specifier = "==12.3.0" },
     { name = "purrcept-core", editable = "../purrcept_core" },
     { name = "purrcept-litellm", editable = "../purrcept_litellm" },
     { name = "pydantic", specifier = "==2.13.4" },
@@ -957,7 +953,7 @@ requires-dist = [
     { name = "websockets", marker = "extra == 'qq'", specifier = "==15.0.1" },
     { name = "websockets", marker = "extra == 'voice-input'", specifier = "==15.0.1" },
 ]
-provides-extras = ["qq", "time", "computer", "browser", "web", "voice-input", "live2d"]
+provides-extras = ["qq", "time", "browser", "web", "voice-input", "live2d"]
 
 [package.metadata.requires-dev]
 dev = [
