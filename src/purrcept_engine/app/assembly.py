@@ -19,8 +19,17 @@ from purrcept_engine.errors import ConfigError
 from purrcept_engine.execution.catalog import Catalog, ObjectDeclaration
 from purrcept_engine.plugins.base import PluginBlueprint, PluginFactory
 
+from .activity import ACTIVITY_DECLARATION
 from .config import PluginSettings
 from .console import console_blueprint
+
+_BUILTIN_ENTRIES = {
+    "notebook": "purrcept_engine.plugins.notebook:factory",
+    "clock": "purrcept_engine.plugins.time:factory",
+    "bed": "purrcept_engine.plugins.rest:factory",
+    "qq": "purrcept_engine.plugins.qq:factory",
+    "computer": "purrcept_engine.plugins.computer:factory",
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -82,8 +91,12 @@ def prepare_plugins(
                 raise ConfigError(f"plugins.{item.instance_id}: 缺少依赖 {module_name}")
         objects.extend(blueprint.objects)
         blueprints.append((item.instance_id, blueprint))
-    capabilities = tuple(
-        capability for _, blueprint in blueprints for capability in blueprint.capabilities
+    # phone 是启用应用的实际包含关系；目录不生成没有业务的遥控能力。
+    if any(obj.parent_id == "phone" for obj in objects):
+        objects.append(ObjectDeclaration("phone", "phone", "手机应用", "subject"))
+    capabilities = (
+        ACTIVITY_DECLARATION,
+        *tuple(capability for _, blueprint in blueprints for capability in blueprint.capabilities),
     )
     catalog = Catalog(tuple(objects), capabilities)
     return PreparedPlugins(catalog, tuple(blueprints))
@@ -91,7 +104,8 @@ def prepare_plugins(
 
 def _external_factory(entry: str) -> PluginFactory:
     """只解析显式包入口；错误定位入口而不输出可能包含配置秘密的异常。"""
-    module_name, separator, attribute = entry.partition(":")
+    # 内置别名同样只在明确启用时导入纯工厂；未启用可选设备不会加载依赖。
+    module_name, separator, attribute = _BUILTIN_ENTRIES.get(entry, entry).partition(":")
     if (
         not separator
         or not module_name

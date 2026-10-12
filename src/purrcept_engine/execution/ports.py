@@ -5,10 +5,13 @@
 它只借用执行记录操作，不取得任意 SQL 或主脑会话。
 """
 
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from typing import Protocol
 
 from purrcept_engine.storage.execution import ActionOutcome, ActionRecord, CallOutcome, CallRecord
+from purrcept_engine.storage.models import MediaReference
+
+from .protocol import JsonObject
 
 
 class ExecutionJournal(Protocol):
@@ -19,8 +22,10 @@ class ExecutionJournal(Protocol):
     追加版本，已确认结果不可覆盖。Store 是内置实现。
     """
 
-    async def begin_action(self, action_id: str, *, catalog_version: str, source: str) -> None:
-        """在启动任何脚本前保存代码及冻结目录身份。"""
+    async def begin_action(
+        self, action_id: str, *, catalog_version: str, source: str, input_id: str | None = None
+    ) -> None:
+        """在启动前保存意图、冻结目录及因果来源，不从脚本文字推测来源身份。"""
         ...
 
     async def begin_call(
@@ -48,8 +53,9 @@ class ExecutionJournal(Protocol):
         result_json: str | None,
         error_type: str | None,
         error: str | None,
+        media: tuple[MediaReference, ...] = (),
     ) -> CallRecord:
-        """保存真实结论、历史版本和待交接责任，再向 Worker 交付。"""
+        """保存真实结论、历史版本和待交接责任，再向观察者交付。"""
         ...
 
     async def finish_action(
@@ -61,7 +67,7 @@ class ExecutionJournal(Protocol):
         output: str,
         error: str | None,
     ) -> None:
-        """结束脚本事实，不能回滚已经保存的逐次调用。"""
+        """结束行动事实，不能回滚已经保存的逐次调用。"""
         ...
 
     async def get_action(self, action_id: str) -> ActionRecord | None:
@@ -91,6 +97,38 @@ class ActionExecutor(Protocol):
         can_start: Callable[[], bool] | None = None,
     ) -> ActionRecord:
         """接管并观察一次行动，观察取消不能冒充执行已终止。"""
+        ...
+
+    async def invoke(
+        self,
+        path: str,
+        arguments: JsonObject,
+        *,
+        input_id: str | None = None,
+        can_start: Callable[[], bool] | None = None,
+        timeout_seconds: float | None = None,
+        before_start: Callable[[], Awaitable[float | None]] | None = None,
+        on_admitted: Callable[[str], None] | None = None,
+    ) -> ActionRecord:
+        """接管一次冻结目录内的结构化能力调用，无需创建脚本或 Worker。
+
+        新请求须先取得有限等待名额，普通饱和不占用控制名额。参数走同一真实
+        Provider 校验，资格在实际启动前复核；timeout_seconds 只缩小既定期限，
+        包含排队和提交等待。观察取消不撤销已接管所有权，未知和迟到真实结果
+        保存在同一调用历史中。活动驱动只能借此有限端口调用插件能力。
+        before_start 在真实 Provider 前查询当前资格，None 拒绝，正有限秒数仅
+        收紧原期限；资格等待超时没有效果，内部权威错误原样传播。on_admitted
+        在首次 await 前关联执行器分配的身份，不授予重投；回调故障撤销派发。
+        """
+        ...
+
+    async def wait_invocation_released(self, action_id: str) -> None:
+        """等待本实例结构化调用的真实资源归还，不把 unknown 当作已经释放。
+
+        只供取得 invoke/on_admitted 身份的可信所有者使用。没有 live 所有权
+        表示本实例已无该项资源，不认证 SQL 入账或效果；此事实独立于账本健康。
+        等待取消只结束观察，没有历史缓存，也不重新执行调用。
+        """
         ...
 
     async def query(self, action_id: str) -> ActionRecord | None:

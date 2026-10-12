@@ -9,6 +9,8 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Literal
 
+from purrcept_engine.execution.protocol import decode_object, encode_json
+
 
 def _nonempty(value: str, field: str) -> None:
     if not isinstance(value, str) or not value.strip():
@@ -74,6 +76,39 @@ class MediaAsset:
 
 
 @dataclass(frozen=True, slots=True)
+class InputContext:
+    """接入方确认的关系与程序信号，正文不能自行授予这些标记。
+
+    details_json 保存平台原生的 @、回复与会话关系，不建立人员权限。最低
+    唤起只要求前台处理；interrupt_generation 请求核对当前代次后抢占，
+    speech_started 表示已达到配置阈值的 VAD 信号，并另外要求音频停播。
+    语音转写接续沿用来源关联，不能再次伪造 speech_started。
+    """
+
+    details_json: str = "{}"
+    minimum_wake: bool = False
+    interrupt_generation: bool = False
+    speech_started: bool = False
+    missing_materials: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        """在可信接入边界冻结有限 JSON 关系，拒绝非对象及伪布尔值。"""
+        if not isinstance(self.details_json, str):
+            raise ValueError("details_json 必须是 JSON 对象文本。")
+        details = decode_object(self.details_json.encode("utf-8"))
+        if not isinstance(details, dict):
+            raise ValueError("details_json 必须是 JSON 对象文本。")
+        for value in (self.minimum_wake, self.interrupt_generation, self.speech_started):
+            if type(value) is not bool:
+                raise ValueError("程序输入信号必须是 bool。")
+        if not isinstance(self.missing_materials, tuple):
+            raise ValueError("missing_materials 必须是不可变缺口说明元组。")
+        for reason in self.missing_materials:
+            _nonempty(reason, "missing_materials")
+        object.__setattr__(self, "details_json", encode_json(details).decode("utf-8"))
+
+
+@dataclass(frozen=True, slots=True)
 class InputSubmission:
     """一次接管的发生事实；接收时间不改变原生重放的内容身份。
 
@@ -86,11 +121,14 @@ class InputSubmission:
     occurred_at: datetime
     received_at: datetime
     media: tuple[MediaAsset, ...] = ()
+    context: InputContext = InputContext()
 
     def __post_init__(self) -> None:
         """校验接管信封，确保传给数据库线程的事实不可变且带时区。"""
         if not isinstance(self.source, InputSource):
             raise ValueError("source 必须是 InputSource。")
+        if not isinstance(self.context, InputContext):
+            raise ValueError("context 必须是 InputContext。")
         if not isinstance(self.text, str):
             raise ValueError("text 必须是字符串。")
         _aware(self.occurred_at, "occurred_at")
@@ -135,3 +173,4 @@ class InputRecord:
     media: tuple[MediaReference, ...]
     state: Literal["pending", "processed"]
     logical_bytes: int
+    context: InputContext = InputContext()

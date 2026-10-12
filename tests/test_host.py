@@ -19,7 +19,7 @@ from purrcept_engine import (
 )
 from purrcept_engine.app.locking import InstanceLock
 from purrcept_engine.app.models import OpenAIGenerationResource
-from purrcept_engine.storage import Store
+from purrcept_engine.storage.store import Store
 
 
 def _config(directory: Path, *, close_seconds: float = 30.0) -> EngineConfig:

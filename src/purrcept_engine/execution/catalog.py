@@ -42,6 +42,8 @@ class CapabilityDeclaration[Parameters: BaseModel]:
     参数模型拥有真实调用边界的字段校验。timeout_seconds 是该能力自己的
     有限期限；行动/活动剩余时间可进一步收紧。target_serial 防止同一目标
     的普通调用重叠；control 标记由宿主装配决定，模型参数不能自称控制请求。
+    example 中的 {path} 在冻结目录时替换为完整能力路径，使可配置父节点
+    不需要在声明阶段复制目录的路径解析规则；其他字符保持原文。
     """
 
     capability_id: str
@@ -155,10 +157,11 @@ class Catalog:
         entries: list[str] = []
         for path, binding in self.bindings.items():
             declaration = binding.declaration
+            example = declaration.example.replace("{path}", path)
             entries.append(
                 f"{path}\n{declaration.description}\n"
                 f"usage: {declaration.usage}\n"
-                f"parameters: {binding.schema_json}\nexample: {declaration.example}"
+                f"parameters: {binding.schema_json}\nexample: {example}"
             )
         return "\n\n".join(entries)
 

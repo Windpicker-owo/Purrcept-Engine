@@ -33,6 +33,7 @@ from purrcept_engine.execution.protocol import JsonObject, decode_object, encode
 
 __all__ = [
     "ActivitySettings",
+    "CharacterSettings",
     "ContextSettings",
     "DecisionModelSettings",
     "EngineConfig",
@@ -146,6 +147,7 @@ class GenerationModelSettings(_ModelSettings):
     kind: Literal["generation"]
     context_window: PositiveInt
     max_output_tokens: PositiveInt
+    input_limit: PositiveInt | None = None
 
     @model_validator(mode="after")
     def _output_fits_window(self) -> Self:
@@ -183,6 +185,45 @@ class SubjectSettings(_Settings):
     )
     foreground_turn: TurnSettings = Field(default_factory=TurnSettings)
     reflection_turn: TurnSettings = Field(default_factory=TurnSettings)
+    character: CharacterSettings = Field(default_factory=lambda: CharacterSettings())
+    attention_batch_seconds: Annotated[float, Field(ge=0, allow_inf_nan=False)] = 0.1
+    attention_batch_size: PositiveInt = 8
+    attention_defer_seconds: PositiveSeconds = 30.0
+    reflection_batch_seconds: PositiveSeconds = 60.0
+    reflection_batch_turns: PositiveInt = 8
+
+
+class CharacterSettings(_Settings):
+    """保留固定身份六字段及顺序，不从认识恢复，也不建立人员权限。
+
+    空字符串转为缺省 None；其余文字保留原有空白，不能在配置重写中改变
+    模型可见的人格。固定前台指令沿用 Python 字典表示及全部 None 字段。
+    """
+
+    name: str | None = None
+    one_line: str | None = None
+    persona: str | None = None
+    relationship: str | None = None
+    speech_style: str | None = None
+    notes: str | None = None
+
+    @field_validator(
+        "name", "one_line", "persona", "relationship", "speech_style", "notes", mode="before"
+    )
+    @classmethod
+    def _empty_to_none(cls, value: object) -> object:
+        return None if value == "" else value
+
+    def record(self) -> dict[str, str | None]:
+        """返回旧固定提示中的同序六字段，缺省值不会被序列化时省略。"""
+        return {
+            "name": self.name,
+            "one_line": self.one_line,
+            "persona": self.persona,
+            "relationship": self.relationship,
+            "speech_style": self.speech_style,
+            "notes": self.notes,
+        }
 
 
 class ContextSettings(_Settings):

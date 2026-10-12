@@ -16,8 +16,15 @@ from pydantic import BaseModel
 
 from purrcept_engine.execution.catalog import CapabilityDeclaration, ObjectDeclaration
 from purrcept_engine.execution.protocol import JsonObject
-from purrcept_engine.execution.providers import CapabilityImplementation
-from purrcept_engine.storage.models import Admission, InputRecord, InputSubmission
+from purrcept_engine.execution.providers import CallContext, CallOutcome, CapabilityImplementation
+from purrcept_engine.storage.execution import CallRecord
+from purrcept_engine.storage.knowledge import EvidencePage, EvidenceSnapshot
+from purrcept_engine.storage.models import Admission, InputRecord, InputSubmission, MediaAsset
+from purrcept_engine.storage.subject import InputProcessing
+from purrcept_engine.storage.time_port import TimePort
+from purrcept_engine.subject.activities import ActivityDefinition
+
+from .panels import DevicePanel
 
 
 class InputPort(Protocol):
@@ -35,17 +42,80 @@ class InputPort(Protocol):
         """读取实际接管及处理状态，不执行模型或再次发送输入。"""
         ...
 
+    async def query_processing(self, input_id: str) -> InputProcessing | None:
+        """读取真实阶段和失败原因；延期或处理中不构成采集画面完成确认。"""
+        ...
+
+
+class EvidencePort(Protocol):
+    """插件借用的原文快照/分页端口，不授予认识修订或任意数据库操作。
+
+    首读提交完整原文，续读由宿主保存的游标查回同一快照；取得页面不构成
+    模型已读证明。插件按自己的业务来源检查快照归属。取消等待不撤销已
+    接管快照，缺失媒体及权威故障原样失败。
+    """
+
+    @property
+    def page_chars(self) -> int:
+        """返回本实例统一页长，插件不另设会静默裁剪原文的上限。"""
+        ...
+
+    async def capture(
+        self, snapshot: EvidenceSnapshot, assets: tuple[MediaAsset, ...]
+    ) -> EvidenceSnapshot:
+        """原子保存显式工具取得的原生媒体和原文，不另投注意或前台输入。"""
+        ...
+
+    async def put_evidence(
+        self, snapshot: EvidenceSnapshot, *, needs_reflection: bool = False
+    ) -> EvidenceSnapshot:
+        """完整保存新快照及媒体关系，不能覆盖同身份的不同原文。"""
+        ...
+
+    async def read_evidence(
+        self,
+        evidence_id: str,
+        *,
+        level: str = "evidence",
+        cursor: str | None = None,
+        max_chars: int = 8000,
+    ) -> EvidencePage:
+        """读取指定快照范围，页面带确切来源、版本与下一游标。"""
+        ...
+
+    async def read_evidence_cursor(self, cursor: str, *, max_chars: int = 8000) -> EvidencePage:
+        """用已保存游标续读原快照，不能从外界文字自行解析游标权限。"""
+        ...
+
+
+class LateResultPort(Protocol):
+    """插件提交实际迟到协议确认的限定端口，不授予重新派发权限。
+
+    app 按当前 Blueprint 的真实能力路径借出，只有保存了 started 门槛且
+    action/input 与 CallContext 对应的调用可用。方法等待首版回执提交后追加
+    不可变版本；插件持有提交任务到真实结束。确认不改写原行动结束结果，
+    不根据请求参数或断线推断效果，也不能使用另一个插件的调用身份。
+    """
+
+    async def record(self, context: CallContext, outcome: CallOutcome) -> CallRecord:
+        """保存真实迟到结果或返回相同已存事实；存储故障保持原型。"""
+        ...
+
 
 @dataclass(frozen=True, slots=True)
 class PluginPorts:
     """app 显式注入的有限依赖；字段增加须对应真实业务交接。
 
     inputs 用于接管与查询；snapshot 读取宿主提交后的只读投影。设备客户端
-    和通用数据库不在端口中。更多业务使用所属子系统的专用协议注入。
+    和通用数据库不在端口中。evidence 为共享原文/分页服务，仅实际需要的
+    组件借用；认识写入不在此门面内。
     """
 
     inputs: InputPort
     snapshot: Callable[[], JsonObject]
+    evidence: EvidencePort | None = None
+    time: TimePort | None = None
+    late_results: LateResultPort | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -56,6 +126,9 @@ class PluginRuntime:
     不关闭仍被已开始调用使用的连接。close 在 execution 收尾后调用一次。
     无对应资源时不必提供空生命周期函数。内部异常原样失败，外围离线应由
     具体插件在其状态投影中表达。所有后台任务必须归这些函数的所有者管理。
+    prepare_request 在每个逻辑模型请求发送前异步刷新技能等读取材料；返回
+    只读 JSON 加入动态 user 尾部，不能修改固定能力目录、执行技能或发外部消息。
+    panel 只列出已批准的面板快捷控制，不把全部模型能力变成页面入口。
     """
 
     capabilities: tuple[CapabilityImplementation, ...]
@@ -63,6 +136,8 @@ class PluginRuntime:
     stop_inputs: Callable[[], Awaitable[None]] | None = None
     close: Callable[[], Awaitable[None]] | None = None
     snapshot: Callable[[], JsonObject] | None = None
+    prepare_request: Callable[[], Awaitable[JsonObject]] | None = None
+    panel: DevicePanel | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -80,6 +155,7 @@ class PluginBlueprint:
     capabilities: tuple[CapabilityDeclaration[BaseModel], ...]
     build: Callable[[PluginPorts], Awaitable[PluginRuntime]]
     required_modules: tuple[str, ...] = ()
+    activities: tuple[ActivityDefinition, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)

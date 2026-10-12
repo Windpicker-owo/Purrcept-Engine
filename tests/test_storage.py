@@ -10,7 +10,12 @@ from pathlib import Path
 import pytest
 
 from purrcept_engine.errors import StorageError
-from purrcept_engine.storage import InputSource, InputSubmission, MediaAsset, Store
+from purrcept_engine.storage import (
+    InputSource,
+    InputSubmission,
+    MediaAsset,
+)
+from purrcept_engine.storage.store import Store
 
 _TIME = datetime(2026, 10, 12, 8, 0, tzinfo=UTC)
 

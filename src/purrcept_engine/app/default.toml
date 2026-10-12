@@ -34,6 +34,14 @@ foreground = "foreground"
 reflection = "foreground"
 summary = "foreground"
 attention = "attention"
+attention_batch_seconds = 0.1
+attention_batch_size = 8
+attention_defer_seconds = 30.0
+reflection_batch_seconds = 60.0
+reflection_batch_turns = 8
+
+# 六项固定身份缺省为 None；配置需要的字符串，不从认识或人员权限恢复。
+[subject.character]
 
 [subject.foreground_retry]
 attempts = 2
@@ -77,3 +85,13 @@ max_active = 8
 initial_seconds = 3600.0
 max_remaining_seconds = 3600.0
 checkpoint_seconds = 5.0
+
+# 启用 Notebook 时改写顶层 plugins=[] 为下列数组项（不可同时保留两种定义）。
+# [[plugins]]
+# instance_id = "notebook"
+# entry = "notebook"
+# enabled = true
+# [plugins.config]
+# notebook_dir = "notes"
+# skills_dir = "skills"
+# seed_examples = true

@@ -137,6 +137,23 @@ async def test_wait_cancellation_does_not_release_running_process() -> None:
         await _release(process)
 
 
+async def test_device_helper_job_owns_process_tree_without_worker_resource_limits() -> None:
+    """设备助手只借用 Job 所有权；Worker 的 CPU/内存默认限额不受影响。"""
+    process = WindowsProcess.launch(
+        _command("import time; time.sleep(10)"), cpu_seconds=None, memory_bytes=None
+    )
+    try:
+        with pytest.raises(OSError):
+            process.query_limits()
+        assert process.poll() is None
+        process.terminate(74)
+        assert await asyncio.wait_for(process.wait(), timeout=5) == 74
+    finally:
+        await _release(process)
+    with pytest.raises(ValueError):
+        WindowsProcess.launch(_command("pass"), cpu_seconds=None)
+
+
 async def test_native_cpu_limit_stops_busy_python_process() -> None:
     """真实循环触发用户态 CPU 限制，不以返回结构存在替代实际终止。"""
     process = WindowsProcess.launch(_command("while True: pass"), cpu_seconds=0.1)
@@ -214,16 +231,24 @@ def test_limit_setup_failure_prevents_process_creation(
     marker = tmp_path / "executed.txt"
     api = _probe()
     before = _handle_count(api)
+    created_jobs: list[int] = []
 
-    def reject_setup(*arguments: object) -> None:
-        del arguments
+    def reject_setup(native_api: object, job: int, *limits: object) -> None:
+        del native_api, limits
+        created_jobs.append(job)
         raise OSError(5, "synthetic native limit failure")
 
     monkeypatch.setattr(windows, "_configure_job", reject_setup)
     with pytest.raises(OSError, match="synthetic native limit failure"):
         WindowsProcess.launch(_command(f"from pathlib import Path; Path({str(marker)!r}).touch()"))
     assert not marker.exists()
-    assert _handle_count(api) == before
+    assert len(created_jobs) == 1
+    flags = ctypes.c_uint32()
+    assert not api.GetHandleInformation(created_jobs[0], ctypes.byref(flags))
+    assert ctypes.get_last_error() == 6
+    # 其他 asyncio/SDK 的已结束资源可能在此时被收回。具体 Job 已失效及
+    # 全进程句柄不增长共同验证本次清理，不能要求无关句柄数保持绝对相等。
+    assert _handle_count(api) <= before
 
 
 def test_failed_create_process_releases_job_handles(tmp_path: Path) -> None:

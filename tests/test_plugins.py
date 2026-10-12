@@ -13,7 +13,7 @@ from purrcept_engine import EngineConfig, EngineHost
 from purrcept_engine.app.assembly import prepare_plugins
 from purrcept_engine.app.config import PluginSettings
 from purrcept_engine.errors import ConfigError
-from purrcept_engine.execution.catalog import CapabilityDeclaration, ObjectDeclaration
+from purrcept_engine.execution.catalog import CapabilityDeclaration, Catalog, ObjectDeclaration
 from purrcept_engine.execution.providers import CallContext, CallOutcome, FunctionCapability
 from purrcept_engine.plugins.base import (
     PluginBlueprint,
@@ -137,13 +137,39 @@ def test_pure_declaration_does_not_build_and_config_is_an_immutable_snapshot(
 
 def test_disabled_plugin_is_not_imported_and_bad_settings_are_sanitized(tmp_path: Path) -> None:
     disabled = PluginSettings(instance_id="unused", entry="does.not.exist:factory", enabled=False)
-    assert not prepare_plugins((disabled,), base_dir=tmp_path, factories={}).catalog.bindings
+    catalog = prepare_plugins((disabled,), base_dir=tmp_path, factories={}).catalog
+    assert set(catalog.bindings) == {"me.activity"}
     invalid = PluginSettings.model_validate(
         {"instance_id": "bad", "entry": "fixture", "config": {"prefix": 2, "secret": "hidden"}}
     )
     with pytest.raises(ConfigError) as caught:
         prepare_plugins((invalid,), base_dir=tmp_path, factories={"fixture": _factory([])})
     assert "prefix" in str(caught.value) and "hidden" not in str(caught.value)
+
+
+def test_catalog_example_uses_the_actual_configured_parent_path() -> None:
+    catalog = Catalog(
+        (
+            ObjectDeclaration("subject", "me", "主体"),
+            ObjectDeclaration("screen", "desktop", "电脑", "subject"),
+            ObjectDeclaration("browser", "research", "浏览器", "screen"),
+        ),
+        (
+            CapabilityDeclaration(
+                "browser.echo",
+                "browser",
+                "echo",
+                "返回正文。",
+                _Parameters,
+                5.0,
+                'await {path}(text="hi")',
+            ),
+        ),
+    )
+    binding = catalog.resolve("me.desktop.research.echo")
+    assert binding.path == "me.desktop.research.echo"
+    assert 'example: await me.desktop.research.echo(text="hi")' in catalog.instructions
+    assert "{path}" not in catalog.instructions
 
 
 async def test_actual_host_uses_frozen_catalog_and_real_worker(tmp_path: Path) -> None:

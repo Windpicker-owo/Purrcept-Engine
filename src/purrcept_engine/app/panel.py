@@ -1,0 +1,252 @@
+"""本机面板的有限控制所有者，借用真实宿主调用与同库身份账本。
+
+页面只提交显式快捷操作，不能发送 Python、聊天文本或模型参数。控制身份先
+持久接管，再交到原能力或活动入口；断开/取消等待不撤销已接受工作。实际回执
+始终由执行器和活动服务保存，面板只保存关联及观察终态。
+"""
+
+from __future__ import annotations
+
+import asyncio
+from collections.abc import Callable, Mapping
+from typing import Protocol, cast
+
+from pydantic import BaseModel, ConfigDict, Field
+
+from purrcept_engine.errors import HostStateError
+from purrcept_engine.execution.catalog import Catalog
+from purrcept_engine.execution.protocol import JsonObject, JsonValue, encode_json
+from purrcept_engine.execution.providers import CapabilityInputError
+from purrcept_engine.execution.service import ExecutionBusy, ExecutionLimitError
+from purrcept_engine.plugins.base import PluginRuntime
+from purrcept_engine.plugins.panels import PanelControl, PreviewFrame
+from purrcept_engine.storage.controls import ControlError, ControlLedger, ControlRecord
+from purrcept_engine.storage.execution import ActionRecord
+from purrcept_engine.subject.activities import ActivityError, ActivityService
+
+
+class ControlRequest(BaseModel):
+    """本机 HTTP/嵌入边界，页面版本与宿主实例不能由默认值补齐。"""
+
+    model_config = ConfigDict(extra="forbid", strict=True, frozen=True)
+    request_id: str = Field(pattern=r"^[A-Za-z0-9_-]{1,128}$")
+    instance_id: str = Field(min_length=1, max_length=128)
+    target: str = Field(min_length=1, max_length=128)
+    operation: str = Field(min_length=1, max_length=64)
+    expected_revision: str = Field(min_length=1, max_length=256)
+    arguments: JsonObject = Field(default_factory=dict)
+
+
+class _Invoke(Protocol):
+    """Host 注入的唯一结构化执行入口；身份回调在首次 await 前发生。"""
+
+    async def __call__(
+        self,
+        path: str,
+        arguments: JsonObject,
+        *,
+        input_id: str | None = None,
+        can_start: Callable[[], bool] | None = None,
+        on_admitted: Callable[[str], None] | None = None,
+    ) -> ActionRecord:
+        """共用真实能力/schema/Provider 和原回执，不先请求语言模型。"""
+        ...
+
+
+class PanelController:
+    """Host 拥有的固定控制集合，查询不会启动设备或创建后台工作。
+
+    最多16个控制观察任务，重复 request_id 合并等待；正式去重在同 Store
+    事务内完成。首次接管的所有者负责取得执行器身份和保存终态。关闭只拒绝
+    新控制，已接管调用继续依赖 execution 的实际收尾，然后归还提交任务。
+    """
+
+    def __init__(
+        self,
+        instance_id: str,
+        catalog: Catalog,
+        plugins: Mapping[str, PluginRuntime],
+        ledger: ControlLedger,
+        invoke: _Invoke,
+        activities: ActivityService,
+    ) -> None:
+        """绑定已构造插件及原业务端口，不另建能力表、设备连接或数据库。"""
+        self.instance_id, self.catalog = instance_id, catalog
+        self.plugins, self.ledger = plugins, ledger
+        self.invoke, self.activities = invoke, activities
+        self._tasks: dict[str, tuple[str, asyncio.Task[ControlRecord]]] = {}
+        self._closing = False
+        paths = {item.declaration.capability_id: item for item in catalog.bindings.values()}
+        self._controls: dict[tuple[str, str], tuple[str, PanelControl]] = {}
+        for instance, runtime in plugins.items():
+            panel = runtime.panel
+            if panel is None:
+                continue
+            own = {item.declaration.capability_id for item in runtime.capabilities}
+            for control in panel.controls:
+                key = (instance, control.key)
+                if key in self._controls or control.capability_id not in own:
+                    raise ControlError("插件面板重复操作或借用了其他插件能力。")
+                binding = paths[control.capability_id]
+                fixed = control.arguments({})
+                properties = binding.declaration.parameters.model_fields
+                if any(name not in properties for name in (*fixed, *control.fields)):
+                    raise ControlError("插件快捷控制参数未在能力契约中声明。")
+                self._controls[key] = (binding.path, control)
+
+    def devices(self) -> list[JsonValue]:
+        """读取插件已提交状态及允许操作，不启动/恢复设备，也不主动采集画面。"""
+        values: list[JsonValue] = []
+        for instance, runtime in self.plugins.items():
+            panel = runtime.panel
+            state = {} if runtime.snapshot is None else runtime.snapshot()
+            values.append(
+                {
+                    "instance_id": instance,
+                    "kind": None if panel is None else panel.kind,
+                    "revision": None if panel is None else panel.revision(),
+                    "state": state,
+                    "controls": []
+                    if panel is None
+                    else [
+                        {"key": item.key, "title": item.title, "fields": list(item.fields)}
+                        for item in panel.controls
+                    ],
+                    "has_preview": panel is not None and panel.preview is not None,
+                }
+            )
+        return values
+
+    def preview(self, target: str) -> PreviewFrame | None:
+        """借出当前缓存，缺失返回 None；请求本身不打开设备或截图。"""
+        runtime = self.plugins.get(target)
+        if runtime is None or runtime.panel is None or runtime.panel.preview is None:
+            raise ControlError("该设备没有缓存预览。", code="control_target")
+        return runtime.panel.preview()
+
+    async def submit(self, request: ControlRequest) -> ControlRecord:
+        """合并同身份观察并交给持久去重；取消等待不取消控制所有者。"""
+        if self._closing:
+            raise ControlError("宿主已停止面板控制接入。", code="host_closing")
+        if request.instance_id != self.instance_id:
+            raise ControlError("页面实例已过期，请刷新。", code="stale_instance")
+        # 配置模型的 frozen 不冻结嵌套容器。接管前取得独立参数快照，不能让
+        # HTTP/嵌入调用者跨 await 改写已记录意图或实际执行值。
+        request = ControlRequest.model_validate_json(request.model_dump_json())
+        payload = cast(
+            JsonObject, request.model_dump(mode="json", exclude={"request_id", "instance_id"})
+        )
+        encoded = encode_json(payload).decode()
+        pending = self._tasks.get(request.request_id)
+        if pending is not None:
+            if pending[0] != encoded:
+                raise ControlError("控制身份对应不同请求。", code="control_conflict")
+            return await asyncio.shield(pending[1])
+        if len(self._tasks) >= 16:
+            raise ControlError("面板控制观察名额已满。", code="control_busy")
+        task = asyncio.create_task(self._run(request, payload), name="panel-control")
+        self._tasks[request.request_id] = (encoded, task)
+
+        def finished(owner: asyncio.Task[ControlRecord]) -> None:
+            self._tasks.pop(request.request_id, None)
+            if not owner.cancelled():
+                owner.exception()
+
+        task.add_done_callback(finished)
+        return await asyncio.shield(task)
+
+    async def _run(self, request: ControlRequest, payload: JsonObject) -> ControlRecord:
+        """先接管身份，再核验真实版本和交接；已接管关联提交必须实际收回。"""
+        record, fresh = await self.ledger.admit(request.request_id, self.instance_id, payload)
+        if not fresh:
+            return record
+        link_task: asyncio.Task[None] | None = None
+        try:
+            if self._closing:
+                raise ControlError("宿主开始关闭，请查询已接管控制。", code="host_closing")
+            if request.target.startswith("activity:"):
+                await self._activity(request)
+            else:
+                selected = self._controls.get((request.target, request.operation))
+                runtime = self.plugins.get(request.target)
+                if selected is None or runtime is None or runtime.panel is None:
+                    raise ControlError("目标没有该快捷控制。", code="control_target")
+                path, declaration = selected
+                panel = runtime.panel
+                if panel.revision() != request.expected_revision:
+                    raise ControlError("设备状态已变化，请刷新。", code="stale_revision")
+                try:
+                    arguments = declaration.arguments(request.arguments)
+                except ValueError as error:
+                    raise ControlError(str(error)) from error
+                stale = False
+
+                def eligible() -> bool:
+                    nonlocal stale
+                    stale = panel.revision() != request.expected_revision
+                    return not self._closing and not stale
+
+                def admitted(action_id: str) -> None:
+                    nonlocal link_task
+                    link_task = asyncio.create_task(
+                        self.ledger.link(request.request_id, action_id=action_id)
+                    )
+
+                await self.invoke(path, arguments, can_start=eligible, on_admitted=admitted)
+                if link_task is not None:
+                    await asyncio.shield(link_task)
+                    link_task = None
+                if stale:
+                    raise ControlError(
+                        "排队期间设备状态已变化；操作没有开始。", code="stale_revision"
+                    )
+            return await self.ledger.finish(request.request_id)
+        except (
+            ControlError,
+            ActivityError,
+            CapabilityInputError,
+            ExecutionBusy,
+            ExecutionLimitError,
+        ) as error:
+            return await self.ledger.finish(
+                request.request_id,
+                error_code=error.code
+                if isinstance(error, (ControlError, ActivityError))
+                else type(error).__name__,
+                error=str(error),
+            )
+        except HostStateError:
+            if not self._closing:
+                raise
+            return await self.ledger.finish(
+                request.request_id, error_code="host_closing", error="宿主已停止新的派发。"
+            )
+        finally:
+            if link_task is not None:
+                await asyncio.shield(link_task)
+
+    async def _activity(self, request: ControlRequest) -> None:
+        """活动控制只允许暂停/恢复/结束，版本在原状态提交锁内核验。"""
+        if request.operation not in ("pause", "resume", "end") or request.arguments:
+            raise ControlError("面板只提供暂停、恢复和结束活动。")
+        try:
+            version = int(request.expected_revision)
+        except ValueError:
+            raise ControlError("活动版本无效。") from None
+        command = await self.activities.command(
+            "panel-" + request.request_id,
+            request.operation,
+            activity_id=request.target.removeprefix("activity:"),
+            expected_version=version,
+        )
+        await self.ledger.link(request.request_id, command_id=command.command_id)
+
+    async def close(self) -> None:
+        """拒绝新控制并等待原业务观察/提交，不随页面断开取消实际工作。"""
+        self._closing = True
+        results = await asyncio.gather(
+            *(item[1] for item in tuple(self._tasks.values())), return_exceptions=True
+        )
+        errors = [item for item in results if isinstance(item, BaseException)]
+        if errors:
+            raise BaseExceptionGroup("面板控制收尾失败。", errors)

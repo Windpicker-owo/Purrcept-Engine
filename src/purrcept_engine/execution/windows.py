@@ -371,19 +371,40 @@ def _close(api: _Kernel32, handle: int) -> None:
     _check(api.CloseHandle(handle))
 
 
-def _configure_job(api: _Kernel32, job: int, cpu_ticks: int, memory_bytes: int) -> None:
-    """限制必须在进程创建前全部成功；分配失败时禁止无额度执行。"""
+def _configure_job(
+    api: _Kernel32, job: int, cpu_ticks: int | None, memory_bytes: int | None
+) -> None:
+    """创建前落实所有权和所选硬限制，可信设备辅助进程可只选择所有权。"""
     info = _ExtendedLimits()
-    info.BasicLimitInformation.PerProcessUserTimeLimit = cpu_ticks
-    info.BasicLimitInformation.PerJobUserTimeLimit = cpu_ticks
-    info.BasicLimitInformation.LimitFlags = (
-        _PROCESS_TIME | _JOB_TIME | _PROCESS_MEMORY | _JOB_MEMORY | _KILL_ON_CLOSE
-    )
-    info.ProcessMemoryLimit = memory_bytes
-    info.JobMemoryLimit = memory_bytes
+    info.BasicLimitInformation.LimitFlags = _KILL_ON_CLOSE
+    if cpu_ticks is not None:
+        assert memory_bytes is not None
+        info.BasicLimitInformation.PerProcessUserTimeLimit = cpu_ticks
+        info.BasicLimitInformation.PerJobUserTimeLimit = cpu_ticks
+        info.BasicLimitInformation.LimitFlags |= (
+            _PROCESS_TIME | _JOB_TIME | _PROCESS_MEMORY | _JOB_MEMORY
+        )
+        info.ProcessMemoryLimit = memory_bytes
+        info.JobMemoryLimit = memory_bytes
     _check(
         api.SetInformationJobObject(job, _EXTENDED_LIMITS, ctypes.byref(info), ctypes.sizeof(info))
     )
+
+
+def _verify_owned_job(api: _Kernel32, job: int) -> None:
+    """只验证可信设备辅助进程的归属，不返回虚假的零 CPU/内存额度。"""
+    info = _ExtendedLimits()
+    _check(
+        api.QueryInformationJobObject(
+            job,
+            _EXTENDED_LIMITS,
+            ctypes.byref(info),
+            ctypes.sizeof(info),
+            None,
+        )
+    )
+    if info.BasicLimitInformation.LimitFlags != _KILL_ON_CLOSE:
+        raise OSError("辅助进程 Job 的退出清理设置与请求不一致。")
 
 
 def _environment(api: _Kernel32) -> ctypes.Array[ctypes.c_wchar]:
@@ -457,8 +478,8 @@ class WindowsProcess:
         cls,
         command: tuple[str, ...],
         *,
-        cpu_seconds: float = 15.0,
-        memory_bytes: int = 512 * 1024 * 1024,
+        cpu_seconds: float | None = 15.0,
+        memory_bytes: int | None = 512 * 1024 * 1024,
         inherited_handles: tuple[int, ...] = (),
     ) -> Self:
         """不经 shell 创建进程，限制与归属失败时回收本次全部资源。
@@ -466,6 +487,8 @@ class WindowsProcess:
         executable 必须是绝对路径。明确传入的句柄须已经标记为可继承；本入口
         不临时扩大其他句柄的继承资格。环境只包含操作系统给出的 SystemRoot。
         原生失败传播 OSError；清理同时失败时汇总原始异常，不伪报成功。
+        两项额度同时为 None 时只取得可信设备辅助进程的完整进程树所有权。
+        模型行动调用始终传入已校验正额度，不能通过此选择取消 Worker 限制。
         """
         cpu_ticks = _validate_launch(command, cpu_seconds, memory_bytes, inherited_handles)
         api = _kernel32()
@@ -481,12 +504,15 @@ class WindowsProcess:
         process_info = _ProcessInfo()
         try:
             _configure_job(api, job, cpu_ticks, memory_bytes)
-            actual_limits = _read_limits(api, job)
-            if (
-                actual_limits.user_cpu_seconds != cpu_ticks / 10_000_000
-                or actual_limits.memory_bytes != memory_bytes
-            ):
-                raise OSError("Job 回读额度与请求不一致。")
+            if cpu_ticks is None:
+                _verify_owned_job(api, job)
+            else:
+                actual_limits = _read_limits(api, job)
+                if (
+                    actual_limits.user_cpu_seconds != cpu_ticks / 10_000_000
+                    or actual_limits.memory_bytes != memory_bytes
+                ):
+                    raise OSError("Job 回读额度与请求不一致。")
             environment = _environment(api)
 
             # Initialize 的第一次失败仅用于取得必需字节数，不是可忽略的设置失败。
@@ -696,7 +722,7 @@ class WindowsProcess:
         return info
 
     def query_limits(self) -> WindowsLimits:
-        """回读本次 Job 的用户态 CPU、提交内存及父退出清理设置。"""
+        """回读硬额度；仅启用进程树所有权的辅助 Job 明确抛 OSError。"""
         if self._job is None:
             raise RuntimeError("Job 所有者已经关闭。")
         return _read_limits(self._api, self._job)
@@ -716,8 +742,11 @@ class WindowsProcess:
 
 
 def _validate_launch(
-    command: tuple[str, ...], cpu_seconds: float, memory_bytes: int, handles: tuple[int, ...]
-) -> int:
+    command: tuple[str, ...],
+    cpu_seconds: float | None,
+    memory_bytes: int | None,
+    handles: tuple[int, ...],
+) -> int | None:
     """只在真实原生边界核验 Python 值，拒绝溢出与隐式 PATH/shell 选择。"""
     if not isinstance(command, tuple) or not command:
         raise ValueError("command 必须是包含绝对 executable 的非空元组。")
@@ -725,17 +754,21 @@ def _validate_launch(
         raise ValueError("command 只接受无空字符的字符串参数。")
     if not Path(command[0]).is_absolute():
         raise ValueError("executable 必须是绝对路径。")
-    if (
-        isinstance(cpu_seconds, bool)
-        or not isinstance(cpu_seconds, (int, float))
-        or not math.isfinite(cpu_seconds)
-        or cpu_seconds <= 0
-    ):
-        raise ValueError("cpu_seconds 必须是正有限时长。")
-    cpu_ticks = math.ceil(cpu_seconds * 10_000_000)
-    if cpu_ticks >= 2**63:
-        raise ValueError("CPU 额度超出原生时间字段范围。")
-    if (
+    if (cpu_seconds is None) != (memory_bytes is None):
+        raise ValueError("CPU 与内存硬限制须同时声明，或同时仅选择进程树所有权。")
+    cpu_ticks: int | None = None
+    if cpu_seconds is not None:
+        if (
+            isinstance(cpu_seconds, bool)
+            or not isinstance(cpu_seconds, (int, float))
+            or not math.isfinite(cpu_seconds)
+            or cpu_seconds <= 0
+        ):
+            raise ValueError("cpu_seconds 必须是正有限时长。")
+        cpu_ticks = math.ceil(cpu_seconds * 10_000_000)
+        if cpu_ticks >= 2**63:
+            raise ValueError("CPU 额度超出原生时间字段范围。")
+    if memory_bytes is not None and (
         isinstance(memory_bytes, bool)
         or not isinstance(memory_bytes, int)
         or not 0 < memory_bytes < 2 ** (ctypes.sizeof(ctypes.c_size_t) * 8)

@@ -19,6 +19,7 @@ from purrcept_engine.errors import ConfigError, EngineError
 
 from .config import load_config
 from .host import EngineHost
+from .stdin import ConsoleIngress, WindowsLineReader
 
 
 def main() -> int:
@@ -56,8 +57,8 @@ def main() -> int:
 async def _run(config_path: Path) -> None:
     """常驻拥有宿主，信号只向本进程提出退出，不触碰外部服务。"""
     config = load_config(config_path)
-    if config.console or config.web:
-        raise ConfigError("控制台接入和 WebUI 尚未装配；当前宿主基线请关闭这两项。")
+    if config.web:
+        raise ConfigError("WebUI 尚未装配；当前配置请关闭 web。")
     host = EngineHost(config)
     loop = asyncio.get_running_loop()
     requested = asyncio.Event()
@@ -76,12 +77,33 @@ async def _run(config_path: Path) -> None:
 
     previous = signal.signal(signal.SIGINT, request_close)
     previous_term = signal.signal(signal.SIGTERM, request_close)
+    ingress: ConsoleIngress | None = None
+    observers: set[asyncio.Task[bool | None]] = set()
     try:
         await host.start()
-        print(f"Engine 核心存储已就绪，实例 {host.query().instance_id}。", flush=True)
-        await requested.wait()
+        print(f"Engine 已就绪，实例 {host.query().instance_id}。", flush=True)
+        if config.console:
+            ingress = ConsoleIngress(
+                host,
+                WindowsLineReader(sys.stdin, max_bytes=config.execution.pending_input_bytes),
+            )
+            ingress.start()
+            close_requested = asyncio.create_task(requested.wait())
+            input_failed = asyncio.create_task(ingress.wait_failed())
+            observers.update((close_requested, input_failed))
+            done, _ = await asyncio.wait(observers, return_when=asyncio.FIRST_COMPLETED)
+            for task in done:
+                await task
+        else:
+            await requested.wait()
     finally:
         try:
+            for observer in observers:
+                observer.cancel()
+            if observers:
+                await asyncio.gather(*observers, return_exceptions=True)
+            if ingress is not None:
+                await ingress.close()
             snapshot = await host.close()
             if snapshot.phase != "closed":
                 print(f"关闭未完成：{', '.join(snapshot.pending_resources)}。", flush=True)

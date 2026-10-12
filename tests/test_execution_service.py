@@ -34,7 +34,7 @@ from purrcept_engine.execution.service import (
     ExecutionService,
 )
 from purrcept_engine.execution.windows import WindowsProcess
-from purrcept_engine.storage import Store
+from purrcept_engine.storage.store import Store
 
 
 class _Parameters(BaseModel):

@@ -17,6 +17,8 @@ from typing import Literal, cast
 
 from purrcept_engine.errors import StorageError
 
+from .models import MediaReference
+
 CallOutcome = Literal["confirmed", "failed", "unknown", "not_started"]
 CallState = Literal["prepared", "started", "confirmed", "failed", "unknown", "not_started"]
 ActionOutcome = Literal["completed", "failed", "timed_out", "cancelled"]
@@ -26,7 +28,9 @@ SCHEMA = (
     "CREATE TABLE actions (action_id TEXT PRIMARY KEY, catalog_version TEXT NOT NULL, "
     "source TEXT NOT NULL, state TEXT NOT NULL CHECK(state IN "
     "('running','completed','failed','timed_out','cancelled')), created_at REAL NOT NULL, "
-    "finished_at REAL, output TEXT NOT NULL DEFAULT '', result_json TEXT, error TEXT)",
+    "finished_at REAL, output TEXT NOT NULL DEFAULT '', result_json TEXT, error TEXT, "
+    "input_id TEXT)",
+    "CREATE INDEX actions_input ON actions(input_id,created_at)",
     "CREATE TABLE calls (call_id TEXT PRIMARY KEY, action_id TEXT NOT NULL REFERENCES "
     "actions(action_id), sequence INTEGER NOT NULL CHECK(sequence >= 0), path TEXT NOT NULL, "
     "target_id TEXT NOT NULL, arguments_json TEXT NOT NULL, state TEXT NOT NULL CHECK(state IN "
@@ -41,6 +45,11 @@ SCHEMA = (
     "CREATE TABLE pending_call_receipts (sequence INTEGER PRIMARY KEY AUTOINCREMENT, "
     "call_id TEXT NOT NULL, revision INTEGER NOT NULL, UNIQUE(call_id, revision), "
     "FOREIGN KEY(call_id, revision) REFERENCES call_results(call_id, revision))",
+    "CREATE TABLE call_result_media (call_id TEXT NOT NULL, revision INTEGER NOT NULL, "
+    "ordinal INTEGER NOT NULL, media_id TEXT NOT NULL REFERENCES media(media_id), "
+    "media_type TEXT NOT NULL, byte_length INTEGER NOT NULL, name TEXT, "
+    "PRIMARY KEY(call_id,revision,ordinal), "
+    "FOREIGN KEY(call_id,revision) REFERENCES call_results(call_id,revision))",
 )
 
 _CALL_COLUMNS = (
@@ -49,7 +58,8 @@ _CALL_COLUMNS = (
 )
 _RESULT_COLUMNS = "call_id, revision, state, finished_at, result_json, error_type, error"
 _ACTION_COLUMNS = (
-    "action_id, catalog_version, source, state, created_at, finished_at, output, result_json, error"
+    "action_id, catalog_version, source, state, created_at, finished_at, output, "
+    "result_json, error, input_id"
 )
 
 
@@ -68,6 +78,7 @@ class CallResultRecord:
     result_json: str | None
     error_type: str | None
     error: str | None
+    media: tuple[MediaReference, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -94,6 +105,7 @@ class CallRecord:
     error_type: str | None
     error: str | None
     history: tuple[CallResultRecord, ...]
+    media: tuple[MediaReference, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -114,6 +126,7 @@ class ActionRecord:
     result_json: str | None
     error: str | None
     calls: tuple[CallRecord, ...]
+    input_id: str | None = None
 
 
 def payload_bytes(*values: str | None) -> int:
@@ -196,13 +209,22 @@ def _json(value: object, *, arguments: bool = False) -> str | None:
     return text
 
 
-def _result(row: Sequence[object]) -> CallResultRecord:
+def _result(connection: sqlite3.Connection, row: Sequence[object]) -> CallResultRecord:
     state = row[2]
     if state not in ("confirmed", "failed", "unknown", "not_started"):
         raise StorageError("调用回执状态无效。", code="invalid_record")
     revision = _integer(row[1])
     if revision == 0:
         raise StorageError("调用回执版本无效。", code="invalid_record")
+    media_rows: list[tuple[object, ...]] = connection.execute(
+        "SELECT media_id,media_type,byte_length,name FROM call_result_media "
+        "WHERE call_id=? AND revision=? ORDER BY ordinal",
+        (_text(row[0]), revision),
+    ).fetchall()
+    media = tuple(
+        MediaReference(_text(item[0]), _text(item[1]), _integer(item[2]), _optional_text(item[3]))
+        for item in media_rows
+    )
     return CallResultRecord(
         _text(row[0]),
         revision,
@@ -211,6 +233,7 @@ def _result(row: Sequence[object]) -> CallResultRecord:
         _json(row[4]),
         _optional_text(row[5]),
         _optional_text(row[6]),
+        media,
     )
 
 
@@ -225,7 +248,7 @@ def _call(connection: sqlite3.Connection, row: Sequence[object]) -> CallRecord:
         f"SELECT {_RESULT_COLUMNS} FROM call_results WHERE call_id = ? ORDER BY revision",
         (call_id,),
     ).fetchall()
-    history = tuple(_result(item) for item in result_rows)
+    history = tuple(_result(connection, item) for item in result_rows)
     if len(history) != current_revision or any(
         item.revision != index for index, item in enumerate(history, 1)
     ):
@@ -258,6 +281,7 @@ def _call(connection: sqlite3.Connection, row: Sequence[object]) -> CallRecord:
         latest.error_type if latest else None,
         latest.error if latest else None,
         history,
+        latest.media if latest else (),
     )
 
 
@@ -271,22 +295,27 @@ def _get_call(connection: sqlite3.Connection, call_id: str) -> CallRecord:
 
 
 def begin_action(
-    connection: sqlite3.Connection, action_id: str, catalog_version: str, source: str
+    connection: sqlite3.Connection,
+    action_id: str,
+    catalog_version: str,
+    source: str,
+    input_id: str | None = None,
 ) -> None:
     """保存不可变行动意图；同身份同材料幂等，不同材料拒绝覆盖。"""
     with connection:
         connection.execute("BEGIN IMMEDIATE")
         row: tuple[object, ...] | None = connection.execute(
-            "SELECT catalog_version, source FROM actions WHERE action_id = ?", (action_id,)
+            "SELECT catalog_version, source, input_id FROM actions WHERE action_id = ?",
+            (action_id,),
         ).fetchone()
         if row is not None:
-            if row != (catalog_version, source):
+            if row != (catalog_version, source, input_id):
                 raise StorageError("行动身份与既有意图冲突。", code="action_conflict")
             return
         connection.execute(
-            "INSERT INTO actions(action_id, catalog_version, source, state, created_at) "
-            "VALUES (?, ?, ?, 'running', ?)",
-            (action_id, catalog_version, source, time.time()),
+            "INSERT INTO actions(action_id, catalog_version, source, state, created_at, input_id) "
+            "VALUES (?, ?, ?, 'running', ?, ?)",
+            (action_id, catalog_version, source, time.time(), input_id),
         )
 
 
@@ -351,14 +380,15 @@ def record_call_result(
     result_json: str | None,
     error_type: str | None,
     error: str | None,
+    media: tuple[MediaReference, ...] = (),
 ) -> CallRecord:
     """结果、不可变历史与可靠交接同事务保存，不借行动结束回滚效果。"""
     with connection:
         connection.execute("BEGIN IMMEDIATE")
         call = _get_call(connection, call_id)
-        facts = (state, result_json, error_type, error)
+        facts = (state, result_json, error_type, error, media)
         if call.receipt_revision:
-            if (call.state, call.result_json, call.error_type, call.error) == facts:
+            if (call.state, call.result_json, call.error_type, call.error, call.media) == facts:
                 return call
             # 超时未知之后，迟到的协议材料可能仍无法确认效果。新材料同样
             # 追加不可变版本，不能因结论仍为 unknown 丢掉实际观察。
@@ -376,6 +406,19 @@ def record_call_result(
             "UPDATE calls SET state=?, receipt_revision=? WHERE call_id=?",
             (state, revision, call_id),
         )
+        for ordinal, reference in enumerate(media):
+            connection.execute(
+                "INSERT INTO call_result_media VALUES(?,?,?,?,?,?,?)",
+                (
+                    call_id,
+                    revision,
+                    ordinal,
+                    reference.media_id,
+                    reference.media_type,
+                    reference.byte_length,
+                    reference.name,
+                ),
+            )
         connection.execute(
             "INSERT INTO pending_call_receipts(call_id, revision) VALUES (?, ?)",
             (call_id, revision),
@@ -436,6 +479,7 @@ def get_action(connection: sqlite3.Connection, action_id: str) -> ActionRecord |
             _json(row[7]),
             _optional_text(row[8]),
             tuple(_call(connection, item) for item in call_rows),
+            _optional_text(row[9]),
         )
 
 

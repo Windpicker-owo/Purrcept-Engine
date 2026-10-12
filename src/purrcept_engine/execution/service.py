@@ -1,8 +1,9 @@
 """接管一次受限行动，拥有 Worker、有限派发和独立真实回执的完整寿命。
 
-ExecutionService 在接管前预留 Worker 名额，先保存源码和目录版本，再通过
-隔离进程调用冻结能力。普通等待按行动轮转，控制调用使用独立名额；实际
-Provider 返回前不释放名额或目标占用。调用者取消只结束观察，关闭则撤销新
+ExecutionService 在脚本接管前预留 Worker 名额，结构化单次调用直接预留调用
+名额；两者先保存意图和目录版本，再共用冻结能力的派发。普通等待按来源轮转，
+控制调用使用独立名额；实际 Provider 返回前不释放名额或目标占用。
+调用者取消只结束观察，关闭则撤销新
 派发并终止本服务的 Worker，等待已经进入 Provider 的调用保存真实结果。
 
 本模块不在宿主执行行动代码，不重放未知效果，也不拥有插件和数据库的关闭。
@@ -12,13 +13,14 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import math
 import msvcrt
 import os
 import sys
 import threading
 from collections import deque
-from collections.abc import Callable
-from dataclasses import dataclass
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass, replace
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Literal
@@ -26,11 +28,11 @@ from uuid import uuid4
 
 from purrcept_engine.app.config import ExecutionSettings
 from purrcept_engine.errors import ConfigError, EngineError
-from purrcept_engine.storage.execution import ActionRecord
+from purrcept_engine.storage.execution import ActionOutcome, ActionRecord, CallRecord
 
 from .catalog import Binding, Catalog
 from .ports import ExecutionJournal
-from .protocol import ActionProtocolError, FrameChannel, JsonObject, encode_json
+from .protocol import ActionProtocolError, FrameChannel, JsonObject, decode_object, encode_json
 from .providers import (
     CallContext,
     CallOutcome,
@@ -42,7 +44,7 @@ from .windows import WindowsProcess
 
 
 class ExecutionBusy(EngineError):
-    """Worker 名额已满；本次源码未接管，也没有隐式等待队列。"""
+    """所需资源名额已满；本次意图未接管，也没有隐式等待队列。"""
 
 
 class ExecutionClosed(EngineError):
@@ -50,7 +52,7 @@ class ExecutionClosed(EngineError):
 
 
 class ExecutionLimitError(EngineError):
-    """行动源码不能完整放入配置授予的额度。"""
+    """行动源码或结构化参数不能完整放入配置授予的额度。"""
 
 
 @dataclass(slots=True)
@@ -92,22 +94,47 @@ class _Terminal:
 
 
 @dataclass(slots=True)
-class _Call:
-    """已持久准备且尚未释放资源的调用，deadline 从收到帧时固定。"""
+class _StructuredAction:
+    """单能力观察所有者，不借用 Worker；首版回执结束观察，真实调用独立收尾。"""
 
-    action: _Action
+    action_id: str
+    source: str
+    input_id: str | None
+    deadline: float
+    can_start: Callable[[], bool] | None
+    receipt: asyncio.Future[CallRecord]
+    before_start: Callable[[], Awaitable[float | None]] | None = None
+    start_ready: asyncio.Future[None] | None = None
+    eligible: bool = True
+    stop_error: str | None = None
+    timed_out: bool = False
+
+
+@dataclass(slots=True)
+class _Call:
+    """已准备且尚未释放资源的调用，deadline 在接收意图时固定。"""
+
+    action: _Action | _StructuredAction
     sequence: int
     binding: Binding
     arguments: JsonObject
     context: CallContext
     ordinary: bool
     target_reserved: bool = False
+    provider_started: bool = False
+
+    @property
+    def source_id(self) -> str:
+        """活动输入关联共用来源轮转，脚本内调用仍按该行动保留明确次序。"""
+        if isinstance(self.action, _StructuredAction) and self.action.input_id is not None:
+            return f"structured:{self.action.input_id}"
+        return self.action.action_id
 
 
 class ExecutionService:
     """由 app 创建的执行资源所有者，所有公开异步操作使用同一事件循环。
 
-    构造检查声明与实际实现精确对应，不打开设备。execute 接管后独立运行，
+    构造检查声明与实际实现精确对应，不打开设备。execute/invoke 接管后独立运行，
     调用方可通过 query 查询回执；取消该等待不会取消已开始的行动。close 可
     重复等待同一收尾任务，取消 close 等待不撤销收尾，不重置宿主关闭期限。
     插件与 Store 必须保留到本服务真正关闭，内部故障原样报告。
@@ -142,10 +169,13 @@ class ExecutionService:
         self._store = store
         self._settings = settings
         self._scratch_root = scratch_root
-        self._actions: dict[str, _Action] = {}
+        self._actions: dict[str, _Action | _StructuredAction] = {}
         self._owned_actions: set[asyncio.Task[ActionRecord]] = set()
         self._owned_calls: set[asyncio.Task[None]] = set()
+        self._invocation_releases: dict[str, asyncio.Future[None]] = {}
         self._pending_calls = 0
+        self._pending_ordinary = 0
+        self._pending_controls = 0
         self._ordinary: dict[str, deque[_Call]] = {}
         self._rotation: deque[str] = deque()
         self._controls: deque[_Call] = deque()
@@ -159,7 +189,7 @@ class ExecutionService:
 
     @property
     def pending_resources(self) -> int:
-        """返回实际 Worker 与未收尾调用数，供宿主关闭超时后报告资源状态。"""
+        """返回行动所有者与未收尾调用数，供宿主关闭超时后报告资源状态。"""
         return len(self._actions) + self._pending_calls
 
     async def execute(
@@ -176,7 +206,9 @@ class ExecutionService:
         """
         if self._closed:
             raise ExecutionClosed("执行服务已关闭接管入口。")
-        if len(self._actions) >= self._settings.max_workers:
+        if sum(isinstance(action, _Action) for action in self._actions.values()) >= (
+            self._settings.max_workers
+        ):
             raise ExecutionBusy("行动 Worker 名额已满。")
         if not isinstance(source, str):
             raise TypeError("行动源码必须是字符串。")
@@ -204,6 +236,189 @@ class ExecutionService:
         self._owned_actions.add(task)
         task.add_done_callback(self._action_done)
         return await asyncio.shield(task)
+
+    async def invoke(
+        self,
+        path: str,
+        arguments: JsonObject,
+        *,
+        input_id: str | None = None,
+        can_start: Callable[[], bool] | None = None,
+        timeout_seconds: float | None = None,
+        before_start: Callable[[], Awaitable[float | None]] | None = None,
+        on_admitted: Callable[[str], None] | None = None,
+    ) -> ActionRecord:
+        """直接接管单能力意图，共用派发和账本，不启动 Worker 或宿主代码。
+
+        参数在接管前冻结为标准 JSON，业务 schema 仍仅在 Provider 边界解析。
+        所有等待都计入固定期限；超时首版未知结束观察，迟到确认继续原回执链。
+        调用方取消等待不改变本服务对已接管意图及实际 Provider 的所有权。
+        before_start 使用当前权威资格收紧期限；on_admitted 在首次等待前交出
+        实际身份，使观察失败的所有者仍能等待真正归还，而不包装原型故障。
+        """
+        if self._closed:
+            raise ExecutionClosed("执行服务已关闭接管入口。")
+        if not isinstance(path, str):
+            raise TypeError("能力路径必须是字符串。")
+        binding = self._catalog.resolve(path)
+        if not isinstance(arguments, dict):
+            raise TypeError("能力参数必须是 JSON 对象。")
+        encoded = encode_json(arguments)
+        if len(encoded) > self._settings.call_arguments_bytes:
+            raise ExecutionLimitError("能力参数超过字节额度。")
+        frozen_arguments = decode_object(encoded)
+        if input_id is not None and (not isinstance(input_id, str) or not input_id):
+            raise ValueError("输入关联必须是非空身份。")
+        if timeout_seconds is not None and (
+            isinstance(timeout_seconds, bool)
+            or not isinstance(timeout_seconds, (int, float))
+            or not math.isfinite(timeout_seconds)
+            or timeout_seconds <= 0
+        ):
+            raise ValueError("调用等待期限必须是有限正数。")
+
+        loop = asyncio.get_running_loop()
+        seconds = min(self._settings.action_seconds, binding.declaration.timeout_seconds)
+        if timeout_seconds is not None:
+            seconds = min(seconds, timeout_seconds)
+        action = _StructuredAction(
+            uuid4().hex,
+            encode_json(
+                {"kind": "structured_call", "path": path, "arguments": frozen_arguments}
+            ).decode("utf-8"),
+            input_id,
+            loop.time() + seconds,
+            can_start,
+            loop.create_future(),
+            before_start=before_start,
+            start_ready=None if before_start is None else loop.create_future(),
+        )
+        call = _Call(
+            action,
+            1,
+            binding,
+            frozen_arguments,
+            CallContext(f"{action.action_id}:1", action.action_id, action.deadline, input_id),
+            not binding.declaration.control,
+        )
+        # 在首次 await 前取得名额，不能把每项未受理意图变成隐藏等待任务。
+        if not self._reserve_call(call):
+            raise ExecutionBusy("能力调用等待名额已满。")
+        self._invocation_releases[action.action_id] = loop.create_future()
+        self._actions[action.action_id] = action
+        task = asyncio.create_task(
+            self._run_structured(call, encoded.decode("utf-8")), name=f"call:{action.action_id}"
+        )
+        self._owned_actions.add(task)
+        task.add_done_callback(self._action_done)
+        if on_admitted is not None:
+            try:
+                on_admitted(action.action_id)
+            except BaseException as callback_error:
+                # 身份回调是所有者交接，故障不能让已预留的行动继续产生效果。
+                # 在首次 await 前撤销资格，收回已接管资源后保留原始回调异常。
+                self._stop(action, "AdmissionCallbackFailed")
+                try:
+                    await asyncio.shield(task)
+                except BaseException as cleanup_error:
+                    raise BaseExceptionGroup(
+                        "调用身份交接与已接管所有者收尾均失败。", [callback_error, cleanup_error]
+                    ) from None
+                raise
+        return await asyncio.shield(task)
+
+    async def wait_invocation_released(self, action_id: str) -> None:
+        """只等待真实结构化资源，不依赖可能失败的权威查询证明归还。
+
+        身份必须来自本实例的 invoke/on_admitted；插件不能直接访问此端口。
+        Future 仅在资源实际占用时登记，归还即移除。没有登记不推断效果或
+        入账成功，特别是意图提交失败时可能尚无 SQL 行，也须能收回活动步骤。
+        """
+        if not isinstance(action_id, str) or not action_id:
+            raise ValueError("调用归还查询必须使用非空行动身份。")
+        released = self._invocation_releases.get(action_id)
+        if released is not None:
+            await asyncio.shield(released)
+
+    async def _run_structured(self, call: _Call, arguments_json: str) -> ActionRecord:
+        """先入账意图再排队；首版真实回执结束行动，Provider 所有权独立保留。"""
+        action = call.action
+        if not isinstance(action, _StructuredAction):
+            raise RuntimeError("结构化行动所有者类型错误。")
+        admitted = False
+        queued = False
+        try:
+            await self._store.begin_action(
+                action.action_id,
+                catalog_version=self._catalog.version,
+                source=action.source,
+                input_id=action.input_id,
+            )
+            admitted = True
+            await self._store.begin_call(
+                call.context.call_id,
+                action_id=action.action_id,
+                sequence=1,
+                path=call.binding.path,
+                target_id=call.binding.declaration.object_id,
+                arguments_json=arguments_json,
+            )
+            self._enqueue(call)
+            queued = True
+            self._dispatch()
+            receipt = await action.receipt
+
+            state: ActionOutcome = "completed" if receipt.state == "confirmed" else "failed"
+            error = receipt.error
+            if action.stop_error is not None:
+                state = (
+                    "cancelled"
+                    if action.stop_error in {"ServiceClosed", "GenerationRevoked"}
+                    else "failed"
+                )
+                error = action.stop_error
+            elif action.timed_out or (
+                receipt.state == "not_started"
+                and asyncio.get_running_loop().time() >= action.deadline
+            ):
+                state = "timed_out"
+            await self._store.finish_action(
+                action.action_id,
+                state=state,
+                result_json=receipt.result_json,
+                output="",
+                error=error,
+            )
+        except BaseException as error:
+            # 这是已接管所有者的清理边界。权威故障原样停止后续派发，不能用
+            # 一个内存失败结果伪装成已经成功入账的行动。
+            self._closed = True
+            for owner in self._actions.values():
+                self._stop(owner, "ExecutionInternalFailure")
+            self._dispatch()
+            if admitted:
+                try:
+                    await self._store.finish_action(
+                        action.action_id,
+                        state="failed",
+                        result_json=None,
+                        output="",
+                        error=f"{type(error).__name__}: {error}",
+                    )
+                except BaseException as record_error:
+                    raise BaseExceptionGroup(
+                        "结构化行动原始故障与权威结束提交均失败。", [error, record_error]
+                    ) from None
+            raise
+        finally:
+            action.eligible = False
+            self._actions.pop(action.action_id, None)
+            if not queued:
+                self._release_call(call)
+        record = await self._store.get_action(action.action_id)
+        if record is None:
+            raise RuntimeError("已接管结构化行动缺少权威记录。")
+        return record
 
     async def query(self, action_id: str) -> ActionRecord | None:
         """查询权威行动与调用回执，不从 Worker 的自报状态补造效果。"""
@@ -248,7 +463,10 @@ class ExecutionService:
         admitted = False
         try:
             await self._store.begin_action(
-                action.action_id, catalog_version=self._catalog.version, source=action.source
+                action.action_id,
+                catalog_version=self._catalog.version,
+                source=action.source,
+                input_id=action.input_id,
             )
             admitted = True
             if self._closed or asyncio.get_running_loop().time() >= action.deadline:
@@ -571,12 +789,55 @@ class ExecutionService:
         elif worker.process.total_cpu_seconds >= self._settings.worker_cpu_seconds:
             action.stop_error = action.stop_error or "WorkerCpuLimit"
 
-    def _stop(self, action: _Action, reason: str) -> None:
+    def _stop(self, action: _Action | _StructuredAction, reason: str) -> None:
         """同步撤销尚未开始的调用资格；已进入 Provider 的效果继续独立收尾。"""
         action.eligible = False
         action.stop_error = action.stop_error or reason
-        if action.worker is not None and action.worker.process.poll() is None:
+        if (
+            isinstance(action, _Action)
+            and action.worker is not None
+            and action.worker.process.poll() is None
+        ):
             action.worker.process.terminate()
+
+    def _reserve_call(self, call: _Call) -> bool:
+        """预留等待及实际收尾位置，普通满额不能挤掉宿主登记的控制类别。
+
+        两类都以既有 Worker 数乘每行动调用数限定未完成记录；这不是额外的
+        Provider 并发额度。已结束观察但仍在返回的 Provider 继续占用原位置。
+        """
+        capacity = self._settings.max_workers * self._settings.max_calls
+        pending = self._pending_ordinary if call.ordinary else self._pending_controls
+        if pending >= capacity:
+            return False
+        self._pending_calls += 1
+        if call.ordinary:
+            self._pending_ordinary += 1
+        else:
+            self._pending_controls += 1
+        return True
+
+    def _release_call(self, call: _Call) -> None:
+        """只在未接管失败或真实调用任务结束时归还其分类位置。"""
+        self._pending_calls -= 1
+        if call.ordinary:
+            self._pending_ordinary -= 1
+        else:
+            self._pending_controls -= 1
+        if isinstance(call.action, _StructuredAction):
+            released = self._invocation_releases.pop(call.action.action_id)
+            released.set_result(None)
+
+    def _enqueue(self, call: _Call) -> None:
+        """进入共用队列；来源内保持接管次序，控制不进入普通轮转。"""
+        if call.ordinary:
+            source_id = call.source_id
+            if source_id not in self._ordinary:
+                self._ordinary[source_id] = deque()
+                self._rotation.append(source_id)
+            self._ordinary[source_id].append(call)
+        else:
+            self._controls.append(call)
 
     async def _frames(self, action: _Action) -> None:
         """严格关联每次连续调用，先保存准备事实，再进入有界普通/控制队列。"""
@@ -634,10 +895,7 @@ class ExecutionService:
             )
             # 已退出 Worker 的迟到 Provider 仍占用本次全局额度；名额在数据库
             # 等待前取得，不让多个接收者同时穿过最后一个空位。
-            capacity = self._settings.max_workers * self._settings.max_calls
-            accepted = self._pending_calls < capacity
-            if accepted:
-                self._pending_calls += 1
+            accepted = self._reserve_call(call)
             try:
                 await self._store.begin_call(
                     call_id,
@@ -649,20 +907,14 @@ class ExecutionService:
                 )
             except BaseException:
                 if accepted:
-                    self._pending_calls -= 1
+                    self._release_call(call)
                 raise
             if not accepted:
                 await self._not_started(
                     call, error_type="CallQueueFull", reason="调用等待额度已满。"
                 )
                 continue
-            if call.ordinary:
-                if action.action_id not in self._ordinary:
-                    self._ordinary[action.action_id] = deque()
-                    self._rotation.append(action.action_id)
-                self._ordinary[action.action_id].append(call)
-            else:
-                self._controls.append(call)
+            self._enqueue(call)
             self._dispatch()
 
     def _terminal(self, message: JsonObject) -> _Terminal:
@@ -703,8 +955,8 @@ class ExecutionService:
 
         stalled = 0
         while self._rotation and stalled < len(self._rotation):
-            action_id = self._rotation.popleft()
-            queue = self._ordinary[action_id]
+            source_id = self._rotation.popleft()
+            queue = self._ordinary[source_id]
             call = queue[0]
             expired = self._closed or not call.action.eligible or now >= call.context.deadline
             serial = call.binding.declaration.concurrency == "target_serial"
@@ -723,9 +975,9 @@ class ExecutionService:
             else:
                 stalled += 1
             if queue:
-                self._rotation.append(action_id)
+                self._rotation.append(source_id)
             else:
-                del self._ordinary[action_id]
+                del self._ordinary[source_id]
 
         waiting = (*self._controls, *(call for queue in self._ordinary.values() for call in queue))
         if waiting:
@@ -735,17 +987,25 @@ class ExecutionService:
     def _start_call(self, call: _Call, *, reserved: bool) -> None:
         task = asyncio.create_task(self._invoke(call, reserved=reserved))
         self._owned_calls.add(task)
-        task.add_done_callback(self._call_done)
+        task.add_done_callback(lambda task: self._call_done(task, call))
 
-    def _call_done(self, task: asyncio.Task[None]) -> None:
+    def _call_done(self, task: asyncio.Task[None], call: _Call) -> None:
         """内部故障撤销服务派发而保留原始异常，不能让后台任务静默失踪。"""
         self._owned_calls.discard(task)
-        self._pending_calls -= 1
+        self._release_call(call)
+        if task.cancelled() and isinstance(call.action, _StructuredAction):
+            # 资格端口自身取消时还未进入 Provider；仍须唤醒已接管行动所有者，
+            # 让原取消沿其持久收尾传播，不能留下永远等待的首版 Future。
+            if not call.action.receipt.done():
+                call.action.receipt.cancel()
         if not task.cancelled() and (error := task.exception()) is not None:
+            if isinstance(call.action, _StructuredAction) and not call.action.receipt.done():
+                call.action.receipt.set_exception(error)
             self._failures.append(error)
             self._closed = True
             for action in self._actions.values():
-                action.failure = error
+                if isinstance(action, _Action):
+                    action.failure = error
                 self._stop(action, "ExecutionInternalFailure")
             self._dispatch()
 
@@ -761,27 +1021,68 @@ class ExecutionService:
                 return
             implementation = self._implementations[call.binding.declaration.capability_id]
             provider = asyncio.create_task(self._enter_provider(call, implementation))
+            ready = call.action.start_ready if isinstance(call.action, _StructuredAction) else None
+            if ready is not None:
+                # 资格异步核验与实际效果属于不同阶段。未完成资格时超时不生成
+                # unknown；它从未进入 Provider。实际开始后使用收紧后的期限。
+                remaining = max(0.0, call.context.deadline - asyncio.get_running_loop().time())
+                qualified, _ = await asyncio.wait(
+                    (provider, ready), timeout=remaining, return_when=asyncio.FIRST_COMPLETED
+                )
+                if not qualified and not call.provider_started:
+                    if isinstance(call.action, _StructuredAction):
+                        call.action.timed_out = True
+                    try:
+                        await self._not_started(call, reason="启动资格核验未在期限内完成。")
+                    except BaseException as receipt_error:
+                        # 权威失败立即关闭派发，但资格任务的实际取消清理仍归
+                        # 本次调用；不能先归还位置，再遗留一个无所有者 Task。
+                        self._closed = True
+                        for owner in self._actions.values():
+                            self._stop(owner, "ExecutionInternalFailure")
+                        self._dispatch()
+                        try:
+                            await provider
+                        except BaseException as qualification_error:
+                            raise BaseExceptionGroup(
+                                "未开始回执提交与资格收尾均失败。",
+                                [receipt_error, qualification_error],
+                            ) from None
+                        raise
+                    await provider
+                    return
             remaining = max(0.0, call.context.deadline - asyncio.get_running_loop().time())
             done, _ = await asyncio.wait((provider,), timeout=remaining)
             timed_out = not done
+            receipt_failure: BaseException | None = None
             if timed_out:
-                await self._record(
-                    call,
-                    CallOutcome("unknown", None, "TimeoutError", "能力期限耗尽，效果尚未确认。"),
-                )
-            try:
-                outcome = await provider
-            except asyncio.CancelledError:
-                # 插件自身取消不证明外界没有效果；服务从不取消此独立调用任务。
-                outcome = CallOutcome(
-                    "unknown", None, "CancelledError", "Provider 已取消，效果未确认。"
-                )
-            except CapabilityInputError as error:
-                outcome = CallOutcome("failed", None, type(error).__name__, str(error))
-            except Exception as error:
-                # Provider 是真实扩展边界：保留原错误类型和失败事实，不提示重填
-                # 参数、不撤销已发生效果；插件可用 unknown/部分结果表达无法确认。
-                outcome = CallOutcome("failed", None, type(error).__name__, str(error))
+                if isinstance(call.action, _StructuredAction):
+                    call.action.timed_out = True
+                try:
+                    await self._record(
+                        call,
+                        CallOutcome(
+                            "unknown", None, "TimeoutError", "能力期限耗尽，效果尚未确认。"
+                        ),
+                    )
+                except BaseException as error:
+                    # 权威提交失败立即阻止新派发，但不能提前归还实际 Provider
+                    # 仍借用的目标和名额。先保留原故障，等真实返回后原样报告。
+                    receipt_failure = error
+                    self._closed = True
+                    for owner in self._actions.values():
+                        self._stop(owner, "ExecutionInternalFailure")
+                    self._dispatch()
+            outcome = await provider
+            if receipt_failure is not None:
+                if outcome is not None:
+                    try:
+                        await self._record(call, outcome, deliver=False)
+                    except BaseException as late_error:
+                        raise BaseExceptionGroup(
+                            "未知回执提交与迟到真实结果提交均失败。", [receipt_failure, late_error]
+                        ) from None
+                raise receipt_failure
             if outcome is None:
                 await self._not_started(call)
                 return
@@ -799,17 +1100,65 @@ class ExecutionService:
     async def _enter_provider(
         self, call: _Call, implementation: CapabilityImplementation
     ) -> CallOutcome | None:
-        """任务真正获得运行时再次核验；核验到 invoke 之间不交还事件循环。"""
+        """异步资格与真实 Provider 分界；权威故障不能被翻译成业务失败。"""
         if not self._call_eligible(call):
             return None
-        return await implementation.invoke(call.arguments, call.context)
+        action = call.action
+        if isinstance(action, _StructuredAction) and action.before_start is not None:
+            deadline = asyncio.timeout_at(call.context.deadline)
+            try:
+                async with deadline:
+                    remaining = await action.before_start()
+            except TimeoutError:
+                if not deadline.expired():
+                    raise
+                return None
+            if remaining is None:
+                self._stop(action, "GenerationRevoked")
+                return None
+            if (
+                isinstance(remaining, bool)
+                or not isinstance(remaining, (int, float))
+                or not math.isfinite(remaining)
+                or remaining <= 0
+            ):
+                raise ValueError("启动资格必须返回正有限剩余秒数或 None。")
+            call.context = replace(
+                call.context,
+                deadline=min(call.context.deadline, asyncio.get_running_loop().time() + remaining),
+            )
+        # 资格 await 后复核服务、宿主同步门槛与收紧的 deadline。从这里到
+        # invoke 不再交还事件循环，暂停/结束不能夹在旧资格与实际启动之间。
+        if not self._call_eligible(call):
+            return None
+        call.provider_started = True
+        if isinstance(action, _StructuredAction) and action.start_ready is not None:
+            action.start_ready.set_result(None)
+        try:
+            return await implementation.invoke(call.arguments, call.context)
+        except asyncio.CancelledError:
+            # 此时实际 Provider 已开始。其自身取消不能证明外部效果撤销。
+            return CallOutcome("unknown", None, "CancelledError", "Provider 已取消，效果未确认。")
+        except CapabilityInputError as error:
+            return CallOutcome("failed", None, type(error).__name__, str(error))
+        except Exception as error:
+            # 只在真实扩展边界保留程序失败；资格/权威异常不进入此翻译范围。
+            return CallOutcome("failed", None, type(error).__name__, str(error))
 
     def _call_eligible(self, call: _Call) -> bool:
-        return (
-            not self._closed
-            and call.action.eligible
-            and asyncio.get_running_loop().time() < call.context.deadline
-        )
+        """脚本已派发后独立运行；结构化资格仍在真实 Provider 前复核。"""
+        if (
+            self._closed
+            or not call.action.eligible
+            or asyncio.get_running_loop().time() >= call.context.deadline
+        ):
+            return False
+        if isinstance(call.action, _StructuredAction):
+            can_start = call.action.can_start
+            if can_start is not None and not can_start():
+                self._stop(call.action, "GenerationRevoked")
+                return False
+        return True
 
     async def _not_started(
         self,
@@ -818,13 +1167,17 @@ class ExecutionService:
         error_type: str = "CallNotStarted",
         reason: str = "调用在开始前失去资格或期限。",
     ) -> None:
-        await self._store.record_call_result(
+        receipt = await self._store.record_call_result(
             call.context.call_id,
             state="not_started",
             result_json=None,
             error_type=error_type,
             error=reason,
         )
+        if isinstance(call.action, _StructuredAction):
+            if not call.action.receipt.done():
+                call.action.receipt.set_result(receipt)
+            return
         await self._deliver(call, {"ok": False, "error_type": error_type, "error": reason})
 
     async def _record(self, call: _Call, outcome: CallOutcome, *, deliver: bool = True) -> None:
@@ -836,13 +1189,20 @@ class ExecutionService:
         }:
             raise TypeError("Provider 未返回声明的 CallOutcome。")
         encoded = encode_json(outcome.value)
-        await self._store.record_call_result(
+        receipt = await self._store.record_call_result(
             call.context.call_id,
             state=outcome.state,
             result_json=encoded.decode("utf-8"),
             error_type=outcome.error_type,
             error=outcome.error,
+            media=outcome.media,
         )
+        if isinstance(call.action, _StructuredAction):
+            # 结构化观察直接读取已提交事实，没有 IPC 交付上限或虚构 Worker。
+            # 超时已交付首版未知时，迟到回执仅追加原调用，不能复活旧观察。
+            if deliver and not call.action.receipt.done():
+                call.action.receipt.set_result(receipt)
+            return
         if not deliver:
             return
         if outcome.state == "confirmed":
@@ -878,6 +1238,8 @@ class ExecutionService:
     async def _deliver(self, call: _Call, response: JsonObject) -> None:
         """只向仍接收结果的 Worker 交付；管道失败不覆盖已入账的真实效果。"""
         action = call.action
+        if not isinstance(action, _Action):
+            raise RuntimeError("Worker 交付只能使用真实脚本所有者。")
         worker = action.worker
         if worker is None or not action.eligible:
             return

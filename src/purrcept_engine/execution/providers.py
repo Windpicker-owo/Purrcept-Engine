@@ -8,12 +8,13 @@ FunctionCapability 在真实调用边界仅解析一次参数，再调用插件�
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Literal, Protocol
 
 from pydantic import BaseModel, ValidationError
 
 from purrcept_engine.errors import EngineError
+from purrcept_engine.storage.models import MediaReference
 
 from .catalog import CapabilityDeclaration
 from .protocol import JsonObject, JsonValue
@@ -50,6 +51,7 @@ class CallOutcome:
     value: JsonValue
     error_type: str | None = None
     error: str | None = None
+    media: tuple[MediaReference, ...] = field(default=(), kw_only=True)
 
 
 class CapabilityImplementation(Protocol):

@@ -3,13 +3,17 @@
 Engine 在独立仓库实施持续主体宿主。已批准的职责与验收要求见
 [重构契约](docs/refactor/contract.md)，实施状态见 [计划](docs/refactor/plan.md)。
 
-当前已接入配置、单实例锁、SQLite/BLOB、模型资源、纯插件装配及 Windows
-受限行动执行。主体、内置设备及 WebUI 仍在实施；已接管输入保持待处理，
-不能把核心就绪视为完整主体就绪。
+维护入口为 `app/cli.py` → `app/config.py` → `app/host.py`。`app/subject.py`
+连接主体用途、模型与插件；`subject/coordinator.py` 串行筛选并交接前台输入，
+`subject/session.py` 借用 Core 的连续工具循环。动态状态和技能每个逻辑请求
+刷新到 user 尾部，传输重试复用同一份材料；最终文字属于内部结果，只有实际
+能力调用对外输出。`subject/background.py` 接续持久反馈与独立反思批次。
 
-维护入口为 `app/cli.py` → `app/config.py` → `app/host.py`。插件纯声明在
-`plugins/base.py`，装配在 `app/assembly.py`；行动从 `execution/service.py`
-进入独立 `worker.py`，`storage/execution.py` 保存独立真实回执。
+历史容量预检和摘要见 `context/` 与 `app/history.py`，认识与反思提交见
+`storage/knowledge.py` 和 `subject/reflection.py`。插件纯声明在 `plugins/base.py`，
+装配在 `app/assembly.py`；行动从 `execution/service.py` 进入独立 `worker.py`，
+`storage/execution.py` 保存独立真实回执。活动的控制/真实确认与累计运行额度
+由 `subject/activities.py` 提交，不依赖页面或模型自行填写身份。
 宿主先取得数据目录锁，正式输入原文、媒体与待处理状态同事务保存。
 关闭的调用者超时或取消不撤销后台收尾，也不提前释放目录锁。
 
@@ -24,8 +28,16 @@ uv run purrcept-engine run
 ```
 
 示例中的模型/凭据/计量规则是需要替换的显式字段。`check` 不连接模型或设备；
-结构通过不能证明端点容量、媒体支持或实际重试行为。当前 `run` 要求
-`console = false`、`web = false`；它在无标准输入时继续运行，Ctrl+C 请求关闭。
+结构通过不能证明端点容量、媒体支持或实际重试行为。`console = true` 时每行
+文字经同一正式接管入口处理；空行忽略，EOF 只结束控制台输入，宿主继续运行。
+Ctrl+C 请求关闭，关闭期间第二次 Ctrl+C 强退本 CLI。Web 页面尚在实施，
+当前启动保持 `web = false`。
+
+内置插件显式启用：`notebook`、`clock`、`bed`、`computer`、`qq`。
+可选依赖通过对应 extra 安装，例如 `uv sync --extra qq --extra computer`；
+纯配置声明不打开设备，电脑仍须明确连接。Notebook 覆盖写入必须提供读取或
+先前写入返回的版本，已有文件不能以省略版本覆盖。QQ 恢复不重发未知消息，
+cursor 续读已保存快照，QZone feed 不支持深翻页。
 
 当前候选组合固定 Python 3.12、OpenAI 2.49.0 和
 `LiteLLM 1.105.0+purrcept.1`。官方 1.105.0 在 TypeSafe 连接错误下仍隐式重发；
