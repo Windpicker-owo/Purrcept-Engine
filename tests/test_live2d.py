@@ -15,7 +15,6 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from purrcept_engine.errors import HostStateError
 from purrcept_engine.execution.providers import CallContext
 from purrcept_engine.plugins.live2d import analyzer as analyzer_module
 from purrcept_engine.plugins.live2d.analyzer import AnalyzerProcess, VisemeFrame
@@ -149,9 +148,10 @@ async def test_independent_apply_is_host_identified_and_expires_after_four_secon
 
 async def test_late_frame_confirmation_cannot_revive_finished_playback() -> None:
     clock, driver = Clock(), Driver()
-    driver.block = True
     body = Live2DRuntime("body", lambda: driver, monotonic=clock)
     await body.connect()
+    driver.entered.clear()
+    driver.block = True
     body.playback_started("old", BodyIntent(gesture="tilt"), 20)
     await driver.entered.wait()
     body.playback_finished("old")
@@ -159,6 +159,22 @@ async def test_late_frame_confirmation_cannot_revive_finished_playback() -> None
     await asyncio.sleep(0)
     assert body.snapshot()["intent_id"] is None
     assert body.snapshot()["adopted"] is False
+    await body.close()
+
+
+async def test_connect_observer_waits_for_pending_first_visual_frame() -> None:
+    """已认证尚未确认首帧时，后来观察者仍等待同一恢复所有者。"""
+    driver = Driver()
+    driver.block = True
+    body = Live2DRuntime("body", lambda: driver)
+    await body.start()
+    await driver.entered.wait()
+    assert body.snapshot()["connected"] is True
+    observer = asyncio.create_task(body.connect())
+    await asyncio.sleep(0)
+    assert not observer.done()
+    driver.release.set()
+    assert (await observer).state == "confirmed"
     await body.close()
 
 
@@ -239,7 +255,11 @@ async def test_old_body_task_error_still_reports_after_actual_resources_released
     driver, analyzer = FailedDriver(), FailedAnalyzer()
     body = Live2DRuntime("body", lambda: driver, analyzer_factory=lambda: analyzer)
     assert body.resources_released is False
-    await body.connect()
+    if failed_task == "frames":
+        with pytest.raises(RuntimeError, match="原身体帧故障"):
+            await body.connect()
+    else:
+        await body.connect()
     if failed_task == "frames":
         await driver.entered.wait()
     else:
@@ -288,12 +308,16 @@ async def test_actual_body_close_failure_keeps_release_evidence_false(
 
 
 async def test_body_close_waits_for_resource_borrowed_by_connect() -> None:
-    """关闭先撤启动资格，等待已开始连接交回资源后才取得明证。"""
+    """关闭撤销已开始连接，但仍等待真实资源关闭才取得明证。"""
 
     class StartingDriver(Driver):
         async def connect(self) -> None:
             self.entered.set()
+            await asyncio.Event().wait()
+
+        async def close(self) -> None:
             await self.release.wait()
+            await super().close()
 
     driver = StartingDriver()
     body = Live2DRuntime("body", lambda: driver)
@@ -306,7 +330,7 @@ async def test_body_close_waits_for_resource_borrowed_by_connect() -> None:
     assert body.resources_released is False
     assert driver.closed == 0
     driver.release.set()
-    with pytest.raises(HostStateError, match="启动期间已撤销"):
+    with pytest.raises(asyncio.CancelledError):
         await connecting
     await closing
     assert body.resources_released is True

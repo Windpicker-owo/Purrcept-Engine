@@ -13,6 +13,7 @@ import time
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import AsyncExitStack
 from datetime import UTC, datetime
+from importlib import import_module
 from pathlib import Path
 from typing import Literal
 
@@ -64,6 +65,16 @@ from purrcept_engine.subject.coordinator import SubjectModel
 from purrcept_engine.subject.knowledge import KnowledgeService
 from purrcept_engine.subject.model_requests import RequestBudget
 from purrcept_engine.subject.session import ContinuousSession, DynamicState
+
+
+@pytest.fixture(autouse=True)
+def prepared_request_compiler(forbid_external_network: None) -> None:
+    """在反思计时前准备冻结 SDK，导入期 HTTP 仍由共同替身拦截。
+
+    场景的三秒等待检查已启动反思批次的提交与停机，不检查 SDK 模块冷导入
+    性能。编译、真实请求证据和反思工具仍在每个场景的实际路径执行。
+    """
+    import_module("purrcept_litellm._request")
 
 
 @pytest.fixture

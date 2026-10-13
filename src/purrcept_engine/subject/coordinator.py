@@ -335,7 +335,8 @@ class SubjectCoordinator:
             self._failure = self._failure or error
             self.session.interrupt(self.session.generation)
             for other in self._tasks:
-                other.cancel()
+                if not other.cancelling():
+                    other.cancel()
 
     async def _wait(self, revision: int, *, seconds: float | None = None) -> None:
         """先读序号再查询后等待，保留发生在查询期间的实际写入通知。"""
@@ -537,6 +538,11 @@ class SubjectCoordinator:
             )
             if applied and level == "urgent":
                 self.session.interrupt(observed_generation)
+        except Exception as error:
+            # 内部/权威故障必须先锁存再异步归还后端；关闭取消可能发生在
+            # finally 的清理等待中，不能用那次取消覆盖已经发生的原始故障。
+            self._failure = self._failure or error
+            raise
         finally:
             budget.revoke()
             await backend.close()
@@ -719,15 +725,19 @@ class SubjectCoordinator:
         """只建立一次实际收尾，取消等待不能使模型借用或写入失去所有者。"""
         if self._close_task is None:
             self._closing = True
-            self._close_task = asyncio.create_task(self._close(), name="subject-close")
+            tasks = tuple(self._tasks)
+            # Ordering: 撤销派发资格与取消工作器必须在同一同步段完成。已经
+            # ready 的 Store 等待可能先于新收尾任务恢复，不能因此把正常停止
+            # 锁存为资格故障；已有取消也不能再次打断工作器的资源清理。
+            for task in tasks:
+                if not task.cancelling():
+                    task.cancel()
+            self._close_task = asyncio.create_task(self._close(tasks), name="subject-close")
         await asyncio.shield(self._close_task)
 
-    async def _close(self) -> None:
-        """先停止工作和 Core 等待，再收回权威提交及实际注意后端借用。"""
+    async def _close(self, tasks: tuple[asyncio.Task[None], ...]) -> None:
+        """等待已经撤销的工作器和 Core，再收回权威提交及实际注意借用。"""
         errors: list[BaseException] = []
-        tasks = tuple(self._tasks)
-        for task in tasks:
-            task.cancel()
         try:
             await self.session.close()
         except BaseException as error:

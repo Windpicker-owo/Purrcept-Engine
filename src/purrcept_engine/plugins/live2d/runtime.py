@@ -20,7 +20,7 @@ from purrcept_engine.execution.protocol import JsonObject
 from purrcept_engine.execution.providers import CallContext, CallOutcome
 
 from .analyzer import VisemeAnalyzer, VisemeFrame
-from .models import VISEMES, BodyError, BodyIntent, BodyStyle
+from .models import VISEMES, BodyError, BodyIntent, BodyStyle, BodyUnavailable
 from .vts import BodyDriver
 
 _LOG = logging.getLogger(__name__)
@@ -48,7 +48,9 @@ class _PCM:
 class Live2DRuntime:
     """app 构造的独立视觉所有者，同时提供 BodyPort 的轻量事实接缝。
 
-    构造不连接；明确 connect 后启动一个最新帧循环，没有历史帧队列。
+    构造不连接；start 登记唯一有限恢复任务，connect 可以等待同一任务。
+    每轮最多五次建连，首帧实际确认后才完成本轮；后续失联开启新轮，
+    没有历史帧队列。
     apply 用宿主 CallContext 身份并收紧为配置期限。VTS 预期故障保存离线
     状态，程序异常原样由后台任务及 close 报告，不能假装外围暂不可用。
     """
@@ -81,6 +83,7 @@ class Live2DRuntime:
         self._last_gesture = -float("inf")
         self._driver: BodyDriver | None = None
         self._connected, self._stopping = False, False
+        self._recovery_enabled = False
         self._intent: _Intent | None = None
         self._playback: str | None = None
         self._playback_result: JsonObject | None = None
@@ -88,8 +91,13 @@ class Live2DRuntime:
         self._generation = 0
         self._error: JsonObject | None = None
         self._loop: asyncio.Task[None] | None = None
+        self._recovery: asyncio.Task[CallOutcome] | None = None
+        self._first_frame: asyncio.Future[None] | None = None
+        self._attempt = 0
+        self._last_failure: BodyError | None = None
         self._close_task: asyncio.Task[None] | None = None
         self._resources_released = False
+        self._cleaning_connection = False
         self._connection_lock = asyncio.Lock()
         self._wake = asyncio.Event()
         self._adopted = asyncio.Event()
@@ -127,22 +135,110 @@ class Live2DRuntime:
         return self._resources_released
 
     async def connect(self) -> CallOutcome:
-        """明确连接不恢复旧姿态，部分失败也必须收回已取得连接。"""
+        """等待唯一恢复轮；取消观察者不取消已登记的连接所有者。
+
+        宿主通过 stop_inputs 撤销所有者。耗尽或协议拒绝后不会自行重开；
+        显式 connect 可以新开一轮，但程序异常必须原样报告。
+        """
+        if self._stopping:
+            raise HostStateError("身体已经停止新连接。")
+        self._recovery_enabled = True
+        task = self._recovery
+        if task is not None and not task.done():
+            return await asyncio.shield(task)
+        if task is not None and task.done() and not task.cancelled():
+            await task
+        if self._connected:
+            return CallOutcome("confirmed", self.snapshot())
+        return await asyncio.shield(self._begin_recovery())
+
+    async def start(self) -> None:
+        """登记外围连接后归还插件启动，不让原生授权阻塞宿主退出。"""
+        if self._stopping:
+            raise HostStateError("身体已经停止新连接。")
+        task = self._recovery
+        if task is not None and task.done() and not task.cancelled():
+            await task
+        self._recovery_enabled = True
+        self._begin_recovery()
+
+    def _begin_recovery(self) -> asyncio.Task[CallOutcome]:
+        """所有入口复用当前轮，帧任务不能并行创建第二个连接所有者。"""
+        if self._recovery is None or self._recovery.done():
+            self._attempt = 0
+            self._recovery = asyncio.create_task(
+                self._recover(), name="live2d-recovery:" + self.instance_id
+            )
+            self._recovery.add_done_callback(self._recovery_done)
+        return self._recovery
+
+    def _recovery_done(self, task: asyncio.Task[CallOutcome]) -> None:
+        """恢复中的程序异常走同一故障记录，仍保留到 close 原样报告。"""
+        if not task.cancelled() and (error := task.exception()) is not None:
+            self._record_task_error(error)
+
+    async def _recover(self) -> CallOutcome:
+        """只重试明确的传输失联，失败资源实际归还之后才能等待下一次。"""
+        delays = (0.5, 1.0, 2.0, 4.0)
+        outcome: CallOutcome | None = None
+        for attempt in range(1, 6):
+            if self._stopping or not self._recovery_enabled:
+                raise asyncio.CancelledError
+            if attempt > 1:
+                await asyncio.sleep(delays[attempt - 2])
+            if self._stopping:
+                raise HostStateError("身体连接在启动期间已撤销。")
+            self._attempt = attempt
+            outcome = await self._connect_once()
+            if self._stopping or not self._recovery_enabled:
+                raise asyncio.CancelledError
+            if self._connected:
+                # 认证并不证明帧路径可用；真实首帧完成才结束本轮，不能
+                # 依赖事件循环让出几次或短暂建连不断刷新恢复额度。
+                first_frame = self._first_frame
+                if first_frame is None:
+                    raise RuntimeError("身体连接没有登记首帧确认。")
+                try:
+                    await first_frame
+                except BodyError:
+                    # 帧/分析循环已经保存原失败；下面按其类型结束或继续本轮。
+                    pass
+                if self._connected:
+                    return CallOutcome("confirmed", self.snapshot())
+            failure = self._last_failure
+            if failure is None:
+                return outcome
+            outcome = CallOutcome("failed", self.snapshot(), type(failure).__name__, str(failure))
+            if not isinstance(failure, BodyUnavailable):
+                return outcome
+        if outcome is None:
+            raise RuntimeError("身体恢复轮没有执行连接尝试。")
+        return outcome
+
+    async def _connect_once(self) -> CallOutcome:
+        """一轮中的一次资源借用；失败先清理，恢复不会跨旧任务代次。"""
         async with self._connection_lock:
             if self._stopping:
                 raise HostStateError("身体已经停止新连接。")
             if self._connected:
                 return CallOutcome("confirmed", self.snapshot())
-            if self._driver is not None:
-                await self._driver.close()
-                self._driver = None
-            if self._analyzer is not None:
-                await self._analyzer.close()
-                self._analyzer = None
-            if self._loop is not None:
-                await self._loop
-            if self._analysis_task is not None:
-                await self._analysis_task
+            self._cleaning_connection = True
+            try:
+                if self._driver is not None:
+                    await self._driver.close()
+                    self._driver = None
+                if self._analyzer is not None:
+                    await self._analyzer.close()
+                    self._analyzer = None
+                if self._loop is not None:
+                    await self._loop
+                if self._analysis_task is not None:
+                    await self._analysis_task
+            finally:
+                self._cleaning_connection = False
+            # 旧资源close可以跨越停止/断开命令；归还不是取得新连接的许可。
+            if self._stopping or not self._recovery_enabled:
+                raise asyncio.CancelledError
             driver = self._factory()
             self._driver = driver
             try:
@@ -154,34 +250,49 @@ class Live2DRuntime:
                     raise HostStateError("身体连接在启动期间已撤销。")
             except BaseException as failure:
                 cleanup_failures: list[BaseException] = []
+                self._cleaning_connection = True
                 try:
-                    await driver.close()
-                    self._driver = None
-                except BaseException as cleanup:
-                    cleanup_failures.append(cleanup)
-                if self._analyzer is not None:
                     try:
-                        await self._analyzer.close()
-                        self._analyzer = None
+                        await driver.close()
+                        self._driver = None
                     except BaseException as cleanup:
                         cleanup_failures.append(cleanup)
+                        if getattr(driver, "resources_released", None) is True:
+                            self._driver = None
+                    if self._analyzer is not None:
+                        try:
+                            await self._analyzer.close()
+                            self._analyzer = None
+                        except BaseException as cleanup:
+                            cleanup_failures.append(cleanup)
+                finally:
+                    self._cleaning_connection = False
                 if cleanup_failures:
                     raise BaseExceptionGroup(
                         "身体连接与资源清理失败。", [failure, *cleanup_failures]
                     ) from None
                 if isinstance(failure, BodyError):
+                    self._last_failure = failure
                     self._error = {"error_type": type(failure).__name__, "message": str(failure)}
                     return CallOutcome(
                         "failed", self.snapshot(), type(failure).__name__, str(failure)
                     )
                 raise
             self._connected, self._error = True, None
+            self._last_failure = None
             self._generation += 1
             self._intent, self._playback = None, None
-            self._energy = 0.0
+            self._energy, self._elapsed = 0.0, 0.0
+            self._last_gesture = -float("inf")
             self._prepared_playback = None
             self._pcm.clear()
             self._visemes.clear()
+            # 平滑通道也属于旧表达，不能在新连接的首帧继续缓慢衰减。
+            for name in self._channels:
+                self._channels[name] = 1.0 if name in {"eye_open", "eye_l", "eye_r"} else 0.0
+            self._channels["valence"] = self._style.baseline_valence
+            self._channels["arousal"] = self._style.baseline_arousal
+            self._first_frame = asyncio.get_running_loop().create_future()
             if self._analyzer is not None:
                 self._analysis_task = asyncio.create_task(
                     self._analyze(), name="live2d-analysis:" + self.instance_id
@@ -194,16 +305,22 @@ class Live2DRuntime:
     def _loop_done(self, task: asyncio.Task[None]) -> None:
         """程序故障记录原型并保留到关闭，不静默转换成视觉离线。"""
         if not task.cancelled() and (error := task.exception()) is not None:
-            self._connected = False
-            self._wake.set()
-            self._analysis_wake.set()
-            self._adopted.set()
-            self._error = {"error_type": type(error).__name__, "message": str(error)}
-            _LOG.error(
-                "身体驱动任务失败。",
-                exc_info=(type(error), error, error.__traceback__),
-                extra={"plugin_id": self.instance_id},
-            )
+            self._record_task_error(error)
+
+    def _record_task_error(self, error: BaseException) -> None:
+        """程序故障只停止视觉，不伪装成可自动重试的外围失联。"""
+        self._connected = False
+        self._wake.set()
+        self._analysis_wake.set()
+        self._adopted.set()
+        self._error = {"error_type": type(error).__name__, "message": str(error)}
+        if self._first_frame is not None and not self._first_frame.done():
+            self._first_frame.set_exception(error)
+        _LOG.error(
+            "身体驱动任务失败。",
+            exc_info=(type(error), error, error.__traceback__),
+            extra={"plugin_id": self.instance_id},
+        )
 
     def playback_started(
         self, playback_id: str, intent: BodyIntent | None, deadline: float
@@ -285,6 +402,9 @@ class Live2DRuntime:
                 if generation != self._generation:
                     return
                 self._error = {"error_type": type(error).__name__, "message": str(error)}
+                self._last_failure = error
+                if self._first_frame is not None and not self._first_frame.done():
+                    self._first_frame.set_exception(error)
                 self._connected = False
                 self._intent, self._playback, self._prepared_playback = None, None, None
                 self._pcm.clear()
@@ -305,7 +425,11 @@ class Live2DRuntime:
         history = self._playback_result
         if history is not None and history["playback_id"] == playback_id:
             # 历史只保留同一项串行声音，结束交回后释放；它不是恢复队列。
-            result: JsonObject = {**history, "status": "finished", "error": self._error}
+            result: JsonObject = {
+                **history,
+                "status": "finished",
+                "error": history.get("error", self._error),
+            }
             self._playback_result = None
         else:
             result = {
@@ -468,7 +592,7 @@ class Live2DRuntime:
             self._adopted.set()
 
     async def _run(self) -> None:
-        """只发最新帧，已知外围失败离线并撤旧姿态；不恢复重播。"""
+        """只发最新帧；失联撤旧表达，传输故障交唯一有限恢复轮。"""
         while self._connected and not self._stopping:
             self._wake.clear()
             try:
@@ -482,8 +606,21 @@ class Live2DRuntime:
                 self._visemes.clear()
                 self._analysis_wake.set()
                 self._error = {"error_type": type(error).__name__, "message": str(error)}
+                self._last_failure = error
+                if self._first_frame is not None and not self._first_frame.done():
+                    self._first_frame.set_exception(error)
+                if self._playback_result is not None:
+                    self._playback_result["error"] = self._error
                 self._adopted.set()
+                if (
+                    isinstance(error, BodyUnavailable)
+                    and self._recovery_enabled
+                    and not self._stopping
+                ):
+                    self._begin_recovery()
                 return
+            if self._first_frame is not None and not self._first_frame.done():
+                self._first_frame.set_result(None)
             try:
                 await asyncio.wait_for(self._wake.wait(), 1 / self._frame_hz)
             except TimeoutError:
@@ -501,6 +638,8 @@ class Live2DRuntime:
             "expires_at": None if intent is None else intent.expires_at,
             "elapsed_seconds": self._elapsed,
             "error": self._error,
+            "recovering": self._recovery is not None and not self._recovery.done(),
+            "connection_attempt": self._attempt,
             "lip_sync_basis": "processed_pcm_ovr_at_player_clock"
             if self._analyzer_factory is not None
             else "processed_pcm_energy_at_player_clock",
@@ -511,6 +650,20 @@ class Live2DRuntime:
 
     async def disconnect(self) -> CallOutcome:
         """先撤连接代次与姿态，再回收视觉连接，声音不受影响。"""
+        self._recovery_enabled = False
+        recovery = self._recovery
+        if recovery is not None and not recovery.done():
+            if not recovery.cancelling() and not self._cleaning_connection:
+                recovery.cancel()
+            results = await asyncio.gather(recovery, return_exceptions=True)
+            failures = [
+                result
+                for result in results
+                if isinstance(result, BaseException)
+                and not isinstance(result, asyncio.CancelledError)
+            ]
+            if failures:
+                raise BaseExceptionGroup("身体恢复撤销失败。", failures)
         async with self._connection_lock:
             self._connected = False
             self._generation += 1
@@ -533,7 +686,18 @@ class Live2DRuntime:
 
     async def stop_inputs(self) -> None:
         """关闭禁止新表达/连接；已开始视觉回执仍可收尾。"""
+        if (
+            not self._stopping
+            and self._recovery is not None
+            and not self._recovery.done()
+            and not self._recovery.cancelling()
+            and not self._cleaning_connection
+        ):
+            self._recovery.cancel()
         self._stopping = True
+        # 资格立即撤销，但资源正在close时不再次取消真实清理。恢复所有者
+        # 归还资源后先检查资格，不能再睡眠或创建下一连接。
+        self._recovery_enabled = False
         self._connected = False
         self._generation += 1
         self._intent, self._playback = None, None
@@ -557,6 +721,12 @@ class Live2DRuntime:
         """等启动归还资源后取得真实关闭明证，历史任务故障仍原样报告。"""
         await self.stop_inputs()
         results: list[object] = []
+        if self._recovery is not None:
+            results.extend(await asyncio.gather(self._recovery, return_exceptions=True))
+            # 所有者取消是明确的关闭命令；其清理或原程序错误仍须报告。
+            results = [
+                result for result in results if not isinstance(result, asyncio.CancelledError)
+            ]
         # connect/disconnect持有此锁借用真实资源；关闭不能在启动尚未结束
         # 时提前收回连接，或把暂未登记分析器误当成全部资源已经释放。
         async with self._connection_lock:
@@ -566,6 +736,8 @@ class Live2DRuntime:
                     self._driver = None
                 except BaseException as error:
                     results.append(error)
+                    if getattr(self._driver, "resources_released", None) is True:
+                        self._driver = None
             if self._loop is not None:
                 results.extend(await asyncio.gather(self._loop, return_exceptions=True))
             if self._analyzer is not None:
@@ -576,13 +748,14 @@ class Live2DRuntime:
                     results.append(error)
             if self._analysis_task is not None:
                 results.extend(await asyncio.gather(self._analysis_task, return_exceptions=True))
-            # 只有实际close成功才清资源引用；任务原错保留在results，不能让
-            # 宿主因此把仍存活的视觉连接当作已归还。
+            # 实际close成功或驱动的强释放明证才清引用；原错保留在results，
+            # 不能让宿主把仍存活的视觉连接当作已归还。
             self._resources_released = (
                 self._driver is None
                 and self._analyzer is None
                 and (self._loop is None or self._loop.done())
                 and (self._analysis_task is None or self._analysis_task.done())
+                and (self._recovery is None or self._recovery.done())
             )
         failures = [result for result in results if isinstance(result, BaseException)]
         if failures:

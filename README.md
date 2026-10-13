@@ -56,7 +56,8 @@ VAD 文件及 ASR 端点；[收音配置](src/purrcept_engine/plugins/voice_inpu
 Live2D 使用 `live2d` extra、VTS模型校准与人工参数绑定；可选 OVR DLL 只在
 独立分析进程加载。音频不借用身体连接，声音开始/终止与视觉采用分别记账。
 配置和校准结构见[身体说明](src/purrcept_engine/plugins/live2d/README.md)。
-VTS 自动有限恢复规则仍待决定，真实声音与视觉效果待实机确认。
+VTS 初连与传输失联恢复每轮最多5次，间隔0.5/1/2/4秒；拒绝、协议错误或
+次数耗尽停止，退出撤销恢复且不补演旧表达。真实声音与视觉效果待实机确认。
 
 独立调音室安装 `web` extra 和 FFmpeg后运行 `purrcept-voice-studio --help`，
 具体使用见[调音室说明](src/purrcept_engine/app/studio/README.md)。面板与调音室

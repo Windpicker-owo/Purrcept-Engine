@@ -1,8 +1,8 @@
 """Live2D 纯声明工厂，只保留已批准 me.live2d.apply(intent) 模型能力。
 
-明确启用插件后 start 建立独立视觉资源，外围离线保留可查询事实；音频
+明确启用插件后 start 登记独立有限恢复任务，外围离线保留可查询事实；音频
 端口由 app 在全部构造后接线。设备状态进入动态快照，不随连接改变目录。
-校准和令牌在 build 读取，纯 prepare 不请求 VTS 或加载设备 SDK。
+校准在 build 读取，令牌由连接所有者读取；纯 prepare 不请求 VTS 或加载设备 SDK。
 """
 
 from __future__ import annotations
@@ -126,9 +126,6 @@ def make_factory(
                 style=settings.style,
             )
 
-            async def start() -> None:
-                await runtime.connect()
-
             async def run_apply(parameters: _Apply, context: CallContext) -> CallOutcome:
                 return await runtime.apply(parameters.intent, context)
 
@@ -137,7 +134,7 @@ def make_factory(
 
             return PluginRuntime(
                 (FunctionCapability(apply, run_apply),),
-                start=start,
+                start=runtime.start,
                 stop_inputs=runtime.stop_inputs,
                 close=runtime.close,
                 snapshot=runtime.snapshot,
