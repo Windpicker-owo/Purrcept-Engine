@@ -97,12 +97,17 @@ class PatchrightDriver:
             self._context = self._browser.contexts[0]
         else:
             launch = await asyncio.to_thread(resolve_launch, settings)
+            # Lifecycle: Windows 会把控制台 Ctrl+C 同时交给 SDK 驱动进程。
+            # 退出只由宿主发起；否则 SDK 会抢先关闭浏览器，破坏后续 CDP/上下文收尾。
             self._context = await self._playwright.chromium.launch_persistent_context(
                 str(settings.user_data_dir),
                 executable_path=launch.executable_path,
                 channel=launch.channel,
                 headless=settings.headless,
                 no_viewport=not settings.headless,
+                handle_sigint=False,
+                handle_sigterm=False,
+                handle_sighup=False,
             )
         pages = self._context.pages
         self._page = pages[0] if pages else await self._context.new_page()

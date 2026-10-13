@@ -21,10 +21,11 @@ from uuid import uuid4
 from purrcept_core.models import DecisionBackend, ModelBackend
 
 from purrcept_engine.context.capacity import CapacityRule
+from purrcept_engine.context.litellm_capacity import GEMINI_MEDIA, RULE, count_litellm_capacity
 from purrcept_engine.errors import ConfigError, HostStateError, StorageError
 from purrcept_engine.execution.catalog import Catalog
 from purrcept_engine.execution.ports import ActionExecutor, ExecutionJournal
-from purrcept_engine.execution.protocol import JsonObject
+from purrcept_engine.execution.protocol import JsonObject, JsonValue
 from purrcept_engine.execution.providers import CallContext, CallOutcome, CapabilityImplementation
 from purrcept_engine.plugins.audio.ports import AudioOutputPort
 from purrcept_engine.plugins.base import PluginFactory, PluginPorts, PluginRuntime
@@ -118,7 +119,10 @@ class EngineHost:
         self._executor_factory = executor_factory
         self._generation_backends = MappingProxyType(dict(generation_backends or {}))
         self._decision_backends = MappingProxyType(dict(decision_backends or {}))
-        self._capacity_rules = MappingProxyType(dict(capacity_rules or {}))
+        # CLI 与嵌入宿主共享显式可选的内置规则，构造时不导入 LiteLLM。
+        self._capacity_rules = MappingProxyType(
+            {RULE: count_litellm_capacity, **dict(capacity_rules or {})}
+        )
         if embedding_provider is not None and config.knowledge.embedding is None:
             raise ConfigError("knowledge.embedding: 借入向量后端仍须显式声明配置。")
         self._embedding_provider, self._reranker = embedding_provider, reranker
@@ -227,9 +231,18 @@ class EngineHost:
                 for binding in self.catalog.bindings.values()
             }
             foreground_model = self.config.models[self.config.subject.foreground]
+            # 模型声明只说明端点能力；没有已注册的媒体计量依据就不能接管
+            # 原声，否则收音成功后每一段都会在真正派发模型前失败。
             native_audio_enabled = (
                 isinstance(foreground_model, GenerationModelSettings)
                 and foreground_model.supports_audio
+                and foreground_model.media_rule != "unsupported"
+                and foreground_model.capacity_rule != "reference-text-only-v1"
+                and foreground_model.capacity_rule in self._capacity_rules
+                and (
+                    foreground_model.capacity_rule != RULE
+                    or foreground_model.media_rule == GEMINI_MEDIA
+                )
             )
             for instance_id, blueprint in self._prepared.blueprints:
                 paths = frozenset(
@@ -618,6 +631,7 @@ class EngineHost:
         if store is None or panel is None:
             raise HostStateError("宿主面板尚未就绪或已收回。")
         facts = await store.runtime_projection()
+        devices = await self._panel_devices(panel, store)
         snapshot = self.query()
         subject = self._subject
         return {
@@ -630,7 +644,7 @@ class EngineHost:
             "input_handoff_failure": None
             if self._input_failure is None
             else type(self._input_failure).__name__,
-            "devices": panel.devices(),
+            "devices": devices,
             "foreground": None if subject is None else subject.coordinator.session.snapshot(),
             "reflection": None if subject is None else subject.background.session.snapshot(),
             "knowledge": None
@@ -648,6 +662,39 @@ class EngineHost:
             },
             "diagnostics": self._diagnostic_cleanup,
         }
+
+    async def _panel_devices(self, panel: PanelController, store: Store) -> list[JsonValue]:
+        """为最近一次收音补权威处理状态，不调用插件能力或重新投递声音。
+
+        每个收音插件只查最近一项，保持轮询成本有界。插件历史中的 admitted
+        仅是当时的接管事实，不能据此声称当前仍在等待或已经回应。
+        """
+        devices = panel.devices()
+        for device in devices:
+            if not isinstance(device, dict) or device.get("kind") != "voice_input":
+                continue
+            state = device.get("state")
+            if not isinstance(state, dict):
+                continue
+            history = state.get("history")
+            if not isinstance(history, list) or not history:
+                continue
+            latest = history[-1]
+            if not isinstance(latest, dict):
+                continue
+            input_id = latest.get("input_id")
+            if not isinstance(input_id, str):
+                continue
+            processing = await store.input_processing(input_id)
+            device["state"] = {
+                **state,
+                "latest_input": {
+                    **latest,
+                    "processing_stage": None if processing is None else processing.stage,
+                    "processing_reason": None if processing is None else processing.reason,
+                },
+            }
+        return devices
 
     async def submit_control(self, request: ControlRequest) -> ControlRecord:
         """提交面板允许的显式控制，共用原能力与活动状态，不经过模型。"""

@@ -3,10 +3,10 @@
 
 :root {
   /* colors */
-  --pc-color-canvas: #F5F5F2;
+  --pc-color-canvas: #FFFFFF;
   --pc-color-surface: #FFFFFF;
-  --pc-color-surface-sunken: #EDEDE9;
-  --pc-color-surface-selected: #E6E6E1;
+  --pc-color-surface-sunken: #F2F3F5;
+  --pc-color-surface-selected: #E6E8EC;
   --pc-color-ink: #15171A;
   --pc-color-ink-secondary: #484D55;
   --pc-color-ink-muted: #61666E;
@@ -14,8 +14,8 @@
   --pc-color-on-ink: #FFFFFF;
   --pc-color-ink-hover: #2B2E33;
   --pc-color-ink-pressed: #000000;
-  --pc-color-outline: #D3D3CD;
-  --pc-color-outline-subtle: #E4E4DF;
+  --pc-color-outline: #CED2D9;
+  --pc-color-outline-subtle: #E0E3E8;
   --pc-color-focus-ring: #15171A;
   --pc-color-scrim: rgba(21, 23, 26, 0.40);
   --pc-color-active: #1460CC;

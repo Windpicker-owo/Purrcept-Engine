@@ -21,6 +21,7 @@ from .dsp import check_program
 from .models import AudioError, PlaybackResult
 
 _CLOCK = re.compile(rb"^\s*(-?\d+(?:\.\d+)?)\s+[AM]-[AV]:")
+_TERMINAL_CONTROL = re.compile(rb"\x1b\[[0-?]*[ -/]*[@-~]")
 
 
 class AudioPlayer(Protocol):
@@ -140,8 +141,10 @@ class FFplayPlayer:
                 "s16le",
                 "-ar",
                 str(self._rate),
-                "-ac",
-                "1",
+                # FFplay 使用输入声道布局选项；现代版本已移除旧的 -ac。
+                # FFmpeg 的输出 -ac 仍有效，不能把两种程序的参数混用。
+                "-ch_layout",
+                "mono",
                 "-i",
                 "pipe:0",
             )
@@ -182,7 +185,9 @@ class FFplayPlayer:
                     if len(buffer) > 8192:
                         raise AudioError("播放器诊断帧超过8 KiB。")
                     while (boundary := re.search(rb"[\r\n]", buffer)) is not None:
-                        line = bytes(buffer[: boundary.start()])
+                        # 新版 FFplay 的 stats 会附带 ANSI 清行指令，管道输出也
+                        # 可能保留它；这是显示控制，不是解码或设备错误。
+                        line = _TERMINAL_CONTROL.sub(b"", bytes(buffer[: boundary.start()]))
                         del buffer[: boundary.end()]
                         if match := _CLOCK.match(line):
                             position = float(match.group(1))
@@ -199,8 +204,9 @@ class FFplayPlayer:
                             failures.append(line[:1024])
                             if len(failures) > 8:
                                 raise AudioError("播放器报告过多错误。")
-                if buffer.strip() and _CLOCK.match(buffer) is None and b"nan" not in buffer:
-                    failures.append(bytes(buffer[:1024]))
+                tail = _TERMINAL_CONTROL.sub(b"", bytes(buffer))
+                if tail.strip() and _CLOCK.match(tail) is None and b"nan" not in tail:
+                    failures.append(tail[:1024])
 
             tasks = [
                 asyncio.create_task(feed(), name="audio-player-feed"),
@@ -221,6 +227,14 @@ class FFplayPlayer:
             except (BrokenPipeError, ConnectionResetError):
                 if not self._revoked:
                     status = "failed"
+                    # 启动失败会先关闭 stdin，写入异常可能早于 stderr 排空。
+                    # 归还进程前等待诊断任务，不能让通用管道错误覆盖真实原因。
+                    try:
+                        async with asyncio.timeout(max(0.0, deadline - self._clock())):
+                            await process.wait()
+                            await tasks[1]
+                    except TimeoutError:
+                        failures.append("播放器诊断等待超时。".encode())
                 else:
                     status = "interrupted" if adopted else "not_started"
             if status == "completed":
@@ -231,7 +245,14 @@ class FFplayPlayer:
                 return PlaybackResult("timed_out", adopted, elapsed, "现场播放期限已到。")
             if status == "not_started":
                 return PlaybackResult("not_started", False, elapsed, "播放资格已撤销或期限已到。")
-            return PlaybackResult("failed", adopted, elapsed, "播放器未确认正常结束。")
+            diagnostics = b"\n".join(failures).decode("utf-8", errors="replace").strip()
+            exit_code = "未取得" if process.returncode is None else str(process.returncode)
+            reason = diagnostics or (
+                "未收到有效播放时钟。" if not adopted else "播放器未确认正常结束。"
+            )
+            return PlaybackResult(
+                "failed", adopted, elapsed, f"FFplay 播放失败（退出码 {exit_code}）：{reason}"
+            )
         finally:
             self._revoked = True
             if process is not None and process.returncode is None:

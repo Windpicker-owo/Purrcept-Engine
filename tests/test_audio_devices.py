@@ -1,7 +1,8 @@
 """本地无声子进程和FFmpeg内存音频验证设备生命周期与调音。
 
-FFplay被明确替换为只报告模拟媒体时钟的Python进程；FFmpeg只读本次
-合成WAV，不打开麦克风、扬声器、网络或VTS。真实DLL和设备效果另需验收。
+生命周期测试以Python进程报告模拟媒体时钟；真实FFplay接缝强制SDL dummy
+输出，FFmpeg只读本次合成WAV。测试不打开麦克风、扬声器、网络或VTS。
+真实DLL和设备效果另需验收。
 """
 
 from __future__ import annotations
@@ -32,7 +33,7 @@ async def test_ffplay_uses_reported_clock_and_reclaims_actual_local_process(
     processes: list[asyncio.subprocess.Process] = []
     script = (
         "import sys\nsys.stdin.buffer.read()\n"
-        "sys.stderr.write('0.10 M-A: 0.000 fd=0\\r')\nsys.stderr.flush()\n"
+        "sys.stderr.write('\\x1b[2K0.10 M-A: 0.000 fd=0\\r\\x1b[2K')\nsys.stderr.flush()\n"
     )
 
     async def launch(*arguments: str) -> asyncio.subprocess.Process:
@@ -83,6 +84,96 @@ async def test_ffplay_uses_reported_clock_and_reclaims_actual_local_process(
     assert positions == [0.1]
     assert all(process.returncode is not None for process in processes)
     await owner.close()
+
+
+async def test_real_ffplay_pcm_command_and_clock_with_dummy_output(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """真实二进制核验命令行与时钟解析，SDL dummy 保证不取得扬声器。"""
+    executable = shutil.which("ffplay")
+    if executable is None:
+        pytest.skip("本地 FFplay 未安装。")
+    monkeypatch.setenv("SDL_AUDIODRIVER", "dummy")
+    owner = FFplayPlayer(executable)
+    actual_started = asyncio.Event()
+    positions: list[float] = []
+
+    async def pcm() -> AsyncGenerator[bytes, None]:
+        yield bytes(64000)
+
+    async def started() -> None:
+        actual_started.set()
+
+    def progress(position: float, energy: float) -> None:
+        del energy
+        positions.append(position)
+
+    try:
+        result = await owner.play(
+            pcm(),
+            playback_id="dummy-output",
+            deadline=asyncio.get_running_loop().time() + 10,
+            started=started,
+            progress=progress,
+        )
+        assert result.status == "completed", result.error
+        assert result.started and actual_started.is_set()
+        assert positions and positions[-1] > 0
+    finally:
+        await owner.close()
+
+
+@pytest.mark.parametrize("broken_pipe", [False, True])
+async def test_ffplay_failure_preserves_exit_code_and_stderr(
+    monkeypatch: pytest.MonkeyPatch,
+    broken_pipe: bool,
+) -> None:
+    """启动失败的错误回执须保留诊断，包含 stderr 晚于管道关闭的情况。"""
+    exited = asyncio.Event()
+
+    async def launch(*arguments: str) -> asyncio.subprocess.Process:
+        del arguments
+        process = await asyncio.create_subprocess_exec(
+            sys.executable,
+            "-c",
+            "import sys; sys.stderr.write('Option not found\\n'); sys.exit(1)",
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.PIPE,
+            creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
+        )
+        if broken_pipe:
+            await process.wait()
+        exited.set()
+        return process
+
+    monkeypatch.setattr(player_module, "launch", launch)
+    owner = FFplayPlayer(sys.executable)
+
+    async def pcm() -> AsyncGenerator[bytes, None]:
+        await exited.wait()
+        if broken_pipe:
+            yield bytes(64000)
+
+    async def started() -> None:
+        pytest.fail("启动失败不得报告开始播放")
+
+    def progress(position: float, energy: float) -> None:
+        pytest.fail("启动失败不得报告播放进度")
+
+    try:
+        result = await owner.play(
+            pcm(),
+            playback_id="invalid-command",
+            deadline=asyncio.get_running_loop().time() + 5,
+            started=started,
+            progress=progress,
+        )
+        assert result.status == "failed" and not result.started
+        assert result.error is not None
+        assert "退出码 1" in result.error and "Option not found" in result.error
+    finally:
+        await owner.close()
 
 
 async def test_old_stop_identity_does_not_kill_a_new_player(

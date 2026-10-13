@@ -44,8 +44,8 @@ describe("受理与实际结束", () => {
   it("恢复严格保留待核对、耗尽和未完成收尾的阻塞理由", () => {
     expect(activityReason(paused, "resume")).toBeUndefined();
     expect(activityReason({ ...paused, needs_reconciliation: true }, "resume")).toContain("核对");
-    expect(activityReason({ ...paused, remaining_seconds: 0 }, "resume")).toContain("耗尽");
-    expect(activityReason({ ...paused, state: "pause_requested" }, "resume")).toContain("收尾");
+    expect(activityReason({ ...paused, remaining_seconds: 0 }, "resume")).toContain("用完");
+    expect(activityReason({ ...paused, state: "pause_requested" }, "resume")).toContain("停稳");
     expect(activityReason({ ...paused, state: "completed" }, "end")).toContain("已经结束");
   });
 });

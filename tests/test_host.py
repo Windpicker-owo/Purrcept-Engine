@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Mapping
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -19,6 +20,10 @@ from purrcept_engine import (
 )
 from purrcept_engine.app.locking import InstanceLock
 from purrcept_engine.app.models import OpenAIGenerationResource
+from purrcept_engine.context.capacity import CapacityDeclaration, CapacityEstimate
+from purrcept_engine.execution.protocol import JsonObject
+from purrcept_engine.plugins.base import PluginBlueprint, PluginFactory, PluginPorts, PluginRuntime
+from purrcept_engine.plugins.panels import DevicePanel
 from purrcept_engine.storage.store import Store
 
 
@@ -50,6 +55,95 @@ def _submission() -> InputSubmission:
         now,
         now,
     )
+
+
+@pytest.mark.parametrize(
+    "supports,rule,media,registered,expected",
+    [
+        (True, "reference-text-only-v1", "unsupported", False, False),
+        (True, "reference-text-only-v1", "test-audio", True, False),
+        (True, "test-audio", "unsupported", True, False),
+        (True, "test-audio", "test-audio", False, False),
+        (False, "test-audio", "test-audio", True, False),
+        (True, "test-audio", "test-audio", True, True),
+        (True, "litellm-token-counter-v1", "gemini-3-inline-v1", False, True),
+        (True, "litellm-token-counter-v1", "unknown", False, False),
+    ],
+)
+async def test_native_audio_admission_requires_registered_media_capacity(
+    tmp_path: Path, supports: bool, rule: str, media: str, registered: bool, expected: bool
+) -> None:
+    """真实宿主接线不能把端点的音频声明当作原声请求可派发的依据。"""
+    observed: list[bool] = []
+
+    async def build(ports: PluginPorts) -> PluginRuntime:
+        observed.append(ports.native_audio_enabled)
+        return PluginRuntime(())
+
+    def prepare(instance: str, raw: object, base: Path) -> PluginBlueprint:
+        del instance, raw, base
+        return PluginBlueprint((), (), build)
+
+    def measure(
+        payload: Mapping[str, object], declaration: CapacityDeclaration
+    ) -> CapacityEstimate:
+        del payload, declaration
+        return CapacityEstimate(1, "test-audio", "synthetic", "synthetic")
+
+    raw = _config(tmp_path).model_dump()
+    raw["models"]["test"].update(supports_audio=supports, capacity_rule=rule, media_rule=media)
+    raw["plugins"] = [{"instance_id": "probe", "entry": "probe"}]
+    host = EngineHost(
+        EngineConfig.validate(raw, base_dir=tmp_path),
+        plugin_factories={"probe": PluginFactory(prepare)},
+        capacity_rules={rule: measure} if registered else {},
+    )
+    await host.start()
+    try:
+        assert observed == [expected]
+    finally:
+        await host.close()
+
+
+async def test_voice_panel_reads_latest_processing_without_replaying_input(tmp_path: Path) -> None:
+    """收音缓存中的旧阶段不能覆盖同库处理事实，查询不能启动模型或设备。"""
+    voice: JsonObject = {"history": []}
+
+    async def build(ports: PluginPorts) -> PluginRuntime:
+        del ports
+        return PluginRuntime(
+            (), snapshot=lambda: voice, panel=DevicePanel("voice_input", (), lambda: "1")
+        )
+
+    def prepare(instance: str, raw: object, base: Path) -> PluginBlueprint:
+        del instance, raw, base
+        return PluginBlueprint((), (), build)
+
+    raw = _config(tmp_path).model_dump()
+    raw["plugins"] = [{"instance_id": "voice", "entry": "probe"}]
+    host = EngineHost(
+        EngineConfig.validate(raw, base_dir=tmp_path),
+        plugin_factories={"probe": PluginFactory(prepare)},
+    )
+    await host.start()
+    try:
+        admitted = await host.submit(_submission())
+        voice["history"] = [{"input_id": admitted.input_id, "processing_stage": "processed"}]
+        snapshot = await host.query_panel()
+        devices = snapshot["devices"]
+        assert isinstance(devices, list)
+        selected = next(
+            d for d in devices if isinstance(d, dict) and d.get("kind") == "voice_input"
+        )
+        assert isinstance(selected, dict)
+        state = selected["state"]
+        assert isinstance(state, dict)
+        latest = state["latest_input"]
+        assert isinstance(latest, dict) and latest["processing_stage"] == "attention"
+        assert "latest_input" not in voice
+        assert (await host.query_panel())["devices"] == devices
+    finally:
+        await host.close()
 
 
 def test_os_lock_rejects_second_owner_and_ignores_stale_file(tmp_path: Path) -> None:

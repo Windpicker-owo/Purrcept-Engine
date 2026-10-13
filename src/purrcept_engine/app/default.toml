@@ -1,7 +1,8 @@
 # Purrcept Engine 零可选插件配置模板。默认看图由宿主装配，校验不读取图像或连接端点。
-# 以下模型名、窗口和计量标识均为占位值，使用前应替换为已核对的实际配置。
-# reference-text-only-v1 明确只描述文本参考计量；不允许接入原生图片或音频。
-# 接入媒体须先配置并验证适用的媒体计量规则，不能把 unsupported 当作零占用。
+# 以下模型名、窗口和凭据为占位值，使用前应替换为已核对的实际配置。
+# 生成请求使用 LiteLLM 本地 token 估计，专用判断保留文本字节参考。
+# Gemini 3 原声输入可配置 media_rule = "gemini-3-inline-v1" 和 supports_audio = true。
+# 该媒体规则覆盖内联单帧图片与 WAV/MP3；不是其他模型或远端媒体的通用公式。
 console = false
 plugins = []
 
@@ -29,7 +30,7 @@ api_base = "http://127.0.0.1:4000/v1"
 api_key = "replace-with-explicit-local-key"
 context_window = 32000
 max_output_tokens = 4096
-capacity_rule = "reference-text-only-v1"
+capacity_rule = "litellm-token-counter-v1"
 media_rule = "unsupported"
 
 [models.attention]

@@ -1,7 +1,8 @@
 """把已接管原文和同库媒体装为 Core 材料，不制造预览或 OCR 替代。
 
 来源、关系和程序信号作为 user 观察保留；真正图像/音频按同一 BLOB 的
-原生内容块交付。未知媒体类型、缺失内容与格式不支持显式失败，容量规则
+原生内容块交付。失败经历接续可显式只带媒体引用，并标明没有展开；不将
+当前输入自动降级。未知媒体类型、缺失内容与格式不支持显式失败，容量规则
 另在完整请求边界核验。函数不读远端 URL 或调用模型。
 """
 
@@ -58,8 +59,18 @@ async def media_blocks(
     return tuple(blocks)
 
 
-async def input_message(store: MediaStore, records: tuple[InputRecord, ...]) -> Message:
-    """完整提供本批每项输入及原生媒体，输入身份与真实顺序始终独立。"""
+async def input_message(
+    store: MediaStore,
+    records: tuple[InputRecord, ...],
+    *,
+    media_as_references: bool = False,
+) -> Message:
+    """提供完整原文与媒体身份，默认展开本批原生媒体。
+
+    media_as_references 只用于已失败轮次的经历接续：保留正文、来源及全部
+    附件引用，明确注明尚未展开，模型可通过 read_evidence 请求原件。这不是
+    对当前输入的降级；失败原件仍在同库，不能把引用声称为已经听到或看过。
+    """
     if not records:
         raise ValueError("前台输入批次不能为空。")
     blocks: list[ContentBlock] = []
@@ -77,11 +88,15 @@ async def input_message(store: MediaStore, records: tuple[InputRecord, ...]) -> 
                         "relations": record.context.details_json,
                         "missing_materials": record.context.missing_materials,
                         "media": record.media,
+                        "media_delivery": "references_only_not_expanded"
+                        if media_as_references and record.media
+                        else "inline",
                     }
                 )
             )
         )
-        blocks.extend(await media_blocks(store, record.media))
+        if not media_as_references:
+            blocks.extend(await media_blocks(store, record.media))
     return Message(
         MessageRole.USER,
         tuple(blocks),

@@ -894,6 +894,48 @@ async def test_explicit_decision_refusal_is_uncompleted_attention_once(rig: _Rig
     assert "DecisionResponseError" in rig.generation.requests[0].messages[-1].text
 
 
+async def test_failed_native_audio_does_not_poison_the_next_text_interaction(rig: _Rig) -> None:
+    """原声计量失败保留原件；后续纯文本可以了解失败事实而不再次被附件阻断。"""
+    output = io.BytesIO()
+    with wave.open(output, "wb") as wav:
+        wav.setnchannels(1)
+        wav.setsampwidth(2)
+        wav.setframerate(16000)
+        wav.writeframes(bytes(3200))
+    audio = output.getvalue()
+    old = await _admit(
+        rig,
+        "raw-audio",
+        "原声发言仍保留。",
+        context=InputContext(minimum_wake=True),
+        media=(MediaAsset(audio, "audio/wav", "voice.wav"),),
+    )
+    await rig.coordinator.start()
+    await _stage(rig, old, "failed")
+    assert rig.generation.requests == []
+    failures = await rig.store.failed_turns("foreground")
+    assert len(failures) == 1 and "CapacityError" in (failures[0].error_json or "")
+
+    new = await _admit(
+        rig, "asr-text", "这次是识别后的文字。", context=InputContext(minimum_wake=True)
+    )
+    await _stage(rig, new, "processed")
+    assert len(rig.generation.requests) == 1
+    messages = rig.generation.requests[0].messages
+    text = "\n".join(message.text for message in messages)
+    assert "原声发言仍保留。" in text and "这次是识别后的文字。" in text
+    assert "references_only_not_expanded" in text and "prior_failed_turn" in text
+    assert not any(
+        isinstance(block, AudioBlock) for message in messages for block in message.content
+    )
+    original = await rig.store.get_input(old)
+    assert original is not None
+    processing = await rig.store.input_processing(old)
+    assert processing is not None and processing.stage == "failed"
+    assert await rig.store.get_media(original.media[0].media_id) == audio
+    assert await rig.store.failed_turns("foreground") == ()
+
+
 async def test_actual_action_survives_failed_turn_and_new_interaction_acknowledges_facts(
     rig: _Rig,
 ) -> None:
@@ -1084,8 +1126,10 @@ async def test_constructor_failure_closes_already_opened_store(
     assert len(closed) == 1
 
 
-async def test_generation_attention_preserves_native_audio_under_explicit_fixture_rule(
+@pytest.mark.parametrize("capacity_kind", ["fixture", "litellm"])
+async def test_generation_attention_preserves_native_audio_under_explicit_rule(
     tmp_path: Path,
+    capacity_kind: str,
 ) -> None:
     value = await _rig(tmp_path, attention_kind="generation")
     buffer = io.BytesIO()
@@ -1098,9 +1142,22 @@ async def test_generation_attention_preserves_native_audio_under_explicit_fixtur
     encoded_audio = base64.b64encode(audio).decode("ascii").encode("ascii")
 
     def fixture_capacity(payload: JsonObject) -> CapacityAssessment:
-        """仅声明这个 10ms WAV 替身的传输字节，不能充当真实模型计量规则。"""
+        """同时核验原有字节替身和真实 LiteLLM 规则，派发必须保留同一原件。"""
         encoded = encode_json(payload)
         assert encoded_audio in encoded
+        if capacity_kind == "litellm":
+            from purrcept_engine.context.capacity import GenerationCapacity, check_capacity
+            from purrcept_engine.context.litellm_capacity import (
+                GEMINI_MEDIA,
+                RULE,
+                count_litellm_capacity,
+            )
+
+            return check_capacity(
+                payload,
+                GenerationCapacity(300_000, 4096, RULE, GEMINI_MEDIA),
+                rules={RULE: count_litellm_capacity},
+            )
         return CapacityAssessment(
             CapacityEstimate(
                 len(encoded), "fixture-10ms-wav-wire-bytes-v1", "fixture_only", "bytes"

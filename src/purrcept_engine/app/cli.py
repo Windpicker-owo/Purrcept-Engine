@@ -2,6 +2,7 @@
 
 init/check 只写示例或校验纯配置；run 显式持有宿主直至退出。一次信号请求
 正常收尾，二次信号明确终止本 CLI；关闭超时仍可观察并等同次收尾任务。
+收尾失败且仍持有资源时保留信号处理器与宿主，报告原错后等待明确强退。
 """
 
 from __future__ import annotations
@@ -12,6 +13,7 @@ import logging
 import os
 import signal
 import sys
+import traceback
 from importlib.resources import files
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -132,20 +134,35 @@ async def _run(config_path: Path) -> None:
                 await ingress.close()
             # 同时关闭页面观察与宿主入口，不先为HTTP等待花一份新期限。
             # HTTP取消不撤销PanelController已接管的独立业务所有者。
-            closes = [host.close()]
-            if web is not None:
-                results = await asyncio.gather(*closes, web.close(), return_exceptions=True)
-            else:
-                results = await asyncio.gather(*closes, return_exceptions=True)
-            errors = [result for result in results if isinstance(result, BaseException)]
-            if errors:
-                raise BaseExceptionGroup("应用接入与宿主收尾失败。", errors)
-            snapshot = results[0]
-            if not isinstance(snapshot, HostSnapshot):
-                raise TypeError("宿主关闭没有返回生命周期快照。")
-            if snapshot.phase != "closed":
-                print(f"关闭未完成：{', '.join(snapshot.pending_resources)}。", flush=True)
-                await host.wait_closed()
+            try:
+                closes = [host.close()]
+                if web is not None:
+                    results = await asyncio.gather(*closes, web.close(), return_exceptions=True)
+                else:
+                    results = await asyncio.gather(*closes, return_exceptions=True)
+                errors = [result for result in results if isinstance(result, BaseException)]
+                if errors:
+                    raise BaseExceptionGroup("应用接入与宿主收尾失败。", errors)
+                snapshot = results[0]
+                if not isinstance(snapshot, HostSnapshot):
+                    raise TypeError("宿主关闭没有返回生命周期快照。")
+                if snapshot.phase != "closed":
+                    print(f"关闭未完成：{', '.join(snapshot.pending_resources)}。", flush=True)
+                    await host.wait_closed()
+            except Exception as failure:
+                pending = host.query().pending_resources
+                if pending:
+                    # Lifecycle: 失败不证明数据库线程或插件已经释放。此时退回
+                    # 解释器退出会卡在非 daemon 线程，且撤掉二次信号处理器。
+                    # 保留原异常和宿主所有权，只接受明确强退，不重做失败清理。
+                    traceback.print_exception(failure)
+                    print(
+                        f"关闭失败，仍占用：{', '.join(pending)}。"
+                        "再次 Ctrl+C 将强制退出本 Engine 进程。",
+                        flush=True,
+                    )
+                    await asyncio.Future[None]()
+                raise
         finally:
             try:
                 requested.set()

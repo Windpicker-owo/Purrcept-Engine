@@ -708,7 +708,7 @@ class SubjectCoordinator:
     async def _foreground_message(
         self, records: tuple[InputRecord, ...], failures: tuple[TurnRecord, ...]
     ) -> Message:
-        """完整交付当前输入及已记录失败来源，不自动复跑失败行动。"""
+        """完整交付当前输入；失败经历带原文、回执和可展开媒体引用。"""
         blocks: list[ContentBlock] = []
         evidence_ids: list[str] = []
         for failure in failures:
@@ -732,7 +732,13 @@ class SubjectCoordinator:
                 original.append(record)
                 evidence_ids.append(input_id)
             if original:
-                blocks.extend((await input_message(self.store, tuple(original))).content)
+                # 失败媒体不自动再次进入请求：同一不可计量附件会让后续纯文本
+                # 交互永久失败。保留原文和原件引用，明确未展开，由证据工具取回。
+                blocks.extend(
+                    (
+                        await input_message(self.store, tuple(original), media_as_references=True)
+                    ).content
+                )
         blocks.extend((await input_message(self.store, records)).content)
         evidence_ids.extend(record.input_id for record in records)
         processing = await self._processing(records)

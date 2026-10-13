@@ -210,6 +210,13 @@ class Chromium:
     def __init__(self, browser: Browser) -> None:
         self.browser = browser
         self.calls: list[str] = []
+        self.launch_options: dict[str, object] = {}
+
+    async def launch_persistent_context(self, directory: str, **options: object) -> Context:
+        """冻结 SDK 启动选项，校验本机资源的信号所有权。"""
+        self.calls.append(directory)
+        self.launch_options = options
+        return self.browser.contexts[0]
 
     async def connect_over_cdp(self, url: str) -> Browser:
         self.calls.append(url)
@@ -243,6 +250,24 @@ def policy(url: str) -> str:
     if not url.startswith("https://allowed.example/"):
         raise BrowserInputError("offline blocked URL")
     return url
+
+
+@pytest.mark.asyncio
+async def test_owned_browser_leaves_shutdown_signals_to_host(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """SDK 不得抢先响应进程信号，否则宿主的 CDP 收尾会失去连接。"""
+    _, context, sdk = setup(monkeypatch, tmp_path)
+    driver = PatchrightDriver(BrowserSettings(user_data_dir=tmp_path, channel=""))
+    await driver.start()
+    try:
+        await driver.set_navigation_policy(policy)
+        assert sdk.chromium.launch_options["handle_sigint"] is False
+        assert sdk.chromium.launch_options["handle_sigterm"] is False
+        assert sdk.chromium.launch_options["handle_sighup"] is False
+    finally:
+        await driver.close()
+    assert context.session.detached and context.closed and sdk.stopped
 
 
 @pytest.mark.asyncio

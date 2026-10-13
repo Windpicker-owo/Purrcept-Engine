@@ -1,0 +1,190 @@
+/**
+ * 使用真实打包产物验收 WebUI，HTTP 只返回内存中的合成宿主投影。
+ * 不启动 Engine、不读取配置或凭据；任何控制写入与外网请求都使检查失败。
+ * 先运行 frontend 的 build，再执行本文件；截图写入 ignored .validation/webui。
+ * 浏览器与服务由本脚本拥有，失败也会关闭；使用 Design 已安装的 Playwright 与系统 Edge。
+ */
+import assert from 'node:assert/strict';
+import { createServer } from 'node:http';
+import { mkdir, readFile } from 'node:fs/promises';
+import { fileURLToPath } from 'node:url';
+import { chromium } from '../../purrcept_design/react/node_modules/playwright-core/index.mjs';
+import { host, paused } from '../frontend/tests/fixtures.ts';
+
+const output = fileURLToPath(new URL('../.validation/webui/', import.meta.url));
+await mkdir(output, { recursive: true });
+const now = Math.floor(Date.now() / 1000);
+const call = (id, path, state) => ({
+  call_id: id, path, state, receipt_revision: 1, started_at: now - 120,
+  finished_at: state === 'started' ? null : now - 100, error_type: null,
+  error: null, result: null, media_count: 0,
+});
+const example = {
+  ...host(),
+  devices: [
+    { instance_id: 'qq', kind: 'qq', revision: '1', state: { state: 'online', mode: 'forward' }, controls: [{ key: 'reconnect', title: '重新连接 QQ', fields: [] }], has_preview: false },
+    { instance_id: 'voice', kind: 'voice_input', revision: '1', state: { state: 'stopped', mode: 'asr', device: 0, devices_loaded: true, devices: [{ index: 0, name: '测试麦克风' }], available_modes: ['asr'], asr_ready: true, audio_ready: false, latest_input: { processing_stage: 'failed' } }, controls: [{ key: 'start', title: '开始收音', fields: ['device', 'mode'] }], has_preview: false },
+    { instance_id: 'computer', kind: 'computer', revision: '1', state: { connected: true, observing: false, foreground: '示例工作区' }, controls: [], has_preview: false },
+  ],
+  activities: [{ ...paused, goal: '整理今天的阅读笔记', remaining_seconds: 1500, progress_preview: { text: '已整理三篇文章的要点，等待继续。', truncated: false, original_chars: 21 } }],
+  recent_actions: [
+    { action_id: 'recent', state: 'completed', created_at: now - 30, finished_at: now - 20, error: null, calls: [call('read', 'me.computer.status', 'confirmed')] },
+    { action_id: 'uncertain', state: 'failed', created_at: now - 120, finished_at: now - 100, error: null, calls: [call('saved', 'me.notebook.write', 'confirmed'), call('sent', 'me.qq.send', 'unknown'), call('next', 'me.audio.say', 'not_started')] },
+  ],
+};
+let snapshot = structuredClone(example);
+let disconnected = false;
+// 首次快照由测试显式放行，可靠覆盖慢连接下不应闪出故障横幅的阶段。
+const firstSnapshot = Promise.withResolvers();
+const writes = [];
+const files = new Map([
+  ['/', ['index.html', 'text/html']], ['/assets/panel.js', ['panel.js', 'text/javascript']],
+  ['/assets/panel.css', ['panel.css', 'text/css']], ['/assets/purrcept.css', ['purrcept.css', 'text/css']],
+]);
+// 白名单静态文件在监听前读入，避免请求路径参与文件路径计算。
+const assets = new Map(await Promise.all([...files].map(async ([route, [name, type]]) => [route, {
+  body: await readFile(new URL(`../src/purrcept_engine/app/static/${name}`, import.meta.url)), type,
+}])));
+const server = createServer(async (req, res) => {
+  if (req.method !== 'GET') { writes.push(req.url); res.writeHead(405).end(); return; }
+  if (req.url === '/api/session' || req.url === '/api/snapshot') {
+    if (req.url === '/api/snapshot') await firstSnapshot.promise;
+    if (disconnected) { res.writeHead(503, { 'Content-Type': 'application/json' }).end('{}'); return; }
+    res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+    res.end(JSON.stringify(req.url === '/api/session' ? { token: 'synthetic-only', instance_id: snapshot.instance_id } : snapshot));
+    return;
+  }
+  const asset = assets.get(req.url);
+  if (!asset) { res.writeHead(404).end(); return; }
+  res.writeHead(200, { 'Content-Type': asset.type }); res.end(asset.body);
+});
+await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+const base = `http://127.0.0.1:${server.address().port}`;
+let browser;
+let page;
+/** hash 生效即应只剩一份可读内容；不再靠等待离场动画掩盖中间帧的问题。 */
+async function openPage(name) {
+  await page.goto(`${base}/#/${name}`);
+  await page.locator('.topbar-age').filter({ hasText: '更新于' }).waitFor();
+  await page.waitForFunction((route) => document.querySelector('.nav-item[aria-current="page"]')?.getAttribute('href') === `#/${route}`, name);
+  await page.waitForFunction(() => document.querySelectorAll('main .page').length === 1 && Number(getComputedStyle(document.querySelector('main .page')).opacity) === 1);
+}
+try {
+  browser = await chromium.launch({ channel: 'msedge' });
+  page = await browser.newPage({ viewport: { width: 1440, height: 960 }, reducedMotion: 'no-preference' });
+  const failures = [];
+  page.on('pageerror', (error) => failures.push(error.message));
+  await page.route('**/*', (route) => {
+    if (!route.request().url().startsWith(base + '/')) { failures.push(`意外外部请求：${route.request().url()}`); return route.abort(); }
+    return route.continue();
+  });
+  await page.goto(base);
+  await page.getByRole('heading', { name: '正在连接本机服务' }).waitFor();
+  assert.equal(await page.getByRole('button', { name: '立即重试' }).count(), 0);
+  assert.equal(await page.locator('.pc-feedback').count(), 0);
+  firstSnapshot.resolve();
+  await page.getByRole('heading', { name: '有 1 件事需要你看一下' }).waitFor();
+
+  // 在真实动效设置下逐帧观察快速来回切页，覆盖旧页面并存、白闪和位置拖尾。
+  const transitionFrames = await page.evaluate(async () => {
+    const routes = ['devices', 'home', 'timeline', 'system', 'activities', 'attention', 'home'];
+    const samples = [];
+    for (const route of routes) {
+      document.querySelector(`.nav-item[href="#/${route}"]`).click();
+      for (let frame = 0; frame < 4; frame++) {
+        await new Promise(requestAnimationFrame);
+        const pages = document.querySelectorAll('main .page');
+        const style = pages[0] ? getComputedStyle(pages[0]) : null;
+        const selected = getComputedStyle(document.querySelector('.nav-item[aria-current="page"]'));
+        // 选中项使用完整反白，不能让字色和底色分两次到达终值。
+        samples.push({ count: pages.length, opacity: style?.opacity, transform: style?.transform,
+          navigationReady: selected.backgroundColor === getComputedStyle(document.querySelector('.main-column')).backgroundColor });
+      }
+    }
+    return samples;
+  });
+  for (const frame of transitionFrames) assert.deepEqual(frame, { count: 1, opacity: '1', transform: 'none', navigationReady: true });
+
+  // 六页在桌面、中等宽度与手机上均不能产生横向溢出。
+  for (const width of [1440, 1024, 768, 390, 320]) {
+    await page.setViewportSize({ width, height: 960 });
+    for (const route of ['home', 'attention', 'timeline', 'devices', 'activities', 'system']) {
+      await openPage(route);
+      await page.evaluate(() => document.fonts.ready);
+      const overflow = await page.evaluate(() => document.documentElement.scrollWidth > innerWidth);
+      assert.equal(overflow, false, `${route} 在 ${width}px 横向溢出`);
+      if (width === 1440 || width === 390) await page.screenshot({ path: `${output}/${route}-${width}.png`, fullPage: true });
+    }
+  }
+
+  await page.setViewportSize({ width: 1440, height: 960 });
+  await openPage('timeline');
+  await page.getByRole('button', { name: /使用电脑/ }).waitFor();
+  await page.getByRole('searchbox', { name: '搜索记录' }).fill('电脑');
+  assert.equal(await page.locator('.data-row').count(), 1);
+  await page.getByRole('searchbox', { name: '搜索记录' }).fill('无匹配内容');
+  await page.getByText('没有符合条件的记录。', { exact: false }).waitFor();
+  await page.getByRole('button', { name: '清除筛选' }).click();
+  assert.equal(await page.locator('.data-row').count(), 2);
+  await page.getByRole('radio', { name: '全部', exact: true }).focus();
+  await page.keyboard.press('ArrowRight');
+  assert.equal(await page.getByRole('radio', { name: '她的行动' }).isChecked(), true);
+  await page.getByRole('radio', { name: '需要核对' }).check();
+  await page.locator('.data-row').click();
+  await page.getByRole('heading', { name: '已经发生 · 1' }).waitFor();
+  await page.getByRole('heading', { name: '结果未知 · 1' }).waitFor();
+  await page.getByRole('heading', { name: '没有发生 · 1' }).waitFor();
+  await page.screenshot({ path: `${output}/inspector-1440.png`, fullPage: true });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.getByRole('dialog').waitFor();
+  await page.waitForFunction(() => document.documentElement.scrollWidth <= innerWidth);
+  await page.waitForFunction(() => Math.abs(new DOMMatrix(getComputedStyle(document.querySelector('[role="dialog"]')).transform).m41) < 0.1);
+  await page.screenshot({ path: `${output}/sheet-390.png`, fullPage: true });
+  await page.keyboard.press('Escape');
+  await page.waitForFunction(() => location.hash === '#/timeline');
+
+  // 同一页面断线后保留旧事实，任何原本可用的控制必须关闭。
+  await openPage('devices');
+  await page.getByText('最近一句处理失败，不能视为已经回应', { exact: true }).waitFor();
+  await page.getByText('收音设备：测试麦克风', { exact: true }).waitFor();
+  assert.equal(await page.getByRole('option', { name: '直接听原声', exact: true }).count(), 0);
+  await page.getByRole('button', { name: '重新连接 QQ', exact: true }).waitFor();
+  disconnected = true;
+  await page.getByRole('banner').getByText('与本机服务的连接中断', { exact: true }).waitFor();
+  assert.equal(await page.getByRole('button', { name: '重新连接 QQ', exact: true }).isDisabled(), true);
+  await page.screenshot({ path: `${output}/offline-390.png`, fullPage: true });
+  disconnected = false;
+
+  // 当前行动比近期完成记录更早时，首页仍必须展示当前行动路径。
+  snapshot = structuredClone(example);
+  snapshot.recent_actions[1].state = 'running';
+  snapshot.recent_actions[1].calls = [call('running', 'me.qq.send', 'started')];
+  await page.setViewportSize({ width: 1440, height: 960 });
+  await openPage('home');
+  await page.getByRole('heading', { name: '正在使用QQ' }).waitFor();
+  await page.getByRole('button', { name: '查看这次行动' }).click();
+  await page.waitForFunction(() => location.hash === '#/timeline/uncertain');
+
+  snapshot = { ...host(), activities: [] };
+  await page.emulateMedia({ reducedMotion: 'reduce' });
+  await openPage('home');
+  await page.getByRole('heading', { name: '安静待命中' }).waitFor();
+  await page.screenshot({ path: `${output}/idle-1440.png`, fullPage: true });
+  // 移除吉祥物和放大正文不能丢失主体状态或导致水平溢出。
+  await page.addStyleTag({ content: '.home-mascot { visibility: hidden; } body { font-size: 200%; }' });
+  assert.equal(await page.getByRole('heading', { name: '安静待命中' }).isVisible(), true);
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
+  assert.deepEqual(writes, [], '查看页面不能提交业务控制');
+  assert.deepEqual(failures, [], '浏览器不应报错或访问外网');
+  console.log(`通过：28 个快速切换帧、30 个页面/视口组合、搜索、键盘过滤、部分失败详情、窄屏关闭、断线控制、当前行动、减少动效与空状态。截图：${output}`);
+} catch (error) {
+  if (page) {
+    await page.screenshot({ path: `${output}/failure.png`, fullPage: true });
+    console.error(await page.locator('body').innerText());
+  }
+  throw error;
+} finally {
+  firstSnapshot.resolve();
+  await browser?.close();
+  await new Promise((resolve) => server.close(resolve));
+}

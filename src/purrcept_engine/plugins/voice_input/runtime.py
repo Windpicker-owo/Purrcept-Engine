@@ -170,7 +170,9 @@ class VoiceInputRuntime:
                     raise VoiceInputError("收音已经开启，请先停止当前会话。")
                 await self.driver
             if mode == "audio" and not self.native_audio_enabled:
-                raise VoiceInputError("生成模型未显式声明原生音频能力，收音尚未开启。")
+                raise VoiceInputError(
+                    "直接听原声需要模型音频能力和已注册的媒体计量规则；请使用识别成文字。"
+                )
             if mode == "asr" and not self.settings.asr_api_key.get_secret_value():
                 raise VoiceInputError("ASR 未配置显式密钥，收音尚未开启。")
             self.session, self.mode, self.device = uuid4().hex, mode, device
