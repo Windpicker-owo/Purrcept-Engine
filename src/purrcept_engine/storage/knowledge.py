@@ -163,8 +163,36 @@ class EvidencePage(_Record):
         return self
 
 
+class KnowledgeReference(_Record):
+    """权威材料的确切版本引用，异步排名后仍须核验当前版本与来源资格。"""
+
+    kind: Literal["evidence", "memory"]
+    id: Text
+    version: Version
+
+
+class MemoryConflictTarget(_Record):
+    """反思明确提出的对方认识版本，原文来源仍由修订的 sources 单独核验。"""
+
+    kind: Literal["memory"]
+    id: Text
+    version: Version
+
+
+class MemoryConflict(MemoryConflictTarget):
+    """保留的未决关系及对方确切版本当前资格，不推断冲突已经消解。"""
+
+    status: Literal["unresolved"] = "unresolved"
+    active: bool
+    inactive_reason: str | None = None
+
+
 class MemoryPatch(_Record):
-    """本批反思提出的有据修订，sources 只接受已呈现的原文片段身份。"""
+    """本批有据修订；原文来源、替代和未决版本关系由同一事务确认。
+
+    sources 只接受实际呈现的原文片段。conflicts 指向当前有效的确切认识版本，
+    不授予对方原文的阅读资格，也不将未决反证解释为自动替代。
+    """
 
     id: Text
     content: Text
@@ -178,35 +206,38 @@ class MemoryPatch(_Record):
     valid_from: Finite | None = None
     valid_until: Finite | None = None
     supersedes: Text | None = None
+    conflicts: tuple[MemoryConflictTarget, ...] = Field(default=(), strict=False)
 
     @model_validator(mode="after")
-    def validity_interval(self) -> Self:
-        """事实有效期不替代学习时刻，明确替代也不能指向自身。"""
+    def consistent_revision(self) -> Self:
+        """有效期、明确替代与未决关系必须表达相容且无重复的修订。"""
         if self.valid_from is not None and self.valid_until is not None:
             if self.valid_until <= self.valid_from:
                 raise ValueError("认识有效时间区间为空。")
         if self.supersedes == self.id:
             raise ValueError("认识不能替代自身。")
+        if len(set(self.conflicts)) != len(self.conflicts):
+            raise ValueError("冲突认识版本不能重复。")
+        if any(item.id == self.id for item in self.conflicts):
+            raise ValueError("认识不能与自身登记未决冲突。")
+        if any(item.id == self.supersedes for item in self.conflicts):
+            raise ValueError("同一认识不能同时被替代并登记为未决反证。")
         return self
 
 
-class KnowledgeReference(_Record):
-    """派生索引携带的确切版本，异步排名后还须回到权威记录核验。"""
-
-    kind: Literal["evidence", "memory"]
-    id: Text
-    version: Version
-
-
 class MemoryRecord(_Record):
-    """一个保留的认识版本；active 由版本、时间、替代和来源共同计算。"""
+    """保留的认识版本及双向未决关系，失效历史不会自动转移到新版本。
+
+    active 由版本、时间、替代和来源共同计算；conflicts 显示对方确切版本的
+    同时点资格，不包含对方正文，也不撤销双方已经保存的来源。
+    """
 
     patch: MemoryPatch
     version: Version
     learned_at: Finite
     active: bool
     inactive_reason: str | None = None
-    conflicts: tuple[KnowledgeReference, ...] = Field(default=(), strict=False)
+    conflicts: tuple[MemoryConflict, ...] = Field(default=(), strict=False)
 
 
 EvidencePage.model_rebuild()
@@ -1168,10 +1199,14 @@ def _presented(
 # ---------------------------------------------------------------------------
 
 
-def _memory(
+def _memory_version(
     connection: sqlite3.Connection, memory_id: str, version: int | None, at: float
 ) -> MemoryRecord | None:
-    """当前版本资格始终来自权威表；失效索引或旧版本不能恢复当前认识。"""
+    """计算单个确切版本的资格，不递归展开相邻冲突图。
+
+    相邻版本也用这套来源和有效性规则；将关系装配留给 _memory，避免双向
+    冲突形成递归读取或将对方完整正文嵌入当前认识。
+    """
     row = _one(
         connection,
         "SELECT version,payload_json,learned_at,retired FROM memories WHERE memory_id=? "
@@ -1203,23 +1238,48 @@ def _memory(
         reason = "not_yet_valid"
     if reason is None and patch.valid_until is not None and at >= patch.valid_until:
         reason = "expired"
-    rows: list[tuple[object, ...]] = connection.execute(
-        "SELECT right_id,right_version FROM memory_conflicts WHERE left_id=? AND "
-        "left_version=? UNION SELECT left_id,left_version FROM memory_conflicts WHERE "
-        "right_id=? AND right_version=?",
-        (memory_id, revision, memory_id, revision),
-    ).fetchall()
     return MemoryRecord(
         patch=patch,
         version=revision,
         learned_at=_number(row[2]),
         active=reason is None,
         inactive_reason=reason,
-        conflicts=tuple(
-            KnowledgeReference(kind="memory", id=_text(item[0]), version=_integer(item[1]))
-            for item in rows
-        ),
     )
+
+
+def _memory(
+    connection: sqlite3.Connection, memory_id: str, version: int | None, at: float
+) -> MemoryRecord | None:
+    """从权威版本装配双向未决关系，双方资格使用同一查询时点。
+
+    对方失效只改变资格投影，不能按时间自动删除关系或改指较新版本。
+    关系引用的版本缺失属于权威记录损坏，不伪装为正常失效。
+    """
+    record = _memory_version(connection, memory_id, version, at)
+    if record is None:
+        return None
+    rows: list[tuple[object, ...]] = connection.execute(
+        "SELECT right_id,right_version FROM memory_conflicts WHERE left_id=? AND "
+        "left_version=? UNION SELECT left_id,left_version FROM memory_conflicts WHERE "
+        "right_id=? AND right_version=? ORDER BY 1,2",
+        (memory_id, record.version, memory_id, record.version),
+    ).fetchall()
+    conflicts: list[MemoryConflict] = []
+    for item in rows:
+        other_id, other_version = _text(item[0]), _integer(item[1])
+        other = _memory_version(connection, other_id, other_version, at)
+        if other is None:
+            raise StorageError("未决冲突缺少对应的认识版本。", code="invalid_record")
+        conflicts.append(
+            MemoryConflict(
+                kind="memory",
+                id=other_id,
+                version=other_version,
+                active=other.active,
+                inactive_reason=other.inactive_reason,
+            )
+        )
+    return record.model_copy(update={"conflicts": tuple(conflicts)})
 
 
 def get_memory(
@@ -1238,7 +1298,11 @@ def get_memory(
 def revise_memory(
     connection: sqlite3.Connection, batch_id: str, version: int, patch: MemoryPatch
 ) -> MemoryRecord:
-    """原子提交新版本、来源、替代退役、索引待办及本批真实整合回执。"""
+    """原子提交版本、来源、替代、未决关系、索引及本批真实整合回执。
+
+    关系目标必须仍是有效确切版本；拒绝迟到提案而非改指最新版本。对方
+    认识不是新原文来源，不将关系或认识正文登记成已读原文。
+    """
     with connection:
         connection.execute("BEGIN IMMEDIATE")
         _active_batch(connection, batch_id, version)
@@ -1249,15 +1313,20 @@ def revise_memory(
         current_version = 0 if row is None or row[0] is None else _integer(row[0])
         if current_version != patch.base_version:
             raise KnowledgeConflict("base_version 与当前认识版本不一致。")
+        now = time.time()
+        for reference in patch.conflicts:
+            other = _memory_version(connection, reference.id, reference.version, now)
+            if other is None or not other.active:
+                raise KnowledgeConflict("冲突认识版本不存在或已经失效，必须重新核对。")
         if patch.supersedes is not None:
-            old = _memory(connection, patch.supersedes, None, time.time())
+            old = _memory_version(connection, patch.supersedes, None, now)
             if old is None or not old.active:
                 raise KnowledgeConflict("要替代的认识不存在或已经失效。")
             connection.execute(
                 "UPDATE memories SET retired='superseded' WHERE memory_id=? AND version=?",
                 (patch.supersedes, old.version),
             )
-        next_version, now = patch.base_version + 1, time.time()
+        next_version = patch.base_version + 1
         connection.execute(
             "INSERT INTO memories VALUES(?,?,?,?,NULL)",
             (patch.id, next_version, patch.model_dump_json(), now),
@@ -1265,6 +1334,10 @@ def revise_memory(
         connection.executemany(
             "INSERT INTO memory_sources VALUES(?,?,?)",
             ((patch.id, next_version, source) for source in dict.fromkeys(patch.sources)),
+        )
+        connection.executemany(
+            "INSERT INTO memory_conflicts VALUES(?,?,?,?)",
+            ((patch.id, next_version, other.id, other.version) for other in patch.conflicts),
         )
         _queue_index(connection, "memory", patch.id, next_version, now)
         connection.execute(
@@ -1275,25 +1348,6 @@ def revise_memory(
         if result is None:
             raise StorageError("新认识缺少事务内记录。", code="invalid_record")
         return result
-
-
-def record_conflict(
-    connection: sqlite3.Connection, left: KnowledgeReference, right: KnowledgeReference
-) -> None:
-    """保留明确的未决版本关系，不按时间或索引分数自动裁决双方。"""
-    if left.kind != "memory" or right.kind != "memory" or left == right:
-        raise KnowledgeInputError("冲突关系必须对应两个不同认识版本。")
-    with connection:
-        connection.execute("BEGIN IMMEDIATE")
-        if (
-            _memory(connection, left.id, left.version, time.time()) is None
-            or _memory(connection, right.id, right.version, time.time()) is None
-        ):
-            raise KnowledgeConflict("冲突认识版本不存在。")
-        connection.execute(
-            "INSERT OR IGNORE INTO memory_conflicts VALUES(?,?,?,?)",
-            (left.id, left.version, right.id, right.version),
-        )
 
 
 def revoke_evidence(connection: sqlite3.Connection, evidence_id: str, version: int) -> None:
@@ -2107,7 +2161,7 @@ def pending_plans(
 
 
 def initialize(connection: sqlite3.Connection) -> None:
-    """核验必需表并撤销上次进程的批次资格，保留已提交认识与完成事实。"""
+    """借用调用方启动事务核验表并撤旧批次资格，不独立提交认识恢复。"""
     for table in (
         "knowledge_evidence",
         "evidence_media",
@@ -2137,9 +2191,9 @@ def initialize(connection: sqlite3.Connection) -> None:
         ("delivery_id,media_id", "reflection_delivery_media"),
     ):
         connection.execute(f"SELECT {columns} FROM {table} LIMIT 0")
-    with connection:
-        connection.execute(
-            "UPDATE reflection_batches SET state='interrupted',payload_json="
-            "json_set(payload_json,'$.interrupted_reason','进程恢复撤销旧代次。') "
-            "WHERE state='running'"
-        )
+    # 启动事务由 Store 持有；恢复失败不能单独提交任何子系统。
+    connection.execute(
+        "UPDATE reflection_batches SET state='interrupted',payload_json="
+        "json_set(payload_json,'$.interrupted_reason','进程恢复撤销旧代次。') "
+        "WHERE state='running'"
+    )

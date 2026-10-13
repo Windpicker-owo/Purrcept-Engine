@@ -1,6 +1,7 @@
 """连接 QQ 原生事实与宿主输入、证据和迟到回执的唯一业务所有者。
 
-QQClient 只拥有传输，Service 在过滤后补取转发原文并原子提交 InputSubmission。
+QQClient 只拥有传输，Service 在过滤后查回原生身份的第一次权威接管；新事实才
+补取转发原文并原子提交 InputSubmission。缓存不决定重放或内容冲突。
 工具应答先保存完整原响应，再检查 status/retcode 和投影；echo 超时不重发，
 真实迟到回包使用原 CallContext 追加版本。历史续读只访问宿主旧快照。
 """
@@ -21,9 +22,9 @@ from purrcept_engine.errors import HostStateError, StorageError
 from purrcept_engine.execution.protocol import JsonObject, JsonValue, decode_object, encode_json
 from purrcept_engine.execution.providers import CallContext, CallOutcome
 from purrcept_engine.storage.knowledge import EvidencePage, EvidenceSnapshot, KnowledgeInputError
-from purrcept_engine.storage.models import InputContext, InputSource, InputSubmission
+from purrcept_engine.storage.models import Admission, InputContext, InputSource, InputSubmission
 
-from ..base import EvidencePort, PluginPorts
+from ..base import EvidencePort, NativeInputPort, PluginPorts
 from .client import QQClient
 from .media import MediaBusy, MediaOwner
 from .messages import (
@@ -64,8 +65,8 @@ def platform_data(reply: Reply) -> JsonValue:
 class QQService:
     """build 创建，Runtime 生命周期持有；不取得 Store 或主脑。
 
-    EvidencePort 与 LateResultPort 是实际启用所必需的有限端口。诊断仅保留来源
-    标识与原因，过滤推送的正文/媒体不进入隐藏缓存或主体权威经历。
+    原生接管查询、原文快照与迟到回执分别借用有限端口。诊断仅保留来源标识
+    与原因，过滤推送的正文/媒体不进入隐藏缓存或主体权威经历。
     """
 
     def __init__(
@@ -77,12 +78,13 @@ class QQService:
         connector: Connector,
     ) -> None:
         """只建立本地所有权；连接在 start 后发生。"""
-        if ports.evidence is None or ports.late_results is None:
-            raise RuntimeError("QQ 必须装配宿主原文与迟到回执端口。")
+        if ports.evidence is None or ports.late_results is None or ports.native_inputs is None:
+            raise RuntimeError("QQ 必须装配宿主原文、原生接管查询与迟到回执端口。")
         self.instance_id = instance_id
         self.settings = settings
         self.ports = ports
         self.evidence: EvidencePort = ports.evidence
+        self.native_inputs: NativeInputPort = ports.native_inputs
         self.media = MediaOwner(settings, base_dir)
         self.stickers = StickerLibrary(self.media.sticker_dir)
         self.cache = HistoryCache(settings)
@@ -128,7 +130,7 @@ class QQService:
         self._account, self._account_generation = account, generation
 
     async def event(self, payload: JsonObject, generation: int) -> None:
-        """先过滤、后补原文、最后原子接管；图片推送沿旧行为只保存引用。"""
+        """先过滤、核对已有原生事实、再补原文并接管；推送媒体只保存引用。"""
         post_type = payload.get("post_type")
         if post_type not in ("message", "message_sent", "notice"):
             return
@@ -147,26 +149,20 @@ class QQService:
         message = project_message(payload, chat=chat, target_id=target)
         received = datetime.now(UTC)
         native_identity = id_text(payload.get("message_id"))
-        previous = (
-            self.cache.submission(account, chat, target, native_identity)
-            if post_type == "message" and native_identity
-            else None
-        )
-        if (
-            previous is not None
-            and decode_object(previous.context.details_json.encode()).get("raw_event") == payload
-        ):
-            # 原生重放借用首次实际信封；接收时刻改变不会重新补取或重新解释本地标签。
-            replay = InputSubmission(
-                previous.source,
-                previous.text,
-                previous.occurred_at,
-                received,
-                previous.media,
-                previous.context,
+        if post_type == "message" and native_identity:
+            source = InputSource(
+                self.instance_id,
+                account,
+                chat + ":" + target,
+                "qq.message.received",
+                native_identity,
+                sender,
+                id_text(message.get("sender_name")) or None,
             )
-            await self.ports.inputs.submit(replay)
-            return
+            # 本地回复历史、贴纸标签、转发补取和缺失发生时间都可能在重连后
+            # 改变。先比较权威原始帧，避免将这些派生变化当成新的原生内容。
+            if await self._replay_native(source, payload, received):
+                return
         missing: list[str] = []
         raw_time = payload.get("time")
         if (
@@ -235,20 +231,67 @@ class QQService:
                 missing_materials=tuple(missing),
             ),
         )
+        if await self._submit_input(submission, payload) is not None and post_type == "message":
+            self.cache.remember(account, message)
+
+    async def _replay_native(
+        self, source: InputSource, payload: JsonObject, received: datetime
+    ) -> bool:
+        """从第一次权威接管恢复信封，不重新解释本地关系或再次补取原文。
+
+        返回 True 表示本事件已重放或因真实原生内容冲突被拒收。查询损坏、
+        存储故障及缺失原生材料不是普通推送冲突，必须让所有者报告失败。
+        """
+        previous = await self.native_inputs.query_native_input(source)
+        if previous is None:
+            return False
+        details = decode_object(previous.context.details_json.encode())
+        raw_event, message = details.get("raw_event"), details.get("message")
+        # 自动推送只保存平台媒体引用；它不能携带本适配器从未采集过的 BLOB。
+        if not isinstance(raw_event, dict) or not isinstance(message, dict) or previous.media:
+            raise StorageError("QQ 权威接管缺少完整原生帧或引用投影。", code="invalid_record")
+        if json.dumps(raw_event, sort_keys=True, allow_nan=False) != json.dumps(
+            payload, sort_keys=True, allow_nan=False
+        ):
+            # JSON 成员次序不构成新事实；bool 与整数则不能按 Python 相等关系混同。
+            self.gap(payload, "source_conflict")
+            return True
+
+        replay = InputSubmission(
+            previous.source,
+            previous.text,
+            previous.occurred_at,
+            received,
+            (),
+            previous.context,
+        )
+        if await self._submit_input(replay, payload) is not None:
+            self.cache.remember(source.account_id, message)
+        return True
+
+    async def _submit_input(
+        self, submission: InputSubmission, payload: JsonObject
+    ) -> Admission | None:
+        """拒收当前推送的容量或来源冲突，权威故障仍终止并保留原异常。
+
+        查询和接管之间已有同身份提交时，存储仍做完整指纹核对。这里的拒收
+        不覆盖旧原文，也不停止后续不同身份推送的消费者。
+        """
         try:
-            await self.ports.inputs.submit(submission)
+            return await self.ports.inputs.submit(submission)
         except StorageError as error:
-            if error.code != "input_capacity":
+            if error.code == "source_conflict":
+                self.gap(payload, "source_conflict")
+            elif error.code == "input_capacity":
+                self.gap(payload, "host_input_capacity")
+            else:
                 raise
-            self.gap(payload, "host_input_capacity")
-            return
+            return None
         except HostStateError:
             if self.client.snapshot()["state"] not in ("stopping", "closed"):
                 raise
             self.gap(payload, "host_ingress_stopped")
-            return
-        if post_type == "message":
-            self.cache.remember(account, message, submission=submission)
+            return None
 
     async def resolve_message(
         self,

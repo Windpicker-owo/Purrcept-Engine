@@ -79,8 +79,9 @@ class ActionExecutor(Protocol):
     """app 构造的执行资源所有者，替换实现须保留相同启动与关闭契约。
 
     接管前有界拒收；接管后任务独立于观察者取消。can_start 只影响尚未
-    实际开始的行动，已开始效果由执行器保留至真实回执提交。close 停止新
-    行动及下一项能力，等待实际借用结束，不重置宿主总关闭期限。平台限制
+    实际开始的行动，已开始效果由执行器保留至真实回执提交。宿主在发布
+    closing 的同一同步段调用 stop_dispatch 撤销新行动和下一能力资格，
+    再由 close 等待实际借用结束，不重置宿主总关闭期限。平台限制
     不成立时明确失败，不退回宿主 exec。内置实现为 ExecutionService。
     """
 
@@ -95,8 +96,13 @@ class ActionExecutor(Protocol):
         *,
         input_id: str | None = None,
         can_start: Callable[[], bool] | None = None,
+        presented_call_ids: frozenset[str] = frozenset(),
     ) -> ActionRecord:
-        """接管并观察一次行动，观察取消不能冒充执行已终止。"""
+        """接管并观察一次行动，观察取消不能冒充执行已终止。
+
+        presented_call_ids 是主体交付门槛冻结的完整回执资格，不由脚本填写，
+        不能凭来源身份或不同行动身份推断主脑已经看过核对材料。
+        """
         ...
 
     async def invoke(
@@ -133,6 +139,14 @@ class ActionExecutor(Protocol):
 
     async def query(self, action_id: str) -> ActionRecord | None:
         """查询权威事实，不用通知丢失推断行动未发生。"""
+        ...
+
+    def stop_dispatch(self) -> None:
+        """同步、幂等撤销所有新派发；不做 I/O，不取消已开始 Provider。
+
+        app 在等待任何插件或资源清理之前调用。已接管队列和运行脚本均
+        必须立即失去下一调用资格，真实回执和资源清理由 close 继续拥有。
+        """
         ...
 
     async def close(self) -> None:

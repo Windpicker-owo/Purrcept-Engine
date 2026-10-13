@@ -36,6 +36,7 @@ from purrcept_engine.storage.knowledge import (
     FinishSubmission,
     Finite,
     KnowledgeInputError,
+    MemoryConflictTarget,
     MemoryKind,
     MemoryPatch,
     ReflectionBatch,
@@ -332,6 +333,9 @@ class ReflectionTools:
                     "sources": patch.sources,
                     "active": memory.active,
                     "inactive_reason": memory.inactive_reason,
+                    "conflicts": [
+                        relation.model_dump(mode="json") for relation in memory.conflicts
+                    ],
                 },
                 "derived": True,
                 "evidence_ref": None,
@@ -418,12 +422,17 @@ class ReflectionTools:
         level: str = "evidence",
         cursor: str | None = None,
         max_chars: Positive | None = None,
+        version: Positive | None = None,
         *,
         context: ToolContext,
     ) -> ToolResult:
-        """展开已有来源的同一快照，summary/overview不计原文阅读，续读不访问外部服务。"""
+        """展开已有确切版本；续读核验原版本，认识与摘要不授予原文阅读资格。
+
+        省略 version 首读当前版本；历史冲突引用可指定 version。cursor 始终
+        绑定原快照，不能用新的版本改写后续页，也不访问外部服务。
+        """
         try:
-            page = await self.knowledge.read_evidence(id, level, cursor, max_chars)
+            page = await self.knowledge.read_evidence(id, level, cursor, max_chars, version)
             content = await self._page_content(page)
             result = ToolResult(content=content)
             if page.slice is not None:
@@ -460,8 +469,13 @@ class ReflectionTools:
         valid_from: Finite | None = None,
         valid_until: Finite | None = None,
         supersedes: Text | None = None,
+        conflicts: tuple[MemoryConflictTarget, ...] = (),
     ) -> str | ToolResult:
-        """立即提交有据认识，sources是已呈现原文片段，base_version必须与实际版本一致。"""
+        """原子提交有据认识与未决关系，sources 为已呈现原文片段。
+
+        base_version 必须符合当前版本；conflicts 指定仍有效的对方确切认识
+        版本，关系双向可见但不裁决、替代或授予对方原文的阅读资格。
+        """
         try:
             patch = MemoryPatch(
                 id=id,
@@ -476,6 +490,7 @@ class ReflectionTools:
                 valid_from=valid_from,
                 valid_until=valid_until,
                 supersedes=supersedes,
+                conflicts=conflicts,
             )
             record = await self.store.revise_memory(self.batch.batch_id, self.batch.version, patch)
         except (KnowledgeInputError, ValidationError) as error:

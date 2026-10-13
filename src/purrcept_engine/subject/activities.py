@@ -7,6 +7,8 @@ Host 创建 ActivityService 并提供同连接 ActivityStore 与冻结定义。�
 单一计时任务仅在实际运行时维护单调时钟与检查点。重启只取得待核对记录，
 不构造驱动、不重发命令。专业驱动通过 ActivityPort 保存工作与反馈，既不取得
 SQLite 连接，也不能直接改控制状态或追加额度。
+主脑首次 resume/end 先取得只读核对；材料完整进入实际模型请求之后，新行动
+才能采用同版本观察决定控制。普通页面控制不能消费这项资格。
 标准能力经 invoke 交到共享执行器，独立步骤所有者在 unknown 或观察取消后
 仍等待真实资源归还；不能用已经拿到首版回执替代实际 Provider 收尾。
 """
@@ -21,7 +23,7 @@ from dataclasses import dataclass, replace
 from typing import Literal, Protocol
 from uuid import uuid4
 
-from purrcept_engine.errors import EngineError, HostStateError
+from purrcept_engine.errors import EngineError, HostStateError, StorageError
 from purrcept_engine.execution.protocol import JsonObject, decode_object, encode_json
 from purrcept_engine.storage.activities import (
     ActivityCommand,
@@ -134,6 +136,18 @@ class RecoveryObservation:
         if self.stopped is not None and not isinstance(self.stopped, bool):
             raise ValueError("核对停止状态只能是 bool 或 None。")
         validate_json(self.evidence_json)
+
+
+@dataclass(frozen=True, slots=True)
+class ActivityRecovery:
+    """一次模型调用取得的只读核对材料，没有接管恢复或结束命令。
+
+    同一可信调用身份重投复用首次材料。主脑看到材料后须用新的调用明确选择，
+    普通控制入口不能消费本结果保存的精确版本资格。
+    """
+
+    activity_id: str
+    observation: RecoveryObservation
 
 
 class ActivityDriver(Protocol):
@@ -310,6 +324,20 @@ class _Request:
     reason: str | None
     cause: CommandCause = "explicit"
     expected_version: int | None = None
+    recovery_version: int | None = None
+    action_id: str | None = None
+    presented_call_ids: frozenset[str] = frozenset()
+
+
+@dataclass(frozen=True, slots=True)
+class _RecoveryProof:
+    """只对未改变记录有效的核对，后续行动须有原调用材料的真实呈现证据。"""
+
+    version: int
+    run_generation: int
+    action_id: str
+    call_id: str
+    observation: RecoveryObservation
 
 
 def _observe[Result](task: asyncio.Future[Result]) -> None:
@@ -407,6 +435,10 @@ class ActivityService:
         self._invocations: dict[str, asyncio.Task[None]] = {}
         self._steps_changed = asyncio.Event()
         self._requests: dict[str, tuple[_Request, asyncio.Task[ActivityCommand]]] = {}
+        self._subject_requests: dict[
+            str, tuple[_Request, asyncio.Task[ActivityCommand | ActivityRecovery]]
+        ] = {}
+        self._subject_recoveries: dict[str, _RecoveryProof] = {}
         self._deliveries: dict[str, asyncio.Task[None]] = {}
         self._delivery_kinds: dict[str, tuple[str, CommandKind]] = {}
         self._retiring: dict[str, asyncio.Task[None]] = {}
@@ -449,6 +481,7 @@ class ActivityService:
             + len(self._steps)
             + self._step_requests
             + len(self._requests)
+            + len(self._subject_requests)
             + len(self._deliveries)
             + int(self._timer is not None and not self._timer.done())
         )
@@ -524,7 +557,7 @@ class ActivityService:
             if pending[0] != request:
                 raise ActivityError("命令身份对应不同参数。", code="activity_conflict")
             return await asyncio.shield(pending[1])
-        if len(self._requests) >= self._max_active * 3:
+        if len(self._subject_requests) + len(self._requests) >= self._max_active * 3:
             raise ActivityError("活动控制接管已满。", code="activity_busy")
         task = asyncio.create_task(self._admit(request), name="purrcept-activity-admit")
         self._requests[command_id] = (request, task)
@@ -536,6 +569,120 @@ class ActivityService:
 
         task.add_done_callback(finished)
         return await asyncio.shield(task)
+
+    async def subject_command(
+        self,
+        command_id: str,
+        command: CommandKind,
+        *,
+        action_id: str,
+        presented_call_ids: frozenset[str] = frozenset(),
+        activity_id: str | None = None,
+        definition: str | None = None,
+        goal: str | None = None,
+        additional_seconds: float | None = None,
+        reason: str | None = None,
+    ) -> ActivityCommand | ActivityRecovery:
+        """主脑控制先交付重启核对材料，再由新调用明确恢复或结束。
+
+        复用现有命令与参数，不为核对增加模型命令。待核对活动的首次
+        resume/end 只调用驱动的只读观察并保存真实材料；状态门槛仍保持。
+        后续新命令只可采用同版本、同运行代次且已完整交给模型的核对材料。
+        resume 还须确认停止；未知时明确 end 仍交驱动取得实际停止确认。普通 command
+        不取得这项资格，页面恢复不能代替主脑在收到材料后的选择。
+        核对与接管由有限所有者持有，观察取消不释放正在借用的驱动。
+        """
+        self._available()
+        request = self._request(
+            command_id, command, activity_id, definition, goal, additional_seconds, reason
+        )
+        request = replace(
+            request,
+            action_id=_nonempty(action_id, "action_id"),
+            presented_call_ids=presented_call_ids,
+        )
+        pending = self._subject_requests.get(command_id)
+        if pending is not None:
+            if pending[0] != request:
+                raise ActivityError("命令身份对应不同参数。", code="activity_conflict")
+            return await asyncio.shield(pending[1])
+        if len(self._subject_requests) + len(self._requests) >= self._max_active * 3:
+            raise ActivityError("活动控制接管已满。", code="activity_busy")
+        owner = asyncio.create_task(
+            self._subject_command(request), name="purrcept-activity-decision"
+        )
+        self._subject_requests[command_id] = (request, owner)
+
+        def finished(task: asyncio.Task[ActivityCommand | ActivityRecovery]) -> None:
+            self._subject_requests.pop(command_id, None)
+            if not task.cancelled():
+                task.exception()
+
+        owner.add_done_callback(finished)
+        return await asyncio.shield(owner)
+
+    async def _subject_command(self, request: _Request) -> ActivityCommand | ActivityRecovery:
+        """首次核对的持久身份与后续控制分开，不将同一调用重投变成恢复。"""
+        if request.command not in ("resume", "end"):
+            return await self._admit(request)
+        assert request.activity_id is not None
+        activity_id = request.activity_id
+        previous_command = await self._store.get_activity_command(request.command_id)
+        self._available()
+        if previous_command is not None:
+            return await self._admit(request)
+        feedback_id = "reconcile-" + request.command_id
+        async with self._lock:
+            self._available()
+            previous = await self._store.get_activity_feedback(feedback_id)
+            self._available()
+            if previous is not None:
+                payload = decode_object(previous.payload_json.encode("utf-8"))
+                if set(payload) != {"command", "action_id", "stopped", "evidence_json"}:
+                    raise StorageError("已保存核对字段无效。", code="invalid_record")
+                if (
+                    previous.activity_id != activity_id
+                    or payload.get("command") != request.command
+                    or payload.get("action_id") != request.action_id
+                    or previous.kind != "reconciled"
+                ):
+                    raise ActivityError("核对身份对应不同控制。", code="activity_conflict")
+                stopped, evidence = payload["stopped"], payload["evidence_json"]
+                if (stopped is not None and not isinstance(stopped, bool)) or not isinstance(
+                    evidence, str
+                ):
+                    raise StorageError("已保存核对材料无效。", code="invalid_record")
+                try:
+                    observation = RecoveryObservation(stopped, evidence)
+                except ValueError as error:
+                    raise StorageError("已保存核对原文无效。", code="invalid_record") from error
+                return ActivityRecovery(activity_id, observation)
+            current = await self.activity(activity_id)
+            self._available()
+            proof = self._subject_recoveries.get(current.activity_id)
+            needs_observation = current.state not in ("ended", "completed") and (
+                current.needs_reconciliation or current.activity_id not in self._drivers
+            )
+            if needs_observation:
+                if (
+                    proof is not None
+                    and proof.version == current.version
+                    and proof.run_generation == current.run_generation
+                    and proof.action_id != request.action_id
+                    and proof.call_id in request.presented_call_ids
+                    and (request.command == "end" or proof.observation.stopped is True)
+                    and (request.command == "end" or not self._in_flight(current.activity_id))
+                ):
+                    request = replace(request, recovery_version=current.version)
+            if request.recovery_version is not None:
+                needs_observation = False
+            request = replace(request, expected_version=current.version)
+        if needs_observation:
+            observation = await self._reconcile(
+                activity_id, subject_request=request, feedback_id=feedback_id
+            )
+            return ActivityRecovery(activity_id, observation)
+        return await self._admit(request)
 
     def _request(
         self,
@@ -601,6 +748,8 @@ class ActivityService:
             self._failure = error
             raise
         await self._notify()
+        if record.state in ("ended", "completed"):
+            self._subject_recoveries.pop(record.activity_id, None)
 
     def _used(self, record: ActivityRecord) -> float:
         clock = self._clocks.get(record.activity_id)
@@ -683,6 +832,23 @@ class ActivityService:
                     raise ActivityError(
                         "活动状态已变化，请读取当前状态。", code="activity_conflict"
                     )
+                if request.recovery_version is not None:
+                    proof = self._subject_recoveries.get(current.activity_id)
+                    if (
+                        request.command not in ("resume", "end")
+                        or proof is None
+                        or proof.version != current.version
+                        or proof.run_generation != current.run_generation
+                        or proof.version != request.recovery_version
+                        or proof.action_id == request.action_id
+                        or proof.call_id not in request.presented_call_ids
+                        or (request.command == "resume" and proof.observation.stopped is not True)
+                        or (request.command == "resume" and self._in_flight(current.activity_id))
+                    ):
+                        raise ActivityError("核对结果已经失效。", code="activity_conflict")
+                    # Ordering: 门槛与新控制在同一次提交解除，页面不能在主脑
+                    # 收到材料但尚未决定的窗口借普通 resume 绕过判断。
+                    current = replace(current, needs_reconciliation=False)
                 if request.command in ("resume", "adjust") and any(
                     owner_activity == current.activity_id and kind in ("start", "resume", "adjust")
                     for owner_activity, kind in self._delivery_kinds.values()
@@ -773,6 +939,8 @@ class ActivityService:
                 raise ActivityError("当前状态不能再次暂停。")
             state = "pause_requested"
         elif request.command == "end":
+            if current.needs_reconciliation:
+                raise ActivityError("结束前需要主脑核对停止状态与在途效果。")
             if current.state == "end_requested":
                 raise ActivityError("活动正在结束。")
             state = "end_requested"
@@ -1255,12 +1423,24 @@ class ActivityService:
         此入口只有明确核对调用才构造驱动；start 的恢复装载永远不调用工厂。
         工厂契约禁止构造即执行。观察在事务外取得，返回时再次核当前版本。
         """
+        return await self._reconcile(activity_id)
+
+    async def _reconcile(
+        self,
+        activity_id: str,
+        *,
+        subject_request: _Request | None = None,
+        feedback_id: str | None = None,
+    ) -> RecoveryObservation:
+        """事务外取得实际观察，再核同版本；模型核对仅保存待决定资格。"""
         self._available()
         async with self._lock:
             current = await self.activity(activity_id)
             self._available()
             if current.state in ("ended", "completed"):
                 raise ActivityError("已结束活动无需恢复核对。")
+            if subject_request is not None and current.version != subject_request.expected_version:
+                raise ActivityError("核对开始前活动已经改变。", code="activity_conflict")
             driver = self._drivers.get(activity_id)
             if driver is None:
                 spec = self._definitions.get(current.definition)
@@ -1271,9 +1451,13 @@ class ActivityService:
         observation = await driver.reconcile(current)
         validate_json(observation.evidence_json)
         async with self._lock:
-            self._available()
+            # Lifecycle: 已接管的只读核对在关闭期间仍归所有者收尾并保存事实。
+            # 关闭后不安装新的恢复资格，驱动直到本次真实观察完成才被释放。
+            if subject_request is None:
+                self._available()
             latest = await self.activity(activity_id)
-            self._available()
+            if subject_request is None:
+                self._available()
             if latest.version != current.version or latest.run_generation != current.run_generation:
                 raise ActivityError(
                     "核对期间活动已经改变，观察不能采用。", code="activity_conflict"
@@ -1282,7 +1466,7 @@ class ActivityService:
             record = replace(
                 latest,
                 version=latest.version + 1,
-                needs_reconciliation=not stopped,
+                needs_reconciliation=subject_request is not None or not stopped,
                 updated_at=self._wall_time(),
             )
             if stopped:
@@ -1290,18 +1474,44 @@ class ActivityService:
                     record, "interrupted" if latest.state == "interrupted" else "paused"
                 )
             notice = ActivityFeedback(
-                "reconcile-" + uuid4().hex,
+                feedback_id or "reconcile-" + uuid4().hex,
                 activity_id,
                 None,
                 record.run_generation,
                 current.version,
                 "reconciled",
-                observation.evidence_json,
+                observation.evidence_json
+                if subject_request is None
+                else encode_json(
+                    {
+                        "command": subject_request.command,
+                        "action_id": subject_request.action_id,
+                        "stopped": observation.stopped,
+                        "evidence_json": observation.evidence_json,
+                    }
+                ).decode("utf-8"),
                 self._wall_time(),
                 True,
             )
             await self._commit(record, expected_version=latest.version, feedback=notice)
-            self._apply_clock(record)
+            if subject_request is not None:
+                try:
+                    self._available()
+                except HostStateError:
+                    # 保存已开始观察的事实与授予下一项控制是不同边界；Host
+                    # 可先进入 closing，活动 close 的所有者仍在等待外围停入。
+                    pass
+                else:
+                    assert subject_request.action_id is not None
+                    self._subject_recoveries[activity_id] = _RecoveryProof(
+                        record.version,
+                        record.run_generation,
+                        subject_request.action_id,
+                        subject_request.command_id,
+                        observation,
+                    )
+            if not self._closing:
+                self._apply_clock(record)
             return observation
 
     async def checkpoint(self) -> None:
@@ -1424,6 +1634,12 @@ class ActivityService:
         if self._requests:
             results = await asyncio.gather(
                 *(owner for _, owner in tuple(self._requests.values())),
+                return_exceptions=True,
+            )
+            errors.extend(result for result in results if isinstance(result, Exception))
+        if self._subject_requests:
+            results = await asyncio.gather(
+                *(owner for _, owner in tuple(self._subject_requests.values())),
                 return_exceptions=True,
             )
             errors.extend(result for result in results if isinstance(result, Exception))

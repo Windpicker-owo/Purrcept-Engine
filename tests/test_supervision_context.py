@@ -141,7 +141,11 @@ def assembly(store: Store, directory: Path, backend: Backend) -> SubjectAssembly
     )
 
     async def execute(
-        source: str, *, input_id: str | None, can_start: Callable[[], bool]
+        source: str,
+        *,
+        input_id: str | None,
+        can_start: Callable[[], bool],
+        presented_call_ids: frozenset[str],
     ) -> ActionRecord:
         raise AssertionError("本场景不应派发世界行动。")
 

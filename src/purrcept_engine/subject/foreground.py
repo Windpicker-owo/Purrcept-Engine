@@ -14,11 +14,11 @@ from purrcept_core.models.tools import FunctionTool, ToolContext, ToolResult, To
 from purrcept_engine.execution.catalog import Catalog
 from purrcept_engine.execution.protocol import decode_object
 from purrcept_engine.storage.execution import ActionRecord
-from purrcept_engine.storage.knowledge import EvidenceSnapshot, WakeupPlan
+from purrcept_engine.storage.knowledge import EvidenceSnapshot, Version, WakeupPlan
 from purrcept_engine.storage.model_requests import encode
 from purrcept_engine.storage.models import MediaReference
 
-from .delivery import ToolDelivery, ToolDeliveryGate, evidence_fallback
+from .delivery import ToolDelivery, ToolDeliveryGate, evidence_fallback, presented_evidence_calls
 from .knowledge import KnowledgeService, KnowledgeStore, recall_payload
 from .tool_errors import model_input_boundary
 
@@ -163,6 +163,11 @@ class ForegroundTools:
                 },
             },
             failure_is_error=False,
+            presented_calls=frozenset(
+                call.call_id
+                for call in result.calls
+                if call.state == "confirmed" and call.result_json is not None
+            ),
         )
 
     @model_input_boundary
@@ -197,16 +202,26 @@ class ForegroundTools:
         level: str = "evidence",
         cursor: str | None = None,
         max_chars: int | None = None,
+        version: Version | None = None,
     ) -> ToolResult:
-        """展开已存原文/认识；summary/overview/evidence 共享同一快照及不透明续读游标。"""
-        return (await self._evidence_result(id, level, cursor, max_chars)).result
+        """展开已存原文/认识的确切版本，省略 version 首读当前版本。
+
+        历史冲突引用可指定 version；cursor 绑定同一版本，不能用新的版本
+        改写后续页。认识、summary 和 overview 均不授予原文阅读资格。
+        """
+        return (await self._evidence_result(id, level, cursor, max_chars, version)).result
 
     async def _evidence_result(
-        self, id: str, level: str, cursor: str | None, max_chars: int | None
+        self,
+        id: str,
+        level: str,
+        cursor: str | None,
+        max_chars: int | None,
+        version: int | None,
     ) -> ToolDelivery:
         """构造不可拆的正文/媒体候选，有限回执始终定位原页而非下一页。"""
         self.check()
-        page = await self.knowledge.read_evidence(id, level, cursor, max_chars)
+        page = await self.knowledge.read_evidence(id, level, cursor, max_chars, version)
         snapshot = page.snapshot
         memory = page.memory
         if snapshot is not None:
@@ -229,6 +244,7 @@ class ForegroundTools:
                 "sources": memory.patch.sources,
                 "active": memory.active,
                 "inactive_reason": memory.inactive_reason,
+                "conflicts": [relation.model_dump(mode="json") for relation in memory.conflicts],
             }
         else:
             raise RuntimeError("原文页面缺少权威快照或认识版本。")
@@ -253,7 +269,9 @@ class ForegroundTools:
             )
             blocks.extend(await self.ports.media_blocks(selected))
         return ToolDelivery(
-            ToolResult(content=tuple(blocks)), evidence_fallback(page, cursor=cursor)
+            ToolResult(content=tuple(blocks)),
+            evidence_fallback(page, cursor=cursor),
+            presented_calls=presented_evidence_calls(page),
         )
 
     @model_input_boundary
@@ -263,11 +281,12 @@ class ForegroundTools:
         level: str = "evidence",
         cursor: str | None = None,
         max_chars: int | None = None,
+        version: Version | None = None,
         *,
         context: ToolContext,
     ) -> ToolResult:
         """登记当前工具完整结果，直接调用 read_evidence 仍返回取得的原页。"""
-        proposal = await self._evidence_result(id, level, cursor, max_chars)
+        proposal = await self._evidence_result(id, level, cursor, max_chars, version)
         if self.delivery is None:
             return proposal.result
         return self.delivery.stage(context.call, proposal)

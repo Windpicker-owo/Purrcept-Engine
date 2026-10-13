@@ -231,9 +231,18 @@ async def _rig(
             return {"coverage": "current_work_only", "working_generation": coordinator.generation}
 
         async def execute(
-            source: str, *, input_id: str | None, can_start: Callable[[], bool]
+            source: str,
+            *,
+            input_id: str | None,
+            can_start: Callable[[], bool],
+            presented_call_ids: frozenset[str],
         ) -> ActionRecord:
-            return await execution.execute(source, input_id=input_id, can_start=can_start)
+            return await execution.execute(
+                source,
+                input_id=input_id,
+                can_start=can_start,
+                presented_call_ids=presented_call_ids,
+            )
 
         coordinator = SubjectCoordinator(
             store,

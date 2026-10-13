@@ -20,6 +20,11 @@ Engine 在独立仓库实施持续主体宿主。已批准的职责与验收要�
 配置结构与旧 Runtime 不兼容。新数据目录使用 `engine.sqlite3`，不会读取、
 迁移或删除旧 Runtime 数据；切换前必须停止旧实例，避免同账号重复接收。
 
+本版启动时将 Engine 格式12原子升级为13，只新增直接@升级判断的表与索引，
+保留原文、BLOB、调用回执和业务关系。升级前停止宿主并复制完整数据目录；
+升级拒绝会保留格式12，故障目录不可用空库替换。升级成功后回到旧代码须先
+停止宿主、另存升级后的完整目录，再恢复升级前的目录副本；没有自动数据库降级。
+
 ```powershell
 uv run purrcept-engine init
 uv run purrcept-engine check
@@ -40,6 +45,13 @@ Ctrl+C 请求关闭，关闭期间第二次 Ctrl+C 强退本 CLI。安装 `web` 
 纯配置声明不打开设备，电脑仍须明确连接。Notebook 覆盖写入必须提供读取或
 先前写入返回的版本，已有文件不能以省略版本覆盖。QQ 恢复不重发未知消息，
 cursor 续读已保存快照，QZone feed 不支持深翻页。
+
+重启活动首次 `me.activity(command="resume"/"end", activity_id=...)` 返回只读
+`reconciliation` 和 `decision_required=true`，不接管控制。主脑在后续模型请求
+完整看到核对回执后，再以新行动明确恢复或结束；未知停止状态只允许明确结束，
+仍以驱动实际确认为准。页面恢复不能替代这一步。反思 `revise_memory` 可用
+`conflicts=[{kind:"memory",id,version}]` 保留双向未决反证；召回与展开返回对方
+确切版本及有效性，`read_evidence(id=..., version=...)` 可展开对应历史版本。
 
 主体默认装配 `me.view_image(source=...)`，支持URL或本地图像（8MiB以内的
 PNG/JPEG/GIF/WebP）；像素完整保存到同库，后续请求通过原生媒体取得。

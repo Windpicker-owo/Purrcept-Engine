@@ -22,7 +22,13 @@ from purrcept_engine.plugins.live2d.ports import BodyPort
 from purrcept_engine.storage.audio_port import AudioPort
 from purrcept_engine.storage.execution import CallRecord
 from purrcept_engine.storage.knowledge import EvidencePage, EvidenceSnapshot
-from purrcept_engine.storage.models import Admission, InputRecord, InputSubmission, MediaAsset
+from purrcept_engine.storage.models import (
+    Admission,
+    InputRecord,
+    InputSource,
+    InputSubmission,
+    MediaAsset,
+)
 from purrcept_engine.storage.subject import InputProcessing
 from purrcept_engine.storage.time_port import TimePort
 from purrcept_engine.subject.activities import ActivityDefinition
@@ -47,6 +53,20 @@ class InputPort(Protocol):
 
     async def query_processing(self, input_id: str) -> InputProcessing | None:
         """读取真实阶段和失败原因；延期或处理中不构成采集画面完成确认。"""
+        ...
+
+
+class NativeInputPort(Protocol):
+    """宿主借出的原生事实只读查询，内置实现为 EngineHost。
+
+    接入插件在重新计算回复关系或本地派生说明前，用原生来源身份查询
+    首次接管记录。没有可靠事件身份时返回 None，不能猜测文字去重。
+    返回值不授予再次派发资格；真实内容冲突仍由接入边界核验，权威
+    读取故障原样传播。端口不暴露数据库或可变输入状态。
+    """
+
+    async def query_native_input(self, source: InputSource) -> InputRecord | None:
+        """按适配器、账号、会话、事件类别和原生身份读首次事实。"""
         ...
 
 
@@ -123,6 +143,7 @@ class PluginPorts:
     late_results: LateResultPort | None = None
     audio: AudioPort | None = None
     native_audio_enabled: bool = False
+    native_inputs: NativeInputPort | None = None
 
 
 @dataclass(frozen=True, slots=True)

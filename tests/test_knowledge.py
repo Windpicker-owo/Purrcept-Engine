@@ -34,6 +34,7 @@ from purrcept_engine.storage.knowledge import (
     KnowledgeConflict,
     KnowledgeInputError,
     KnowledgeReference,
+    MemoryConflictTarget,
     MemoryPatch,
     SupervisionNotice,
     WakeupPlan,
@@ -314,12 +315,12 @@ def test_versions_replacement_and_unresolved_conflicts_remain_auditable(
         connection,
         batch_id,
         version,
-        MemoryPatch(id="b", content="可能不喜欢茶，未决。", sources=(reference,)),
-    )
-    ledger.record_conflict(
-        connection,
-        KnowledgeReference(kind="memory", id="a", version=1),
-        KnowledgeReference(kind="memory", id="b", version=1),
+        MemoryPatch(
+            id="b",
+            content="可能不喜欢茶，未决。",
+            sources=(reference,),
+            conflicts=(MemoryConflictTarget(kind="memory", id="a", version=1),),
+        ),
     )
     a = ledger.get_memory(connection, "a")
     assert a is not None and a.active and a.conflicts[0].id == "b"
@@ -528,7 +529,8 @@ def test_restart_retires_only_batch_generation(connection: sqlite3.Connection) -
         version,
         MemoryPatch(id="kept", content="真实写入。", sources=(reference,)),
     )
-    ledger.initialize(connection)
+    with connection:
+        ledger.initialize(connection)
     replacement = ledger.begin_reflection(connection, batch_id, (reference,))
     assert replacement.version == version + 1
     with pytest.raises(KnowledgeConflict):
@@ -635,7 +637,8 @@ def test_persistent_delivery_restores_only_complete_original_material(
     assert ledger.deliveries_for_history(connection, forged) == ()
     assert connection.execute("SELECT count(*) FROM media").fetchone() == (1,)
     assert connection.execute("SELECT count(*) FROM reflection_delivery_media").fetchone() == (2,)
-    ledger.initialize(connection)
+    with connection:
+        ledger.initialize(connection)
     assert ledger.deliveries_for_history(connection, (initial, actual)) == (first, tool)
     saved = connection.execute(
         "SELECT payload_json FROM reflection_deliveries WHERE delivery_id=?", (first.delivery_id,)

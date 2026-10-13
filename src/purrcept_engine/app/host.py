@@ -33,6 +33,7 @@ from purrcept_engine.storage import (
     ActionRecord,
     Admission,
     InputRecord,
+    InputSource,
     InputSubmission,
 )
 from purrcept_engine.storage.activities import ActivityCommand, ActivityRecord, CommandKind
@@ -243,6 +244,7 @@ class EngineHost:
                     LateCallResults(self._store, paths),
                     audio=self._store.audio,
                     native_audio_enabled=native_audio_enabled,
+                    native_inputs=self,
                 )
                 runtime = await blueprint.build(ports)
                 self._plugins[instance_id] = runtime
@@ -479,6 +481,13 @@ class EngineHost:
             raise HostStateError("宿主没有可查询的权威存储。")
         return await store.get_input(input_id)
 
+    async def query_native_input(self, source: InputSource) -> InputRecord | None:
+        """按原生来源读取首次接管事实，供重放恢复；不开始新的输入处理。"""
+        store = self._store
+        if store is None or self._phase == "closed":
+            raise HostStateError("宿主没有可查询的权威存储。")
+        return await store.get_native_input(source)
+
     async def query_processing(self, input_id: str) -> InputProcessing | None:
         """读取宿主实际输入阶段，取得、接管及处理结束分别表达。"""
         store = self._store
@@ -492,11 +501,14 @@ class EngineHost:
         *,
         input_id: str | None = None,
         can_start: Callable[[], bool] | None = None,
+        presented_call_ids: frozenset[str] = frozenset(),
     ) -> ActionRecord:
         """程序式执行明确行动，接管后的观察取消不撤销真实效果。
 
         主脑 play_action 使用同一入口和冻结目录，不另建平行执行路径。
         input_id 表示因果来源，不授予能力权限；can_start 撤销未派发生成。
+        presented_call_ids 仅供主体交付门槛传入已呈现的完整回执身份，程序式
+        默认调用没有此资格；它不会作为模型参数或Worker协议字段下发。
         """
         self._check_dispatch()
         execution = self._execution
@@ -509,7 +521,12 @@ class EngineHost:
             self._check_dispatch()
             return can_start is None or can_start()
 
-        return await execution.execute(source, input_id=input_id, can_start=eligible)
+        return await execution.execute(
+            source,
+            input_id=input_id,
+            can_start=eligible,
+            presented_call_ids=presented_call_ids,
+        )
 
     async def query_action(self, action_id: str) -> ActionRecord | None:
         """读取包括迟到调用结论的权威事实，关闭收尾期间仍可查询。"""
@@ -708,6 +725,10 @@ class EngineHost:
             loop = asyncio.get_running_loop()
             self._close_deadline = loop.time() + self.config.host.close_seconds
             self._transition("closing")
+            # Ordering: 慢插件停止、启动收尾或数据库等待都不能给旧 Worker
+            # 留出下一项能力的窗口。这里只撤资格，已开始调用保留原回执链。
+            if self._execution is not None:
+                self._execution.stop_dispatch()
             self._close_task = asyncio.create_task(self._close(), name="engine-close")
 
         close_task = self._close_task

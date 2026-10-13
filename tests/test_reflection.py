@@ -455,7 +455,12 @@ async def test_authority_failure_propagates_instead_of_becoming_input_error(
     tools, _, _ = await reflection(store, page)
 
     async def broken(
-        identity: str, *, level: str = "evidence", cursor: str | None = None, max_chars: int = 8000
+        identity: str,
+        *,
+        level: str = "evidence",
+        cursor: str | None = None,
+        max_chars: int = 8000,
+        version: int | None = None,
     ) -> EvidencePage:
         raise StorageError("authoritative failure", code="database_failure")
 

@@ -330,36 +330,35 @@ def get_request(connection: sqlite3.Connection, request_id: str) -> RequestRecor
 
 
 def initialize(connection: sqlite3.Connection) -> None:
-    """恢复上次宿主留下的开始事实，仅标记中断，不声称模型物理停止。"""
+    """在调用方启动事务内记录旧请求中断，不提交或声称模型物理停止。"""
     connection.execute("SELECT request_id,evidence_json,state FROM model_requests LIMIT 0")
     connection.execute("SELECT attempt_id,start_json,result_json FROM model_attempts LIMIT 0")
     connection.execute("SELECT request_id,media_id FROM model_request_media LIMIT 0")
     connection.execute("SELECT attempt_id,media_id FROM model_attempt_media LIMIT 0")
-    with connection:
-        connection.execute("BEGIN IMMEDIATE")
-        rows: list[tuple[object, ...]] = connection.execute(
-            "SELECT start_json FROM model_attempts WHERE result_json IS NULL"
-        ).fetchall()
-        for row in rows:
-            start = decode_start(_text(row[0]))
-            result = AttemptEvidence(
-                start,
-                "interrupted",
-                None,
-                FailureEvidence("host_interrupted", "interrupted"),
-                "[]",
-                "[]",
-                False,
-                0,
-            )
-            connection.execute(
-                "UPDATE model_attempts SET result_json=?,finished_at=? WHERE attempt_id=?",
-                (_encode_authority_attempt(result), time.time(), start.attempt_id),
-            )
-        connection.execute(
-            "UPDATE model_requests SET state='interrupted',finished_at=? WHERE state='running'",
-            (time.time(),),
+    # 启动事务由 Store 持有；恢复失败不能单独提交任何子系统。
+    rows: list[tuple[object, ...]] = connection.execute(
+        "SELECT start_json FROM model_attempts WHERE result_json IS NULL"
+    ).fetchall()
+    for row in rows:
+        start = decode_start(_text(row[0]))
+        result = AttemptEvidence(
+            start,
+            "interrupted",
+            None,
+            FailureEvidence("host_interrupted", "interrupted"),
+            "[]",
+            "[]",
+            False,
+            0,
         )
+        connection.execute(
+            "UPDATE model_attempts SET result_json=?,finished_at=? WHERE attempt_id=?",
+            (_encode_authority_attempt(result), time.time(), start.attempt_id),
+        )
+    connection.execute(
+        "UPDATE model_requests SET state='interrupted',finished_at=? WHERE state='running'",
+        (time.time(),),
+    )
 
 
 def intern_request_media(

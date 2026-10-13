@@ -484,7 +484,9 @@ async def test_internal_media_failure_is_not_a_correctable_capacity_receipt(stor
     assert len(await store.requests_for_turn("foreground", "actual-turn")) == 1
 
 
-async def test_direct_tools_and_public_model_parameters_remain_unchanged(store: Store) -> None:
+async def test_direct_tools_preserve_registered_parameters_and_explicit_read_version(
+    store: Store,
+) -> None:
     await source(store, "source", "原文")
     gate = ToolDeliveryGate()
     tools = foreground(store, gate)
@@ -492,7 +494,7 @@ async def test_direct_tools_and_public_model_parameters_remain_unchanged(store: 
     assert isinstance(read.content[0], TextBlock) and "原文" in read.content[0].text
     specifications = {spec.name: spec for spec in tools.tools.specs}
     schema = decode_object(encode(specifications["read_evidence"].parameters).encode("utf-8"))
-    assert set(obj(schema["properties"])) == {"id", "level", "cursor", "max_chars"}
+    assert set(obj(schema["properties"])) == {"id", "level", "cursor", "max_chars", "version"}
     action = decode_object(encode(specifications["play_action"].parameters).encode("utf-8"))
     assert set(obj(action["properties"])) == {"action_code"}
 

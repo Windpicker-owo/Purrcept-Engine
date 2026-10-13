@@ -30,12 +30,15 @@ class CallContext:
 
     插件可以把 call_id 传给原生幂等协议或关联播放/控制；它不意味着平台
     本身保证恰好一次。来源用于因果追溯，不能被解释为人员权限等级。
+    presented_call_ids 来自本轮成功模型请求的完整确认正文，Worker及模型
+    参数不能填写；UNKNOWN空回执及同响应尚未交付的核对不在此集合中。
     """
 
     call_id: str
     action_id: str
     deadline: float
     input_id: str | None = None
+    presented_call_ids: frozenset[str] = frozenset()
 
 
 @dataclass(frozen=True, slots=True)

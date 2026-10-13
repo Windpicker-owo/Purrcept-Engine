@@ -4,6 +4,8 @@
 的关闭。注意按最早接管时刻合批，前台不再等待一轮合批；所有选择以事务中的
 输入版本为准。延期由独立固定交接者处理，不被模型等待阻塞。这里没有反思、
 活动反馈或行动自动续行；那些可靠来源由各自所有者另行接入。
+QQ 直接 @ 的最低唤起先进入前台，再由同一注意工作器核对持久旧代次观察；
+升级结果不能撤销最低唤起、重复入队或抢占正在处理该输入的新轮次。
 """
 
 from __future__ import annotations
@@ -47,6 +49,7 @@ from purrcept_engine.storage.subject import (
     AttentionLevel,
     InputProcessing,
     InputStage,
+    MinimumWakeAssessment,
     SessionScope,
     TurnRecord,
 )
@@ -107,6 +110,33 @@ class CoordinatorStore(SessionStore, RequestEvidenceSink, MediaStore, Protocol):
         """同事务采用整批结果与延期；过时版本返回 False 而不重新投递。"""
         ...
 
+    async def register_minimum_wake_assessment(
+        self,
+        expected: InputProcessing,
+        *,
+        owner_id: str,
+        observed_generation: int,
+    ) -> bool:
+        """CAS 登记直接唤起的旧代次观察；同一输入只取得一次升级资格。"""
+        ...
+
+    async def minimum_wake_assessments(
+        self, owner_id: str, *, limit: int = 8
+    ) -> tuple[MinimumWakeAssessment, ...]:
+        """查询本宿主的有限升级待办，不重建前台投递或猜测重启前代次。"""
+        ...
+
+    async def finish_minimum_wake_assessment(
+        self,
+        assessment: MinimumWakeAssessment,
+        level: AttentionLevel,
+        reason: str,
+        *,
+        request_id: str | None = None,
+    ) -> bool:
+        """结案判断并核对原前台版本，任何结果都不能撤销最低 WAKE。"""
+        ...
+
     async def next_deferred_input(self) -> float | None:
         """返回最早未交接期限，单一定时等待服务全部延后身份。"""
         ...
@@ -141,6 +171,7 @@ class ActionCallback(Protocol):
         *,
         input_id: str | None,
         can_start: Callable[[], bool],
+        presented_call_ids: frozenset[str],
     ) -> Awaitable[ActionRecord]:
         """接管受限脚本，不在宿主 exec 或直接调用插件实现。"""
         ...
@@ -200,10 +231,16 @@ class _ForegroundBinding:
     wakeup: Callable[[], None]
     input_id: str
     eligible: Callable[[], bool]
+    delivery: ToolDeliveryGate
 
     async def play_action(self, source: str) -> ActionRecord:
         """传入本轮资格，实际资源与迟到回执仍归 app 的执行器。"""
-        return await self.execute(source, input_id=self.input_id, can_start=self.eligible)
+        return await self.execute(
+            source,
+            input_id=self.input_id,
+            can_start=self.eligible,
+            presented_call_ids=self.delivery.presented_call_ids,
+        )
 
     async def media_blocks(self, media: tuple[MediaReference, ...]) -> tuple[ContentBlock, ...]:
         """仅展开已经接管的原生内容，缺口不会变为描述性预览。"""
@@ -259,6 +296,7 @@ class SubjectCoordinator:
         self.can_start = can_start
         self.prepare_history = prepare_history
         self.session = ContinuousSession(store, "foreground", can_start=self._check)
+        self._attention_owner = uuid4().hex
         self._tasks: set[asyncio.Task[None]] = set()
         self._commits: set[asyncio.Future[object]] = set()
         self._attention_backends: set[ModelDecisionBackend | ModelGenerationBackend] = set()
@@ -307,18 +345,35 @@ class SubjectCoordinator:
 
         app 在接管前读取 generation，再在成功提交后调用。输入若已经进入
         前台处理或代次已经变化，不抢占新生成；重启后不猜测旧观察身份。
-        音频停播由音频所有者另行受理，这个返回值只表示生成是否被抢占。
+        QQ 直接 @ 已取得最低 WAKE，仍有效的旧代次可登记一次上下文升级，
+        由相同注意工作器有限判断。音频停播由音频所有者另行受理；返回值
+        只表示本通知是否已经直接抢占，不预报后续模型判断的结果。
         """
         self._check()
         record = await self.store.get_input(input_id)
         processing = await self.store.input_processing(input_id)
         if record is None or processing is None:
             raise StorageError("可信接管通知引用不存在的输入。", code="invalid_record")
-        if processing.stage != "foreground" or not (
-            record.context.interrupt_generation or record.context.speech_started
-        ):
+        if processing.stage != "foreground":
             return False
-        return self.session.interrupt(observed_generation)
+        if record.context.interrupt_generation or record.context.speech_started:
+            return self.session.interrupt(observed_generation)
+        if (
+            self.attention is not None
+            and record.source.event_kind == "qq.message.received"
+            and record.context.minimum_wake
+            and self.session.eligible(observed_generation)
+        ):
+            # 最低 WAKE 已由接管事务完成。升级观察仍绑定接管前的旧代次，
+            # 使用权威有限待办交给同一个注意工作器，不逐消息创建模型任务。
+            await self._commit(
+                self.store.register_minimum_wake_assessment(
+                    processing,
+                    owner_id=self._attention_owner,
+                    observed_generation=observed_generation,
+                )
+            )
+        return False
 
     def _check(self) -> None:
         """在新工作和实际模型边界同步核验本所有者及宿主的派发资格。"""
@@ -364,6 +419,10 @@ class SubjectCoordinator:
         while True:
             self._check()
             revision = self.store.change_revision
+            upgrades = await self.store.minimum_wake_assessments(self._attention_owner, limit=1)
+            if upgrades:
+                await self._upgrade_minimum_wake(upgrades[0])
+                continue
             records = await self.store.staged_inputs(
                 "attention", limit=self.settings.attention_batch
             )
@@ -377,16 +436,22 @@ class SubjectCoordinator:
                 max(0.0, first + self.settings.coalesce_seconds - time.time()),
             )
             deadline = asyncio.get_running_loop().time() + remaining
+            upgrade_ready = False
             while len(records) < self.settings.attention_batch and remaining > 0:
                 await self._wait(revision, seconds=remaining)
                 self._check()
                 revision = self.store.change_revision
+                if await self.store.minimum_wake_assessments(self._attention_owner, limit=1):
+                    upgrade_ready = True
+                    break
                 records = await self.store.staged_inputs(
                     "attention", limit=self.settings.attention_batch
                 )
                 if not records:
                     break
                 remaining = deadline - asyncio.get_running_loop().time()
+            if upgrade_ready:
+                continue
             if not records:
                 continue
             expected = await self._processing(records)
@@ -426,12 +491,77 @@ class SubjectCoordinator:
                 await self._assess(records, expected, request, observed)
                 break
 
+    async def _upgrade_minimum_wake(self, assessment: MinimumWakeAssessment) -> None:
+        """仅评估仍在旧生成后排队的直接唤起，失效观察结案而不换代续做。"""
+        record = await self.store.get_input(assessment.input_id)
+        processing = await self.store.input_processing(assessment.input_id)
+        if record is None or processing is None:
+            raise StorageError("最低唤起升级引用缺少原文或处置身份。", code="invalid_record")
+        if (
+            processing.stage != "foreground"
+            or processing.version != assessment.input_version
+            or not self.session.eligible(assessment.observed_generation)
+        ):
+            await self._commit(
+                self.store.finish_minimum_wake_assessment(
+                    assessment, "wake", "attention.minimum_wake_observation_expired"
+                )
+            )
+            return
+        if self.attention is None:
+            raise RuntimeError("最低唤起升级缺少装配的注意模型。")
+        background = await self.attention_context()
+        try:
+            request = await attention_request(
+                (record,),
+                background=background,
+                media=self.media,
+                model=self.attention,
+                defer_seconds=self.settings.defer_seconds,
+            )
+        except (CapacityError, UnsupportedMaterial) as error:
+            await self._commit(
+                self.store.finish_minimum_wake_assessment(
+                    assessment,
+                    "wake",
+                    encode(
+                        {
+                            "attention": "not_completed",
+                            "minimum_level": "wake",
+                            "error_type": type(error).__name__,
+                            "reason": str(error),
+                            "code": error.code if isinstance(error, CapacityError) else None,
+                        }
+                    ),
+                )
+            )
+            return
+        # 材料组装也可能等待存储。正式请求仍只针对原观察，不因为生成已经
+        # 前进而借新代次继续评估；第一次逻辑请求前无需伪造失败模型证据。
+        current = await self.store.input_processing(assessment.input_id)
+        if current != processing or not self.session.eligible(assessment.observed_generation):
+            await self._commit(
+                self.store.finish_minimum_wake_assessment(
+                    assessment, "wake", "attention.minimum_wake_observation_expired"
+                )
+            )
+            return
+        await self._assess(
+            (record,),
+            (processing,),
+            request,
+            assessment.observed_generation,
+            minimum_wake=assessment,
+        )
+
     async def _assess(
         self,
         records: tuple[InputRecord, ...],
         expected: tuple[InputProcessing, ...],
         request: DecisionRequest | ModelRequest,
         observed_generation: int,
+        *,
+        minimum_wake: MinimumWakeAssessment | None = None,
     ) -> None:
         """判断证据独立入账，处置 CAS 后才抢占，有限服务失败交前台一次。"""
         if self.attention is None:
@@ -441,6 +571,15 @@ class SubjectCoordinator:
             max_requests=1,
             deadline=asyncio.get_running_loop().time() + self.attention.retry.total_seconds,
         )
+
+        def can_assess() -> None:
+            self._check()
+            if minimum_wake is not None and not self.session.eligible(observed_generation):
+                # 旧生成结束后不重试升级请求。已启动尝试仍按原证据/借用机制
+                # 收尾，不能把迟到的 urgent 采用到正在处理该输入的新轮次。
+                budget.revoke()
+                budget.check()
+
         scope = RequestScope("attention", identity, tuple(record.input_id for record in records))
         if self.attention.kind == "decision":
             backend = ModelDecisionBackend(
@@ -450,7 +589,7 @@ class SubjectCoordinator:
                 budget=budget,
                 policy=self.attention.retry,
                 diagnostic_bytes=self.settings.diagnostic_bytes,
-                can_start=self._check,
+                can_start=can_assess,
             )
         else:
             backend = ModelGenerationBackend(
@@ -460,7 +599,7 @@ class SubjectCoordinator:
                 budget=budget,
                 policy=self.attention.retry,
                 diagnostic_bytes=self.settings.diagnostic_bytes,
-                can_start=self._check,
+                can_start=can_assess,
             )
         self._attention_backends.add(backend)
         level: AttentionLevel = "wake"
@@ -525,17 +664,35 @@ class SubjectCoordinator:
                         ),
                     }
                 )
-            applied = await self._commit(
-                self.store.decide_inputs(
-                    expected,
-                    level,
-                    reason,
-                    request_id=requests[0].request.request_id,
-                    defer_until=time.time() + self.settings.defer_seconds
-                    if level == "defer"
-                    else None,
+            if minimum_wake is None:
+                applied = await self._commit(
+                    self.store.decide_inputs(
+                        expected,
+                        level,
+                        reason,
+                        request_id=requests[0].request.request_id,
+                        defer_until=time.time() + self.settings.defer_seconds
+                        if level == "defer"
+                        else None,
+                    )
                 )
-            )
+            else:
+                applied = await self._commit(
+                    self.store.finish_minimum_wake_assessment(
+                        minimum_wake,
+                        level,
+                        encode(
+                            {
+                                "attention": "minimum_wake_assessment",
+                                "minimum_level": "wake",
+                                "assessed_level": level,
+                                "reason": reason,
+                                "observed_generation": observed_generation,
+                            }
+                        ),
+                        request_id=requests[0].request.request_id,
+                    )
+                )
             if applied and level == "urgent":
                 self.session.interrupt(observed_generation)
         except Exception as error:
@@ -656,14 +813,15 @@ class SubjectCoordinator:
         """冻结本轮来源和工具资格，异步原文组装仍计入同一主动处理预算。"""
         failures = await self.store.failed_turns("foreground")
         generation = self.session.generation + 1
+        delivery = ToolDeliveryGate()
         ports = _ForegroundBinding(
             self.execute,
             self.media,
             self.wakeup_committed,
             records[0].input_id,
             lambda: self._turn_eligible(generation),
+            delivery,
         )
-        delivery = ToolDeliveryGate()
         tools = ForegroundTools(
             self.knowledge,
             self.knowledge_store,

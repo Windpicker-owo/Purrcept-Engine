@@ -514,38 +514,36 @@ def pending_call_receipts(connection: sqlite3.Connection, limit: int) -> tuple[C
 
 
 def initialize(connection: sqlite3.Connection) -> None:
-    """核对新增必需列，并保守结束上个宿主留下的未完成派发。"""
+    """借用调用方启动事务核对必需列并结束旧派发，不独立提交恢复。"""
     connection.execute(f"SELECT {_ACTION_COLUMNS} FROM actions LIMIT 0")
     connection.execute(f"SELECT {_CALL_COLUMNS} FROM calls LIMIT 0")
     connection.execute(f"SELECT {_RESULT_COLUMNS} FROM call_results LIMIT 0")
     connection.execute("SELECT sequence, call_id, revision FROM pending_call_receipts LIMIT 0")
     # 每项回执事务本身含其可靠待办；整个恢复再用外层事务确保启动失败不留下
     # 部分恢复。这里直接写入，不调用会开启独立 BEGIN 的公开事务入口。
-    with connection:
-        connection.execute("BEGIN IMMEDIATE")
-        interrupted: list[tuple[object, ...]] = connection.execute(
-            "SELECT call_id, state FROM calls WHERE state IN ('prepared','started') "
-            "ORDER BY prepared_at"
-        ).fetchall()
-        for row in interrupted:
-            call = _get_call(connection, _text(row[0]))
-            state: CallOutcome = "not_started" if call.state == "prepared" else "unknown"
-            connection.execute(
-                "INSERT INTO call_results(call_id, revision, state, finished_at, "
-                "error_type, error) "
-                "VALUES (?, 1, ?, ?, 'host_interrupted', '宿主结束前未取得回执')",
-                (call.call_id, state, time.time()),
-            )
-            connection.execute(
-                "UPDATE calls SET state=?, receipt_revision=1 WHERE call_id=?",
-                (state, call.call_id),
-            )
-            connection.execute(
-                "INSERT INTO pending_call_receipts(call_id, revision) VALUES (?, 1)",
-                (call.call_id,),
-            )
+    interrupted: list[tuple[object, ...]] = connection.execute(
+        "SELECT call_id, state FROM calls WHERE state IN ('prepared','started') "
+        "ORDER BY prepared_at"
+    ).fetchall()
+    for row in interrupted:
+        call = _get_call(connection, _text(row[0]))
+        state: CallOutcome = "not_started" if call.state == "prepared" else "unknown"
         connection.execute(
-            "UPDATE actions SET state='failed', finished_at=?, error='host_interrupted' "
-            "WHERE state='running'",
-            (time.time(),),
+            "INSERT INTO call_results(call_id, revision, state, finished_at, "
+            "error_type, error) "
+            "VALUES (?, 1, ?, ?, 'host_interrupted', '宿主结束前未取得回执')",
+            (call.call_id, state, time.time()),
         )
+        connection.execute(
+            "UPDATE calls SET state=?, receipt_revision=1 WHERE call_id=?",
+            (state, call.call_id),
+        )
+        connection.execute(
+            "INSERT INTO pending_call_receipts(call_id, revision) VALUES (?, 1)",
+            (call.call_id,),
+        )
+    connection.execute(
+        "UPDATE actions SET state='failed', finished_at=?, error='host_interrupted' "
+        "WHERE state='running'",
+        (time.time(),),
+    )

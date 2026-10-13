@@ -271,17 +271,6 @@ class KnowledgeLedger:
             logical_bytes=_bytes(memory_id),
         )
 
-    async def record_conflict(
-        self, left: sql.KnowledgeReference, right: sql.KnowledgeReference
-    ) -> None:
-        """保存明确未决关系，不让相似度自动淘汰任一认识。"""
-        await self._submit(
-            lambda connection: sql.record_conflict(connection, left, right),
-            logical_bytes=_bytes(left.model_dump(mode="json"), right.model_dump(mode="json")),
-            control=True,
-            writing=True,
-        )
-
     async def search_knowledge(
         self,
         query: str,

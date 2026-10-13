@@ -4,6 +4,8 @@
 成功会话、输入处理结束和检查点同事务提交。失败批次保留错误与来源，不能
 以 Core 丢弃临时历史为由抹掉已经发生的行动。这里不推进模型或等待设备。
 所有 SQL 函数由 Store 专属线程调用，事务内仅访问本连接。
+最低唤起的紧急升级单独保存宿主、旧代次和输入版本；它只结案一次判断，
+不另建待办。重启撤销旧观察，保留原前台交接资格。
 """
 
 from __future__ import annotations
@@ -27,11 +29,19 @@ type InputStage = Literal[
 type AttentionLevel = Literal["observe", "defer", "wake", "urgent"]
 type TurnOutcome = Literal["running", "succeeded", "failed", "cancelled", "interrupted"]
 
+MINIMUM_WAKE_SCHEMA = (
+    "CREATE TABLE minimum_wake_assessments (input_id TEXT PRIMARY KEY REFERENCES inputs(input_id), "
+    "owner_id TEXT NOT NULL, observed_generation INTEGER NOT NULL, input_version INTEGER NOT NULL, "
+    "state TEXT NOT NULL, level TEXT, reason TEXT, request_id TEXT)",
+    "CREATE INDEX minimum_wake_pending ON minimum_wake_assessments(owner_id,state)",
+)
+
 SCHEMA = (
     "CREATE TABLE input_processing (input_id TEXT PRIMARY KEY REFERENCES inputs(input_id), "
     "version INTEGER NOT NULL, stage TEXT NOT NULL, reason TEXT NOT NULL, "
     "attention_request_id TEXT, due_at REAL, handed_off INTEGER NOT NULL DEFAULT 0, "
     "admitted_at REAL NOT NULL)",
+    *MINIMUM_WAKE_SCHEMA,
     "CREATE TABLE subject_sessions (scope TEXT PRIMARY KEY, version INTEGER NOT NULL, "
     "checkpoint_json TEXT, active_turn TEXT)",
     "CREATE TABLE session_media (scope TEXT NOT NULL REFERENCES subject_sessions(scope), "
@@ -59,6 +69,20 @@ class InputProcessing:
     due_at: float | None
     handed_off: bool
     admitted_at: float
+
+
+@dataclass(frozen=True, slots=True)
+class MinimumWakeAssessment:
+    """直接唤起后的一次紧急升级资格，绑定创建它的宿主与旧生成代次。
+
+    记录不另建前台待办。input_version 冻结仍在 foreground 的处置身份；
+    一旦被前台接管或宿主重启，旧结果只能留下判断事实，不能抢占新轮次。
+    """
+
+    input_id: str
+    owner_id: str
+    observed_generation: int
+    input_version: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -165,6 +189,85 @@ def decide_inputs(
             if level == "observe":
                 connection.execute("DELETE FROM pending_inputs WHERE input_id=?", (item.input_id,))
     return True
+
+
+def register_minimum_wake_assessment(
+    connection: sqlite3.Connection,
+    expected: InputProcessing,
+    *,
+    owner_id: str,
+    observed_generation: int,
+) -> bool:
+    """同事务绑定首次升级观察；重放或已接管输入不获得新的判断资格。"""
+    if expected.stage != "foreground" or not owner_id or observed_generation <= 0:
+        raise ValueError("最低唤起升级必须绑定待处理输入和有效旧生成。")
+    with connection:
+        connection.execute("BEGIN IMMEDIATE")
+        if processing(connection, expected.input_id) != expected:
+            return False
+        cursor = connection.execute(
+            "INSERT OR IGNORE INTO minimum_wake_assessments"
+            "(input_id,owner_id,observed_generation,input_version,state) VALUES(?,?,?,?,'pending')",
+            (expected.input_id, owner_id, observed_generation, expected.version),
+        )
+        return cursor.rowcount == 1
+
+
+def minimum_wake_assessments(
+    connection: sqlite3.Connection, owner_id: str, *, limit: int
+) -> tuple[MinimumWakeAssessment, ...]:
+    """按接管顺序取得本宿主的有限升级身份，不建立全部积压的内存副本。"""
+    rows: list[tuple[object, ...]] = connection.execute(
+        "SELECT a.input_id,a.observed_generation,a.input_version "
+        "FROM minimum_wake_assessments a JOIN input_processing p USING(input_id) "
+        "WHERE a.owner_id=? AND a.state='pending' ORDER BY p.admitted_at,a.input_id LIMIT ?",
+        (owner_id, limit),
+    ).fetchall()
+    return tuple(
+        MinimumWakeAssessment(_string(row[0]), owner_id, _integer(row[1]), _integer(row[2]))
+        for row in rows
+    )
+
+
+def finish_minimum_wake_assessment(
+    connection: sqlite3.Connection,
+    assessment: MinimumWakeAssessment,
+    level: AttentionLevel,
+    reason: str,
+    *,
+    request_id: str | None,
+) -> bool:
+    """永久结案一次判断，只有原 foreground 版本可采用；最低 WAKE 始终保留。
+
+    observe/defer 是模型的实际回答，不能撤销已经接管的直接唤起或新设延期。
+    迟到结果仍记录在升级身份，但不覆盖 processing/终态，也不重复投递输入。
+    """
+    if level not in ("observe", "defer", "wake", "urgent"):
+        raise ValueError("注意级别无效。")
+    with connection:
+        connection.execute("BEGIN IMMEDIATE")
+        cursor = connection.execute(
+            "UPDATE minimum_wake_assessments SET state='completed',level=?,reason=?,request_id=? "
+            "WHERE input_id=? AND owner_id=? AND observed_generation=? AND input_version=? "
+            "AND state='pending'",
+            (
+                level,
+                reason,
+                request_id,
+                assessment.input_id,
+                assessment.owner_id,
+                assessment.observed_generation,
+                assessment.input_version,
+            ),
+        )
+        if cursor.rowcount != 1:
+            return False
+        cursor = connection.execute(
+            "UPDATE input_processing SET version=version+1,reason=?,attention_request_id=? "
+            "WHERE input_id=? AND version=? AND stage='foreground'",
+            (reason, request_id, assessment.input_id, assessment.input_version),
+        )
+        return cursor.rowcount == 1
 
 
 def deliver_due(connection: sqlite3.Connection, now: float) -> tuple[str, ...]:
@@ -392,32 +495,39 @@ def get_turn(connection: sqlite3.Connection, turn_id: str) -> TurnRecord | None:
 
 
 def initialize(connection: sqlite3.Connection) -> None:
-    """上次在途处理变成明确中断经历，原检查点保留且不自动重做输入。"""
+    """借用调用方启动事务将旧处理记为中断，不提交或自动重做输入。"""
     connection.execute("SELECT input_id,stage FROM input_processing LIMIT 0")
-    with connection:
-        rows: list[tuple[object, ...]] = connection.execute(
-            "SELECT turn_id FROM subject_turns WHERE state='running'"
-        ).fetchall()
-        for row in rows:
-            turn_id = _string(row[0])
-            connection.execute(
-                "UPDATE subject_turns SET state='interrupted',finished_at=?,error_json=? "
-                "WHERE turn_id=?",
-                (time.time(), encode_json({"error_type": "host_interrupted"}).decode(), turn_id),
-            )
-            connection.execute("INSERT OR IGNORE INTO failed_turns(turn_id) VALUES(?)", (turn_id,))
-            connection.execute(
-                "UPDATE input_processing SET version=version+1,stage='failed',"
-                "reason='host_interrupted' "
-                "WHERE input_id IN (SELECT input_id FROM turn_inputs WHERE turn_id=?)",
-                (turn_id,),
-            )
-            connection.execute(
-                "DELETE FROM pending_inputs WHERE input_id IN "
-                "(SELECT input_id FROM turn_inputs WHERE turn_id=?)",
-                (turn_id,),
-            )
-        connection.execute("UPDATE subject_sessions SET active_turn=NULL")
+    connection.execute(
+        "SELECT input_id,owner_id,observed_generation,input_version,state,level,reason,request_id "
+        "FROM minimum_wake_assessments LIMIT 0"
+    )
+    # 启动事务由 Store 持有；恢复失败不能单独提交任何子系统。
+    # 重启没有旧宿主正在运行的生成身份。只撤销升级资格，原最低唤起
+    # 继续留在前台；不得根据新进程恰好相同的数字 generation 重新判断。
+    connection.execute("UPDATE minimum_wake_assessments SET state='expired' WHERE state='pending'")
+    rows: list[tuple[object, ...]] = connection.execute(
+        "SELECT turn_id FROM subject_turns WHERE state='running'"
+    ).fetchall()
+    for row in rows:
+        turn_id = _string(row[0])
+        connection.execute(
+            "UPDATE subject_turns SET state='interrupted',finished_at=?,error_json=? "
+            "WHERE turn_id=?",
+            (time.time(), encode_json({"error_type": "host_interrupted"}).decode(), turn_id),
+        )
+        connection.execute("INSERT OR IGNORE INTO failed_turns(turn_id) VALUES(?)", (turn_id,))
+        connection.execute(
+            "UPDATE input_processing SET version=version+1,stage='failed',"
+            "reason='host_interrupted' "
+            "WHERE input_id IN (SELECT input_id FROM turn_inputs WHERE turn_id=?)",
+            (turn_id,),
+        )
+        connection.execute(
+            "DELETE FROM pending_inputs WHERE input_id IN "
+            "(SELECT input_id FROM turn_inputs WHERE turn_id=?)",
+            (turn_id,),
+        )
+    connection.execute("UPDATE subject_sessions SET active_turn=NULL")
 
 
 def _string(value: object) -> str:

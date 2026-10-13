@@ -25,7 +25,7 @@ from purrcept_engine.plugins.qq.ports import ConnectionRejected
 from purrcept_engine.plugins.qq.service import QQService
 from purrcept_engine.plugins.qq.settings import QQSettings
 from purrcept_engine.storage.knowledge import EvidenceSnapshot, KnowledgeInputError
-from purrcept_engine.storage.models import Admission, InputRecord, InputSubmission
+from purrcept_engine.storage.models import Admission, InputRecord, InputSource, InputSubmission
 from purrcept_engine.storage.store import Store
 from purrcept_engine.storage.subject import InputProcessing
 
@@ -40,16 +40,29 @@ class Inputs:
     def __init__(self, store: Store) -> None:
         self.store = store
         self.admitted: list[Admission] = []
+        self.changed = asyncio.Event()
 
     async def submit(self, submission: InputSubmission) -> Admission:
         """先取得真实事务确认，再向样例公布 input_id。"""
         result = await self.store.admit(submission)
         self.admitted.append(result)
+        self.changed.set()
         return result
+
+    async def wait_admissions(self, count: int) -> None:
+        """等待实际事务确认数量，避免用循环休眠推断消费者进度。"""
+        async with asyncio.timeout(3):
+            while len(self.admitted) < count:
+                self.changed.clear()
+                await self.changed.wait()
 
     async def query_input(self, input_id: str) -> InputRecord | None:
         """从同一个 Store 读取权威原文。"""
         return await self.store.get_input(input_id)
+
+    async def query_native_input(self, source: InputSource) -> InputRecord | None:
+        """按原生范围查询第一次权威接管，不借用测试本地列表。"""
+        return await self.store.get_native_input(source)
 
     async def query_processing(self, input_id: str) -> InputProcessing | None:
         """查询真实处理状态，不启动模型。"""
@@ -79,6 +92,7 @@ async def rig(tmp_path: Path) -> AsyncIterator[Rig]:
         lambda: {},
         evidence,
         late_results=LateCallResults(store, frozenset({"me.phone.qq.read"})),
+        native_inputs=inputs,
     )
     service = QQService("qq", settings, tmp_path, ports, Connector((socket,)))
     await service.client.start()
@@ -86,8 +100,10 @@ async def rig(tmp_path: Path) -> AsyncIterator[Rig]:
     try:
         yield Rig(store, inputs, service, socket, tmp_path)
     finally:
-        await service.close()
-        await store.close()
+        try:
+            await service.close()
+        finally:
+            await store.close()
 
 
 def message(*, message_id: int = -1, group_id: int = 123, user_id: int = 456) -> JsonObject:

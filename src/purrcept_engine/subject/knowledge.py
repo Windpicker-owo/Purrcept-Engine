@@ -140,10 +140,6 @@ class KnowledgeStore(Protocol):
         """默认读取当前有效认识，显式历史保留失效原因。"""
         ...
 
-    async def record_conflict(self, left: KnowledgeReference, right: KnowledgeReference) -> None:
-        """登记明确的未决关系，不自动淘汰任何一方。"""
-        ...
-
     async def search_knowledge(
         self,
         query: str,
@@ -291,7 +287,7 @@ def recall_payload(result: RecallResult) -> str:
 
 
 def _recall_item(candidate: KnowledgeCandidate) -> dict[str, object]:
-    """沿用默认摘要选择，只交付召回正文，不序列化完整持久化对象。"""
+    """默认交付摘要及未决版本引用，不自动展开对方正文或授予来源资格。"""
     record = candidate.record
     if isinstance(record, EvidenceSnapshot):
         text = record.summary or record.items_json or record.text
@@ -303,7 +299,7 @@ def _recall_item(candidate: KnowledgeCandidate) -> dict[str, object]:
         sources = record.patch.sources
         active = record.active
         reason = record.inactive_reason
-    return {
+    item: dict[str, object] = {
         "id": candidate.reference.id,
         "text": text,
         "version": candidate.reference.version,
@@ -314,6 +310,9 @@ def _recall_item(candidate: KnowledgeCandidate) -> dict[str, object]:
         "ranks": dict(candidate.ranks),
         "score": sum(1 / (60 + rank) for _, rank in candidate.ranks),
     }
+    if isinstance(record, MemoryRecord):
+        item["conflicts"] = [relation.model_dump(mode="json") for relation in record.conflicts]
+    return item
 
 
 class KnowledgeService:
@@ -341,13 +340,15 @@ class KnowledgeService:
         level: str = "evidence",
         cursor: str | None = None,
         max_chars: int | None = None,
+        version: int | None = None,
     ) -> EvidencePage:
-        """同一快照分页，取得片段不会提前登记实际呈现。"""
+        """展开指定版本或当前版本；游标始终绑定原版本，取得不登记实际呈现。"""
         return await self.store.read_evidence(
             identity,
             level=level,
             cursor=cursor,
             max_chars=self.page_chars if max_chars is None else max_chars,
+            version=version,
         )
 
     async def recall(

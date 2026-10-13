@@ -497,13 +497,15 @@ async def test_sqlite_roundtrip_and_interruption_preserve_attempt_facts(tmp_path
     sql.begin_attempt(connection, start)
     connection.close()
     connection = sqlite3.connect(tmp_path / "evidence.sqlite")
-    sql.initialize(connection)
+    with connection:
+        sql.initialize(connection)
     interrupted = sql.get_request(connection, "interrupted")
     assert interrupted is not None and interrupted.state == "interrupted"
     assert interrupted.attempts[0].result is not None
     assert interrupted.attempts[0].result.state == "interrupted"
     assert sql.get_request(connection, record.request.request_id) == record
-    sql.initialize(connection)
+    with connection:
+        sql.initialize(connection)
     assert sql.get_request(connection, "interrupted") == interrupted
     connection.close()
     await wrapper.close()

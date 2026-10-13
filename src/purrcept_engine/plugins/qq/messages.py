@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import re
 from collections import OrderedDict
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 from purrcept_engine.execution.protocol import (
     ActionProtocolError,
@@ -18,7 +18,6 @@ from purrcept_engine.execution.protocol import (
     decode_object,
     encode_json,
 )
-from purrcept_engine.storage.models import InputSubmission
 
 from .settings import QQSettings
 
@@ -218,9 +217,6 @@ def directory(data: JsonValue, *, kind: str) -> JsonObject:
 class _Conversation:
     messages: list[JsonObject]
     size: int
-    submissions: dict[str, InputSubmission] = field(
-        default_factory=lambda: dict[str, InputSubmission]()
-    )
 
 
 class HistoryCache:
@@ -236,13 +232,10 @@ class HistoryCache:
         self._conversations: OrderedDict[tuple[str, str, str], _Conversation] = OrderedDict()
         self._bytes = 0
 
-    def remember(
-        self, scope: str, message: JsonObject, *, submission: InputSubmission | None = None
-    ) -> None:
-        """同一消息身份替换投影；已接管信封也计入本缓存额度并随消息淘汰。
+    def remember(self, scope: str, message: JsonObject) -> None:
+        """同一消息身份替换投影，额度只覆盖有限的历史与回复关系材料。
 
-        信封只用于重放相同原事件，防止后来本地标签或补取响应变化改变该事实；
-        它不是独立权威去重库，也不能凭缓存存在推断宿主新事务成功。
+        原生重放由宿主已接管原文核对，不能依赖本缓存的存在或淘汰顺序。
         """
         chat, target = message.get("chat"), message.get("target_id")
         if not isinstance(chat, str) or not isinstance(target, str):
@@ -257,20 +250,7 @@ class HistoryCache:
             ]
         conversation.messages.append(message)
         conversation.messages = conversation.messages[-100:]
-        if submission is not None and submission.source.native_event_id is not None:
-            conversation.submissions[submission.source.native_event_id] = submission
-        retained = {id_text(item.get("message_id")) for item in conversation.messages}
-        conversation.submissions = {
-            identity: item
-            for identity, item in conversation.submissions.items()
-            if identity in retained
-        }
-        conversation.size = len(encode_json(conversation.messages)) + sum(
-            len(item.text.encode())
-            + len(item.context.details_json.encode())
-            + sum(len(asset.content) for asset in item.media)
-            for item in conversation.submissions.values()
-        )
+        conversation.size = len(encode_json(conversation.messages))
         if conversation.size <= self._settings.cache_bytes:
             self._conversations[key] = conversation
             self._bytes += conversation.size
@@ -292,10 +272,3 @@ class HistoryCache:
         if value is None:
             return None
         return next((item for item in value.messages if item.get("message_id") == message_id), None)
-
-    def submission(
-        self, scope: str, chat: str, target_id: str, message_id: str
-    ) -> InputSubmission | None:
-        """仅返回仍有缓存额度的实际已接管信封，重放仍需走宿主原子提交。"""
-        conversation = self._conversations.get((scope, chat, target_id))
-        return None if conversation is None else conversation.submissions.get(message_id)

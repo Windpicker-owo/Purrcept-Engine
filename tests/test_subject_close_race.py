@@ -62,7 +62,11 @@ def _coordinator(store: Store, *, coalesce_seconds: float = 0) -> SubjectCoordin
         return {}
 
     async def execute(
-        source: str, *, input_id: str | None, can_start: Callable[[], bool]
+        source: str,
+        *,
+        input_id: str | None,
+        can_start: Callable[[], bool],
+        presented_call_ids: frozenset[str],
     ) -> ActionRecord:
         raise AssertionError("关闭边界不应开始行动。")
 

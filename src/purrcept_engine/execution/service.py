@@ -75,6 +75,7 @@ class _Action:
     deadline: float
     can_start: Callable[[], bool] | None
     messages: asyncio.Queue[JsonObject | BaseException]
+    presented_call_ids: frozenset[str] = frozenset()
     worker: _Worker | None = None
     eligible: bool = True
     sequence: int = 0
@@ -198,11 +199,13 @@ class ExecutionService:
         *,
         input_id: str | None = None,
         can_start: Callable[[], bool] | None = None,
+        presented_call_ids: frozenset[str] = frozenset(),
     ) -> ActionRecord:
         """接管完整源码后等待整体结果，等待取消不撤销该行动的所有权。
 
         can_start 只在实际 execute 帧之前核验生成资格。派发之后资格变化
         不终止已开始的独立行动；服务关闭与自身资源额度仍可以停止 Worker。
+        presented_call_ids 冻结接管时的真实回执交付资格，脚本不能扩大此集合。
         """
         if self._closed:
             raise ExecutionClosed("执行服务已关闭接管入口。")
@@ -220,6 +223,10 @@ class ExecutionService:
             raise ExecutionLimitError("行动源码超过字节额度。")
         if input_id is not None and (not isinstance(input_id, str) or not input_id):
             raise ValueError("输入关联必须是非空身份。")
+        if not isinstance(presented_call_ids, frozenset) or any(
+            not isinstance(identity, str) or not identity for identity in presented_call_ids
+        ):
+            raise ValueError("模型回执交付资格必须是不可变的非空调用身份集合。")
 
         loop = asyncio.get_running_loop()
         action = _Action(
@@ -229,6 +236,7 @@ class ExecutionService:
             loop.time() + self._settings.action_seconds,
             can_start,
             asyncio.Queue(maxsize=self._settings.max_calls + 2),
+            presented_call_ids=presented_call_ids,
         )
         # 名额在第一次 await 前取得；两项并发接管不能同时看到最后一个空位。
         self._actions[action.action_id] = action
@@ -424,6 +432,15 @@ class ExecutionService:
         """查询权威行动与调用回执，不从 Worker 的自报状态补造效果。"""
         return await self._store.get_action(action_id)
 
+    def stop_dispatch(self) -> None:
+        """立即撤新派发资格，已开始 Provider 的真实效果仍独立收尾。
+
+        只改变当前循环上的资格，不等待数据库、不操作进程；Host 可在
+        发布 closing 的同一同步段完成撤销。队列、Worker 和 Provider
+        的资源归还仍由唯一 close 所有者执行。
+        """
+        self._closed = True
+
     async def close(self) -> None:
         """停止新入口与新调用，等待本服务持有的实际进程和 Provider 收尾。
 
@@ -431,7 +448,7 @@ class ExecutionService:
         的插件或 Store；等待取消后同一后台收尾继续，后续 close 可再次观察。
         """
         if self._close_task is None:
-            self._closed = True
+            self.stop_dispatch()
             for action in self._actions.values():
                 self._stop(action, "ServiceClosed")
             self._dispatch()
@@ -890,7 +907,13 @@ class ExecutionService:
                 sequence,
                 binding,
                 arguments,
-                CallContext(call_id, action.action_id, deadline, action.input_id),
+                CallContext(
+                    call_id,
+                    action.action_id,
+                    deadline,
+                    action.input_id,
+                    action.presented_call_ids,
+                ),
                 not binding.declaration.control,
             )
             # 已退出 Worker 的迟到 Provider 仍占用本次全局额度；名额在数据库

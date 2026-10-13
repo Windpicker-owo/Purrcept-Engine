@@ -11,7 +11,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from typing import Literal
 
 from purrcept_core.models import (
@@ -57,11 +57,14 @@ class ToolDelivery:
 
     fallback 只保存明确的来源引用、真实关键效果和重试指引；不可放入正文、
     媒体描述或任意调试输出。failure_is_error 区分阅读未交付与已发生行动。
+    presented_calls 由工具的权威完整确认正文提供，Gate只在成功的实际模型
+    请求保留该正文后授予；它不进入模型参数，也不授权容量引用或未知结果。
     """
 
     result: ToolResult
     fallback: dict[str, object]
     failure_is_error: bool = True
+    presented_calls: frozenset[str] = field(default=frozenset(), kw_only=True)
 
 
 @dataclass(frozen=True, slots=True)
@@ -76,6 +79,48 @@ class _FrozenDelivery:
     position: int
     original: Message
     delivered: Message
+
+
+def presented_evidence_calls(page: EvidencePage) -> frozenset[str]:
+    """只给完整真实回执正文登记调用身份，派生认识与摘要不能授予此资格。
+
+    原文由权威账本生成，来源与正文身份必须一致。分页片段不证明完整核对
+    材料已呈现；容量引用也没有此登记。这里不从模型文字或ID前缀猜来源。
+    """
+    snapshot = page.snapshot
+    if snapshot is None or page.level != "evidence" or page.text != snapshot.text:
+        return frozenset()
+    source = decode_object(snapshot.source_json.encode("utf-8"))
+    if snapshot.kind == "action_result":
+        if source.get("source") != "actual_action_result":
+            raise RuntimeError("行动结果缺少真实内部来源。")
+        payload = decode_object(snapshot.text.encode("utf-8"))
+        if payload.get("action_id") != source.get("action_id"):
+            raise RuntimeError("行动结果正文与来源身份不一致。")
+        calls = payload.get("calls")
+        if not isinstance(calls, list):
+            raise RuntimeError("行动结果没有完整调用记录。")
+    elif snapshot.kind == "call_receipt":
+        payload = decode_object(snapshot.text.encode("utf-8"))
+        call = payload.get("call")
+        if payload.get("source") != "actual_call_receipt" or not isinstance(call, dict):
+            raise RuntimeError("调用原文缺少真实内部来源。")
+        if call.get("call_id") != source.get("call_id"):
+            raise RuntimeError("调用原文与来源身份不一致。")
+        calls = [call]
+    else:
+        return frozenset()
+    identities: set[str] = set()
+    for call in calls:
+        if not isinstance(call, dict):
+            raise RuntimeError("真实回执缺少明确调用身份。")
+        identity = call.get("call_id")
+        if not isinstance(identity, str):
+            raise RuntimeError("真实回执调用身份无效。")
+        # UNKNOWN只有在途身份，不能让之后迟到的核对结果借旧空回执获得已读资格。
+        if call.get("state") == "confirmed" and call.get("result_json") is not None:
+            identities.add(identity)
+    return frozenset(identities)
 
 
 def evidence_fallback(page: EvidencePage, *, cursor: str | None) -> dict[str, object]:
@@ -97,6 +142,7 @@ def evidence_fallback(page: EvidencePage, *, cursor: str | None) -> dict[str, ob
         "retry": {
             "tool": "read_evidence",
             "id": reference["id"],
+            "version": reference["version"],
             "cursor": cursor,
             "level": "evidence",
             "instruction": "使用更小的 max_chars 重读原页；正文与媒体均未获得阅读覆盖。",
@@ -267,6 +313,13 @@ class ToolDeliveryGate:
         self._pending: list[_PendingDelivery] = []
         self._frozen: list[_FrozenDelivery] = []
         self._sent_prefix = 0
+        self._awaiting_presentation: list[tuple[Message, frozenset[str]]] = []
+        self._presented_call_ids: set[str] = set()
+
+    @property
+    def presented_call_ids(self) -> frozenset[str]:
+        """返回本轮成功模型请求已完整接收的真实回执身份，不含引用或待发结果。"""
+        return frozenset(self._presented_call_ids)
 
     def stage(self, call: ToolCallBlock, proposal: ToolDelivery) -> ToolResult:
         """登记工具真正生成的完整候选，登记本身不赋予原文呈现资格。"""
@@ -294,6 +347,13 @@ class ToolDeliveryGate:
     def sent(self, request: ModelRequest) -> None:
         """成功派发之后冻结已存在前缀，不从未来响应猜测新的结果位置。"""
         self._sent_prefix = len(request.messages)
+        # Ordering: 后端成功且请求证据提交后才授予下一工具行动读取资格。
+        # 同一响应的全部工具在 prepare/sent 前执行，不能消费尚未呈现的核对。
+        for message, identities in self._awaiting_presentation:
+            if message not in request.messages:
+                raise RuntimeError("真实回执呈现证明不在实际模型请求中。")
+            self._presented_call_ids.update(identities)
+        self._awaiting_presentation.clear()
 
     def prepare(
         self,
@@ -331,6 +391,7 @@ class ToolDeliveryGate:
                 raise
             reason = _capacity_details(error)
         else:
+            self._remember_presentations(current, positions)
             self._pending.clear()
             return self._project_tail(current, host_state, reminder_key)
 
@@ -372,8 +433,17 @@ class ToolDeliveryGate:
             delivered = current.messages[position]
             if delivered != pending.original:
                 self._frozen.append(_FrozenDelivery(position, pending.original, delivered))
+        self._remember_presentations(current, positions)
         self._pending.clear()
         return self._project_tail(current, host_state, reminder_key)
+
+    def _remember_presentations(self, request: ModelRequest, positions: list[int]) -> None:
+        """登记容量选择后的完整正文，失败派发不会使它成为已读事实。"""
+        for position, pending in zip(positions, self._pending, strict=True):
+            if request.messages[position] == pending.original and pending.proposal.presented_calls:
+                self._awaiting_presentation.append(
+                    (pending.original, pending.proposal.presented_calls)
+                )
 
     @staticmethod
     def _project_tail(

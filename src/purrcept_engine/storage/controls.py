@@ -72,15 +72,15 @@ SCHEMA = (
 
 
 def initialize(connection: sqlite3.Connection) -> None:
-    """在装配期核验列并保留上次未确认控制，绝不从意图重放设备调用。"""
+    """借用调用方启动事务保留旧未确认控制，不提交或重放设备调用。"""
     connection.execute("SELECT * FROM panel_controls LIMIT 0")
-    with connection:
-        connection.execute(
-            "UPDATE panel_controls SET state='interrupted',finished_at=?,"
-            "error_code='host_restarted',error='宿主重启；请查询原业务关联。' "
-            "WHERE state IN ('admitted','running')",
-            (time.time(),),
-        )
+    # 启动事务由 Store 持有；恢复失败不能单独提交任何子系统。
+    connection.execute(
+        "UPDATE panel_controls SET state='interrupted',finished_at=?,"
+        "error_code='host_restarted',error='宿主重启；请查询原业务关联。' "
+        "WHERE state IN ('admitted','running')",
+        (time.time(),),
+    )
 
 
 def get(connection: sqlite3.Connection, request_id: str) -> ControlRecord | None:
