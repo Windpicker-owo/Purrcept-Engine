@@ -10,7 +10,8 @@ import pytest
 from purrcept_engine.app import cli
 from purrcept_engine.app.cli import main
 from purrcept_engine.app.config import EngineConfig, load_config
-from purrcept_engine.app.host import EngineHost, HostSnapshot
+from purrcept_engine.app.host import EngineHost
+from purrcept_engine.app.host_types import HostSnapshot
 
 
 def test_init_check_and_repeat_init_preserve_existing_config(

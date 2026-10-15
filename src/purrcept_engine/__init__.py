@@ -5,7 +5,8 @@ EngineHost 拥有显式生命周期；接管输入不等于已经产生对外输
 """
 
 from purrcept_engine.app.config import EngineConfig, load_config
-from purrcept_engine.app.host import EngineHost, HostSnapshot
+from purrcept_engine.app.host import EngineHost
+from purrcept_engine.app.host_types import HostSnapshot
 from purrcept_engine.domain.inputs.models import (
     Admission,
     InputContext,

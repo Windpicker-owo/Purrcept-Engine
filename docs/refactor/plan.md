@@ -4,6 +4,14 @@
 
 ## 当前实施状态
 
+2026-10-15 阶段五：EngineHost 保留原公开签名，缩为 258 行嵌入门面。
+EngineAssembly 装配，HostLifecycle 持有唯一启动/关闭任务与显式依赖收尾，
+InputAdmissionService 持有接管交接，HostQueries 提供只读事实；EngineState
+只在应用内部保存部分启动和真实资源归还事实。关闭同步撤派发、并行停止
+所有者、依赖归还后解锁的顺序保留。1081 项全量离线测试、30 项关闭相关
+验证、Ruff、格式、strict Pyright 与编译检查通过。
+
+
 2026-10-15 阶段四：默认 ExecutionService 归入 infrastructure/execution，
 WorkerSession 负责进程/帧资源，CallDispatcher 负责共享能力队列与真实回执，
 二者借用同一行动状态。领域保留目录、Provider 契约、执行端口和源码校验。
