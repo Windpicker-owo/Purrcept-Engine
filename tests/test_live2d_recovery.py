@@ -13,8 +13,8 @@ from pathlib import Path
 import pytest
 
 from purrcept_engine import EngineConfig, EngineHost, InstanceLocked
-from purrcept_engine.app.locking import InstanceLock
 from purrcept_engine.errors import HostStateError
+from purrcept_engine.infrastructure.locking import InstanceLock
 from purrcept_engine.plugin_system.body import BodyIntent
 from purrcept_engine.plugins.live2d import runtime as runtime_module
 from purrcept_engine.plugins.live2d.analyzer import VisemeFrame

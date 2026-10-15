@@ -29,6 +29,7 @@ from purrcept_engine.domain.inputs.models import (
 )
 from purrcept_engine.domain.subject.models import InputProcessing
 from purrcept_engine.errors import StorageError
+from purrcept_engine.infrastructure.sqlite.store import Store
 from purrcept_engine.plugins.computer import driver as driver_module
 from purrcept_engine.plugins.computer import plugin
 from purrcept_engine.plugins.computer.driver import ProcessDriver
@@ -40,7 +41,6 @@ from purrcept_engine.plugins.computer.models import (
     ObservationPolicy,
 )
 from purrcept_engine.plugins.computer.runtime import ComputerRuntime, load_policy
-from purrcept_engine.storage.store import Store
 from purrcept_engine.values import decode_object
 
 

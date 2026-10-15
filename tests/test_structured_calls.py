@@ -24,7 +24,7 @@ from purrcept_engine.execution.service import (
     ExecutionLimitError,
     ExecutionService,
 )
-from purrcept_engine.storage.store import Store
+from purrcept_engine.infrastructure.sqlite.store import Store
 from purrcept_engine.values import ActionProtocolError, JsonObject
 
 

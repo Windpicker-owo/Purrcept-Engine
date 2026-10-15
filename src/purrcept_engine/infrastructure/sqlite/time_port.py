@@ -13,8 +13,8 @@ from datetime import datetime
 from typing import Protocol
 
 import purrcept_engine.domain.time.models as time_models
+from purrcept_engine.infrastructure.sqlite import time as sql
 from purrcept_engine.serialization import encode
-from purrcept_engine.storage import time as sql
 
 
 class _Submit(Protocol):

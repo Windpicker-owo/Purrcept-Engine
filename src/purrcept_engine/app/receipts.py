@@ -9,7 +9,7 @@
 from purrcept_engine.domain.execution.models import CallRecord
 from purrcept_engine.errors import StorageError
 from purrcept_engine.execution.providers import CallContext, CallOutcome, CapabilityInputError
-from purrcept_engine.storage.store import Store
+from purrcept_engine.infrastructure.sqlite.store import Store
 from purrcept_engine.values import encode_json
 
 

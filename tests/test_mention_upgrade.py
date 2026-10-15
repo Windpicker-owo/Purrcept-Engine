@@ -30,7 +30,7 @@ from purrcept_core.models import (
 )
 
 from purrcept_engine import EngineConfig, EngineHost, InputContext, InputSource, InputSubmission
-from purrcept_engine.storage.store import Store
+from purrcept_engine.infrastructure.sqlite.store import Store
 from purrcept_engine.subject.attention import ATTENTION_QUESTION
 
 

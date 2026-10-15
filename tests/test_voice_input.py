@@ -20,6 +20,7 @@ from pydantic import SecretStr
 from purrcept_engine.domain.inputs.models import Admission, InputRecord, InputSubmission
 from purrcept_engine.domain.subject.models import InputProcessing
 from purrcept_engine.execution.providers import CallContext
+from purrcept_engine.infrastructure.sqlite.store import Store
 from purrcept_engine.plugin_system.contracts import PluginPorts
 from purrcept_engine.plugins.voice_input.models import (
     InputDevice,
@@ -30,7 +31,6 @@ from purrcept_engine.plugins.voice_input.models import (
 from purrcept_engine.plugins.voice_input.plugin import factory, make_factory
 from purrcept_engine.plugins.voice_input.runtime import VoiceInputRuntime
 from purrcept_engine.plugins.voice_input.vad import Segmenter
-from purrcept_engine.storage.store import Store
 from purrcept_engine.values import decode_object
 
 SILENCE = b"\0" * 1024

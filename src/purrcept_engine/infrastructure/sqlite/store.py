@@ -11,30 +11,23 @@
 线程内程序异常原样交回当前和排队的等待者，并停止派发、关闭连接。
 """
 
-import asyncio
 import hashlib
 import json
 import logging
-import os
 import sqlite3
-import threading
 import time
-from collections import deque
-from collections.abc import Callable, Iterator
-from dataclasses import dataclass, replace
+from collections.abc import Iterator
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Literal, Protocol
+from typing import Literal
 from uuid import uuid4
 
-import purrcept_engine.domain.controls.models as controls_models
 import purrcept_engine.domain.execution.record_validation as record_validation
 import purrcept_engine.domain.knowledge.models as knowledge_models
-import purrcept_engine.domain.time.models as time_models
 import purrcept_engine.serialization as serialization
 from purrcept_engine.context.maintenance import (
     Reservation,
-    SummaryError,
     SummaryProposal,
     SummarySource,
 )
@@ -75,128 +68,29 @@ from purrcept_engine.domain.subject.models import (
     TurnRecord,
 )
 from purrcept_engine.errors import StorageError
-from purrcept_engine.storage import activities as activity_storage
-from purrcept_engine.storage import audio as audio_storage
-from purrcept_engine.storage import controls as control_storage
-from purrcept_engine.storage import execution as execution_storage
-from purrcept_engine.storage import feedback as feedback_storage
-from purrcept_engine.storage import knowledge as knowledge_storage
-from purrcept_engine.storage import maintenance as maintenance_storage
-from purrcept_engine.storage import model_requests as model_storage
-from purrcept_engine.storage import projections as projection_storage
-from purrcept_engine.storage import retention as retention_storage
-from purrcept_engine.storage import subject as subject_storage
-from purrcept_engine.storage import time as time_storage
-from purrcept_engine.storage.audio_port import AudioLedger
-from purrcept_engine.storage.controls import ControlLedger
-from purrcept_engine.storage.feedback_port import FeedbackLedger
-from purrcept_engine.storage.knowledge_port import KnowledgeLedger
-from purrcept_engine.storage.time_port import TimeLedger
+from purrcept_engine.infrastructure.sqlite import activities as activity_storage
+from purrcept_engine.infrastructure.sqlite import execution as execution_storage
+from purrcept_engine.infrastructure.sqlite import feedback as feedback_storage
+from purrcept_engine.infrastructure.sqlite import knowledge as knowledge_storage
+from purrcept_engine.infrastructure.sqlite import maintenance as maintenance_storage
+from purrcept_engine.infrastructure.sqlite import model_requests as model_storage
+from purrcept_engine.infrastructure.sqlite import projections as projection_storage
+from purrcept_engine.infrastructure.sqlite import retention as retention_storage
+from purrcept_engine.infrastructure.sqlite import subject as subject_storage
+from purrcept_engine.infrastructure.sqlite.audio_port import AudioLedger
+from purrcept_engine.infrastructure.sqlite.controls import ControlLedger
+from purrcept_engine.infrastructure.sqlite.feedback_port import FeedbackLedger
+from purrcept_engine.infrastructure.sqlite.knowledge_port import KnowledgeLedger
+from purrcept_engine.infrastructure.sqlite.queue import SqliteExecutor
+from purrcept_engine.infrastructure.sqlite.time_port import TimeLedger
 from purrcept_engine.values import ActionProtocolError, JsonObject, JsonValue, decode_object
 
-_FORMAT_VERSION = 13
 _logger = logging.getLogger(__name__)
-_APPLICATION_ID = 0x50555245
+
 _INPUT_COLUMNS = (
     "input_id, adapter_id, account_id, conversation_id, event_kind, native_event_id, "
     "sender_id, display_name, text, occurred_at, received_at, logical_bytes, context_json"
 )
-_SCHEMA = (
-    "CREATE TABLE media (media_id TEXT PRIMARY KEY, content BLOB NOT NULL)",
-    "CREATE TABLE inputs ("
-    "input_id TEXT PRIMARY KEY, adapter_id TEXT NOT NULL, account_id TEXT NOT NULL, "
-    "conversation_id TEXT NOT NULL, event_kind TEXT NOT NULL, native_event_id TEXT, "
-    "sender_id TEXT, display_name TEXT, text TEXT NOT NULL, occurred_at TEXT NOT NULL, "
-    "received_at TEXT NOT NULL, logical_bytes INTEGER NOT NULL CHECK(logical_bytes >= 0), "
-    "context_json TEXT NOT NULL, dedup_key TEXT UNIQUE, fingerprint TEXT NOT NULL)",
-    "CREATE TABLE input_media ("
-    "input_id TEXT NOT NULL REFERENCES inputs(input_id), ordinal INTEGER NOT NULL, "
-    "media_id TEXT NOT NULL REFERENCES media(media_id), media_type TEXT NOT NULL, "
-    "name TEXT, PRIMARY KEY(input_id, ordinal))",
-    "CREATE TABLE pending_inputs ("
-    "sequence INTEGER PRIMARY KEY AUTOINCREMENT, "
-    "input_id TEXT UNIQUE NOT NULL REFERENCES inputs(input_id))",
-    *execution_storage.SCHEMA,
-    *model_storage.SCHEMA,
-    *activity_storage.SCHEMA,
-    *subject_storage.SCHEMA,
-    *knowledge_storage.SCHEMA,
-    *maintenance_storage.SCHEMA,
-    *time_storage.SCHEMA,
-    *feedback_storage.SCHEMA,
-    *control_storage.SCHEMA,
-    *audio_storage.SCHEMA,
-)
-
-
-def _upgrade_minimum_wake(connection: sqlite3.Connection) -> None:
-    """在格式12上原子增加升级判断表，不改写原文、关系或业务记录。
-
-    格式12的DDL已冻结。先核对全部原有对象和完整性，再在同一短事务创建
-    表及索引。Store在全部初始化通过后推进版本并提交；任何拒绝或SQLite
-    失败均留下原版本与原数据。不能用IF NOT EXISTS接受名称冲突。
-    """
-    rows: list[tuple[object, ...]] = connection.execute(
-        "SELECT sql FROM sqlite_master WHERE sql IS NOT NULL"
-    ).fetchall()
-    existing_sql = {_text(row[0]) for row in rows}
-    for statement in _SCHEMA:
-        if statement in subject_storage.MINIMUM_WAKE_SCHEMA:
-            continue
-        if statement not in existing_sql:
-            raise StorageError("格式12的数据库结构不完整或已被修改。", code="invalid_record")
-    for statement in subject_storage.MINIMUM_WAKE_SCHEMA:
-        connection.execute(statement)
-
-
-class _QueuedJob(Protocol):
-    """数据库线程执行一次交接，结果通过所属事件循环交回等待者。
-
-    Store 创建并入队，工作线程调用 run；数据库或业务边界错误由线程调用
-    fail 回传。结果 Future 只在事件循环修改。该内部契约隐藏结果类型，
-    使混合事务队列不必抹除公开方法的返回类型。
-    """
-
-    logical_bytes: int
-    writing: bool
-
-    def run(self, connection: sqlite3.Connection) -> Callable[[], None]:
-        """执行事务并返回结果交付动作；线程先归还交接位置再公开结果。"""
-        ...
-
-    def fail(self, error: BaseException) -> None:
-        """送回原错误；内部异常不转换成容量拒收或可纠正参数错误。"""
-        ...
-
-
-@dataclass(slots=True)
-class _Job[Result]:
-    """保留操作与等待者的精确结果类型，不将连接交给异步调用者。"""
-
-    operation: Callable[[sqlite3.Connection], Result]
-    future: asyncio.Future[Result]
-    loop: asyncio.AbstractEventLoop
-    logical_bytes: int
-    writing: bool
-
-    def run(self, connection: sqlite3.Connection) -> Callable[[], None]:
-        """冻结事务结果，延迟公开到队列名额实际归还后。"""
-        result = self.operation(connection)
-
-        def publish() -> None:
-            self.loop.call_soon_threadsafe(self.future.set_result, result)
-
-        return publish
-
-    def fail(self, error: BaseException) -> None:
-        """在所属循环保留错误，即使原等待者已经取消。"""
-        self.loop.call_soon_threadsafe(self.future.set_exception, error)
-
-
-def _observe_result[Result](future: asyncio.Future[Result]) -> None:
-    """取回无人继续等待的异常，保留 Future 中的结果供正常等待者读取。"""
-    if not future.cancelled():
-        future.exception()
 
 
 def _text(value: object) -> str:
@@ -637,32 +531,12 @@ class Store:
     """
 
     def __init__(self, path: Path, max_inputs: int, max_input_bytes: int) -> None:
-        """准备未打开实例；公开创建通过 open 取得线程初始化结果。
-
-        路径在交接前固定到当前工作目录，实际文件与 SQLite I/O 全部在线程上。
-        """
-        self._path = Path(os.path.abspath(path))
+        """创建同连接账本门面；公开创建仍通过 open 等待连接就绪。"""
         self._max_inputs = max_inputs
         self._max_input_bytes = max_input_bytes
-        self._loop = asyncio.get_running_loop()
-        self._ready: asyncio.Future[None] = self._loop.create_future()
-        self._closed: asyncio.Future[None] = self._loop.create_future()
-        self._ready.add_done_callback(_observe_result)
-        self._closed.add_done_callback(_observe_result)
-        self._condition = threading.Condition()
-        self._ordinary: deque[_QueuedJob] = deque()
-        self._control: deque[_QueuedJob] = deque()
-        self._ordinary_count = 0
-        self._ordinary_bytes = 0
-        self._control_count = 0
-        self._control_bytes = 0
-        self._closing = False
-        self._connection_closing = False
-        self._failure: StorageError | None = None
-        self._thread = threading.Thread(target=self._run, name="purrcept-storage", daemon=False)
+        self._queue = SqliteExecutor(path, max_inputs, max_input_bytes)
+        self._submit = self._queue.submit
         self._knowledge = KnowledgeLedger(self._submit)
-        self._change_revision = 0
-        self._changed = asyncio.Event()
 
     @property
     def knowledge(self) -> KnowledgeLedger:
@@ -736,26 +610,12 @@ class Store:
 
     @property
     def change_revision(self) -> int:
-        """返回本进程成功写入通知代次，业务事实仍须从权威记录读取。"""
-        return self._change_revision
+        """返回提交器已发布的事务通知代次，不替代权威查询。"""
+        return self._queue.change_revision
 
     async def wait_for_change(self, after_revision: int) -> int:
-        """等待新提交或关闭唤醒；通知丢失不能替代持久待办查询。
-
-        工作器先记录代次再查可靠待办，查询期间发生的写入会立即结束本次
-        等待。固定工作器可借用此等待，不创建每行订阅或无界消息总线。
-        """
-        while self._change_revision <= after_revision and not self._closing:
-            self._changed.clear()
-            if self._change_revision > after_revision:
-                break
-            await self._changed.wait()
-        return self._change_revision
-
-    def _notify_change(self) -> None:
-        """数据库线程仅排入本循环通知，事实及其可靠待办已经提交。"""
-        self._change_revision += 1
-        self._changed.set()
+        """等待事务或关闭通知，所有账本共享同一通知源。"""
+        return await self._queue.wait_for_change(after_revision)
 
     @classmethod
     async def open(
@@ -772,18 +632,7 @@ class Store:
         _positive(max_inputs, "max_inputs")
         _positive(max_input_bytes, "max_input_bytes")
         store = cls(path, max_inputs, max_input_bytes)
-        store._thread.start()
-        try:
-            await asyncio.shield(store._ready)
-        except asyncio.CancelledError:
-            store._begin_close()
-            await asyncio.shield(store._closed)
-            raise
-        except BaseException:
-            # 生命周期：失败只有在专属连接实际收回后才能交给目录锁所有者。
-            # 这里仅等待清理，原错误仍原样传播。
-            await asyncio.shield(store._closed)
-            raise
+        await store._queue.start()
         return store
 
     async def admit(self, submission: InputSubmission) -> Admission:
@@ -1207,13 +1056,8 @@ class Store:
 
     @property
     def authority_available(self) -> bool:
-        """返回派发前可同步核验的权威资格，不以查询成功替代写入健康。
-
-        故障与关闭门槛由同一线程条件锁读取；调用者在 await 后仍须再次核验，
-        该快照不预留提交容量，也不是外部效果已经发生的证明。
-        """
-        with self._condition:
-            return self._failure is None and not self._closing and not self._connection_closing
+        """同步读取提交器的写入资格；调用方在等待后仍须复核。"""
+        return self._queue.authority_available
 
     async def begin_request(self, request: RequestEvidence) -> None:
         """原子保存编译材料与同库 BLOB 引用，确认前不允许模型派发。"""
@@ -1539,262 +1383,19 @@ class Store:
         )
 
     async def close(self) -> None:
-        """禁止新的写入并等待同一排空与关闭过程。
-
-        取消本次等待不会取消线程收尾；再次调用加入原关闭过程，不再次关闭
-        连接。宿主负责整体关闭期限，本入口等待实际完成才返回。
-        """
-        self._check_loop()
-        self._begin_close()
-        await asyncio.shield(self._closed)
-
-    def _check_loop(self) -> None:
-        if asyncio.get_running_loop() is not self._loop:
-            raise RuntimeError("Store 只能在创建它的事件循环上使用。")
+        """等待唯一提交器实际排空和关闭，观察取消不撤销收尾。"""
+        await self._queue.close()
 
     @staticmethod
     def _validate_id(value: str) -> None:
         if not isinstance(value, str) or not value:
             raise ValueError("记录身份必须是非空字符串。")
 
-    async def _submit[Result](
-        self,
-        operation: Callable[[sqlite3.Connection], Result],
-        *,
-        logical_bytes: int = 0,
-        control: bool = False,
-        writing: bool = False,
-    ) -> Result:
-        """在取得有限交接位置后提交；shield 保护的是实际提交所有权。"""
-        self._check_loop()
-        future: asyncio.Future[Result] = self._loop.create_future()
-        future.add_done_callback(_observe_result)
-        job = _Job(operation, future, self._loop, logical_bytes, writing)
-        with self._condition:
-            if self._connection_closing or (self._closing and writing):
-                raise StorageError("存储已开始关闭。", code="store_closed")
-            if writing and self._failure is not None:
-                raise StorageError("权威存储已故障，拒绝新的写入。") from self._failure
-
-            # 控制有独立的条数和字节位置，真实回执不借普通输入容量收尾；
-            # 参数与结果也须计量，不能在控制路径绕过有界载荷。
-            if control:
-                if (
-                    self._control_count >= self._max_inputs
-                    or self._control_bytes + logical_bytes > self._max_input_bytes
-                ):
-                    raise StorageError("存储控制提交已满。", code="store_busy")
-                self._control_count += 1
-                self._control_bytes += logical_bytes
-                self._control.append(job)
-            else:
-                if (
-                    self._ordinary_count >= self._max_inputs
-                    or self._ordinary_bytes + logical_bytes > self._max_input_bytes
-                ):
-                    raise StorageError("存储普通提交已满。", code="store_busy")
-                self._ordinary_count += 1
-                self._ordinary_bytes += logical_bytes
-                self._ordinary.append(job)
-            self._condition.notify()
-        return await asyncio.shield(future)
-
-    def _begin_close(self) -> None:
-        """关闭资格由同一条件锁串行确认，排队中的提交仍由线程持有。"""
-        with self._condition:
-            self._closing = True
-            self._condition.notify()
-        self._loop.call_soon_threadsafe(self._notify_change)
-
-    def _run(self) -> None:
-        """专属线程拥有从打开到关闭的全部连接访问与事务执行。"""
-        connection: sqlite3.Connection | None = None
-        try:
-            self._path.parent.mkdir(parents=True, exist_ok=True)
-            connection = sqlite3.connect(self._path)
-            self._initialize(connection)
-        except (OSError, sqlite3.Error, StorageError) as error:
-            failure = self._storage_failure(error)
-            self._loop.call_soon_threadsafe(self._ready.set_exception, failure)
-        except BaseException as error:
-            # 跨线程交接必须完成 Future。保留程序异常本身，不让线程退出后
-            # 启动等待者永久悬挂，也不把它归入可恢复的 SQLite 错误。
-            self._loop.call_soon_threadsafe(self._ready.set_exception, error)
-        else:
-            self._loop.call_soon_threadsafe(self._ready.set_result, None)
-            self._drain(connection)
-        finally:
-            with self._condition:
-                self._connection_closing = True
-            try:
-                if connection is not None:
-                    connection.close()
-            except sqlite3.Error as error:
-                self._loop.call_soon_threadsafe(
-                    self._closed.set_exception, self._storage_failure(error)
-                )
-            else:
-                self._loop.call_soon_threadsafe(self._closed.set_result, None)
-
-    def _drain(self, connection: sqlite3.Connection) -> None:
-        """控制优先于未开始事务；已开始事务完成后才归还交接位置。"""
-        while True:
-            with self._condition:
-                self._condition.wait_for(
-                    lambda: bool(self._control or self._ordinary) or self._closing
-                )
-                if not self._control and not self._ordinary:
-                    # 读取与连接关闭使用同一门槛；此后不再接管排队，否则新查询
-                    # 可能落在已排空队列之后，永久等待无人执行的任务。
-                    self._connection_closing = True
-                    return
-                control = bool(self._control)
-                job = self._control.popleft() if control else self._ordinary.popleft()
-            fatal: BaseException | None = None
-            error_to_send: BaseException | None = None
-            publish: Callable[[], None] | None = None
-            changes_before = connection.total_changes
-            try:
-                # 权威故障也撤销尚未开始的已排队写入资格，防止前一提交失败后
-                # 后续派发意图仍被接管并成为能力启动许可；只读事实继续可查询。
-                with self._condition:
-                    if job.writing and self._failure is not None:
-                        raise StorageError("权威存储已故障，拒绝排队写入。") from self._failure
-                publish = job.run(connection)
-            except StorageError as error:
-                if error.code in {"invalid_record", "unsupported_format"}:
-                    self._latch_failure(error)
-                error_to_send = error
-            except knowledge_models.KnowledgeInputError as error:
-                # 来源/批次/版本冲突可在原预算内纠正，不是数据库或程序故障。
-                # 该显式业务分类仍原样交回，其他未识别异常继续停止派发。
-                error_to_send = error
-            except (SummaryError, time_models.TimeError, controls_models.ControlError) as error:
-                error_to_send = error
-            except sqlite3.Error as error:
-                failure = self._storage_failure(error)
-                self._latch_failure(failure)
-                error_to_send = failure
-            except BaseException as error:
-                fatal = error
-                error_to_send = error
-            finally:
-                with self._condition:
-                    if control:
-                        self._control_count -= 1
-                        self._control_bytes -= job.logical_bytes
-                    else:
-                        self._ordinary_count -= 1
-                        self._ordinary_bytes -= job.logical_bytes
-            # Ordering: Future 一旦完成，调用方可立即提交下一条操作。名额须
-            # 已归还，否则 max_inputs=1 时成功 admit 后的 pending 会随机拒收。
-            if error_to_send is not None:
-                job.fail(error_to_send)
-            else:
-                assert publish is not None
-                if job.writing and connection.total_changes > changes_before:
-                    self._loop.call_soon_threadsafe(self._notify_change)
-                publish()
-            if fatal is not None:
-                self._abort_pending(fatal)
-                return
-
-    def _abort_pending(self, error: BaseException) -> None:
-        """程序异常停止线程派发，并把所有已接管等待者交回同一个真实故障。"""
-        with self._condition:
-            self._closing = True
-            self._connection_closing = True
-            pending = (*self._control, *self._ordinary)
-            self._control_count -= len(self._control)
-            self._control_bytes -= sum(queued.logical_bytes for queued in self._control)
-            self._ordinary_count -= len(self._ordinary)
-            self._ordinary_bytes -= sum(queued.logical_bytes for queued in self._ordinary)
-            self._control.clear()
-            self._ordinary.clear()
-            self._loop.call_soon_threadsafe(self._notify_change)
-            # 当前任务已归还，只扣尚未开始的队列位置。
-            for queued in pending:
-                queued.fail(error)
-
-    def _latch_failure(self, failure: StorageError) -> None:
-        """权威故障保留为拒写原因，不自动重建连接或替换空数据库。"""
-        with self._condition:
-            if self._failure is None:
-                self._failure = failure
-                self._loop.call_soon_threadsafe(self._notify_change)
-
-    @staticmethod
-    def _storage_failure(error: BaseException) -> StorageError:
-        """翻译真实 I/O 与 SQLite 错误并保留原因，沿用已分类的存储错误。"""
-        if isinstance(error, StorageError):
-            return error
-        result = StorageError("权威 SQLite 操作失败，原数据库已保留。")
-        result.__cause__ = error
-        return result
-
-    @staticmethod
-    def _initialize(connection: sqlite3.Connection) -> None:
-        """初始化空库或升级已知格式12；未知格式和完整性故障保留原库。"""
-        connection.execute("PRAGMA foreign_keys = ON")
-        version_row: tuple[object, ...] = connection.execute("PRAGMA user_version").fetchone()
-        identity_row: tuple[object, ...] = connection.execute("PRAGMA application_id").fetchone()
-        version = _integer(version_row[0])
-        identity = _integer(identity_row[0])
-        tables: list[tuple[object, ...]] = connection.execute(
-            "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'"
-        ).fetchall()
-        # Ordering: 格式、结构、业务解码和上次在途恢复共享一次提交。子系统
-        # 初始化借用此事务；任何后置拒绝都不能留下升级或部分中断记录。
-        with connection:
-            connection.execute("BEGIN IMMEDIATE")
-            if version == 0 and identity == 0 and not tables:
-                for statement in _SCHEMA:
-                    connection.execute(statement)
-                connection.execute(f"PRAGMA application_id = {_APPLICATION_ID}")
-            elif version == 12 and identity == _APPLICATION_ID:
-                _upgrade_minimum_wake(connection)
-            elif version != _FORMAT_VERSION or identity != _APPLICATION_ID:
-                raise StorageError("数据库不是支持的 Engine 格式。", code="unsupported_format")
-
-            check: tuple[object, ...] = connection.execute("PRAGMA quick_check").fetchone()
-            if check != ("ok",):
-                raise StorageError("权威数据库完整性检查失败。", code="invalid_record")
-            broken_reference: tuple[object, ...] | None = connection.execute(
-                "PRAGMA foreign_key_check"
-            ).fetchone()
-            if broken_reference is not None:
-                raise StorageError("权威数据库包含失效引用。", code="invalid_record")
-            # 明确读取必需列，在装配时暴露缺表/缺列，避免首次输入才触发格式失败。
-            connection.execute(
-                f"SELECT {_INPUT_COLUMNS}, dedup_key, fingerprint FROM inputs LIMIT 0"
-            )
-            connection.execute("SELECT media_id, content FROM media LIMIT 0")
-            connection.execute(
-                "SELECT input_id, ordinal, media_id, media_type, name FROM input_media LIMIT 0"
-            )
-            connection.execute("SELECT sequence, input_id FROM pending_inputs LIMIT 0")
-            execution_storage.initialize(connection)
-            model_storage.initialize(connection)
-            subject_storage.initialize(connection)
-            knowledge_storage.initialize(connection)
-            maintenance_storage.initialize(connection)
-            time_storage.initialize(connection)
-            feedback_storage.initialize(connection)
-            control_storage.initialize(connection)
-            connection.execute(
-                "SELECT sequence,plugin_id,identity,fact,occurred_at,payload_json "
-                "FROM audio_facts LIMIT 0"
-            )
-            activity_storage.activity_records(connection)
-            connection.execute(f"PRAGMA user_version = {_FORMAT_VERSION}")
-
     def _admit(
         self, connection: sqlite3.Connection, submission: InputSubmission, logical_bytes: int
     ) -> Admission:
         """外部接管持有事务；其他业务在自己的事务中复用同一输入保存机制。"""
-        with self._condition:
-            if self._failure is not None:
-                raise StorageError("权威存储已故障，拒绝新的写入。") from self._failure
+        self._queue.check_writing()
         connection.execute("BEGIN IMMEDIATE")
         try:
             admission = admit_in_transaction(
@@ -1910,9 +1511,7 @@ class Store:
 
     def _complete_input(self, connection: sqlite3.Connection, input_id: str) -> None:
         """显式处置只移除积压关系；原文和媒体继续作为权威历史保留。"""
-        with self._condition:
-            if self._failure is not None:
-                raise StorageError("权威存储已故障，拒绝新的写入。") from self._failure
+        self._queue.check_writing()
         with connection:
             existing: tuple[object, ...] | None = connection.execute(
                 "SELECT 1 FROM inputs WHERE input_id = ?", (input_id,)

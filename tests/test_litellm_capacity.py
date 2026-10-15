@@ -14,7 +14,7 @@ import pytest
 from PIL import Image
 
 from purrcept_engine.context.capacity import CapacityError, GenerationCapacity, check_capacity
-from purrcept_engine.context.litellm_capacity import (
+from purrcept_engine.infrastructure.models.capacity import (
     GEMINI_MEDIA,
     RULE,
     count_litellm_capacity,

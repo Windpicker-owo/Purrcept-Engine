@@ -33,9 +33,9 @@ from purrcept_engine.domain.subject.feedback_models import (
 )
 from purrcept_engine.domain.subject.models import TurnRecord
 from purrcept_engine.errors import StorageError
+from purrcept_engine.infrastructure.sqlite import activities, execution, knowledge
+from purrcept_engine.infrastructure.sqlite.time import AdmitInput
 from purrcept_engine.serialization import encode
-from purrcept_engine.storage import activities, execution, knowledge
-from purrcept_engine.storage.time import AdmitInput
 from purrcept_engine.values import decode_object
 
 SCHEMA = (

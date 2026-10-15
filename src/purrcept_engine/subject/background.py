@@ -39,7 +39,7 @@ from purrcept_engine.domain.knowledge.models import (
 )
 from purrcept_engine.domain.subject.feedback_models import ReflectionSource, ReflectionState
 from purrcept_engine.errors import HostStateError
-from purrcept_engine.storage.feedback_port import FeedbackLedger
+from purrcept_engine.infrastructure.sqlite.feedback_port import FeedbackLedger
 from purrcept_engine.subject.attention import NativeMedia
 from purrcept_engine.subject.coordinator import SubjectModel
 from purrcept_engine.subject.delivery import ToolDeliveryGate

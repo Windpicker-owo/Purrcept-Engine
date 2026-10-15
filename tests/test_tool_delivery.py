@@ -38,7 +38,13 @@ from purrcept_engine.context.capacity import (
     check_capacity,
 )
 from purrcept_engine.domain.execution.models import ActionRecord, CallOutcome
-from purrcept_engine.domain.inputs.models import MediaReference
+from purrcept_engine.domain.inputs.models import (
+    InputContext,
+    InputSource,
+    InputSubmission,
+    MediaAsset,
+    MediaReference,
+)
 from purrcept_engine.domain.knowledge.models import (
     EvidenceSnapshot,
     KnowledgeInputError,
@@ -48,9 +54,8 @@ from purrcept_engine.domain.knowledge.models import (
 )
 from purrcept_engine.domain.subject.models import SessionScope
 from purrcept_engine.errors import StorageError
+from purrcept_engine.infrastructure.sqlite.store import Store
 from purrcept_engine.serialization import encode
-from purrcept_engine.storage import InputContext, InputSource, InputSubmission, MediaAsset
-from purrcept_engine.storage.store import Store
 from purrcept_engine.subject.delivery import ToolDeliveryGate
 from purrcept_engine.subject.foreground import ForegroundTools
 from purrcept_engine.subject.knowledge import KnowledgeService

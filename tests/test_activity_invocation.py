@@ -24,6 +24,7 @@ from purrcept_engine.errors import StorageError
 from purrcept_engine.execution.catalog import CapabilityDeclaration, Catalog, ObjectDeclaration
 from purrcept_engine.execution.providers import CallContext, CallOutcome, FunctionCapability
 from purrcept_engine.execution.service import ExecutionService
+from purrcept_engine.infrastructure.sqlite.store import Store
 from purrcept_engine.plugin_system.contracts import (
     PluginBlueprint,
     PluginFactory,
@@ -31,7 +32,6 @@ from purrcept_engine.plugin_system.contracts import (
     PluginRuntime,
     typed_factory,
 )
-from purrcept_engine.storage.store import Store
 from purrcept_engine.subject.activities import (
     ActivityDefinition,
     ActivityError,

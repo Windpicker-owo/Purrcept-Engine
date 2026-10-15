@@ -26,7 +26,7 @@ from purrcept_engine.context.capacity import CapacityAssessment, CapacityError
 from purrcept_engine.context.checkpoints import decode_checkpoint
 from purrcept_engine.context.maintenance import SummaryError, freeze_summary_source
 from purrcept_engine.domain.subject.models import SessionRecord
-from purrcept_engine.storage.store import Store
+from purrcept_engine.infrastructure.sqlite.store import Store
 from purrcept_engine.subject.delivery import ToolDeliveryGate
 from purrcept_engine.subject.history import HistoryMaintenance
 from purrcept_engine.subject.model_requests import (

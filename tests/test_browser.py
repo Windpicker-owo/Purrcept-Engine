@@ -25,6 +25,7 @@ from purrcept_engine.domain.subject.models import InputProcessing
 from purrcept_engine.errors import ConfigError
 from purrcept_engine.execution.catalog import Catalog, ObjectDeclaration
 from purrcept_engine.execution.providers import CallContext, CapabilityInputError
+from purrcept_engine.infrastructure.sqlite.store import Store
 from purrcept_engine.plugin_system.contracts import PluginPorts
 from purrcept_engine.plugins.browser import plugin
 from purrcept_engine.plugins.browser.driver import (
@@ -40,7 +41,6 @@ from purrcept_engine.plugins.browser.navigation import NavigationPolicy, normali
 from purrcept_engine.plugins.browser.search import build_search_url, parse_search_results
 from purrcept_engine.plugins.browser.session import BrowserSession
 from purrcept_engine.plugins.browser.settings import BrowserSettings, SearchEngine
-from purrcept_engine.storage.store import Store
 from purrcept_engine.values import JsonObject, decode_object
 
 

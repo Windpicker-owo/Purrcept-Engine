@@ -21,6 +21,12 @@ from purrcept_engine.app.config import EngineConfig, PluginSettings
 from purrcept_engine.app.host import EngineHost
 from purrcept_engine.app.receipts import LateCallResults
 from purrcept_engine.context.capacity import CapacityDeclaration, CapacityEstimate
+from purrcept_engine.domain.inputs.models import (
+    InputSource,
+    InputSubmission,
+    MediaAsset,
+    MediaReference,
+)
 from purrcept_engine.domain.knowledge.models import EvidenceSnapshot
 from purrcept_engine.execution.catalog import CapabilityDeclaration, ObjectDeclaration
 from purrcept_engine.execution.providers import (
@@ -29,14 +35,13 @@ from purrcept_engine.execution.providers import (
     CapabilityInputError,
     FunctionCapability,
 )
+from purrcept_engine.infrastructure.sqlite.store import Store
 from purrcept_engine.plugin_system.contracts import (
     PluginBlueprint,
     PluginFactory,
     PluginPorts,
     PluginRuntime,
 )
-from purrcept_engine.storage import InputSource, InputSubmission, MediaAsset, MediaReference
-from purrcept_engine.storage.store import Store
 
 PNG = base64.b64decode(
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aT1sAAAAASUVORK5CYII="

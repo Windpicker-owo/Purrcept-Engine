@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pytest
 
-from purrcept_engine.app.logging import CliLogging
+from purrcept_engine.infrastructure.logging import CliLogging
 
 
 def test_cli_summary_keeps_causal_identity_without_exception_or_arbitrary_extra(

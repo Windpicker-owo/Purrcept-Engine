@@ -56,9 +56,9 @@ from purrcept_engine.domain.knowledge.models import (
 )
 from purrcept_engine.domain.subject.models import TurnOutcome
 from purrcept_engine.errors import HostStateError, StorageError
-from purrcept_engine.storage import feedback as feedback_sql
-from purrcept_engine.storage.store import Store
-from purrcept_engine.storage.time import AdmitInput
+from purrcept_engine.infrastructure.sqlite import feedback as feedback_sql
+from purrcept_engine.infrastructure.sqlite.store import Store
+from purrcept_engine.infrastructure.sqlite.time import AdmitInput
 from purrcept_engine.subject import background as background_module
 from purrcept_engine.subject.background import BackgroundService, BackgroundSettings
 from purrcept_engine.subject.coordinator import SubjectModel

@@ -45,8 +45,11 @@ from purrcept_engine.domain.knowledge.models import (
     WakeupPlan,
 )
 from purrcept_engine.errors import StorageError
+from purrcept_engine.infrastructure.sqlite.model_requests import (
+    intern_core_media,
+    restore_core_media,
+)
 from purrcept_engine.serialization import encode
-from purrcept_engine.storage.model_requests import intern_core_media, restore_core_media
 
 EvidencePage.model_rebuild()
 

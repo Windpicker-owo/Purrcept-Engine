@@ -17,6 +17,7 @@ from pydantic import BaseModel, ConfigDict
 
 from purrcept_engine import EngineConfig, EngineHost, HostStateError
 from purrcept_engine.domain.activities.models import ActivityCommand, ActivityRecord, ActivityState
+from purrcept_engine.infrastructure.sqlite import activities as sql
 from purrcept_engine.plugin_system.contracts import (
     PluginBlueprint,
     PluginFactory,
@@ -24,7 +25,6 @@ from purrcept_engine.plugin_system.contracts import (
     PluginRuntime,
     typed_factory,
 )
-from purrcept_engine.storage import activities as sql
 from purrcept_engine.subject.activities import (
     ActivityDefinition,
     ActivityPort,

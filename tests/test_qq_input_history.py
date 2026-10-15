@@ -26,12 +26,12 @@ from purrcept_engine.domain.inputs.models import (
 from purrcept_engine.domain.knowledge.models import EvidenceSnapshot, KnowledgeInputError
 from purrcept_engine.domain.subject.models import InputProcessing
 from purrcept_engine.execution.providers import CallContext
+from purrcept_engine.infrastructure.sqlite.store import Store
 from purrcept_engine.plugin_system.contracts import PluginPorts
 from purrcept_engine.plugins.qq.parameters import Read
 from purrcept_engine.plugins.qq.ports import ConnectionRejected
 from purrcept_engine.plugins.qq.service import QQService
 from purrcept_engine.plugins.qq.settings import QQSettings
-from purrcept_engine.storage.store import Store
 from purrcept_engine.values import JsonObject, decode_object, encode_json
 
 PNG = base64.b64decode(

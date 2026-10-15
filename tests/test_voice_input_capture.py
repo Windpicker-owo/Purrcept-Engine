@@ -20,11 +20,11 @@ from test_voice_input import Inputs, Transcriber, settings
 
 from purrcept_engine.app.config import ContextSettings, RetrySettings
 from purrcept_engine.app.history import HistoryPreparation
+from purrcept_engine.infrastructure.sqlite.store import Store
 from purrcept_engine.plugins.voice_input import capture
 from purrcept_engine.plugins.voice_input.capture import SoundDeviceCapture
 from purrcept_engine.plugins.voice_input.models import VoiceInputError
 from purrcept_engine.plugins.voice_input.runtime import VoiceInputRuntime
-from purrcept_engine.storage.store import Store
 from purrcept_engine.subject.history import HistoryMaintenance
 from purrcept_engine.subject.model_requests import prepare_off_loop
 from purrcept_engine.subject.session import ContinuousSession

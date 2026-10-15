@@ -25,6 +25,8 @@ from pydantic import SecretStr
 from purrcept_engine.domain.audio.models import AudioFact
 from purrcept_engine.errors import StorageError
 from purrcept_engine.execution.providers import CallContext, CallOutcome
+from purrcept_engine.infrastructure.sqlite.audio import make_fact
+from purrcept_engine.infrastructure.sqlite.store import Store
 from purrcept_engine.plugin_system.body import BodyIntent
 from purrcept_engine.plugins.audio import player as player_module
 from purrcept_engine.plugins.audio.dsp import encode_wav
@@ -39,8 +41,6 @@ from purrcept_engine.plugins.audio.models import (
 from purrcept_engine.plugins.audio.player import FFplayPlayer
 from purrcept_engine.plugins.audio.runtime import AudioRuntime
 from purrcept_engine.plugins.audio.tts import FishSource
-from purrcept_engine.storage.audio import make_fact
-from purrcept_engine.storage.store import Store
 from purrcept_engine.values import JsonObject
 
 

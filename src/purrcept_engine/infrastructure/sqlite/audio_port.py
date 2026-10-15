@@ -12,7 +12,7 @@ from collections.abc import Awaitable, Callable
 from typing import Protocol
 
 import purrcept_engine.domain.audio.models as audio_models
-from purrcept_engine.storage import audio as sql
+from purrcept_engine.infrastructure.sqlite import audio as sql
 
 _logger = logging.getLogger(__name__)
 

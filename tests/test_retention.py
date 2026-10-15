@@ -13,8 +13,8 @@ from pathlib import Path
 import pytest
 
 from purrcept_engine.errors import StorageError
-from purrcept_engine.storage import model_requests
-from purrcept_engine.storage.retention import (
+from purrcept_engine.infrastructure.sqlite import model_requests
+from purrcept_engine.infrastructure.sqlite.retention import (
     diagnostic_events_digest,
     expire_diagnostics,
 )

@@ -30,8 +30,8 @@ from purrcept_engine.domain.model_requests.models import (
     RequestScope,
 )
 from purrcept_engine.errors import StorageError
+from purrcept_engine.infrastructure.sqlite import retention
 from purrcept_engine.serialization import encode
-from purrcept_engine.storage import retention
 
 _logger = logging.getLogger(__name__)
 

@@ -55,7 +55,7 @@ async def verify_host(directory: Path) -> dict[str, object]:
     from purrcept_core.models import ModelEventSink, ModelRequest, ModelResponse
 
     from purrcept_engine import EngineConfig, EngineHost
-    from purrcept_engine.storage.store import Store
+    from purrcept_engine.infrastructure.sqlite.store import Store
 
     class OfflineBackend:
         """仅禁止模型网络路径；本场景没有输入或到期反思，不需合成回复。"""

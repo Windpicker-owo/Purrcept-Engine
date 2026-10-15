@@ -12,9 +12,9 @@ from typing import Protocol
 
 import purrcept_engine.domain.subject.feedback_models as subject_feedback_models
 from purrcept_engine.domain.knowledge.models import EvidencePage, SupervisionRecord
+from purrcept_engine.infrastructure.sqlite import feedback as sql
+from purrcept_engine.infrastructure.sqlite.time import AdmitInput
 from purrcept_engine.serialization import encode
-from purrcept_engine.storage import feedback as sql
-from purrcept_engine.storage.time import AdmitInput
 
 
 def _nonnegative(value: int) -> None:

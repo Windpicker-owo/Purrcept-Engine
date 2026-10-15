@@ -11,7 +11,7 @@ import sqlite3
 
 import purrcept_engine.domain.execution.models as execution_models
 from purrcept_engine.errors import StorageError
-from purrcept_engine.storage import activities, execution, subject
+from purrcept_engine.infrastructure.sqlite import activities, execution, subject
 from purrcept_engine.values import JsonObject, JsonValue
 
 

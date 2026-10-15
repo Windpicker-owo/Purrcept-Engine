@@ -14,8 +14,8 @@ from purrcept_core.models import ContentBlock, Message
 
 import purrcept_engine.domain.knowledge.models as knowledge_models
 from purrcept_engine.domain.inputs.models import MediaAsset, MediaReference
+from purrcept_engine.infrastructure.sqlite import knowledge as sql
 from purrcept_engine.serialization import encode
-from purrcept_engine.storage import knowledge as sql
 
 
 class _Submit(Protocol):

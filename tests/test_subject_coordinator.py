@@ -51,18 +51,18 @@ from purrcept_engine.context.capacity import (
 )
 from purrcept_engine.context.materials import media_blocks
 from purrcept_engine.domain.execution.models import ActionRecord
-from purrcept_engine.domain.model_requests.models import RequestEvidence
-from purrcept_engine.errors import StorageError
-from purrcept_engine.execution.catalog import CapabilityDeclaration, Catalog, ObjectDeclaration
-from purrcept_engine.execution.providers import CallContext, CallOutcome, FunctionCapability
-from purrcept_engine.execution.service import ExecutionService
-from purrcept_engine.storage import (
+from purrcept_engine.domain.inputs.models import (
     InputContext,
     InputSource,
     InputSubmission,
     MediaAsset,
 )
-from purrcept_engine.storage.store import Store
+from purrcept_engine.domain.model_requests.models import RequestEvidence
+from purrcept_engine.errors import StorageError
+from purrcept_engine.execution.catalog import CapabilityDeclaration, Catalog, ObjectDeclaration
+from purrcept_engine.execution.providers import CallContext, CallOutcome, FunctionCapability
+from purrcept_engine.execution.service import ExecutionService
+from purrcept_engine.infrastructure.sqlite.store import Store
 from purrcept_engine.subject.attention import ATTENTION_QUESTION, AttentionModel
 from purrcept_engine.subject.coordinator import (
     CoordinatorSettings,
@@ -1273,7 +1273,7 @@ async def test_generation_attention_preserves_native_audio_under_explicit_rule(
         assert encoded_audio in encoded
         if capacity_kind == "litellm":
             from purrcept_engine.context.capacity import GenerationCapacity, check_capacity
-            from purrcept_engine.context.litellm_capacity import (
+            from purrcept_engine.infrastructure.models.capacity import (
                 GEMINI_MEDIA,
                 RULE,
                 count_litellm_capacity,

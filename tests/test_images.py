@@ -29,9 +29,9 @@ from purrcept_engine.errors import ConfigError, StorageError
 from purrcept_engine.execution.catalog import Catalog, ObjectDeclaration
 from purrcept_engine.execution.providers import CallContext, CapabilityInputError
 from purrcept_engine.execution.service import ExecutionService
+from purrcept_engine.infrastructure.sqlite.store import Store
 from purrcept_engine.plugin_system.contracts import PluginPorts, PluginRuntime
 from purrcept_engine.plugins import images
-from purrcept_engine.storage.store import Store
 
 
 def pixels(format: str = "PNG") -> bytes:

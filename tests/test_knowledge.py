@@ -39,7 +39,7 @@ from purrcept_engine.domain.knowledge.models import (
     WakeupPlan,
 )
 from purrcept_engine.errors import StorageError
-from purrcept_engine.storage import knowledge as ledger
+from purrcept_engine.infrastructure.sqlite import knowledge as ledger
 
 
 @pytest.fixture

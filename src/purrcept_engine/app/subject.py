@@ -24,8 +24,8 @@ from purrcept_engine.context.capacity import (
 from purrcept_engine.context.materials import media_blocks
 from purrcept_engine.domain.inputs.models import MediaReference
 from purrcept_engine.execution.catalog import Catalog
+from purrcept_engine.infrastructure.sqlite.store import Store
 from purrcept_engine.plugin_system.contracts import PluginRuntime
-from purrcept_engine.storage.store import Store
 from purrcept_engine.subject.attention import AttentionModel
 from purrcept_engine.subject.background import BackgroundService, BackgroundSettings
 from purrcept_engine.subject.coordinator import (

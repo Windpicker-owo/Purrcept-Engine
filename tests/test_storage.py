@@ -9,13 +9,10 @@ from pathlib import Path
 
 import pytest
 
+from purrcept_engine.domain.inputs.models import InputSource, InputSubmission, MediaAsset
 from purrcept_engine.errors import StorageError
-from purrcept_engine.storage import (
-    InputSource,
-    InputSubmission,
-    MediaAsset,
-)
-from purrcept_engine.storage.store import Store
+from purrcept_engine.infrastructure.sqlite.schema import initialize
+from purrcept_engine.infrastructure.sqlite.store import Store
 
 _TIME = datetime(2026, 10, 12, 8, 0, tzinfo=UTC)
 
@@ -357,20 +354,23 @@ async def test_connection_and_statements_stay_on_one_owned_thread(
 
 
 @pytest.mark.asyncio
-async def test_cancelled_open_waits_for_connection_cleanup(tmp_path: Path) -> None:
+async def test_cancelled_open_waits_for_connection_cleanup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     entered = threading.Event()
     release = threading.Event()
     workers: list[threading.Thread] = []
 
-    class SlowStore(Store):
-        @staticmethod
-        def _initialize(connection: sqlite3.Connection) -> None:
-            workers.append(threading.current_thread())
-            entered.set()
-            release.wait(2)
-            Store._initialize(connection)
+    def slow_initialize(connection: sqlite3.Connection) -> None:
+        workers.append(threading.current_thread())
+        entered.set()
+        release.wait(2)
+        initialize(connection)
 
-    opening = asyncio.create_task(SlowStore.open(tmp_path / "state.sqlite3"))
+    # 初始化属于连接提交器；仍验证实际连接线程在取消后完成清理。
+    monkeypatch.setattr("purrcept_engine.infrastructure.sqlite.queue.initialize", slow_initialize)
+
+    opening = asyncio.create_task(Store.open(tmp_path / "state.sqlite3"))
     try:
         assert await asyncio.to_thread(entered.wait, 2)
         opening.cancel()

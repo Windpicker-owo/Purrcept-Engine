@@ -26,10 +26,10 @@ from purrcept_engine.domain.knowledge.models import (
 )
 from purrcept_engine.domain.model_requests.models import AttemptStart, RequestEvidence, RequestScope
 from purrcept_engine.errors import StorageError
-from purrcept_engine.storage import activities as activity_storage
-from purrcept_engine.storage import execution as execution_storage
-from purrcept_engine.storage import model_requests as request_storage
-from purrcept_engine.storage.store import Store
+from purrcept_engine.infrastructure.sqlite import activities as activity_storage
+from purrcept_engine.infrastructure.sqlite import execution as execution_storage
+from purrcept_engine.infrastructure.sqlite import model_requests as request_storage
+from purrcept_engine.infrastructure.sqlite.store import Store
 
 type SqlValue = int | float | str | bytes | None
 type StoredCell = tuple[str, SqlValue]

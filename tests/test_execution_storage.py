@@ -16,8 +16,8 @@ import pytest
 
 import purrcept_engine.domain.execution.models as execution_models
 from purrcept_engine.errors import StorageError
-from purrcept_engine.storage import execution as execution_storage
-from purrcept_engine.storage.store import Store
+from purrcept_engine.infrastructure.sqlite import execution as execution_storage
+from purrcept_engine.infrastructure.sqlite.store import Store
 
 
 async def _prepare(store: Store, call_id: str, *, sequence: int = 0) -> None:

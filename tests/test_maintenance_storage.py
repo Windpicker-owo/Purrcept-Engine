@@ -49,8 +49,8 @@ from purrcept_engine.domain.model_requests.models import (
     RequestEvidence,
     RequestScope,
 )
+from purrcept_engine.infrastructure.sqlite import knowledge, maintenance, model_requests, subject
 from purrcept_engine.serialization import encode
-from purrcept_engine.storage import knowledge, maintenance, model_requests, subject
 
 
 @pytest.fixture

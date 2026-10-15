@@ -23,8 +23,8 @@ from purrcept_core.models import (
     ModelResponse,
 )
 
-from purrcept_engine.app.config import DecisionModelSettings, GenerationModelSettings
 from purrcept_engine.errors import ConfigError
+from purrcept_engine.infrastructure.models.connection import ModelConnection
 
 if TYPE_CHECKING:
     from purrcept_litellm import LiteLLMBackend, LiteLLMDecisionBackend
@@ -42,7 +42,7 @@ class OpenAIGenerationResource:
     关闭等待加入同一清理任务，不关闭 LiteLLM 全局缓存或其他宿主客户端。
     """
 
-    def __init__(self, settings: GenerationModelSettings) -> None:
+    def __init__(self, settings: ModelConnection) -> None:
         """固定凭据、端点与客户端所有权；不建立真实连接。"""
         if not settings.model.startswith("openai/"):
             raise ConfigError("首批生成路径需要显式 openai/ 模型协议标识")
@@ -64,7 +64,7 @@ class OpenAIGenerationResource:
         self._close_task: asyncio.Task[None] | None = None
 
     @classmethod
-    def create(cls, settings: GenerationModelSettings) -> OpenAIGenerationResource:
+    def create(cls, settings: ModelConnection) -> OpenAIGenerationResource:
         """从已校验配置建立一个独立所有者，不读取环境凭据或探测服务。"""
         return cls(settings)
 
@@ -125,7 +125,7 @@ class DecisionResource:
     应用先结束在途借用，再关闭同一个所有者，不操作 SDK 全局客户端缓存。
     """
 
-    def __init__(self, settings: DecisionModelSettings) -> None:
+    def __init__(self, settings: ModelConnection) -> None:
         """记录已校验配置，首次调用前不导入 SDK 或取得 HTTP 传输。"""
         # 只接入已核验传输契约的提供商；端点地址不能代替模型前缀选择协议。
         if not settings.model.startswith(("typesafe/", "openrouter/")):
@@ -138,7 +138,7 @@ class DecisionResource:
         self._close_task: asyncio.Task[None] | None = None
 
     @classmethod
-    def create(cls, settings: DecisionModelSettings) -> DecisionResource:
+    def create(cls, settings: ModelConnection) -> DecisionResource:
         """建立显式判断所有者，不探测端点或修改全局 SDK 配置。"""
         return cls(settings)
 

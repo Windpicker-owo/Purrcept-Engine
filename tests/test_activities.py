@@ -21,7 +21,7 @@ from purrcept_engine.domain.activities.models import (
     ActivityRecord,
 )
 from purrcept_engine.errors import HostStateError, StorageError
-from purrcept_engine.storage import activities as sql
+from purrcept_engine.infrastructure.sqlite import activities as sql
 from purrcept_engine.subject.activities import (
     ActivityDefinition,
     ActivityError,

@@ -26,13 +26,13 @@ from purrcept_engine.domain.inputs.models import (
     InputSubmission,
 )
 from purrcept_engine.errors import StorageError
+from purrcept_engine.infrastructure.sqlite.store import Store
 from purrcept_engine.plugin_system.contracts import PluginPorts
 from purrcept_engine.plugins.qq.messages import HistoryCache, project_message
 from purrcept_engine.plugins.qq.plugin import factory_with_connector
 from purrcept_engine.plugins.qq.service import QQService
 from purrcept_engine.plugins.qq.settings import QQSettings
 from purrcept_engine.plugins.qq.stickers import StickerRecord
-from purrcept_engine.storage.store import Store
 from purrcept_engine.values import JsonObject, decode_object, encode_json
 
 

@@ -50,7 +50,10 @@ from purrcept_core.models import (
 )
 
 if TYPE_CHECKING:
-    from purrcept_engine.app.models import DecisionResource, OpenAIGenerationResource
+    from purrcept_engine.infrastructure.models.clients import (
+        DecisionResource,
+        OpenAIGenerationResource,
+    )
 
 _GENERATION_BASE = "https://generation.invalid/v1"
 _DECISION_BASE = "https://decision.invalid/v1"
@@ -265,7 +268,7 @@ def _generation_resource() -> OpenAIGenerationResource:
     from pydantic import SecretStr
 
     from purrcept_engine.app.config import GenerationModelSettings
-    from purrcept_engine.app.models import OpenAIGenerationResource
+    from purrcept_engine.infrastructure.models.clients import OpenAIGenerationResource
 
     return OpenAIGenerationResource.create(
         GenerationModelSettings(
@@ -285,7 +288,7 @@ def _decision_resource(path: Literal["decision", "openrouter"] = "decision") -> 
     from pydantic import SecretStr
 
     from purrcept_engine.app.config import DecisionModelSettings
-    from purrcept_engine.app.models import DecisionResource
+    from purrcept_engine.infrastructure.models.clients import DecisionResource
 
     model, api_base = _DECISION_TARGETS[path]
     return DecisionResource.create(
@@ -443,7 +446,7 @@ httpx.Client.send = forbid_sync
 httpx.AsyncClient.send = forbid_async
 
 from purrcept_engine.app.config import DecisionModelSettings, GenerationModelSettings
-from purrcept_engine.app.models import OpenAIGenerationResource, DecisionResource
+from purrcept_engine.infrastructure.models.clients import OpenAIGenerationResource, DecisionResource
 assert 'litellm' not in sys.modules
 assert 'purrcept_litellm' not in sys.modules
 
@@ -488,7 +491,7 @@ async def test_resource_close_is_shared_and_rejects_new_calls(
     path: Literal["generation", "decision", "openrouter"],
 ) -> None:
     """取消关闭等待者不取消清理，重复关闭不释放第二次或再启动模型。"""
-    from purrcept_engine.app.models import DecisionResource
+    from purrcept_engine.infrastructure.models.clients import DecisionResource
 
     resource = _generation_resource() if path == "generation" else _decision_resource(path)
     if isinstance(resource, DecisionResource):

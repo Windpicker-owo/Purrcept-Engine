@@ -21,8 +21,8 @@ from purrcept_engine.domain.model_requests.models import (
     RequestEvidence,
     RequestScope,
 )
-from purrcept_engine.storage import model_requests as sql
-from purrcept_engine.storage.store import Store
+from purrcept_engine.infrastructure.sqlite import model_requests as sql
+from purrcept_engine.infrastructure.sqlite.store import Store
 from purrcept_engine.values import JsonObject
 
 

@@ -20,9 +20,9 @@ from typing import TYPE_CHECKING
 
 from purrcept_engine.app.config import load_config
 from purrcept_engine.app.host import EngineHost, HostSnapshot
-from purrcept_engine.app.logging import CliLogging
 from purrcept_engine.app.stdin import ConsoleIngress, WindowsLineReader
 from purrcept_engine.errors import ConfigError, EngineError
+from purrcept_engine.infrastructure.logging import CliLogging
 
 if TYPE_CHECKING:
     from purrcept_engine.app.web import WebServer

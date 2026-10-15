@@ -28,13 +28,13 @@ from purrcept_engine.context.maintenance import (
 )
 from purrcept_engine.domain.subject.models import SessionScope
 from purrcept_engine.errors import StorageError
-from purrcept_engine.serialization import encode
-from purrcept_engine.storage.knowledge import get_evidence
-from purrcept_engine.storage.model_requests import (
+from purrcept_engine.infrastructure.sqlite.knowledge import get_evidence
+from purrcept_engine.infrastructure.sqlite.model_requests import (
     decode_attempt,
     decode_request,
     restore_core_media,
 )
+from purrcept_engine.serialization import encode
 from purrcept_engine.values import JsonObject, JsonValue, decode_object
 
 SCHEMA = (

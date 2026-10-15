@@ -2,7 +2,7 @@
 
 from purrcept_engine.domain.inputs.models import MediaAsset
 from purrcept_engine.domain.knowledge.models import EvidencePage, EvidenceSnapshot
-from purrcept_engine.storage.knowledge_port import KnowledgeLedger
+from purrcept_engine.infrastructure.sqlite.knowledge_port import KnowledgeLedger
 
 
 class EvidenceAccess:

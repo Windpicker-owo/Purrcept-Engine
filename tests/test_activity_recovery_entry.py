@@ -32,6 +32,8 @@ from purrcept_engine.domain.activities.models import (
     ActivityRecord,
     ActivityState,
 )
+from purrcept_engine.infrastructure.sqlite.activities import get_activity_feedback
+from purrcept_engine.infrastructure.sqlite.store import Store
 from purrcept_engine.plugin_system.contracts import (
     PluginBlueprint,
     PluginFactory,
@@ -39,8 +41,6 @@ from purrcept_engine.plugin_system.contracts import (
     PluginRuntime,
     typed_factory,
 )
-from purrcept_engine.storage.activities import get_activity_feedback
-from purrcept_engine.storage.store import Store
 from purrcept_engine.subject.activities import (
     ActivityDefinition,
     ActivityError,

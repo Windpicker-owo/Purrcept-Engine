@@ -25,33 +25,37 @@ from purrcept_engine.app.assembly import prepare_plugins
 from purrcept_engine.app.config import EngineConfig, ExecutionSettings, GenerationModelSettings
 from purrcept_engine.app.evidence import EvidenceAccess
 from purrcept_engine.app.knowledge_resources import KnowledgeResources
-from purrcept_engine.app.locking import InstanceLock
-from purrcept_engine.app.models import DecisionResource, OpenAIGenerationResource
 from purrcept_engine.app.panel import ControlRequest, PanelController
 from purrcept_engine.app.receipts import LateCallResults
 from purrcept_engine.app.subject import SubjectAssembly, build_subject
 from purrcept_engine.context.capacity import CapacityRule
-from purrcept_engine.context.litellm_capacity import GEMINI_MEDIA, RULE, count_litellm_capacity
 from purrcept_engine.domain.activities.models import ActivityCommand, ActivityRecord, CommandKind
 from purrcept_engine.domain.controls.models import ControlRecord
+from purrcept_engine.domain.execution.models import ActionRecord
+from purrcept_engine.domain.inputs.models import (
+    Admission,
+    InputRecord,
+    InputSource,
+    InputSubmission,
+)
 from purrcept_engine.domain.model_requests.models import RequestRecord
 from purrcept_engine.domain.subject.models import InputProcessing
 from purrcept_engine.errors import ConfigError, HostStateError, StorageError
 from purrcept_engine.execution.catalog import Catalog
 from purrcept_engine.execution.ports import ActionExecutor, ExecutionJournal
 from purrcept_engine.execution.providers import CallContext, CallOutcome, CapabilityImplementation
+from purrcept_engine.infrastructure.locking import InstanceLock
+from purrcept_engine.infrastructure.models.capacity import (
+    GEMINI_MEDIA,
+    RULE,
+    count_litellm_capacity,
+)
+from purrcept_engine.infrastructure.models.clients import DecisionResource, OpenAIGenerationResource
+from purrcept_engine.infrastructure.sqlite.projections import action_projection
+from purrcept_engine.infrastructure.sqlite.store import Store
 from purrcept_engine.plugin_system.audio_port import AudioOutputPort
 from purrcept_engine.plugin_system.contracts import PluginFactory, PluginPorts, PluginRuntime
 from purrcept_engine.plugin_system.panels import PreviewFrame
-from purrcept_engine.storage import (
-    ActionRecord,
-    Admission,
-    InputRecord,
-    InputSource,
-    InputSubmission,
-)
-from purrcept_engine.storage.projections import action_projection
-from purrcept_engine.storage.store import Store
 from purrcept_engine.subject.activities import ActivityService
 from purrcept_engine.subject.knowledge import Reranker
 from purrcept_engine.subject.semantic import EmbeddingProvider

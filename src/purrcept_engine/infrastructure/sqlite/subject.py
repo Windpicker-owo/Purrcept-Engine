@@ -26,7 +26,10 @@ from purrcept_engine.domain.subject.models import (
     TurnRecord,
 )
 from purrcept_engine.errors import StorageError
-from purrcept_engine.storage.model_requests import intern_core_media, restore_core_media
+from purrcept_engine.infrastructure.sqlite.model_requests import (
+    intern_core_media,
+    restore_core_media,
+)
 from purrcept_engine.values import decode_object, encode_json
 
 MINIMUM_WAKE_SCHEMA = (

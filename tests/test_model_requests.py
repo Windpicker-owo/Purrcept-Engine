@@ -63,7 +63,7 @@ from purrcept_core.models import (
 
 import purrcept_engine.serialization as serialization
 from purrcept_engine.app.config import DecisionModelSettings, GenerationModelSettings, RetrySettings
-from purrcept_engine.app.models import DecisionResource, OpenAIGenerationResource
+from purrcept_engine.domain.inputs.models import InputSource, InputSubmission, MediaAsset
 from purrcept_engine.domain.model_requests.models import (
     AttemptEvidence,
     AttemptStart,
@@ -72,13 +72,9 @@ from purrcept_engine.domain.model_requests.models import (
     RequestScope,
 )
 from purrcept_engine.errors import StorageError
-from purrcept_engine.storage import (
-    InputSource,
-    InputSubmission,
-    MediaAsset,
-)
-from purrcept_engine.storage import model_requests as sql
-from purrcept_engine.storage.store import Store
+from purrcept_engine.infrastructure.models.clients import DecisionResource, OpenAIGenerationResource
+from purrcept_engine.infrastructure.sqlite import model_requests as sql
+from purrcept_engine.infrastructure.sqlite.store import Store
 from purrcept_engine.subject.model_requests import (
     ModelDecisionBackend,
     ModelGenerationBackend,

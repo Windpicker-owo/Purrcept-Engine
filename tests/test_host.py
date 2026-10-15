@@ -18,9 +18,10 @@ from purrcept_engine import (
     InstanceLocked,
     StorageError,
 )
-from purrcept_engine.app.locking import InstanceLock
-from purrcept_engine.app.models import OpenAIGenerationResource
 from purrcept_engine.context.capacity import CapacityDeclaration, CapacityEstimate
+from purrcept_engine.infrastructure.locking import InstanceLock
+from purrcept_engine.infrastructure.models.clients import OpenAIGenerationResource
+from purrcept_engine.infrastructure.sqlite.store import Store
 from purrcept_engine.plugin_system.contracts import (
     PluginBlueprint,
     PluginFactory,
@@ -28,7 +29,6 @@ from purrcept_engine.plugin_system.contracts import (
     PluginRuntime,
 )
 from purrcept_engine.plugin_system.panels import DevicePanel
-from purrcept_engine.storage.store import Store
 from purrcept_engine.values import JsonObject
 
 

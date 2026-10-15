@@ -51,8 +51,8 @@ from purrcept_engine.domain.model_requests.models import (
     RequestScope,
 )
 from purrcept_engine.errors import HostStateError
+from purrcept_engine.infrastructure.sqlite.maintenance import summary_message
 from purrcept_engine.serialization import encode
-from purrcept_engine.storage.maintenance import summary_message
 from purrcept_engine.subject.model_requests import (
     ModelGenerationBackend,
     RequestBudget,

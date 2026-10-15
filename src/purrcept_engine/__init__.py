@@ -21,7 +21,6 @@ from purrcept_engine.errors import (
     InstanceLocked,
     StorageError,
 )
-from purrcept_engine.storage import ActionRecord, CallRecord
 
 __all__ = [
     "ActionRecord",
@@ -42,3 +41,5 @@ __all__ = [
     "StorageError",
     "load_config",
 ]
+
+from purrcept_engine.domain.execution.models import ActionRecord, CallRecord

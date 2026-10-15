@@ -39,8 +39,8 @@ from purrcept_engine.domain.knowledge.models import (
     MemoryRecord,
     SupervisionRecord,
 )
-from purrcept_engine.storage import knowledge as ledger
-from purrcept_engine.storage.store import Store
+from purrcept_engine.infrastructure.sqlite import knowledge as ledger
+from purrcept_engine.infrastructure.sqlite.store import Store
 from purrcept_engine.subject.delivery import evidence_fallback
 from purrcept_engine.subject.foreground import ForegroundTools
 from purrcept_engine.subject.knowledge import KnowledgeService
