@@ -685,7 +685,6 @@ class Notebook:
             "incomplete": bool(scan.issues),
             "issues": list(scan.issues),
         }
-        payload["skills_version"] = hashlib.sha256(encode_json(payload)).hexdigest()
         return payload
 
     async def tree(self, path: str = "") -> JsonObject:

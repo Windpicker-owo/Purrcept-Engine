@@ -138,6 +138,7 @@ def make_factory(
                 stop_inputs=runtime.stop_inputs,
                 close=runtime.close,
                 snapshot=runtime.snapshot,
+                prepare_request=runtime.prepare_request,
                 panel=DevicePanel("live2d", (), revision),
                 body=runtime,
                 resources_released=lambda: runtime.resources_released,

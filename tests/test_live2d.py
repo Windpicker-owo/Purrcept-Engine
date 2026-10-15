@@ -95,6 +95,12 @@ async def test_playback_adopts_only_actual_start_and_gesture_does_not_restart() 
     assert accepted["adopted"] is False
     await body.step()
     assert body.snapshot()["adopted"] is True
+    material = await body.prepare_request()
+    assert material["connected"] is True and material["adopted"] is True
+    assert material["playback_id"] == "playing"
+    assert "remaining_seconds_at_assembly" in material
+    assert "expires_at" not in material and "analysis_queued_frames" not in material
+    assert "generation" not in material
     clock.now += 0.3
     await body.step()
     gesture = driver.frames[-1]["head_y"]

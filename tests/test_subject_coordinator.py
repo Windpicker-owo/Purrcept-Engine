@@ -435,6 +435,106 @@ async def test_minimum_wake_bypasses_attention_window_without_keyword_rules(tmp_
         await value.store.close()
 
 
+async def test_high_priority_flushes_all_open_inputs_without_attention_batch_cap(rig: _Rig) -> None:
+    rig.coordinator.settings = CoordinatorSettings(4096, coalesce_seconds=60, attention_batch=2)
+    ids = [await _admit(rig, f"ordinary-{i}", f"缓冲正文 {i}") for i in range(12)]
+    ids.append(await _admit(rig, "high", "实时输入", context=InputContext(minimum_wake=True)))
+    ids.append(await _admit(rig, "after-high", "高优先之后到达"))
+    await rig.coordinator.start()
+    for identity in ids:
+        await _stage(rig, identity, "processed")
+    assert len(rig.generation.requests) == 1
+    assert not rig.decision.requests and not rig.generation.cancelled
+    request_text = "\n".join(message.text for message in rig.generation.requests[0].messages)
+    assert all(identity in request_text for identity in ids)
+
+
+async def test_every_stop_pulls_all_arrivals_including_unexpired_buffer(rig: _Rig) -> None:
+    rig.coordinator.settings = CoordinatorSettings(4096, coalesce_seconds=60, attention_batch=2)
+    rig.generation.blocks[1] = asyncio.Event()
+    first = await _admit(rig, "initial", "开始", context=InputContext(minimum_wake=True))
+    await rig.coordinator.start()
+    await rig.generation.arrivals.get()
+    ids = [await _admit(rig, f"waiting-{i}", f"等待期间 {i}") for i in range(12)]
+    ids.append(await _admit(rig, "high", "高优先输入", context=InputContext(minimum_wake=True)))
+    ids.append(await _admit(rig, "latest", "拉取前最新输入"))
+    rig.generation.blocks[1].set()
+    async with asyncio.timeout(5):
+        request = await rig.generation.arrivals.get()
+    text = "\n".join(message.text for message in request.messages)
+    assert all(identity in text for identity in (first, *ids))
+    for identity in (first, *ids):
+        await _stage(rig, identity, "processed")
+    assert rig.coordinator.generation == 1 and not rig.generation.cancelled
+    assert not rig.decision.requests
+    with sqlite3.connect(rig.directory / "state.sqlite3") as connection:
+        assert connection.execute("SELECT COUNT(*) FROM subject_turns").fetchone() == (1,)
+        turn_id = connection.execute("SELECT turn_id FROM subject_turns").fetchone()[0]
+    evidence = await rig.store.requests_for_turn("foreground", turn_id)
+    assert evidence[-1].request.scope.input_ids == (first, *ids)
+    session = await rig.store.get_session("foreground")
+    assert session.checkpoint_json is not None
+    assert all(identity in session.checkpoint_json for identity in ids)
+
+
+async def test_tool_response_receives_input_before_execution_and_again_before_request(
+    rig: _Rig,
+) -> None:
+    rig.coordinator.settings = CoordinatorSettings(4096, coalesce_seconds=60)
+    rig.generation.blocks[1] = asyncio.Event()
+    rig.generation.responses.append(
+        ModelResponse(
+            Message(
+                MessageRole.ASSISTANT,
+                (
+                    ToolCallBlock(
+                        "call",
+                        "play_action",
+                        arguments={
+                            "action_code": (
+                                'from world import me\nreturn await me.console.echo(text="actual")'
+                            )
+                        },
+                    ),
+                ),
+            )
+        )
+    )
+    execute = rig.coordinator.execute
+    during_tool: list[str] = []
+    arrived = ""
+
+    async def execute_with_arrival(
+        source: str,
+        *,
+        input_id: str | None,
+        can_start: Callable[[], bool],
+        presented_call_ids: frozenset[str],
+    ) -> ActionRecord:
+        state = await rig.store.input_processing(arrived)
+        assert state is not None and state.stage == "processing"
+        during_tool.append(await _admit(rig, "during-tool", "工具执行期间到达"))
+        return await execute(
+            source, input_id=input_id, can_start=can_start, presented_call_ids=presented_call_ids
+        )
+
+    rig.coordinator.execute = execute_with_arrival
+    first = await _admit(rig, "first", "开始", context=InputContext(minimum_wake=True))
+    await rig.coordinator.start()
+    await rig.generation.arrivals.get()
+    arrived = await _admit(rig, "before-tool", "模型生成期间到达")
+    rig.generation.blocks[1].set()
+    await _stage(rig, first, "processed")
+    assert rig.effects == ["actual"] and len(during_tool) == 1
+    for identity in (arrived, *during_tool):
+        await _stage(rig, identity, "processed")
+    assert len(rig.generation.requests) == 2 and rig.coordinator.generation == 1
+    second = rig.generation.requests[1]
+    assert any(message.role == MessageRole.TOOL for message in second.messages)
+    text = "\n".join(message.text for message in second.messages)
+    assert arrived in text and during_tool[0] in text
+
+
 async def test_missing_materials_and_native_audio_reach_foreground_once(rig: _Rig) -> None:
     missing = await _admit(
         rig,
@@ -453,8 +553,28 @@ async def test_missing_materials_and_native_audio_reach_foreground_once(rig: _Ri
     assert (await rig.store.get_input(audio)) is not None
 
 
-async def test_capacity_reduces_complete_batch_and_keeps_remaining_identity(tmp_path: Path) -> None:
-    value = await _rig(tmp_path, decision_limit=25_000)
+async def test_mid_turn_intake_keeps_budget_and_all_failed_sources(rig: _Rig) -> None:
+    rig.coordinator.settings = CoordinatorSettings(4096, coalesce_seconds=60, max_requests=1)
+    rig.generation.blocks[1] = asyncio.Event()
+    first = await _admit(rig, "first", "初始材料", context=InputContext(minimum_wake=True))
+    await rig.coordinator.start()
+    await rig.generation.arrivals.get()
+    late = await _admit(rig, "late", "追加材料不能刷新额度")
+    rig.generation.blocks[1].set()
+    await _stage(rig, first, "failed")
+    await _stage(rig, late, "failed")
+    assert len(rig.generation.requests) == 1
+    failures = await rig.store.failed_turns("foreground")
+    assert len(failures) == 1 and failures[0].input_ids == (first, late)
+    assert (await rig.store.get_session("foreground")).checkpoint_json is None
+    assert not await rig.store.pending()
+
+
+async def test_attention_capacity_reduces_batch_but_foreground_pulls_all_inputs(
+    tmp_path: Path,
+) -> None:
+    # 分节来源字段也计入真实请求；额度容纳两份完整正文及信封，仍装不下三份。
+    value = await _rig(tmp_path, decision_limit=30_000)
     try:
         identities = tuple(
             [
@@ -465,13 +585,16 @@ async def test_capacity_reduces_complete_batch_and_keeps_remaining_identity(tmp_
         await value.coordinator.start()
         for identity in identities:
             await _stage(value, identity, "processed")
-        assert len(value.decision.requests) == 2
+        assert len(value.decision.requests) == 1
         selected = [
             tuple(identity for identity in identities if identity in _text(request))
             for request in value.decision.requests
         ]
-        assert selected == [identities[:2], identities[2:]]
+        assert selected == [identities[:2]]
         assert all("x" * 10_000 in _text(request) for request in value.decision.requests)
+        assert len(value.generation.requests) == 1
+        text = "\n".join(message.text for message in value.generation.requests[0].messages)
+        assert all(identity in text for identity in identities)
     finally:
         await value.coordinator.close()
         await value.execution.close()
@@ -537,18 +660,21 @@ async def test_defer_persisted_identity_is_delivered_once_without_rejudgment(
 
 async def test_due_handoff_occurs_while_foreground_model_is_busy(rig: _Rig) -> None:
     rig.generation.blocks[1] = asyncio.Event()
+    # 明确延期先于主脑交互；到期交接仍须独立于忙碌的生成推进。
+    deferred = await _admit(rig, "due", "按原身份到期")
+    state = await rig.store.input_processing(deferred)
+    assert state is not None
+    await rig.store.decide_inputs((state,), "defer", "等待到期", defer_until=time.time() + 0.3)
     first = await _admit(rig, "busy", "在途", context=InputContext(minimum_wake=True))
-    rig.coordinator.settings = CoordinatorSettings(4096, coalesce_seconds=0, defer_seconds=0.08)
     await rig.coordinator.start()
     await rig.generation.arrivals.get()
-    rig.decision.choices.append("defer")
-    deferred = await _admit(rig, "due", "按原身份到期")
     await _stage(rig, deferred, "foreground")
     assert len(rig.generation.requests) == 1
     rig.generation.blocks[1].set()
     await _stage(rig, first, "processed")
     await _stage(rig, deferred, "processed")
-    assert len(rig.decision.requests) == 1 and len(rig.generation.requests) == 2
+    assert not rig.decision.requests and len(rig.generation.requests) == 2
+    assert rig.coordinator.generation == 1
 
 
 async def test_real_worker_action_and_dynamic_tail_refresh_on_each_logical_request(
@@ -645,24 +771,24 @@ async def test_urgent_interrupts_only_observed_generation_and_preserves_failed_i
     assert "旧正在处理" in rig.generation.requests[1].messages[-1].text
 
 
-async def test_late_semantic_urgent_cannot_interrupt_newer_foreground(rig: _Rig) -> None:
+async def test_late_semantic_urgent_cannot_override_inputs_already_pulled(rig: _Rig) -> None:
     first_gate = asyncio.Event()
     second_gate = asyncio.Event()
     rig.generation.blocks = {1: first_gate, 2: second_gate}
     rig.decision.release.clear()
     rig.decision.choices.append("urgent")
-    await _admit(rig, "old", "第一轮", context=InputContext(minimum_wake=True))
-    await rig.coordinator.start()
-    await rig.generation.arrivals.get()
     ordinary = await _admit(rig, "semantic", "慢判断的普通刺激")
+    await rig.coordinator.start()
     await rig.decision.arrivals.get()
-    first_gate.set()
-    newer = await _admit(rig, "newer", "第二轮", context=InputContext(minimum_wake=True))
+    await _admit(rig, "old", "第一轮", context=InputContext(minimum_wake=True))
     await rig.generation.arrivals.get()
-    assert rig.coordinator.generation == 2
+    newer = await _admit(rig, "newer", "第二轮", context=InputContext(minimum_wake=True))
+    first_gate.set()
+    await rig.generation.arrivals.get()
+    assert rig.coordinator.generation == 1
     rig.decision.release.set()
-    await _stage(rig, ordinary, "foreground")
-    assert rig.coordinator.generation == 2 and not rig.generation.cancelled
+    await _stage(rig, ordinary, "processing")
+    assert rig.coordinator.generation == 1 and not rig.generation.cancelled
     second_gate.set()
     await _stage(rig, newer, "processed")
     await _stage(rig, ordinary, "processed")
@@ -687,14 +813,14 @@ async def test_later_input_does_not_refresh_oldest_admission_window(tmp_path: Pa
         await value.store.close()
 
 
-async def test_max_eight_current_inputs_are_frozen_for_single_attention(rig: _Rig) -> None:
+async def test_attention_page_limit_does_not_limit_foreground_intake(rig: _Rig) -> None:
     identities = [await _admit(rig, str(index), str(index)) for index in range(9)]
     await rig.coordinator.start()
     for identity in identities:
         await _stage(rig, identity, "processed")
-    assert len(rig.decision.requests) == 2
+    assert len(rig.decision.requests) == 1
     assert sum(identity in _text(rig.decision.requests[0]) for identity in identities) == 8
-    assert identities[8] in _text(rig.decision.requests[1])
+    assert all(identity in rig.generation.requests[0].messages[-1].text for identity in identities)
 
 
 async def test_close_cancels_model_wait_once_and_refuses_new_generation(rig: _Rig) -> None:
@@ -727,8 +853,8 @@ async def test_inputs_arriving_during_judgment_stay_outside_frozen_request(rig: 
     assert state is not None and state.stage == "attention"
     rig.decision.release.set()
     await _stage(rig, later, "processed")
-    assert len(rig.decision.requests) == 2
-    assert later in _text(rig.decision.requests[1])
+    assert len(rig.decision.requests) == 1
+    assert later in rig.generation.requests[0].messages[-1].text
 
 
 async def test_old_admitted_backlog_does_not_open_another_window(tmp_path: Path) -> None:

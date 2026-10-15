@@ -24,7 +24,7 @@ export function time(value: number | null): string {
 }
 /** 相对时间只用于扫描；精确时间保留在 title 中。 */
 export function relative(value: number | null, now: number): string {
-  if (value === null) return "刚刚";
+  if (value === null) return "时间未知";
   const seconds = Math.max(0, Math.floor(now / 1000 - value));
   if (seconds < 60) return "刚刚";
   if (seconds < 3600) return `${Math.floor(seconds / 60)} 分钟前`;

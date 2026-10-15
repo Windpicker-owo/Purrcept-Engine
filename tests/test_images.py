@@ -238,6 +238,8 @@ async def test_cancelled_read_keeps_client_until_actual_capture_finishes(
         await asyncio.sleep(0)
         assert not closing.done() and not client.is_closed
         assert runtime.snapshot is not None and runtime.snapshot()["pending_reads"] == 1
+        assert runtime.prepare_request is not None
+        assert await runtime.prepare_request() == {"state": "closing"}
         release.set()
         await closing
         assert client.is_closed

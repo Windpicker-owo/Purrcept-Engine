@@ -199,6 +199,26 @@ _TRANSPORT_FIELDS = frozenset(
 )
 
 
+async def prepare_off_loop[T](operation: Callable[[], T]) -> T:
+    """在线程中串行完成一次本地请求准备，避免阻塞实时收音和停音。
+
+    调用方在返回前独占材料及交付状态；操作不得启动模型、提交事务或
+    操作设备。取消不能停止 Python 线程，因此仍等待原工作归还，再传播
+    取消，禁止其与下一轮共享状态竞争。没有逐帧任务或后台准备队列。
+    """
+    task = asyncio.create_task(asyncio.to_thread(operation), name="model-local-preparation")
+    cancelled = False
+    while not task.done():
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError:
+            cancelled = True
+    result = task.result()
+    if cancelled:
+        raise asyncio.CancelledError
+    return result
+
+
 def compile_materials(request: ModelRequest | DecisionRequest, *, model: str) -> tuple[str, str]:
     """借用冻结 SDK 的纯编译器，记录真实顺序且不给编译器凭据。
 
@@ -441,7 +461,10 @@ class _RetryRunner:
         turn_deadline = self.budget.claim()
         started = asyncio.get_running_loop().time()
         deadline = min(turn_deadline, started + self.policy.total_seconds)
-        materials, compiler = compile_materials(request, model=model)
+        materials, compiler = await prepare_off_loop(
+            lambda: compile_materials(request, model=model)
+        )
+        self._check()
         capacity_json = request.metadata.get("engine.capacity")
         if capacity_json is not None and not isinstance(capacity_json, str):
             raise TypeError("Engine 容量事实必须是完整 JSON 文本。")

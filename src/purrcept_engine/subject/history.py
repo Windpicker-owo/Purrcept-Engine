@@ -1,32 +1,38 @@
 """计算一次无工具历史摘要并在目标空闲事务中安装，不推进连续会话。
 
-HistoryMaintenance 借用命名模型及权威账本。先保留冻结覆盖，再按旧维护提示
-提交一个逻辑请求；唯一传输重试仍由 ModelGenerationBackend 提供。完整候选
-用目标会话同一请求布局/计量分母复查，事务确认后才返回新版本。失败不自动
+HistoryMaintenance 借用命名模型及权威账本。先按容量选择旧完整轮次前缀，保留
+冻结覆盖后再按维护提示提交一个逻辑请求；唯一传输重试仍由
+ModelGenerationBackend 提供。完整候选用目标会话同一请求布局/计量分母复查，
+事务确认后才返回新版本。失败不自动
 切换来源、调小提示或再摘要，所有原历史及实际响应证据继续保留。
 """
 
 from __future__ import annotations
 
 import asyncio
-import base64
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, fields, is_dataclass, replace
 from enum import Enum
+from functools import partial
 from typing import cast
 
 from purrcept_core.models import (
+    AudioBlock,
+    ContentBlock,
     ConversationCheckpoint,
     FinishReason,
+    ImageBlock,
     Message,
+    MessageRole,
     ModelBackend,
     ModelRequest,
     ModelSettings,
     ReasoningBlock,
     SystemInstruction,
+    TextBlock,
 )
 
-from purrcept_engine.context.capacity import CapacityAssessment
+from purrcept_engine.context.capacity import CapacityAssessment, CapacityError
 from purrcept_engine.context.maintenance import (
     MaintenanceStore,
     Reservation,
@@ -35,6 +41,7 @@ from purrcept_engine.context.maintenance import (
     SummarySource,
     build_summary_proposal,
     candidate_checkpoint,
+    shorten_summary_source,
 )
 from purrcept_engine.errors import HostStateError
 from purrcept_engine.execution.protocol import JsonObject, decode_object
@@ -54,6 +61,7 @@ from .model_requests import (
     RequestEvidenceSink,
     RetryPolicy,
     compile_materials,
+    prepare_off_loop,
 )
 
 type CapacityCheck = Callable[[JsonObject], CapacityAssessment]
@@ -110,47 +118,61 @@ class _RequestCapture:
         await self.sink.finish_request(request_id, state)
 
 
-def _public_history(value: object) -> object:
-    """沿用维护的公开历史投影，隐藏reasoning不进入摘要模型或被假造为事实。
+def _public_history(value: object, media: list[ImageBlock | AudioBlock]) -> object:
+    """保留历史结构与回执，将媒体投影为同请求原生附件的明确序号。
 
     只有实际Core ReasoningBlock会被占位，外界JSON字段或文字中的同名标签
-    不被解释。其余冻结纯数据保留工具关联及原媒体base64，旧调用不成为新工具。
+    不被解释。媒体原字节进入原生块，不将base64作为文字要求模型阅读；嵌套
+    工具结果也沿相同路径提取。旧调用只作为历史资料，不成为可执行的新工具。
     """
     if isinstance(value, ReasoningBlock):
         return {"kind": "provider_reasoning_omitted"}
+    if isinstance(value, (ImageBlock, AudioBlock)):
+        media.append(value)
+        return {"kind": type(value).__name__, "attachment": len(media), "alt_text": value.alt_text}
     if isinstance(value, Enum):
         return value.value
     if value is None or isinstance(value, (str, bool, int, float)):
         return value
-    if isinstance(value, bytes):
-        return {"base64": base64.b64encode(value).decode("ascii")}
     if isinstance(value, Mapping):
         return {
-            key: _public_history(item) for key, item in cast(Mapping[str, object], value).items()
+            key: _public_history(item, media)
+            for key, item in cast(Mapping[str, object], value).items()
         }
     if isinstance(value, Sequence):
-        return [_public_history(item) for item in cast(Sequence[object], value)]
+        if isinstance(value, bytes):
+            raise TypeError("摘要二进制必须属于明确的媒体内容块。")
+        return [_public_history(item, media) for item in cast(Sequence[object], value)]
     if is_dataclass(value) and not isinstance(value, type):
-        return {field.name: _public_history(getattr(value, field.name)) for field in fields(value)}
+        return {
+            field.name: _public_history(getattr(value, field.name), media)
+            for field in fields(value)
+        }
     raise TypeError("摘要历史包含不支持的运行对象。")
 
 
 def summary_request(source: SummarySource, output_tokens: int) -> ModelRequest:
     """把完整可压缩轮次包为历史资料，不携近期/当前后缀或任何可调用工具。
 
-    提示全文及JSON分组表达沿用已有维护路径。首版一次逻辑请求容纳这次冻结
-    前缀；实际模型容量不足明确失败，不能私自生成多个请求重置预算。
+    提示全文及JSON分组表达沿用已有维护路径，媒体通过attachment序号关联原生
+    附件。调用方先选择能容纳的完整前缀，仍只派发一次逻辑请求，不重置预算。
     """
     turns: list[dict[str, object]] = []
+    media: list[ImageBlock | AudioBlock] = []
     start = 0
     for index, end in enumerate(source.checkpoint.history.turn_boundaries[: source.end_turn]):
-        turns.append({"turn": index + 1, "messages": _public_history(source.messages[start:end])})
+        turns.append(
+            {"turn": index + 1, "messages": _public_history(source.messages[start:end], media)}
+        )
         start = end
     text = encode(
         {"archive": "summary:" + source.coverage_id, "session": source.owner_id, "turns": turns}
     )
+    content: list[ContentBlock] = [TextBlock(text)]
+    for index, block in enumerate(media, start=1):
+        content.extend((TextBlock(f"历史资料附件 {index}（对应 attachment 序号）："), block))
     return ModelRequest(
-        (Message.user(text),),
+        (Message(MessageRole.USER, tuple(content)),),
         instructions=(SystemInstruction.from_text(_INSTRUCTIONS),),
         settings=ModelSettings(max_output_tokens=min(4096, output_tokens)),
         metadata={"purpose": "context_maintenance", "target": source.owner_id},
@@ -165,6 +187,41 @@ def _assessment(request: ModelRequest, model: str, capacity: CapacityCheck) -> C
     if not isinstance(payload, dict):
         raise TypeError("摘要容量计量缺少SDK公开payload对象。")
     return capacity(payload)
+
+
+async def prepare_summary_request(
+    source: SummarySource,
+    *,
+    output_tokens: int,
+    model: str,
+    capacity: CapacityCheck,
+    check_budget: Callable[[], None],
+) -> tuple[SummarySource, ModelRequest]:
+    """派发前有界选择可容纳的旧完整前缀，不消费模型请求或修改存储。
+
+    全部旧历史装不下时逐次减半轮数，最多检查对数次，不逐条删除正文。
+    保留检查点的其余历史供候选拼接；候选仍超额时不安装、不继续循环摘要。
+    缺少媒体计量依据等错误不能被当成长度问题；最早一轮也装不下则明确失败。
+    """
+    while True:
+        check_budget()
+        request = await prepare_off_loop(partial(summary_request, source, output_tokens))
+        try:
+            measured = await prepare_off_loop(partial(_assessment, request, model, capacity))
+        except CapacityError as error:
+            if error.code != "over_capacity" or error.assessment is None:
+                raise
+            measured = error.assessment
+        check_budget()
+        if measured.within_budget:
+            return source, replace(
+                request, metadata={**request.metadata, "engine.capacity": encode(measured)}
+            )
+        if source.end_turn == 1:
+            raise SummaryError("最早一个完整历史轮次超过摘要输入预算，原文保持不变。")
+        source = await prepare_off_loop(
+            partial(shorten_summary_source, source, max(1, source.end_turn // 2))
+        )
 
 
 class HistoryMaintenance:
@@ -232,19 +289,22 @@ class HistoryMaintenance:
         try:
             budget = RequestBudget(max_requests=1, deadline=deadline)
             budget.check()
+            # 先完成纯容量选择，不能把尚未派发的容量失败永久登记为模型已尝试。
+            source, request = await prepare_summary_request(
+                source,
+                output_tokens=self.output_tokens,
+                model=self.model,
+                capacity=self.summary_capacity,
+                check_budget=budget.check,
+            )
             reservation = await self.store.reserve_summary(source)
             if reservation != "reserved":
                 return HistoryResult(reservation)
             budget.check()
             self._check()
 
-            before = _assessment(source_layout(source.checkpoint), source_model, source_capacity)
-            request = summary_request(source, self.output_tokens)
-            measured = _assessment(request, self.model, self.summary_capacity)
-            if not measured.within_budget:
-                raise SummaryError("冻结旧历史超过摘要模型的完整输入预算。")
-            request = replace(
-                request, metadata={**request.metadata, "engine.capacity": encode(measured)}
+            before = await prepare_off_loop(
+                lambda: _assessment(source_layout(source.checkpoint), source_model, source_capacity)
             )
             capture = _RequestCapture(self.evidence)
             reference = "summary:" + source.coverage_id
@@ -275,7 +335,9 @@ class HistoryMaintenance:
 
             summary = summary_message(source, text)
             candidate = candidate_checkpoint(source, summary)
-            after = _assessment(source_layout(candidate), source_model, source_capacity)
+            after = await prepare_off_loop(
+                lambda: _assessment(source_layout(candidate), source_model, source_capacity)
+            )
             proposal = build_summary_proposal(
                 source, summary, summary_request_id=capture.request_id, before=before, after=after
             )

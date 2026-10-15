@@ -25,6 +25,7 @@ from purrcept_core.models import (
 from purrcept_core.models.tools import ToolResult
 
 from purrcept_engine.context.capacity import CapacityAssessment, CapacityError
+from purrcept_engine.context.presentation import render_host_state
 from purrcept_engine.execution.protocol import JsonObject, JsonValue, decode_object
 from purrcept_engine.storage.knowledge import EvidencePage
 from purrcept_engine.storage.model_requests import encode
@@ -306,6 +307,9 @@ class ToolDeliveryGate:
     请求中的工具消息顺序。先验证全部有限回执，再逐项尝试完整原文，避免
     第一项占满窗口使同响应其它真实回执失去纠正机会。回执仍放不下时明确
     终止，既不删历史也不重新执行已发生工具。
+
+    Core 与请求准备串行借用此对象。prepare 可在线程中运行，但调用方必须
+    等它实际结束（含取消收尾）才继续 stage/project/sent，不并发改变本轮状态。
     """
 
     def __init__(self) -> None:
@@ -485,9 +489,9 @@ class ToolDeliveryGate:
                 "instruction": "引用不表示已读；依赖未交付正文或平台详细字段时先 read_evidence。",
             }
             selected.append(projected)
-        projected_state = {**host_state, "work": {**work, "calls": selected}}
-        original_text = encode(host_state)
-        projected_text = encode(projected_state)
+        projected_state: JsonObject = {**host_state, "work": {**work, "calls": selected}}
+        original_text = render_host_state(host_state)
+        projected_text = render_host_state(projected_state)
         reminders = list(request.reminders)
         for index, reminder in enumerate(reminders):
             if reminder.key == reminder_key:

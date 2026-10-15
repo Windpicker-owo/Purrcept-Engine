@@ -59,6 +59,7 @@ class _Utterance:
     started_input_id: str | None = None
     final_input_id: str | None = None
     task: asyncio.Task[None] | None = None
+    start_task: asyncio.Task[None] | None = None
     result: tuple[str, tuple[MediaAsset, ...]] | None = None
     finished: bool = False
     failure: str | None = None
@@ -139,6 +140,28 @@ class VoiceInputRuntime:
             "devices_loaded": self.device_cache is not None,
             "available_modes": ["asr", "audio"] if self.native_audio_enabled else ["asr"],
             "recognition_state": "recognizing" if self.utterances else "idle",
+        }
+
+    async def prepare_request(self) -> JsonObject:
+        """交付收音能力与实际阶段；不把未定识别文本或历史预览当作新发言。
+
+        已接管发言沿正式输入进入上下文。缺口保留来源和原因，不能因省去
+        采样电平、缓存计数和设备枚举而隐藏收音失败。
+        """
+        state = self.snapshot()
+        return {
+            key: state[key]
+            for key in (
+                "state",
+                "mode",
+                "device",
+                "source_name",
+                "error",
+                "asr_ready",
+                "audio_ready",
+                "recognition_state",
+                "gaps",
+            )
         }
 
     async def status(self) -> JsonObject:
@@ -285,6 +308,23 @@ class VoiceInputRuntime:
             await task
             raise
 
+    async def _admit_start(self, utterance: _Utterance) -> None:
+        """独立等待持续人声入账；采样继续，最终材料必须等此身份确认。
+
+        每个有限发言名额最多拥有一个起音任务。停止收音也等已经提交的
+        事实确认，不取消它或重新发送，避免丢失真实的抢占事件关系。
+        """
+        admitted = await self._submit(
+            InputSubmission(
+                self._source(utterance, "speech_started"),
+                "本机麦克风确认持续人声。",
+                utterance.occurred_at,
+                datetime.now(UTC),
+                context=self._context(utterance, started=True),
+            )
+        )
+        utterance.started_input_id = admitted.input_id
+
     def _gap(self, utterance: _Utterance | None, message: str) -> None:
         self.gaps.append(
             {
@@ -306,10 +346,11 @@ class VoiceInputRuntime:
                 if len(frame) != 1024:
                     raise VoiceInputError("输入设备返回了不完整 VAD 帧，当前发言已释放。")
                 for value in tuple(self.utterances.values()):
-                    if value.task is not None and value.task.done() and not value.task.cancelled():
-                        error = value.task.exception()
-                        if error is not None:
-                            raise error
+                    for task in (value.task, value.start_task):
+                        if task is not None and task.done() and not task.cancelled():
+                            error = task.exception()
+                            if error is not None:
+                                raise error
                 if self.state == "starting":
                     self.state = "listening"
                     self.ready.set()
@@ -348,16 +389,9 @@ class VoiceInputRuntime:
                             ) from error
                     elif kind == "speech_started" and self.current is not None:
                         utterance = self.current
-                        admitted = await self._submit(
-                            InputSubmission(
-                                self._source(utterance, "speech_started"),
-                                "本机麦克风确认持续人声。",
-                                utterance.occurred_at,
-                                datetime.now(UTC),
-                                context=self._context(utterance, started=True),
-                            )
+                        utterance.start_task = asyncio.create_task(
+                            self._admit_start(utterance), name="voice-start-admission"
                         )
-                        utterance.started_input_id = admitted.input_id
                     elif kind in {"end", "discard"} and self.current is not None:
                         utterance, self.current = self.current, None
                         if kind == "end":
@@ -369,11 +403,12 @@ class VoiceInputRuntime:
                                     "识别结束标记无法进入有界缓存，收音已暂停。"
                                 ) from error
                         else:
-                            if utterance.task is not None:
-                                utterance.task.cancel()
-                                await asyncio.gather(utterance.task, return_exceptions=True)
-                            utterance.finished = True
-                            await self._deliver()
+                            utterance.task = asyncio.create_task(
+                                self._discard(utterance, utterance.task), name="voice-discard"
+                            )
+                # 已缓存的设备帧可能连续同步 yield。显式归还一次调度机会，
+                # 让识别消费者排空队列；不能把自身占满循环误判为上传过载。
+                await asyncio.sleep(0)
         except (VoiceInputError, StorageError, OSError, TimeoutError, WebSocketException) as error:
             self.state, self.error = "paused", str(error)
             self._gap(self.current, str(error))
@@ -381,13 +416,18 @@ class VoiceInputRuntime:
             # 先关闭输入流，再收回识别；取消后绝不刷新未完成录音尾部。
             await frames.aclose()
             jobs = tuple(value.task for value in self.utterances.values() if value.task is not None)
+            starts = tuple(
+                value.start_task
+                for value in self.utterances.values()
+                if value.start_task is not None
+            )
             for value in self.utterances.values():
                 if not value.finished:
                     self._gap(value, "收音结束时发言尚未完整接管。")
             for job in jobs:
                 if not job.done():
                     job.cancel()
-            results = await asyncio.gather(*jobs, return_exceptions=True)
+            results = await asyncio.gather(*jobs, *starts, return_exceptions=True)
             self.current = None
             self.utterances.clear()
             self.level, self.partial = 0.0, ""
@@ -397,6 +437,14 @@ class VoiceInputRuntime:
                     (VoiceInputError, StorageError, OSError, TimeoutError, WebSocketException),
                 ):
                     raise result
+
+    async def _discard(self, utterance: _Utterance, recognition: asyncio.Task[None] | None) -> None:
+        """短噪声仍按序释放名额，但不让采样等待前一句的入库或识别收尾。"""
+        if recognition is not None:
+            recognition.cancel()
+            await asyncio.gather(recognition, return_exceptions=True)
+        utterance.finished = True
+        await self._deliver()
 
     async def _recognize(self, utterance: _Utterance) -> None:
         """只采用完整最终结果，有限句子修订和 PCM 归本发言任务所有。"""
@@ -460,6 +508,8 @@ class VoiceInputRuntime:
             while (
                 utterance := self.utterances.get(self.deliver_sequence)
             ) is not None and utterance.finished:
+                if utterance.start_task is not None:
+                    await asyncio.shield(utterance.start_task)
                 if utterance.result is not None:
                     text, media = utterance.result
                     admitted = await self._submit(

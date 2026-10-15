@@ -157,6 +157,47 @@ def pending_ids(connection: sqlite3.Connection, stage: InputStage, limit: int) -
     return tuple(_string(row[0]) for row in rows)
 
 
+def take_foreground_inputs(connection: sqlite3.Connection, turn_id: str | None) -> tuple[str, ...]:
+    """在一次事务内取尽开放缓冲池；活动轮次同时接管来源身份。
+
+    空闲时至少有一个已唤起输入才启动，随后连同尚在缓冲/判断中的普通输入
+    一起取走。活动轮次的每次拉取不再等待各输入窗口。延期和已处理输入不
+    属于缓冲池。版本递增使在途注意结果失效，事务后的新接管留到下一次。
+    """
+    with connection:
+        connection.execute("BEGIN IMMEDIATE")
+        turn = None if turn_id is None else get_turn(connection, turn_id)
+        if turn_id is not None:
+            if (
+                turn is None
+                or turn.scope != "foreground"
+                or turn.state != "running"
+                or session(connection, "foreground").active_turn != turn_id
+            ):
+                raise StorageError("新输入已失去活动前台轮次。", code="session_conflict")
+        elif not pending_ids(connection, "foreground", 1):
+            return ()
+
+        rows: list[tuple[object, ...]] = connection.execute(
+            "SELECT p.input_id FROM pending_inputs p JOIN input_processing s USING(input_id) "
+            "WHERE s.stage IN ('attention','foreground') ORDER BY p.sequence"
+        ).fetchall()
+        ids = tuple(_string(row[0]) for row in rows)
+        ordinal = len(turn.input_ids) if turn is not None else 0
+        for offset, input_id in enumerate(ids):
+            connection.execute(
+                "UPDATE input_processing SET version=version+1,stage=?,"
+                "reason=CASE WHEN stage='attention' THEN 'foreground.buffer_pull' ELSE reason END "
+                "WHERE input_id=?",
+                ("processing" if turn is not None else "foreground", input_id),
+            )
+            if turn is not None:
+                connection.execute(
+                    "INSERT INTO turn_inputs VALUES(?,?,?)", (turn_id, ordinal + offset, input_id)
+                )
+        return ids
+
+
 def decide_inputs(
     connection: sqlite3.Connection,
     expected: tuple[InputProcessing, ...],
@@ -384,6 +425,11 @@ def finish_turn(
         current = session(connection, turn.scope)
         if current.version != turn.session_version or current.active_turn != turn.turn_id:
             raise StorageError("会话提交已失去原版本资格。", code="session_conflict")
+        # 拉取事务可能在调用方取消等待后完成。结案读取权威来源集合，不能
+        # 用最初 begin_turn 的旧快照遗漏本轮中途已经接管的输入。
+        actual_turn = get_turn(connection, turn.turn_id)
+        if actual_turn is None:
+            raise StorageError("活动轮次缺少权威记录。", code="invalid_record")
         for failure_id in accepted_failures:
             row: tuple[object, ...] | None = connection.execute(
                 "SELECT t.scope,f.presented_in FROM failed_turns f "
@@ -410,7 +456,7 @@ def finish_turn(
             "UPDATE subject_turns SET state=?,finished_at=?,error_json=? WHERE turn_id=?",
             (outcome, time.time(), error_json, turn.turn_id),
         )
-        for input_id in turn.input_ids:
+        for input_id in actual_turn.input_ids:
             connection.execute(
                 "UPDATE input_processing SET version=version+1,stage=?,reason=? WHERE input_id=?",
                 ("processed" if outcome == "succeeded" else "failed", outcome, input_id),

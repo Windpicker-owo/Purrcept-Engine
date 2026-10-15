@@ -149,6 +149,76 @@ async def until(predicate: Callable[[], bool]) -> None:
     raise TimeoutError("本地状态未在三秒内完成。")
 
 
+async def test_slow_start_admission_does_not_stop_capture(tmp_path: Path) -> None:
+    """持续人声入库等待期间仍读完音频，最终材料等待原起音身份后有序入账。"""
+    store = await Store.open(tmp_path / "slow-admission.sqlite3")
+    inputs, capture = Inputs(store), Capture()
+    inputs.gate = asyncio.Event()
+    runtime = VoiceInputRuntime(
+        "voice",
+        settings(min_speech_ms=96),
+        inputs,
+        lambda: capture,
+        Detector,
+        Transcriber(),
+        native_audio_enabled=True,
+    )
+    try:
+        await runtime.start("audio", 7)
+        await capture.feed(SPEECH, 5)
+        await asyncio.wait_for(inputs.entered.wait(), 2)
+        await capture.feed(SPEECH, 70)
+        await capture.feed(SILENCE, 7)
+        await until(lambda: capture.queue.empty())
+        assert runtime.state == "listening" and runtime.current is None
+        assert inputs.admissions == []
+        # 前一句仍在等入库时，短噪声的丢弃也不能卡住后续静音读取。
+        await capture.feed(SPEECH, 1)
+        await capture.feed(SILENCE, 20)
+        await until(lambda: capture.queue.empty())
+        assert runtime.state == "listening"
+        inputs.gate.set()
+        await until(lambda: len(inputs.admissions) == 2)
+        started, final = inputs.submissions
+        assert started.source.event_kind == "speech_started"
+        details = decode_object(final.context.details_json.encode())["voice"]
+        assert isinstance(details, dict)
+        assert details["speech_started_input_id"] == inputs.admissions[0].input_id
+        assert len(final.media) == 1
+    finally:
+        inputs.gate.set()
+        await runtime.close()
+        await store.close()
+
+
+async def test_buffered_frames_allow_recognition_to_drain(tmp_path: Path) -> None:
+    """一次取得多帧时也给识别消费者运行机会，不将调度饥饿误报为网络积压。"""
+    store = await Store.open(tmp_path / "burst.sqlite3")
+    inputs, capture, transcriber = Inputs(store), Capture(), Transcriber()
+    runtime = VoiceInputRuntime(
+        "voice",
+        settings(interrupt_ms=2000, frame_queue_size=8),
+        inputs,
+        lambda: capture,
+        Detector,
+        transcriber,
+        native_audio_enabled=False,
+    )
+    try:
+        await runtime.start("asr", 7)
+        for _ in range(50):
+            capture.queue.put_nowait(SPEECH)
+        for _ in range(7):
+            capture.queue.put_nowait(SILENCE)
+        await until(lambda: len(inputs.admissions) == 1 or runtime.state != "listening")
+        assert runtime.state == "listening"
+        assert inputs.submissions[0].text == "完整识别文字"
+        assert transcriber.byte_count >= 50 * 1024
+    finally:
+        await runtime.close()
+        await store.close()
+
+
 @pytest.mark.asyncio
 async def test_real_store_speech_started_then_final_does_not_interrupt_twice(
     tmp_path: Path,
@@ -282,6 +352,11 @@ async def test_overload_pauses_without_unbounded_tasks_or_partial_final(tmp_path
         assert runtime.snapshot()["state"] == "paused"
         assert runtime.snapshot()["pending_utterances"] == 0
         assert runtime.snapshot()["gaps"] and len(inputs.admissions) == 1
+        material = await runtime.prepare_request()
+        assert material["state"] == "paused" and material["gaps"] == runtime.snapshot()["gaps"]
+        assert material["error"] == runtime.snapshot()["error"]
+        assert "history" not in material and "pending_utterances" not in material
+        assert "partial" not in material and "revision" not in material
         assert inputs.submissions[0].source.event_kind == "speech_started"
     finally:
         await runtime.close()

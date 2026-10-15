@@ -195,6 +195,10 @@ class ImageRuntime:
             "pending_reads": len(self._tasks),
         }
 
+    async def prepare_request(self) -> JsonObject:
+        """只交付当前可用阶段；在途读取数属于宿主资源诊断。"""
+        return {"state": self.snapshot()["state"]}
+
     @property
     def resources_released(self) -> bool:
         """读取客户端真实关闭明证，不用在途数量推断连接池已经归还。"""
@@ -269,6 +273,7 @@ def images_blueprint(
             (FunctionCapability(declaration, runtime.view_image),),
             close=runtime.close,
             snapshot=runtime.snapshot,
+            prepare_request=runtime.prepare_request,
             resources_released=lambda: runtime.resources_released,
         )
 

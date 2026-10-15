@@ -208,6 +208,12 @@ async def test_screenshot_has_full_blob_authority_and_does_not_create_pending_in
         assert decode_object(saved.source_json.encode())["foreground"] == (
             driver.value.foreground.model_dump(mode="json")
         )
+        material = await runtime.prepare_request()
+        assert material["connected"] is True and material["captured_at"] == driver.value.captured_at
+        assert material["last_window_title"] == "离线测试窗口"
+        assert "offline.exe" not in str(material) and "offline-window" not in str(material)
+        assert "policy" not in material and "generation" not in material
+        assert driver.captures == [True]  # 组装上下文不额外采集桌面。
         with pytest.raises(ValidationError):
             await runtime.screenshot("monitor", None)
     finally:
@@ -232,8 +238,9 @@ async def test_one_admitted_frame_and_replaceable_candidate_wait_for_real_proces
         assert len(await store.pending()) == 1 and runtime.snapshot()["candidate"]
         assert runtime.snapshot()["input_id"] == original.input_id
         processing = await store.input_processing(original.input_id)
-        assert processing is not None
-        await store.decide_inputs((processing,), "observe", "仅记录已完成")
+        assert processing is not None and processing.stage == "foreground"
+        assert original.context.minimum_wake and not original.context.interrupt_generation
+        await store.complete_input(original.input_id)
         await runtime.step()
         assert runtime.snapshot()["input_id"] is None
         clock[0] = 31.0
@@ -247,7 +254,7 @@ async def test_one_admitted_frame_and_replaceable_candidate_wait_for_real_proces
 
 
 @pytest.mark.asyncio
-async def test_deferred_waits_and_real_failed_turn_pauses_without_new_input(
+async def test_pending_waits_and_real_failed_turn_pauses_without_new_input(
     store: Store, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     runtime, driver, clock = await controlled(store, tmp_path, monkeypatch)
@@ -256,14 +263,12 @@ async def test_deferred_waits_and_real_failed_turn_pauses_without_new_input(
         await runtime.step()
         original = (await store.pending())[0]
         processing = await store.input_processing(original.input_id)
-        assert processing is not None
-        await store.decide_inputs((processing,), "defer", "稍后处理", defer_until=1.0)
+        assert processing is not None and processing.stage == "foreground"
         clock[0], driver.value = 50.0, frame(200)
         await runtime.step()
         assert (
             len(await store.pending()) == 1 and runtime.snapshot()["input_id"] == original.input_id
         )
-        await store.deliver_due_inputs(2.0)
         turn = await store.begin_turn("failed", "foreground", 0, 1, (original.input_id,))
         await store.finish_turn(turn, "failed", error_json='{"error_type":"OfflineCapacity"}')
         await runtime.step()
@@ -464,8 +469,7 @@ async def test_late_failed_processing_cannot_pause_new_observation_generation(
         await runtime.step()
         input_id = (await store.pending())[0].input_id
         stage = await store.input_processing(input_id)
-        assert stage is not None
-        await store.decide_inputs((stage,), "wake", "前台处理")
+        assert stage is not None and stage.stage == "foreground"
         turn = await store.begin_turn("failure", "foreground", 0, 1, (input_id,))
         await store.finish_turn(turn, "failed", error_json='{"error_type":"OfflineFailure"}')
         entered, release = asyncio.Event(), asyncio.Event()

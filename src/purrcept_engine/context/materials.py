@@ -19,8 +19,8 @@ from purrcept_core.models import (
     TextBlock,
 )
 
+from purrcept_engine.context.presentation import render_input
 from purrcept_engine.errors import EngineError, StorageError
-from purrcept_engine.storage.model_requests import encode
 from purrcept_engine.storage.models import InputRecord, MediaReference
 
 
@@ -75,26 +75,7 @@ async def input_message(
         raise ValueError("前台输入批次不能为空。")
     blocks: list[ContentBlock] = []
     for record in records:
-        blocks.append(
-            TextBlock(
-                encode(
-                    {
-                        "material_kind": "original_input",
-                        "input_id": record.input_id,
-                        "source": record.source,
-                        "occurred_at": record.occurred_at.isoformat(),
-                        "received_at": record.received_at.isoformat(),
-                        "text": record.text,
-                        "relations": record.context.details_json,
-                        "missing_materials": record.context.missing_materials,
-                        "media": record.media,
-                        "media_delivery": "references_only_not_expanded"
-                        if media_as_references and record.media
-                        else "inline",
-                    }
-                )
-            )
-        )
+        blocks.append(TextBlock(render_input(record, media_as_references=media_as_references)))
         if not media_as_references:
             blocks.extend(await media_blocks(store, record.media))
     return Message(

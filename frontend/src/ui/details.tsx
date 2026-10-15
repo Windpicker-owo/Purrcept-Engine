@@ -55,6 +55,7 @@ export function ControlDetail({ entry, client, state, open }: { entry: Entry; cl
   const actual = r?.action;
   const expired = state.snapshot !== null && entry.request.instance_id !== state.snapshot.instance_id;
   const status = entry.sending ? { state: "waiting-external" as const, label: "正在发送" } : r ? controlMark(r)
+    : entry.unavailable ? { state: "warning" as const, label: "历史回执不可用" }
     : entry.rejected ? { state: "failed" as const, label: "操作未被接受" } : { state: "warning" as const, label: "不确定是否已送达" };
   return <div className="detail">
     <h2>{entry.title}</h2>

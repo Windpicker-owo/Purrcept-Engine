@@ -1,4 +1,4 @@
-"""拥有首批生成网关及 TypeSafe 判断的显式客户端与关闭进度。
+"""拥有生成网关及 TypeSafe/OpenRouter 判断的显式客户端与关闭进度。
 
 应用按已校验模型配置创建资源，借出 ``backend`` 给 Core，并在在途借用结束后
 关闭资源。模型材料、重试预算和请求证据属于主体会话；这里仅固定传输来源、
@@ -29,7 +29,7 @@ from purrcept_engine.errors import ConfigError
 if TYPE_CHECKING:
     from purrcept_litellm import LiteLLMBackend, LiteLLMDecisionBackend
 
-__all__ = ["OpenAIGenerationResource", "TypeSafeDecisionResource"]
+__all__ = ["DecisionResource", "OpenAIGenerationResource"]
 
 
 class OpenAIGenerationResource:
@@ -113,9 +113,12 @@ class OpenAIGenerationResource:
         request.headers.pop("OpenAI-Project", None)
 
 
-class TypeSafeDecisionResource:
-    """应用拥有的 TypeSafe 判断传输，借出 Core Decisions 后端。
+class DecisionResource:
+    """应用拥有的专用判断传输，借出 Core Decisions 后端。
 
+    模型前缀显式选择 TypeSafe 或 OpenRouter，端点与凭据来自同一配置。
+    TypeSafe 使用 /systemone；OpenRouter 使用 /alpha/decisions，并保留
+    上游模型的命名空间。两条路径都由 LiteLLM 编译，不回退到聊天生成。
     依赖已冻结的 LiteLLM 本地补丁提供公开 ``http_client`` 借用接缝及
     ``retry_connection_errors`` 开关。协议编译、Provider 映射和结果规范化
     继续由 SDK 完成；本资源固定客户端和实际尝试数，不重新实现判断协议。
@@ -124,8 +127,9 @@ class TypeSafeDecisionResource:
 
     def __init__(self, settings: DecisionModelSettings) -> None:
         """记录已校验配置，首次调用前不导入 SDK 或取得 HTTP 传输。"""
-        if not settings.model.startswith("typesafe/"):
-            raise ConfigError("首批专用判断路径需要显式 typesafe/ 模型协议标识")
+        # 只接入已核验传输契约的提供商；端点地址不能代替模型前缀选择协议。
+        if not settings.model.startswith(("typesafe/", "openrouter/")):
+            raise ConfigError("专用判断路径需要显式 typesafe/ 或 openrouter/ 模型协议标识")
 
         self._settings = settings
         self._handler: object | None = None
@@ -134,12 +138,12 @@ class TypeSafeDecisionResource:
         self._close_task: asyncio.Task[None] | None = None
 
     @classmethod
-    def create(cls, settings: DecisionModelSettings) -> TypeSafeDecisionResource:
+    def create(cls, settings: DecisionModelSettings) -> DecisionResource:
         """建立显式判断所有者，不探测端点或修改全局 SDK 配置。"""
         return cls(settings)
 
     @property
-    def backend(self) -> TypeSafeDecisionResource:
+    def backend(self) -> DecisionResource:
         """借出本资源的 Core 判断边界；读取不初始化 SDK 或传输。"""
         return self
 

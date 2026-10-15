@@ -31,6 +31,7 @@ from purrcept_engine.context.capacity import CapacityError
 from purrcept_engine.context.checkpoints import encode_checkpoint
 from purrcept_engine.errors import StorageError
 from purrcept_engine.execution.protocol import JsonObject, JsonValue, decode_object
+from purrcept_engine.plugins.base import PluginRuntime
 from purrcept_engine.storage import knowledge as knowledge_sql
 from purrcept_engine.storage.activities import ActivityRecord
 from purrcept_engine.storage.execution import ActionRecord
@@ -120,7 +121,13 @@ class Backend:
         return ModelResponse(Message.assistant("内部结束"))
 
 
-def assembly(store: Store, directory: Path, backend: Backend) -> SubjectAssembly:
+def assembly(
+    store: Store,
+    directory: Path,
+    backend: Backend,
+    *,
+    plugins: dict[str, PluginRuntime] | None = None,
+) -> SubjectAssembly:
     """使用实际 app 装配路径，但不启动注意/反思接入工作器。"""
     config = EngineConfig.validate(
         {
@@ -157,7 +164,7 @@ def assembly(store: Store, directory: Path, backend: Backend) -> SubjectAssembly
         {"main": backend},
         {},
         execute=execute,
-        plugins={},
+        plugins={} if plugins is None else plugins,
         can_start=lambda: None,
         rules={},
         wakeup_committed=lambda: None,
@@ -188,15 +195,15 @@ async def run(assembled: SubjectAssembly, store: Store, identity: str, turn: str
     )
 
 
-def work(request: ModelRequest) -> JsonObject:
-    """从实际 SDK 编译的最后 user 状态材料读出宿主投影。"""
+def state_text(request: ModelRequest) -> str:
+    """读取实际 SDK 最后一个 user 材料，不把展示文本当作内部存储协议。"""
     material, _ = compile_materials(request, model="openai/offline")
     payload = object_(decode_object(material.encode())["payload"])
     message = object_(array(payload["messages"])[-1])
     text = message["content"]
     assert isinstance(text, str)
-    state = decode_object(text.encode())
-    return object_(state["work"])
+    assert text.startswith("## 宿主当前状态")
+    return text
 
 
 async def test_actual_request_contains_all_open_notices_and_plans_then_refreshes_state(
@@ -218,27 +225,75 @@ async def test_actual_request_contains_all_open_notices_and_plans_then_refreshes
     try:
         first = await admit(store, "first")
         await run(assembled, store, first, "turn:first")
-        initial = work(backend.requests[0])
-        assert len(array(initial["supervision"])) == 35
-        assert len(array(initial["plans"])) == 35
-        assert initial["foreground_session_version"] == 0
-        assert isinstance(initial["assembled_at"], float)
+        initial = state_text(backend.requests[0])
+        for identity in ids:
+            assert f'"id": > {identity}\n' in initial
+        for ordinal in range(35):
+            assert f'"id": > plan:{ordinal}\n' in initial
+        assert "foreground_session_version" not in initial
+        assert '"observed_at": > ' in initial
+        assert (await store.get_session("foreground")).version == 1
         await store.knowledge.respond_supervision(ids[-1], "reject", "已核对真实来源")
         await store.knowledge.resolve_plan("plan:34", "事项已处理", source)
         second = await admit(store, "second")
         await run(assembled, store, second, "turn:second")
-        refreshed = work(backend.requests[1])
-        assert len(array(refreshed["supervision"])) == 34
-        assert len(array(refreshed["plans"])) == 34
-        assert refreshed["foreground_session_version"] == 1
-        assert all(
-            object_(object_(notice)["notice"])["id"] != ids[-1]
-            for notice in array(refreshed["supervision"])
-        )
+        refreshed = state_text(backend.requests[1])
+        for identity in ids[:-1]:
+            assert f'"id": > {identity}\n' in refreshed
+        for ordinal in range(34):
+            assert f'"id": > plan:{ordinal}\n' in refreshed
+        assert f'"id": > {ids[-1]}\n' not in refreshed
+        assert '"id": > plan:34\n' not in refreshed
+        assert "foreground_session_version" not in refreshed
+        assert (await store.get_session("foreground")).version == 2
         attention = await assembled.coordinator.attention_context()
         assert len(array(attention["plans"])) == 32
         assert "supervision" not in attention and "calls" not in attention
         assert "first_32" in str(attention["coverage"])
+    finally:
+        await assembled.coordinator.close()
+        await assembled.background.close()
+        await assembled.foreground_history.close()
+        await assembled.reflection_history.close()
+
+
+async def test_real_request_uses_explicit_plugin_materials_without_diagnostic_fallback(
+    store: Store,
+    tmp_path: Path,
+) -> None:
+    """插件实例名不决定选材；仅声明诊断快照的扩展不能把内部信息混入请求。"""
+    prepared: list[str] = []
+
+    def diagnostic() -> JsonObject:
+        return {"process_path": "private-driver.exe", "queue": 12345}
+
+    async def model_materials() -> JsonObject:
+        prepared.append("read")
+        return {"connected": False, "reason": "连接已中断，发送结果待核对"}
+
+    plugins = {
+        "custom-instance": PluginRuntime((), snapshot=diagnostic, prepare_request=model_materials),
+        "diagnostic-only": PluginRuntime((), snapshot=diagnostic),
+    }
+    backend = Backend()
+    assembled = assembly(store, tmp_path, backend, plugins=plugins)
+    try:
+        identity = await admit(store, "current")
+        await run(assembled, store, identity, "turn:explicit-materials")
+        text = state_text(backend.requests[0])
+        assert prepared  # 轮次容量预检和实际请求准备均可读取，读取本身不执行能力。
+        assert "custom-instance" in text and "连接已中断，发送结果待核对" in text
+        assert "diagnostic-only" not in text and "private-driver.exe" not in text
+        assert "plugin_states" not in text and "deadline_monotonic" not in text
+        assert "remaining_seconds_at_assembly" in text and identity in text
+        assert "turn:explicit-materials" not in text
+        assert plugins["custom-instance"].snapshot is diagnostic
+        assert diagnostic()["queue"] == 12345
+        records = await store.requests_for_turn("foreground", "turn:explicit-materials")
+        assert len(records) == 1
+        saved = decode_object(records[0].request.materials_json.encode())
+        wire, _ = compile_materials(backend.requests[0], model="openai/offline")
+        assert saved["payload"] == decode_object(wire.encode())["payload"]
     finally:
         await assembled.coordinator.close()
         await assembled.background.close()
@@ -367,7 +422,8 @@ async def test_open_supervision_protects_source_older_than_recent_turns_during_r
         # 派发一次前台，完整来源留在实际历史中，未为满足50%目标改写它。
         assert len(backend.requests) == 1
         assert "x" * 50_000 in backend.requests[0].messages[0].text
-        assert work(backend.requests[0])["foreground_session_version"] == 5
+        assert "foreground_session_version" not in state_text(backend.requests[0])
+        assert (await store.get_session("foreground")).version == 6
     finally:
         await assembled.coordinator.close()
         await assembled.background.close()

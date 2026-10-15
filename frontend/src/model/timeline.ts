@@ -37,11 +37,13 @@ export function timelineItems(snapshot: Snapshot | null, entries: readonly Entry
   for (const entry of entries) {
     items.push({
       kind: "control", id: controlId(entry), at: entry.result?.admitted_at ?? null, title: entry.title,
-      status: entry.result ? mark(entry.result.action?.state ?? entry.result.activity_command?.status ?? entry.result.state) : null,
-      needsCheck: entry.rejected || entry.unresolved, entry,
+      status: entry.result ? mark(entry.result.action?.state ?? entry.result.activity_command?.status ?? entry.result.state)
+        : entry.unavailable ? { state: "warning", label: "历史回执不可用" }
+        : entry.rejected ? { state: "failed", label: "操作未被接受" } : null,
+      needsCheck: entry.rejected || entry.unresolved || entry.unavailable, entry,
     });
   }
-  // 尚未取得受理时间的控制是刚刚发起的，排在最前。
+  // 缺少受理时间的记录保持原列表顺序；展示为未知，不能推断刚刚发起。
   items.sort((left, right) => {
     const l = left.at ?? Number.POSITIVE_INFINITY;
     const r = right.at ?? Number.POSITIVE_INFINITY;

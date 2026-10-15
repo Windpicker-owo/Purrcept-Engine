@@ -5,6 +5,7 @@
 客户端和插件资源的最终关闭仍归 EngineHost。
 """
 
+import asyncio
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 
@@ -171,10 +172,8 @@ def build_subject(
             "current_turn": None
             if turn is None
             else {
-                "turn_id": turn.turn_id,
                 "input_ids": list(turn.input_ids),
                 "started_at": turn.started_at,
-                "generation": turn.generation,
             },
             "plans": [item.model_dump(mode="json") for item in plans],
             "activities": [
@@ -183,7 +182,6 @@ def build_subject(
                     "version": item.version,
                     "goal": item.goal,
                     "state": item.state,
-                    "run_generation": item.run_generation,
                     "remaining_seconds": item.remaining_seconds,
                     "reconciliation_required": item.needs_reconciliation,
                 }
@@ -196,26 +194,24 @@ def build_subject(
         # Ordering: 当前未决材料全部重新核验，不能用注意的有限背景或已投递
         # 邮箱代替仍有效监管、未完成计划和真实调用事实。超额由完整请求拒绝。
         work = await store.subject_work()
-        snapshots: JsonObject = {}
-        skills: JsonObject = {}
+        materials: JsonObject = {}
         for name, runtime in plugins.items():
-            if runtime.snapshot is not None:
-                snapshots[name] = runtime.snapshot()
             if runtime.prepare_request is not None:
-                # 文件刷新每个逻辑请求发生一次；同步 Reminder.resolve 只借用
-                # 这份已完成材料，同一次传输重试不会再次扫文件或改变请求。
-                skills[name] = await runtime.prepare_request()
+                # 轮次预检和逻辑请求派发前刷新；同步 Reminder.resolve 只借用
+                # 已完成材料，同一次传输重试不会再次扫文件或改变请求。
+                materials[name] = await runtime.prepare_request()
         budget.check()
         return DynamicState.from_payload(
             {
                 "material_kind": "engine_committed_state",
                 "work": work,
-                "plugin_states": snapshots,
-                "request_materials": skills,
+                "request_materials": materials,
                 "budget": {
                     "used_requests": budget.used,
                     "max_requests": budget.max_requests,
-                    "deadline_monotonic": budget.deadline,
+                    "remaining_seconds_at_assembly": max(
+                        0, budget.deadline - asyncio.get_running_loop().time()
+                    ),
                 },
             }
         )

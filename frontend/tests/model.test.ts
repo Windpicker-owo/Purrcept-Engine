@@ -23,7 +23,7 @@ function device(kind: string, state: Device["state"]): Device {
   return { instance_id: kind, kind, revision: "1", state, controls: [], has_preview: false };
 }
 function entry(patch: Partial<Entry> = {}): Entry {
-  return { request: request(), title: "连接电脑", result: null, sending: false, unresolved: false, rejected: false, error: null, ...patch };
+  return { request: request(), title: "连接电脑", result: null, sending: false, unresolved: false, rejected: false, unavailable: false, error: null, ...patch };
 }
 
 describe("agentView", () => {

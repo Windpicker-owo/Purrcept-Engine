@@ -201,10 +201,15 @@ async def test_one_active_four_pending_rejects_without_synthesizing(
     queued = owner.snapshot()["queued"]
     assert isinstance(queued, list)
     assert len(queued) == 4
+    material = await owner.prepare_request()
+    assert isinstance(material["queued"], list) and len(material["queued"]) == 4
+    assert material["active"] == owner.snapshot()["active"]
+    assert "deadline" not in str(material) and "revision" not in material
     source.release.set()
     results = await asyncio.gather(*tasks)
     assert all(payload(result)["completed"] is True for result in results)
     assert source.calls == ["首项", "0", "1", "2", "3"]
+    assert (await owner.prepare_request())["last"] == owner.snapshot()["last"]
     await owner.close()
 
 

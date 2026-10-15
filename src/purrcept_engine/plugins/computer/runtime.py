@@ -25,7 +25,13 @@ from purrcept_engine.execution.protocol import JsonObject, encode_json
 from purrcept_engine.execution.providers import CallOutcome
 from purrcept_engine.plugins.base import EvidencePort, InputPort
 from purrcept_engine.storage.knowledge import EvidenceSnapshot
-from purrcept_engine.storage.models import InputSource, InputSubmission, MediaAsset, MediaReference
+from purrcept_engine.storage.models import (
+    InputContext,
+    InputSource,
+    InputSubmission,
+    MediaAsset,
+    MediaReference,
+)
 
 from .driver import ComputerDriver
 from .models import ChangeDetector, ComputerError, ComputerFrame, ObservationPolicy
@@ -336,6 +342,8 @@ class ComputerRuntime:
             datetime.fromtimestamp(candidate.frame.captured_at, UTC),
             datetime.now(UTC),
             media=(MediaAsset(candidate.frame.data, "image/jpeg"),),
+            # 实时观察只让通用缓冲到期；不取消生成，也不撤销已返回的行动。
+            context=InputContext(minimum_wake=True),
         )
         admitted = await self._own(self._inputs.submit(submission))
         if generation != self._generation or not self._observing or self._stopping:
@@ -395,6 +403,23 @@ class ComputerRuntime:
             "delivered_size": None if frame is None else list(frame.delivered_size),
             "input_id": self._inflight,
             "candidate": self._candidate is not None,
+            "error": self._error,
+        }
+
+    async def prepare_request(self) -> JsonObject:
+        """给主体连接、观察及最新窗口语境，不把驱动参数和进程句柄当作认知材料。
+
+        截图仍由正式输入交付；标题和采集时间只说明最后观察到什么窗口，不
+        冒充当前画面或重新采集。完整尺寸、策略和连接代次留在 snapshot。
+        """
+        state = self.snapshot()
+        frame = self._latest
+        return {
+            "connected": state["connected"],
+            "observing": self._observing,
+            "last_window_title": None if frame is None else frame.foreground.title,
+            "captured_at": None if frame is None else frame.captured_at,
+            "pending_input_id": self._inflight,
             "error": self._error,
         }
 

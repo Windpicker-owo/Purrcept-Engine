@@ -86,7 +86,7 @@ def count_litellm_capacity(
 def _local_counter() -> Callable[..., object]:
     """首次导入只读随包价格表，恢复调用者环境，不下载分词或价格资源。
 
-    Host 的同步预检之间没有 await；锁另串行化多个嵌入线程的首次导入。
+    不同会话的预检在线程中进行；锁串行化临时环境设置与首次导入。
     已导入的 SDK 由 Python 复用，不改变其全局开关或其他宿主的计量配置。
     """
     with _import_lock:

@@ -16,7 +16,6 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from purrcept_engine.errors import ConfigError
 from purrcept_engine.execution.catalog import CapabilityDeclaration, ObjectDeclaration
-from purrcept_engine.execution.protocol import JsonObject
 from purrcept_engine.execution.providers import (
     CallContext,
     CallOutcome,
@@ -178,9 +177,6 @@ def make_factory(driver_factory: Callable[[], ComputerDriver]) -> PluginFactory:
                     raise CapabilityInputError(str(error)) from error
                 return CallOutcome("confirmed", result)
 
-            async def prepare_request() -> JsonObject:
-                return computer.snapshot()
-
             def revision() -> str:
                 state = computer.snapshot()
                 return f"{state['connection_id']}:{state['generation']}:{state['observing']}"
@@ -205,7 +201,7 @@ def make_factory(driver_factory: Callable[[], ComputerDriver]) -> PluginFactory:
                 stop_inputs=computer.stop_inputs,
                 close=computer.close,
                 snapshot=computer.snapshot,
-                prepare_request=prepare_request,
+                prepare_request=computer.prepare_request,
                 panel=DevicePanel(
                     "computer",
                     (

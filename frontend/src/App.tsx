@@ -156,6 +156,9 @@ export function App({ client }: { client: PanelClient }): ReactElement {
             {state.storageError ? (
               <Feedback state="warning" scope="region" urgency="passive" persistence="retained" title="操作记录没有保存到浏览器">{state.storageError}</Feedback>
             ) : null}
+            {state.controlError ? (
+              <Feedback state="warning" scope="region" urgency="passive" persistence="until-resolved" title="操作等待名额已满">{state.controlError}</Feedback>
+            ) : null}
           </main>
         </div>
 

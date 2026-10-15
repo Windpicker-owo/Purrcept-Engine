@@ -256,6 +256,11 @@ async def test_real_native_conflict_rejects_only_current_frame(rig: Rig, changed
     await rig.inputs.wait_admissions(2)
     assert rig.service.snapshot()["state"] == "online"
     assert rig.service.snapshot()["gap_counts"] == {"source_conflict": 1}
+    material = await rig.service.prepare_request()
+    assert material["state"] == "online" and material["gap_counts"] == {"source_conflict": 1}
+    assert material["account_id"] == rig.service.snapshot()["account_id"]
+    assert "diagnostics" not in material and "generation" not in material
+    assert "verification" not in material and "queued_events" not in material
     assert rig.inputs.admitted[-1].input_id != first.input_id
     assert await rig.store.get_input(first.input_id) == first
 

@@ -51,6 +51,10 @@ async def test_attachment_order_paths_and_owned_voice_cleanup(tmp_path: Path) ->
             "image",
             "file",
         ]
+        images = [part for part in segments if isinstance(part, dict) and part["type"] == "image"]
+        assert images == [
+            {"type": "image", "data": {"file": "base64://" + base64.b64encode(PNG).decode()}}
+        ]
         assert len(temporary) == 1 and temporary[0].read_bytes() == b"RIFF synthetic WAV"
         bad = Send(
             chat="private",
@@ -95,7 +99,8 @@ async def test_external_junction_cannot_supply_attachment(tmp_path: Path) -> Non
         await owner.close()
 
 
-async def test_sticker_uses_real_get_image_and_survives_restart(tmp_path: Path) -> None:
+@pytest.mark.parametrize("chat", ("private", "group"))
+async def test_sticker_uses_real_get_image_and_survives_restart(tmp_path: Path, chat: str) -> None:
     socket = Socket()
     connector = Connector((socket,))
     host = EngineHost(
@@ -145,18 +150,19 @@ async def test_sticker_uses_real_get_image_and_survives_restart(tmp_path: Path) 
         assert isinstance(values, list) and len(values) == 1
         task = asyncio.create_task(
             host.invoke(
-                "me.phone.qq.send_sticker", {"chat": "private", "target_id": "123", "tag": "开心"}
+                "me.phone.qq.send_sticker", {"chat": chat, "target_id": "123", "tag": "开心"}
             )
         )
         request = await second_socket.sent.get()
-        assert request["action"] == "send_private_msg"
+        assert request["action"] == f"send_{chat}_msg"
         params = request["params"]
         assert isinstance(params, dict)
+        assert params["group_id" if chat == "group" else "user_id"] == 123
         message = params["message"]
         assert isinstance(message, list) and isinstance(message[0], dict)
         assert message[0]["data"] == {
             "file": Path(saved["path"]).as_uri(),
-            "subtype": 1,
+            "sub_type": 1,
             "summary": "[开心]",
         }
         second_socket.reply(request, {"message_id": -456})

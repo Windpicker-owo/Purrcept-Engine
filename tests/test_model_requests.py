@@ -62,7 +62,7 @@ from purrcept_core.models import (
 )
 
 from purrcept_engine.app.config import DecisionModelSettings, GenerationModelSettings, RetrySettings
-from purrcept_engine.app.models import OpenAIGenerationResource, TypeSafeDecisionResource
+from purrcept_engine.app.models import DecisionResource, OpenAIGenerationResource
 from purrcept_engine.errors import StorageError
 from purrcept_engine.storage import (
     InputSource,
@@ -681,7 +681,7 @@ async def test_real_sdk_retry_has_two_http_attempts_and_preserves_same_payload(
                 "capacity_rule": "synthetic-test-rule",
             }
         )
-        decision_resource = TypeSafeDecisionResource.create(decision_settings)
+        decision_resource = DecisionResource.create(decision_settings)
         decision_wrapper = ModelDecisionBackend(
             decision_resource,
             sink,

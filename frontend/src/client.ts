@@ -8,11 +8,11 @@ import type { ControlRequest, ControlResult, ObjectValue, Snapshot } from "./con
 
 export interface Entry {
   request: ControlRequest; title: string; result: ControlResult | null;
-  sending: boolean; unresolved: boolean; rejected: boolean; error: string | null;
+  sending: boolean; unresolved: boolean; rejected: boolean; unavailable: boolean; error: string | null;
 }
 export interface PanelState {
   snapshot: Snapshot | null; online: boolean; receivedAt: number | null; error: string | null;
-  entries: Entry[]; storageError: string | null;
+  entries: Entry[]; storageError: string | null; controlError: string | null;
 }
 interface StoragePort { getItem(key: string): string | null; setItem(key: string, value: string): void }
 type FetchPort = (input: string, init?: RequestInit) => Promise<Response>;
@@ -38,6 +38,8 @@ function message(error: unknown): string {
 
 /** 是否仍有业务工作等待确认；控制 finished 本身不能结束观察。 */
 export function awaiting(entry: Entry): boolean {
+  // 旧实例且当前账本明确查无记录，只能保留未知说明，不能无限占用新控制名额。
+  if (entry.unavailable) return false;
   if (entry.unresolved || entry.sending) return true;
   const r = entry.result;
   if (r === null) return false;
@@ -52,7 +54,7 @@ export function awaiting(entry: Entry): boolean {
  * 状态修改经单一 publish 通知；同目标在途时点击合并，重传保留完整原请求。
  */
 export class PanelClient {
-  private state: PanelState = { snapshot: null, online: false, receivedAt: null, error: null, entries: [], storageError: null };
+  private state: PanelState = { snapshot: null, online: false, receivedAt: null, error: null, entries: [], storageError: null, controlError: null };
   private listeners = new Set<() => void>();
   private session: { token: string; instance_id: string } | null = null;
   private refreshing: Promise<void> | null = null;
@@ -77,7 +79,8 @@ export class PanelClient {
       if (!Array.isArray(saved) || saved.length > 16) throw new ContractError("saved_controls");
       const entries = saved.map((value: unknown): Entry => {
         if (typeof value !== "object" || value === null || !("request" in value) || !("title" in value) || typeof value.title !== "string") throw new ContractError("saved_control");
-        return { request: controlRequest(value.request), title: value.title, result: null, sending: false, unresolved: true, rejected: false, error: "页面已刷新，正在查询原控制身份。" };
+        const rejected = "rejected" in value && value.rejected === true;
+        return { request: controlRequest(value.request), title: value.title, result: null, sending: false, unresolved: !rejected, rejected, unavailable: false, error: rejected ? "原操作未被接受。" : "页面已刷新，正在查询原控制身份。" };
       });
       this.state = { ...this.state, entries };
     } catch (error: unknown) {
@@ -86,14 +89,14 @@ export class PanelClient {
   }
   private save(entries: Entry[]): void {
     try {
-      this.storage.setItem(STORAGE_KEY, JSON.stringify(entries.map(({ request, title }) => ({ request, title }))));
+      this.storage.setItem(STORAGE_KEY, JSON.stringify(entries.map(({ request, title, rejected }) => ({ request, title, rejected }))));
     } catch {
       this.publish({ storageError: "浏览器未保存控制身份。当前页面仍可去重；刷新后请在近期回执核对实际结果。" });
     }
   }
   private update(requestId: string, patch: Partial<Entry>): void {
     const entries = this.state.entries.map((entry) => entry.request.request_id === requestId ? { ...entry, ...patch } : entry);
-    this.publish({ entries });
+    this.publish({ entries, controlError: entries.some((entry) => !awaiting(entry)) ? null : this.state.controlError });
     this.save(entries);
   }
   private async get(path: string, init?: RequestInit): Promise<Response> {
@@ -131,7 +134,13 @@ export class PanelClient {
     try {
       const response = await this.get(`/api/controls/${encodeURIComponent(requestId)}`);
       if (response.status === 404) {
-        this.update(requestId, { unresolved: true, error: "宿主尚无这个控制身份；可使用原 ID 原参数重传。" });
+        const unavailable = this.session !== null && entry.request.instance_id !== this.session.instance_id;
+        this.update(requestId, {
+          unavailable, unresolved: !unavailable,
+          error: unavailable
+            ? "历史回执不可用：这条操作属于旧 Engine 实例，当前数据库没有对应记录。实际效果无法确认，不会重发，也不占用新操作名额。"
+            : "宿主尚无这个控制身份；可使用原 ID 原参数重传。",
+        });
         return;
       }
       const result = controlResult(await responseJson(response));
@@ -146,7 +155,7 @@ export class PanelClient {
       || JSON.stringify(result.request.arguments) !== JSON.stringify(entry.request.arguments)) throw new ContractError("control_payload");
     if (result.action && result.action.action_id !== result.action_id) throw new ContractError("action_identity");
     if (result.activity_command && result.activity_command.command_id !== result.command_id) throw new ContractError("command_identity");
-    this.update(entry.request.request_id, { result, unresolved: false, error: null });
+    this.update(entry.request.request_id, { result, unresolved: false, unavailable: false, error: null });
   }
 
   /** 新意图在首次网络 await 前取得并保存身份，双击不会产生第二个请求。 */
@@ -156,15 +165,21 @@ export class PanelClient {
     if (this.state.entries.some((entry) => entry.request.instance_id === this.session?.instance_id && entry.request.target === target && entry.request.operation === operation && awaiting(entry))) return;
     const entry: Entry = {
       request: { request_id: this.identity(), instance_id: this.session.instance_id, target, operation, expected_revision: revision, arguments: structuredClone(argumentsValue) },
-      title, result: null, sending: true, unresolved: true, rejected: false, error: null,
+      title, result: null, sending: true, unresolved: true, rejected: false, unavailable: false, error: null,
     };
-    const retained = this.state.entries.slice(0, 15);
-    if (this.state.entries.slice(15).some(awaiting)) {
-      this.publish({ storageError: "已有 16 项控制需要核对；请先取得原控制结果。" });
-      return;
+    const retained = [...this.state.entries];
+    if (retained.length >= 16) {
+      // 近期列表只淘汰最旧的非在途观察，不因队尾一条未知请求锁死整个面板。
+      let removable = retained.length - 1;
+      while (removable >= 0 && awaiting(retained[removable]!)) removable--;
+      if (removable < 0) {
+        this.publish({ controlError: "已有 16 项操作仍在等待结果，请在时间线查询原操作。" });
+        return;
+      }
+      retained.splice(removable, 1);
     }
     const entries = [entry, ...retained];
-    this.publish({ entries });
+    this.publish({ entries, controlError: null });
     this.save(entries);
     await this.transmit(entry);
   };

@@ -743,6 +743,30 @@ class AudioRuntime:
             else {"error_type": type(self._failure).__name__, "message": str(self._failure)},
         }
 
+    async def prepare_request(self) -> JsonObject:
+        """保留当前播放阶段、排队身份及真实收尾回执，不暴露内部单调截止。
+
+        last/control 是实际播放与停音结果，不能按诊断字段一并丢弃；在途
+        业务状态仍不表示声音已被听见，执行额度和停止资格由宿主继续核验。
+        """
+        state = self.snapshot()
+        return {
+            "ready": state["ready"],
+            "active": state["active"],
+            "queued": [
+                {
+                    "playback_id": speech.playback_id,
+                    "call_id": speech.context.call_id,
+                    "stage": speech.stage,
+                }
+                for speech in self._queue
+            ],
+            "last": state["last"],
+            "control": state["control"],
+            "pending_controls": state["pending_controls"],
+            "error": state["error"],
+        }
+
     async def stop_inputs(self) -> None:
         """宿主关闭先撤全部现场资格，再收回输出；不关闭身体或 Store。"""
         self._stopping, self._ready = True, False

@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from collections import deque
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
@@ -15,8 +16,12 @@ from pathlib import Path
 import pytest
 import pytest_asyncio
 from purrcept_core.models import (
+    AudioBlock,
+    AudioBytes,
     ConversationCheckpoint,
     ConversationState,
+    ImageBlock,
+    ImageBytes,
     Message,
     MessageRole,
     ModelEventSink,
@@ -41,8 +46,8 @@ from purrcept_engine.storage import (
     InputSubmission,
 )
 from purrcept_engine.storage.store import Store
-from purrcept_engine.subject.history import HistoryMaintenance
-from purrcept_engine.subject.model_requests import RequestBudgetExceeded
+from purrcept_engine.subject.history import HistoryMaintenance, summary_request
+from purrcept_engine.subject.model_requests import RequestBudgetExceeded, compile_materials
 
 
 @pytest_asyncio.fixture
@@ -415,3 +420,122 @@ async def test_cancelled_summary_retains_coverage_and_real_cancelled_attempt(sto
     )
     assert (await store.get_session("foreground")).version == 1
     assert await store.reserve_summary(source) == "already_attempted"
+
+
+def test_summary_media_remain_native_and_nested_receipts_keep_their_association() -> None:
+    """媒体不能变成JSON里的base64文字，附件位置仍对应原消息与工具回执。"""
+    image = ImageBlock(ImageBytes(b"image-content", "image/png"), alt_text="画面")
+    audio = AudioBlock(AudioBytes(b"audio-content"), alt_text="原始声音")
+    checkpoint = ConversationCheckpoint(
+        ConversationState(
+            (
+                Message(MessageRole.USER, (TextBlock("看图"), image)),
+                Message(
+                    MessageRole.ASSISTANT,
+                    (ToolCallBlock("receipt", "read_evidence"),),
+                ),
+                Message(
+                    MessageRole.TOOL,
+                    (ToolResultBlock("receipt", content=(TextBlock("真实回执"), audio)),),
+                ),
+                Message.assistant("已读取"),
+            ),
+            turn_index=1,
+            turn_boundaries=(4,),
+        ),
+        ReminderState(),
+    )
+    source = freeze_summary_source(
+        checkpoint, owner_id="foreground", source_version=1, protected_turns=0
+    )
+    assert source is not None
+    request = summary_request(source, 4096)
+    content = request.messages[0].content
+    assert content[2] is image and content[4] is audio
+    assert isinstance(content[0], TextBlock)
+    archive = json.loads(content[0].text)
+    messages = archive["turns"][0]["messages"]
+    assert messages[0]["content"][1]["attachment"] == 1
+    assert messages[2]["content"][0]["tool_call_id"] == "receipt"
+    assert messages[2]["content"][0]["content"][1]["attachment"] == 2
+    assert "base64" not in request.messages[0].text
+    assert "真实回执" in request.messages[0].text
+    materials, _ = compile_materials(request, model="openai/offline")
+    blocks = json.loads(materials)["payload"]["messages"][1]["content"]
+    assert [block["type"] for block in blocks if block["type"] != "text"] == [
+        "image_url",
+        "input_audio",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_oversized_history_summarizes_one_fitting_prefix_and_keeps_the_rest(store: Store):
+    """一次摘要恢复容量；没有选择的旧轮次、近期轮次和回执保持原样。"""
+    source = await saved_source(store)
+    # 模拟旧版本把未派发的超额来源登记为已尝试；新选择不能被此覆盖永久堵住。
+    assert await store.reserve_summary(source) == "reserved"
+    backend = Backend((ModelResponse(Message.assistant('{"summary":"旧交互与真实回执。"}')),))
+    maintenance = service(store, backend)
+
+    def limited(payload: JsonObject):
+        return check_capacity(payload, GenerationCapacity(6_000, 256, "reference-text-only-v1"))
+
+    maintenance.summary_capacity = limited
+    try:
+        result = await maintenance.run(
+            source,
+            source_layout=layout,
+            source_model="openai/offline",
+            source_capacity=source_capacity,
+            deadline=asyncio.get_running_loop().time() + 600,
+        )
+    finally:
+        await maintenance.close()
+    assert result.installed_version == 2 and result.proposal is not None
+    selected = result.proposal.source
+    assert selected.end_turn < source.end_turn
+    assert len(backend.requests) == 1
+    assert (
+        result.proposal.candidate.history.messages[1:]
+        == source.checkpoint.history.messages[selected.end_message :]
+    )
+    assert selected.checkpoint == source.checkpoint
+    assert selected.protected_turns == source.protected_turns
+    assert "confirmed past" in backend.requests[0].messages[0].text
+
+
+@pytest.mark.asyncio
+async def test_one_oversized_turn_does_not_reserve_or_dispatch_and_can_follow_config_fix(
+    store: Store,
+):
+    """纯容量失败不锁死覆盖；修正容量后仍可正常摘要，原文从未删减。"""
+    source = await saved_source(store)
+    backend = Backend((ModelResponse(Message.assistant('{"summary":"有效摘要"}')),))
+    maintenance = service(store, backend)
+
+    def too_small(payload: JsonObject):
+        return check_capacity(payload, GenerationCapacity(1_000, 256, "reference-text-only-v1"))
+
+    maintenance.summary_capacity = too_small
+    try:
+        with pytest.raises(SummaryError, match="最早一个完整"):
+            await maintenance.run(
+                source,
+                source_layout=layout,
+                source_model="openai/offline",
+                source_capacity=source_capacity,
+                deadline=asyncio.get_running_loop().time() + 600,
+            )
+        assert backend.requests == []
+        assert (await store.get_session("foreground")).version == 1
+        maintenance.summary_capacity = summary_capacity
+        result = await maintenance.run(
+            source,
+            source_layout=layout,
+            source_model="openai/offline",
+            source_capacity=source_capacity,
+            deadline=asyncio.get_running_loop().time() + 600,
+        )
+        assert result.installed_version == 2
+    finally:
+        await maintenance.close()

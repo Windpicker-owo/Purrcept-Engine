@@ -27,11 +27,12 @@ from purrcept_core.models import (
 )
 
 from purrcept_engine.context.materials import UnsupportedMaterial
+from purrcept_engine.context.presentation import render_input, render_material
 from purrcept_engine.execution.protocol import JsonObject, decode_object
 from purrcept_engine.storage.model_requests import encode
 from purrcept_engine.storage.models import InputRecord, MediaReference
 
-from .model_requests import RetryPolicy, compile_materials
+from .model_requests import RetryPolicy, compile_materials, prepare_off_loop
 from .session import CapacityCheck
 
 ATTENTION_QUESTION = ChoiceQuestion(
@@ -119,12 +120,13 @@ async def attention_request(
         raise ValueError("注意批次不能为空。")
     blocks: list[ContentBlock] = [
         TextBlock(
-            encode(
+            render_material(
+                "注意判断的有限工作背景（不含完整主脑历史）",
                 {
                     "material_kind": "attention_work_context",
                     "coverage": "limited_work_context; full_foreground_history_not_included",
                     "context": background,
-                }
+                },
             )
         )
     ]
@@ -133,22 +135,7 @@ async def attention_request(
             raise UnsupportedMaterial(
                 "attention.missing_materials:" + encode(record.context.missing_materials)
             )
-        blocks.append(
-            TextBlock(
-                encode(
-                    {
-                        "material_kind": "original_input",
-                        "input_id": record.input_id,
-                        "source": record.source,
-                        "occurred_at": record.occurred_at.isoformat(),
-                        "received_at": record.received_at.isoformat(),
-                        "text": record.text,
-                        "relations": record.context.details_json,
-                        "media": record.media,
-                    }
-                )
-            )
-        )
+        blocks.append(TextBlock(render_input(record)))
         for block in await media(record.media):
             if isinstance(block, AudioBlock) and model.kind == "decision":
                 raise UnsupportedMaterial("attention.unsupported_native_audio")
@@ -175,9 +162,14 @@ async def attention_request(
             ),
             settings=ModelSettings(max_output_tokens=model.output_tokens),
         )
-    materials, _ = compile_materials(request, model=model.model)
-    payload = decode_object(materials.encode("utf-8"))["payload"]
-    if not isinstance(payload, dict):
-        raise TypeError("专用判断编译材料缺少 payload 对象。")
-    assessment = model.capacity(payload)
-    return replace(request, metadata={"engine.capacity": encode(assessment)})
+
+    def measure() -> ModelRequest | DecisionRequest:
+        """冻结后仅做本地计算，不占用实时输入的事件循环。"""
+        materials, _ = compile_materials(request, model=model.model)
+        payload = decode_object(materials.encode("utf-8"))["payload"]
+        if not isinstance(payload, dict):
+            raise TypeError("专用判断编译材料缺少 payload 对象。")
+        assessment = model.capacity(payload)
+        return replace(request, metadata={"engine.capacity": encode(assessment)})
+
+    return await prepare_off_loop(measure)

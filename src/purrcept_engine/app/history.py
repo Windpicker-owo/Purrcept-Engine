@@ -21,7 +21,7 @@ from purrcept_core.models import (
 )
 from purrcept_core.models.effects import Generate
 
-from purrcept_engine.context.capacity import CapacityError
+from purrcept_engine.context.capacity import CapacityAssessment, CapacityError
 from purrcept_engine.context.checkpoints import decode_checkpoint
 from purrcept_engine.context.maintenance import SummaryError, freeze_summary_source
 from purrcept_engine.execution.protocol import decode_object
@@ -29,7 +29,11 @@ from purrcept_engine.storage.store import Store
 from purrcept_engine.storage.subject import SessionRecord
 from purrcept_engine.subject.delivery import ToolDeliveryGate
 from purrcept_engine.subject.history import HistoryMaintenance
-from purrcept_engine.subject.model_requests import RequestBudget, compile_materials
+from purrcept_engine.subject.model_requests import (
+    RequestBudget,
+    compile_materials,
+    prepare_off_loop,
+)
 from purrcept_engine.subject.session import CapacityCheck, DynamicReminder, DynamicState
 
 from .config import ContextSettings
@@ -134,11 +138,16 @@ class HistoryPreparation:
                 reminder_key=DynamicReminder.source_id,
             )
 
-        materials, _ = compile_materials(layout(checkpoint), model=self.model)
-        payload = decode_object(materials.encode("utf-8")).get("payload")
-        if not isinstance(payload, dict):
-            raise TypeError("Core 实际布局缺少 SDK payload。")
-        before = self.assess(payload)
+        def measure() -> CapacityAssessment:
+            """首轮完整布局及分词可能耗时数秒，不能阻塞麦克风采集。"""
+            materials, _ = compile_materials(layout(checkpoint), model=self.model)
+            payload = decode_object(materials.encode("utf-8")).get("payload")
+            if not isinstance(payload, dict):
+                raise TypeError("Core 实际布局缺少 SDK payload。")
+            return self.assess(payload)
+
+        before = await prepare_off_loop(measure)
+        budget.check()
         if not before.maintenance_due or checkpoint is None:
             return session
 

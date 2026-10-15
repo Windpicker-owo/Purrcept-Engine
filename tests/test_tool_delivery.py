@@ -747,12 +747,12 @@ async def actual_work_state(store: Store, budget: RequestBudget) -> DynamicState
     )
 
 
-def tail_calls(sdk: JsonObject) -> tuple[JsonObject, ...]:
-    """从最终 SDK user 尾部检查模型实际收到的宿主调用表示。"""
+def tail_text(sdk: JsonObject) -> str:
+    """读取最终 SDK user 尾部；呈现文本不再承担 JSON 存储协议。"""
     last = obj(items(sdk["messages"])[-1])
     assert last["role"] == "user" and isinstance(last["content"], str)
-    state = decode_object(last["content"].encode("utf-8"))
-    return tuple(obj(call) for call in items(obj(state["work"])["calls"]))
+    assert last["content"].startswith("## 宿主当前状态")
+    return last["content"]
 
 
 @pytest.mark.parametrize("full_delivery", (False, True))
@@ -794,22 +794,20 @@ async def test_current_tail_does_not_duplicate_or_bypass_frozen_action_delivery(
         foreground_input=admission.input_id,
         refresh_state=current,
     )
-    call_material = tail_calls(transport.payloads[1])
-    assert [call["state"] for call in call_material] == ["confirmed", "confirmed", "unknown"]
-    assert [call["call_id"] for call in call_material] == [
-        "long-read",
-        "platform-send",
-        "unknown-send",
-    ]
-    assert all("result_json" not in call for call in call_material)
-    assert all(
-        call["original_ref"] == {"id": "action_result:work-action", "version": 1}
-        for call in call_material
+    call_material = tail_text(transport.payloads[1])
+    assert call_material.count('"state": > confirmed') == 2
+    assert call_material.count('"state": > unknown') == 1
+    assert (
+        call_material.index('"call_id": > long-read')
+        < call_material.index('"call_id": > platform-send')
+        < call_material.index('"call_id": > unknown-send')
     )
+    assert '"result_json"' not in call_material
+    assert call_material.count('"id": > action_result:work-action') == 6
     expected_mode = "full_tool_message" if full_delivery else "reference_only"
-    assert all(obj(call["result_delivery"])["mode"] == expected_mode for call in call_material)
-    assert call_material[1]["arguments_json"] == '{"target_id":"qq-scope","text":"实际发送内容"}'
-    assert call_material[2]["target_id"] == "platform-instance"
+    assert call_material.count(f'"mode": > {expected_mode}') == 3
+    assert '"arguments_json": > {"target_id":"qq-scope","text":"实际发送内容"}' in call_material
+    assert '"target_id": > platform-instance' in call_material
     transmitted = encode(transport.payloads[1]["messages"])
     assert transmitted.count("L" * 60_000) == (2 if full_delivery else 0)
     assert ("platform-confirmed-42" in transmitted) is full_delivery
@@ -820,9 +818,7 @@ async def test_current_tail_does_not_duplicate_or_bypass_frozen_action_delivery(
     if not full_delivery:
         instruction = obj(payload(delivered(result)[0])["retry"])["instruction"]
         assert isinstance(instruction, str) and "平台详细字段尚未交付" in instruction
-        assert all(
-            obj(call["result_delivery"])["details_presented"] is False for call in call_material
-        )
+        assert call_material.count('"details_presented": false') == 3
 
     resumed_gate = ToolDeliveryGate()
     resumed_tools = foreground(store, resumed_gate)
@@ -835,9 +831,9 @@ async def test_current_tail_does_not_duplicate_or_bypass_frozen_action_delivery(
         window=200_000 if full_delivery else 32_000,
         refresh_state=current,
     )
-    resumed_calls = tail_calls(resumed_transport.payloads[0])
-    assert all("result_json" not in call for call in resumed_calls)
-    assert all(obj(call["result_delivery"])["mode"] == expected_mode for call in resumed_calls)
+    resumed_calls = tail_text(resumed_transport.payloads[0])
+    assert '"result_json"' not in resumed_calls
+    assert resumed_calls.count(f'"mode": > {expected_mode}') == 3
 
     await store.record_call_result(
         "unknown-send",
@@ -857,11 +853,13 @@ async def test_current_tail_does_not_duplicate_or_bypass_frozen_action_delivery(
         window=200_000 if full_delivery else 32_000,
         refresh_state=current,
     )
-    late_calls = tail_calls(late_transport.payloads[0])
-    late = next(call for call in late_calls if call["call_id"] == "unknown-send")
-    assert late["state"] == "confirmed" and late["receipt_revision"] == 2
-    assert late["result_json"] == '{"message_id":"platform-late-99","status":"confirmed"}'
-    assert "result_delivery" not in late
+    late_calls = tail_text(late_transport.payloads[0])
+    assert '"call_id": > unknown-send' in late_calls
+    assert late_calls.count('"state": > confirmed') == 3
+    assert '"receipt_revision": 2' in late_calls
+    assert late_calls.count('"result_json":') == 1
+    assert '"result_json": > {"message_id":"platform-late-99","status":"confirmed"}' in late_calls
+    assert late_calls.count('"result_delivery":') == 2
     assert "platform-late-99" in encode(late_transport.payloads[0]["messages"])
     assert ports.actions == 1
 
@@ -887,18 +885,11 @@ async def test_current_tail_does_not_duplicate_or_bypass_frozen_action_delivery(
             turn_id="work-receipt",
             refresh_state=current,
         )
-        before = next(
-            call
-            for call in tail_calls(receipt_transport.payloads[0])
-            if call["call_id"] == "unknown-send"
-        )
-        after = next(
-            call
-            for call in tail_calls(receipt_transport.payloads[1])
-            if call["call_id"] == "unknown-send"
-        )
-        assert before["result_json"] == '{"message_id":"platform-late-99","status":"confirmed"}'
-        assert "result_json" not in after and after["receipt_revision"] == 2
-        assert after["original_ref"] == {"id": "call:unknown-send:2", "version": 1}
-        assert obj(after["result_delivery"])["mode"] == "full_tool_message"
+        before = tail_text(receipt_transport.payloads[0])
+        after = tail_text(receipt_transport.payloads[1])
+        assert '"result_json": > {"message_id":"platform-late-99","status":"confirmed"}' in before
+        assert '"result_json"' not in after and '"receipt_revision": 2' in after
+        assert '"id": > call:unknown-send:2' in after and '"version": 1' in after
+        assert after.count('"mode": > full_tool_message') == 1
+        assert after.count('"mode": > reference_only') == 2
         assert "platform-late-99" in encode(receipt_transport.payloads[1]["messages"])

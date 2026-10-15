@@ -551,7 +551,9 @@ class QQCapabilities:
                     "type": "image",
                     "data": {
                         "file": path.as_uri(),
-                        "subtype": 1,
+                        # SnowLuma 的 OneBot 字段是 sub_type；省略或拼成 subtype
+                        # 会按普通图片发送，summary 只控制摘要文字，不决定显示样式。
+                        "sub_type": 1,
                         "summary": "[" + record.tag + "]",
                     },
                 }
@@ -782,6 +784,7 @@ def _declare(
             stop_inputs=service.client.stop_inputs,
             close=service.close,
             snapshot=service.snapshot,
+            prepare_request=service.prepare_request,
             panel=DevicePanel(
                 "qq",
                 (PanelControl("reconnect", "恢复连接", instance_id + ":qq.reconnect"),),

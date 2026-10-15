@@ -151,6 +151,7 @@ def make_factory(
                 stop_inputs=runtime.stop_inputs,
                 close=runtime.close,
                 snapshot=runtime.snapshot,
+                prepare_request=runtime.prepare_request,
                 panel=DevicePanel(
                     "audio",
                     (PanelControl("stop_output", "停止语音输出", interrupt.capability_id),),

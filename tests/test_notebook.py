@@ -210,7 +210,9 @@ async def test_each_request_refreshes_skills_and_reports_bad_files(fixture: _Fix
     (fixture.root / "bad.md").write_bytes(b"\xff")
     (fixture.root / "huge.md").write_bytes(b"x" * 65537)
     second = await notes.prepare_request()
-    assert second["skills_version"] != first["skills_version"]
+    assert second["skills"] != first["skills"]
+    assert "新名" in str(second["skills"]) and "新说明" in str(second["skills"])
+    assert "skills_version" not in second
     assert second["incomplete"] is True
     issues = second["issues"]
     assert isinstance(issues, list)

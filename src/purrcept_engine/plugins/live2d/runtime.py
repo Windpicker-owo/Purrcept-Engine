@@ -648,6 +648,25 @@ class Live2DRuntime:
             "analysis_dropped_frames": self._dropped_pcm,
         }
 
+    async def prepare_request(self) -> JsonObject:
+        """保留身体可用性和实际采用状态，音素分析队列与重连计数留给诊断。"""
+        state = self.snapshot()
+        result: JsonObject = {
+            key: state[key]
+            for key in (
+                "connected",
+                "playback_id",
+                "adopted",
+                "elapsed_seconds",
+                "error",
+                "recovering",
+            )
+        }
+        result["remaining_seconds_at_assembly"] = (
+            None if self._intent is None else max(0, self._intent.expires_at - self._clock())
+        )
+        return result
+
     async def disconnect(self) -> CallOutcome:
         """先撤连接代次与姿态，再回收视觉连接，声音不受影响。"""
         self._recovery_enabled = False

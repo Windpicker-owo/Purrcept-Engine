@@ -1,8 +1,9 @@
 """用固定工作器推进权威输入的注意、延期交接和唯一前台 Core 会话。
 
 主体借用 app 已装配的模型、账本、认识读取与行动入口，不拥有客户端或数据库
-的关闭。注意按最早接管时刻合批，前台不再等待一轮合批；所有选择以事务中的
-输入版本为准。延期由独立固定交接者处理，不被模型等待阻塞。这里没有反思、
+的关闭。注意按最早接管时刻合批；前台每次拉取取尽开放缓冲池，活动会话在
+模型返回和下一请求前继续接收。所有选择以事务中的输入版本为准，迟到注意
+不能覆盖已拉取输入。延期由独立固定交接者处理，不被模型等待阻塞。这里没有反思、
 活动反馈或行动自动续行；那些可靠来源由各自所有者另行接入。
 QQ 直接 @ 的最低唤起先进入前台，再由同一注意工作器核对持久旧代次观察；
 升级结果不能撤销最低唤起、重复入队或抢占正在处理该输入的新轮次。
@@ -39,6 +40,7 @@ from purrcept_core.models import (
 
 from purrcept_engine.context.capacity import CapacityError
 from purrcept_engine.context.materials import MediaStore, UnsupportedMaterial, input_message
+from purrcept_engine.context.presentation import render_material
 from purrcept_engine.errors import HostStateError, StorageError
 from purrcept_engine.execution.catalog import Catalog
 from purrcept_engine.execution.protocol import ActionProtocolError, JsonObject, decode_object
@@ -96,6 +98,10 @@ class CoordinatorStore(SessionStore, RequestEvidenceSink, MediaStore, Protocol):
 
     async def staged_inputs(self, stage: InputStage, *, limit: int = 8) -> tuple[InputRecord, ...]:
         """按接管顺序加载有限批次，不在内存建立全积压副本。"""
+        ...
+
+    async def take_foreground_inputs(self, turn_id: str | None = None) -> tuple[InputRecord, ...]:
+        """取尽截至本事务的新刺激，活动轮次同时持久接管；不包含明确延期。"""
         ...
 
     async def decide_inputs(
@@ -414,14 +420,40 @@ class SubjectCoordinator:
             result.append(item)
         return tuple(result)
 
+    async def _wait_foreground(self, revision: int) -> None:
+        """等会话释放或可信控制通知；观察者取消不能传播到主脑任务。
+
+        普通刺激在忙碌时保留给主脑；独立中断判断仍可被新事务唤醒。会话
+        完成另有等待源，避免最后一次数据库通知早于 busy 清除而漏掉空闲。
+        """
+        waits = (
+            asyncio.create_task(self.store.wait_for_change(revision)),
+            asyncio.create_task(self.session.wait_idle()),
+        )
+        try:
+            done, _ = await asyncio.wait(waits, return_when=asyncio.FIRST_COMPLETED)
+            for task in done:
+                task.result()
+        finally:
+            for task in waits:
+                task.cancel()
+            await asyncio.gather(*waits, return_exceptions=True)
+
     async def _attention_loop(self) -> None:
-        """固定最早接管窗口，冻结本批后不并入模型等待期间到达的新输入。"""
+        """空闲时判断普通输入；主脑活动期间保持缓冲开放，由请求边界取尽。"""
         while True:
             self._check()
             revision = self.store.change_revision
             upgrades = await self.store.minimum_wake_assessments(self._attention_owner, limit=1)
             if upgrades:
                 await self._upgrade_minimum_wake(upgrades[0])
+                continue
+            if self.session.busy:
+                # 已有主脑交互时，新刺激不再被后台 observe/defer 提前取走。
+                await self._wait_foreground(revision)
+                continue
+            if await self.store.staged_inputs("foreground", limit=1):
+                await self._wait(revision)
                 continue
             records = await self.store.staged_inputs(
                 "attention", limit=self.settings.attention_batch
@@ -453,6 +485,8 @@ class SubjectCoordinator:
             if upgrade_ready:
                 continue
             if not records:
+                continue
+            if self.session.busy or await self.store.staged_inputs("foreground", limit=1):
                 continue
             expected = await self._processing(records)
             if any(item.stage != "attention" for item in expected):
@@ -714,13 +748,14 @@ class SubjectCoordinator:
         for failure in failures:
             blocks.append(
                 TextBlock(
-                    encode(
+                    render_material(
+                        "此前未完成的轮次与真实行动回执",
                         {
                             "material_kind": "prior_failed_turn",
                             "turn": failure,
                             "evidence_refs": failure.input_ids,
                             "actions": await self.store.actions_for_inputs(failure.input_ids),
-                        }
+                        },
                     )
                 )
             )
@@ -745,7 +780,8 @@ class SubjectCoordinator:
         assembled_at = time.time()
         blocks.append(
             TextBlock(
-                encode(
+                render_material(
+                    "本批输入的处理与延期情况",
                     {
                         "material_kind": "input_disposition",
                         "processing": processing,
@@ -759,7 +795,7 @@ class SubjectCoordinator:
                             for item in processing
                             if item.handed_off and item.due_at is not None
                         ),
-                    }
+                    },
                 )
             )
         )
@@ -790,9 +826,10 @@ class SubjectCoordinator:
         while True:
             self._check()
             revision = self.store.change_revision
-            records = await self.store.staged_inputs(
-                "foreground", limit=self.settings.attention_batch
-            )
+            # 先只读检查唤起，避免空池写事务不断通知注意工作器。真正取批在
+            # 单个事务中连同尚未到期/正在判断的普通刺激一并接管。
+            ready = await self.store.staged_inputs("foreground", limit=1)
+            records = await self.store.take_foreground_inputs() if ready else ()
             if not records:
                 await self._wait(revision)
                 continue
@@ -816,7 +853,7 @@ class SubjectCoordinator:
                 pass
 
     async def _run_foreground(self, records: tuple[InputRecord, ...]) -> None:
-        """冻结本轮来源和工具资格，异步原文组装仍计入同一主动处理预算。"""
+        """建立本轮工具资格；后续拉取扩充来源但不刷新代次和主动预算。"""
         failures = await self.store.failed_turns("foreground")
         generation = self.session.generation + 1
         delivery = ToolDeliveryGate()
@@ -835,6 +872,15 @@ class SubjectCoordinator:
             check=lambda: self._check_turn(generation),
             delivery=delivery,
         )
+
+        async def receive_inputs(turn: TurnRecord) -> Message | None:
+            """原子关联新输入后展开原文；失败仍由当前轮次统一结案。"""
+            self._check_turn(generation)
+            incoming = await self.store.take_foreground_inputs(turn.turn_id)
+            if not incoming:
+                return None
+            return await self._foreground_message(incoming, ())
+
         await self.session.run(
             lambda: self._foreground_message(records, failures),
             turn_id=uuid4().hex,
@@ -854,6 +900,7 @@ class SubjectCoordinator:
             capacity=self.subject.capacity,
             delivery=delivery,
             prepare_history=self.prepare_history,
+            receive_inputs=receive_inputs,
         )
 
     async def _deferred_loop(self) -> None:

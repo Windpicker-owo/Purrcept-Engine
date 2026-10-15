@@ -150,6 +150,7 @@ def make_factory(
                 stop_inputs=runtime.stop_inputs,
                 close=runtime.close,
                 snapshot=runtime.snapshot,
+                prepare_request=runtime.prepare_request,
                 panel=DevicePanel(
                     "voice_input",
                     (

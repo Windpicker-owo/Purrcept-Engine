@@ -11,6 +11,103 @@ function memory(initial: string | null = null): { getItem: () => string | null; 
 function json(value: unknown, status = 200): Response { return new Response(JSON.stringify(value), { status, headers: { "Content-Type": "application/json" } }); }
 
 describe("只读观察与稳定身份", () => {
+  it("数据库重建后旧实例的 16 条缺失回执退出等待，新操作可以提交且不会重放旧请求", async () => {
+    const saved = Array.from({ length: 16 }, (_, i) => ({
+      request: { request_id: `old-${i}`, instance_id: "old-host", target: "voice", operation: "stop", expected_revision: "1", arguments: {} }, title: "停止收音",
+    }));
+    const posts: string[] = [];
+    let latest: ReturnType<typeof controlRequest> | null = null;
+    const client = new PanelClient(async (path, init) => {
+      if (path === "/api/session") return json({ instance_id: "host-1", token: "token" });
+      if (path === "/api/snapshot") return json(host());
+      if (init?.method === "POST") {
+        latest = controlRequest(JSON.parse(String(init.body)));
+        posts.push(latest.request_id);
+        return json(result(latest, "completed"), 202);
+      }
+      if (latest && path.endsWith(latest.request_id)) return json(result(latest, "completed"));
+      return json({ error: "control_missing" }, 404);
+    }, memory(JSON.stringify(saved)), () => "new-id");
+    await client.refresh();
+    expect(posts).toEqual([]);
+    expect(client.getState().entries).toHaveLength(16);
+    expect(client.getState().entries.every((entry) => entry.unavailable && !entry.unresolved && entry.result === null)).toBe(true);
+    await client.retry("old-0");
+    await client.submit("voice", "stop", "1", {}, "停止收音");
+    expect(posts).toEqual(["new-id"]);
+    expect(client.getState().entries[0]?.result?.action?.state).toBe("completed");
+    expect(client.getState().controlError).toBeNull();
+    expect(client.getState().storageError).toBeNull();
+  });
+
+  it("最旧记录未确认时淘汰其他已结束记录；真正满载时提示控制限额，取得结果后自动解除", async () => {
+    const saved = Array.from({ length: 16 }, (_, i) => ({
+      request: { request_id: `pending-${i}`, instance_id: "host-1", target: `target-${i}`, operation: "start", expected_revision: "1", arguments: {} }, title: "开始",
+    }));
+    let completed = false;
+    const posts: string[] = [];
+    const client = new PanelClient(async (path, init) => {
+      if (path === "/api/session") return json({ instance_id: "host-1", token: "token" });
+      if (path === "/api/snapshot") return json(host());
+      if (init?.method === "POST") {
+        const r = controlRequest(JSON.parse(String(init.body)));
+        posts.push(r.request_id);
+        return json(result(r, "completed"), 202);
+      }
+      if (completed && path.endsWith("pending-3")) return json(result(saved[3]!.request, "completed"));
+      return json({ error: "control_missing" }, 404);
+    }, memory(JSON.stringify(saved)), () => "new-id");
+    await client.refresh();
+    await client.submit("voice", "stop", "1", {}, "停止");
+    expect(posts).toEqual([]);
+    expect(client.getState().controlError).toContain("16");
+    expect(client.getState().storageError).toBeNull();
+    expect(client.getState().entries.every((entry) => !entry.unavailable)).toBe(true);
+    completed = true;
+    await client.refresh();
+    expect(client.getState().controlError).toBeNull();
+    await client.submit("voice", "stop", "1", {}, "停止");
+    expect(posts).toEqual(["new-id"]);
+    expect(client.getState().entries.some((entry) => entry.request.request_id === "pending-15")).toBe(true);
+    expect(client.getState().entries.some((entry) => entry.request.request_id === "pending-3")).toBe(false);
+  });
+
+  it("历史回执仍存在时采用实际结果；临时网络故障不能被当成回执消失", async () => {
+    const old = { request_id: "old-id", instance_id: "old-host", target: "voice", operation: "stop", expected_revision: "1", arguments: {} };
+    let offline = true;
+    const client = new PanelClient(async (path) => {
+      if (path === "/api/session") return json({ instance_id: "host-1", token: "token" });
+      if (path === "/api/snapshot") return json(host());
+      if (offline) throw new Error("offline");
+      return json(result(old, "completed"));
+    }, memory(JSON.stringify([{ request: old, title: "旧操作" }])), () => "new-id");
+    await client.refresh();
+    expect(client.getState().entries[0]?.unresolved).toBe(true);
+    expect(client.getState().entries[0]?.unavailable).toBe(false);
+    offline = false;
+    await client.refresh();
+    expect(client.getState().entries[0]?.result?.action?.state).toBe("completed");
+  });
+
+  it("明确拒绝的操作刷新后仍是拒绝，不重新成为无回执等待", async () => {
+    const storage = memory();
+    let posts = 0;
+    const fetcher = async (path: string, init?: RequestInit): Promise<Response> => {
+      if (path === "/api/session") return json({ instance_id: "host-1", token: "token" });
+      if (path === "/api/snapshot") return json(host());
+      if (init?.method === "POST") { posts++; return json({ message: "状态已变化" }, 409); }
+      return json({}, 404);
+    };
+    const client = new PanelClient(fetcher, storage, () => "rejected-id");
+    await client.refresh();
+    await client.submit("voice", "start", "1", {}, "开始收音");
+    const restored = new PanelClient(fetcher, storage, () => "new-id");
+    await restored.refresh();
+    await restored.retry("rejected-id");
+    expect(posts).toBe(1);
+    expect(restored.getState().entries[0]?.rejected).toBe(true);
+    expect(restored.getState().entries[0]?.unresolved).toBe(false);
+  });
   it("打开/刷新只请求会话和快照，断线保留过期数据并拒绝控制", async () => {
     const calls: string[] = [];
     let offline = false;

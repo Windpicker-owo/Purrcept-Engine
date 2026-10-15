@@ -1,8 +1,8 @@
 """核验首批 SDK 路径的真实编码、传输次数和可观察参数证据。
 
 测试保留 LiteLLM 与 OpenAI SDK 的请求构造、错误翻译和重试流程，只在
-HTTPX 选择网络传输时替换为 MockTransport。所有模型凭据和端点均为本地
-合成值，不读取运行配置，也不连接服务。非流式替身只用于核验 SDK 的
+HTTPX 选择网络传输时替换为 MockTransport。模型凭据均为合成值，不读取
+运行配置；OpenRouter 官方 URL 也只交给替身，不连接服务。非流式替身只用于核验 SDK 的
 参数观察契约，不能作为真实传输次数的证据。
 """
 
@@ -50,13 +50,17 @@ from purrcept_core.models import (
 )
 
 if TYPE_CHECKING:
-    from purrcept_engine.app.models import OpenAIGenerationResource, TypeSafeDecisionResource
+    from purrcept_engine.app.models import DecisionResource, OpenAIGenerationResource
 
 _GENERATION_BASE = "https://generation.invalid/v1"
 _DECISION_BASE = "https://decision.invalid/v1"
 _EXPLICIT_KEY = "synthetic-explicit-key"
 _MODEL = "openai/gemini-3.8-flash-high"
 _DECISION_MODEL = "typesafe/jev-1.13.0"
+_DECISION_TARGETS = {
+    "decision": (_DECISION_MODEL, _DECISION_BASE),
+    "openrouter": ("openrouter/typesafe/jev-1.13", "https://openrouter.ai/api"),
+}
 
 
 @dataclass
@@ -70,8 +74,8 @@ class _Wire:
     cancelled: asyncio.Event = field(default_factory=asyncio.Event)
 
     async def respond(self, request: httpx.Request) -> httpx.Response:
-        """仅接受合成模型端点，并让取消越过实际 SDK 调用栈。"""
-        assert request.url.host in {"generation.invalid", "decision.invalid"}
+        """只记录已声明的测试目标，并让取消越过实际 SDK 调用栈。"""
+        assert request.url.host in {"generation.invalid", "decision.invalid", "openrouter.ai"}
         self.requests.append(request)
         self.entered.set()
         if self.mode == "connect_error":
@@ -91,7 +95,7 @@ class _Wire:
                 json={"error": {"message": "synthetic failure", "type": "invalid_request_error"}},
                 request=request,
             )
-        if request.url.path.endswith("/systemone"):
+        if request.url.path.endswith(("/systemone", "/alpha/decisions")):
             return httpx.Response(
                 200,
                 json={
@@ -240,7 +244,7 @@ def _body(request: httpx.Request) -> dict[str, object]:
     return cast(dict[str, object], body)
 
 
-async def _invoke(path: Literal["generation", "decision"]) -> None:
+async def _invoke(path: Literal["generation", "decision", "openrouter"]) -> None:
     """经 Engine 资源所有者进入真实 SDK，传输替身仅置于 HTTP 边界。"""
     if path == "generation":
         generation = _generation_resource()
@@ -249,9 +253,9 @@ async def _invoke(path: Literal["generation", "decision"]) -> None:
         finally:
             await generation.close()
     else:
-        decision = _decision_resource()
+        decision = _decision_resource(path)
         try:
-            await decision.backend.decide(_decision_request(), model=_DECISION_MODEL)
+            await decision.backend.decide(_decision_request(), model=_DECISION_TARGETS[path][0])
         finally:
             await decision.close()
 
@@ -276,19 +280,20 @@ def _generation_resource() -> OpenAIGenerationResource:
     )
 
 
-def _decision_resource() -> TypeSafeDecisionResource:
+def _decision_resource(path: Literal["decision", "openrouter"] = "decision") -> DecisionResource:
     """用同一显式配置建立待测 Engine 判断所有者，不提供第三套传输。"""
     from pydantic import SecretStr
 
     from purrcept_engine.app.config import DecisionModelSettings
-    from purrcept_engine.app.models import TypeSafeDecisionResource
+    from purrcept_engine.app.models import DecisionResource
 
-    return TypeSafeDecisionResource.create(
+    model, api_base = _DECISION_TARGETS[path]
+    return DecisionResource.create(
         DecisionModelSettings(
             kind="decision",
-            model=_DECISION_MODEL,
+            model=model,
             api_key=SecretStr(_EXPLICIT_KEY),
-            api_base=_DECISION_BASE,
+            api_base=api_base,
             capacity_rule="synthetic-test-rule",
             input_limit=12000,
         )
@@ -333,18 +338,24 @@ async def test_generation_wire_preserves_catalog_history_tail_and_native_audio(w
     }
 
 
-async def test_decision_wire_preserves_order_and_sdk_refusal(wire: _Wire) -> None:
-    """观察真实 TypeSafe 编码及上游规范化，拒答不解释为概率零。"""
-    resource = _decision_resource()
+@pytest.mark.parametrize("path", ["decision", "openrouter"])
+async def test_decision_wire_preserves_order_and_sdk_refusal(
+    wire: _Wire, path: Literal["decision", "openrouter"]
+) -> None:
+    """两条判断路径保留问题和上游模型身份，拒答不解释为概率零。"""
+    resource = _decision_resource(path)
+    model, api_base = _DECISION_TARGETS[path]
     try:
-        result = await resource.backend.decide(_decision_request(), model=_DECISION_MODEL)
+        result = await resource.backend.decide(_decision_request(), model=model)
     finally:
         await resource.close()
     assert len(wire.requests) == 1
     request = wire.requests[0]
-    assert str(request.url) == f"{_DECISION_BASE}/systemone"
+    endpoint = "/alpha/decisions" if path == "openrouter" else "/systemone"
+    assert str(request.url) == api_base + endpoint
     assert request.headers["authorization"] == f"Bearer {_EXPLICIT_KEY}"
     body = _body(request)
+    assert body["model"] == model.split("/", 1)[1]
     assert body["state"] == "source=qq; input=synthetic-input\n\nlast evidence"
     questions = cast(dict[str, dict[str, object]], body["questions"])
     assert list(questions) == ["attend", "route", "restricted"]
@@ -396,6 +407,8 @@ def _isolated_environment() -> dict[str, str]:
         OPENAI_PROJECT_ID="synthetic-environment-project",
         TYPESAFE_API_KEY="synthetic-environment-key",
         TYPESAFE_API_BASE="https://environment.invalid/v1",
+        OPENROUTER_API_KEY="synthetic-environment-key",
+        OPENROUTER_API_BASE="https://environment.invalid/api",
         PYTHONIOENCODING="utf-8",
     )
     # 包叠加目录属于本轮明确选中的依赖证据，不继承任意 PYTHONPATH。
@@ -411,7 +424,8 @@ def _isolated_environment() -> dict[str, str]:
     return environment
 
 
-def test_fresh_resource_construction_and_close_do_not_import_or_contact_sdk() -> None:
+@pytest.mark.parametrize("model", [_DECISION_MODEL, _DECISION_TARGETS["openrouter"][0]])
+def test_fresh_resource_construction_and_close_do_not_import_or_contact_sdk(model: str) -> None:
     """未导入 SDK 的新进程直接证明资源装配与关闭不会获取价格表。"""
     script = """
 import asyncio
@@ -429,7 +443,7 @@ httpx.Client.send = forbid_sync
 httpx.AsyncClient.send = forbid_async
 
 from purrcept_engine.app.config import DecisionModelSettings, GenerationModelSettings
-from purrcept_engine.app.models import OpenAIGenerationResource, TypeSafeDecisionResource
+from purrcept_engine.app.models import OpenAIGenerationResource, DecisionResource
 assert 'litellm' not in sys.modules
 assert 'purrcept_litellm' not in sys.modules
 
@@ -438,8 +452,8 @@ generation = OpenAIGenerationResource.create(GenerationModelSettings(
     api_base='https://generation.invalid/v1', capacity_rule='synthetic',
     context_window=1000, max_output_tokens=100,
 ))
-decision = TypeSafeDecisionResource.create(DecisionModelSettings(
-    kind='decision', model='typesafe/synthetic', api_key=SecretStr('synthetic'),
+decision = DecisionResource.create(DecisionModelSettings(
+    kind='decision', model=sys.argv[1], api_key=SecretStr('synthetic'),
     api_base='https://decision.invalid/v1', capacity_rule='synthetic', input_limit=1000,
 ))
 assert generation.backend is generation
@@ -456,7 +470,7 @@ assert 'litellm' not in sys.modules
 assert 'purrcept_litellm' not in sys.modules
 """
     result = subprocess.run(
-        [sys.executable, "-c", script],
+        [sys.executable, "-c", script, model],
         env=_isolated_environment(),
         capture_output=True,
         text=True,
@@ -467,16 +481,18 @@ assert 'purrcept_litellm' not in sys.modules
     assert result.returncode == 0, result.stdout + result.stderr
 
 
-@pytest.mark.parametrize("path", ["generation", "decision"])
+@pytest.mark.parametrize("path", ["generation", "decision", "openrouter"])
 async def test_resource_close_is_shared_and_rejects_new_calls(
-    wire: _Wire, monkeypatch: pytest.MonkeyPatch, path: Literal["generation", "decision"]
+    wire: _Wire,
+    monkeypatch: pytest.MonkeyPatch,
+    path: Literal["generation", "decision", "openrouter"],
 ) -> None:
     """取消关闭等待者不取消清理，重复关闭不释放第二次或再启动模型。"""
-    from purrcept_engine.app.models import TypeSafeDecisionResource
+    from purrcept_engine.app.models import DecisionResource
 
-    resource = _generation_resource() if path == "generation" else _decision_resource()
-    if isinstance(resource, TypeSafeDecisionResource):
-        await resource.backend.decide(_decision_request(), model=_DECISION_MODEL)
+    resource = _generation_resource() if path == "generation" else _decision_resource(path)
+    if isinstance(resource, DecisionResource):
+        await resource.backend.decide(_decision_request(), model=_DECISION_TARGETS[path][0])
     attempts_before_close = len(wire.requests)
     entered = asyncio.Event()
     release = asyncio.Event()
@@ -499,8 +515,8 @@ async def test_resource_close_is_shared_and_rejects_new_calls(
             await waiting
         joined = asyncio.create_task(resource.close())
         with pytest.raises(ModelRequestError, match="资源已开始关闭"):
-            if isinstance(resource, TypeSafeDecisionResource):
-                await resource.backend.decide(_decision_request(), model=_DECISION_MODEL)
+            if isinstance(resource, DecisionResource):
+                await resource.backend.decide(_decision_request(), model=_DECISION_TARGETS[path][0])
             else:
                 await resource.backend.generate(_generation_request(), model=_MODEL)
         assert close_count == 1
@@ -517,7 +533,10 @@ async def test_resource_close_is_shared_and_rejects_new_calls(
         await resource.close()
 
 
-async def test_typesafe_rejects_images_without_substituting_descriptions(wire: _Wire) -> None:
+@pytest.mark.parametrize("path", ["decision", "openrouter"])
+async def test_decision_rejects_images_without_substituting_descriptions(
+    wire: _Wire, path: Literal["decision", "openrouter"]
+) -> None:
     """注意路径无法表达图片时明确拒绝，不静默降级为仅判断说明文字。"""
     request = DecisionRequest(
         (
@@ -526,19 +545,19 @@ async def test_typesafe_rejects_images_without_substituting_descriptions(wire: _
         ),
         (PredicateQuestion("attend", "Should this input receive attention?"),),
     )
-    resource = _decision_resource()
+    resource = _decision_resource(path)
     try:
         with pytest.raises(ModelRequestError, match="input_image content parts are not supported"):
-            await resource.backend.decide(request, model=_DECISION_MODEL)
+            await resource.backend.decide(request, model=_DECISION_TARGETS[path][0])
     finally:
         await resource.close()
     assert not wire.requests
 
 
-@pytest.mark.parametrize("path", ["generation", "decision"])
+@pytest.mark.parametrize("path", ["generation", "decision", "openrouter"])
 @pytest.mark.parametrize("status", [400, 401, 429, 503])
 async def test_http_errors_have_one_actual_attempt(
-    wire: _Wire, path: Literal["generation", "decision"], status: int
+    wire: _Wire, path: Literal["generation", "decision", "openrouter"], status: int
 ) -> None:
     """错误响应也只产生一次实际发送，防止 SDK 隐式叠加重试。"""
     wire.status = status
@@ -547,11 +566,11 @@ async def test_http_errors_have_one_actual_attempt(
     assert len(wire.requests) == 1
 
 
-@pytest.mark.parametrize("path", ["generation", "decision"])
+@pytest.mark.parametrize("path", ["generation", "decision", "openrouter"])
 @pytest.mark.parametrize("failure", ["connect_error", "timeout"])
 async def test_transport_errors_have_one_actual_attempt(
     wire: _Wire,
-    path: Literal["generation", "decision"],
+    path: Literal["generation", "decision", "openrouter"],
     failure: Literal["connect_error", "timeout"],
 ) -> None:
     """连接和超时路径同样需要关闭重发；失败是接入门槛的直接证据。"""
@@ -561,9 +580,9 @@ async def test_transport_errors_have_one_actual_attempt(
     assert len(wire.requests) == 1
 
 
-@pytest.mark.parametrize("path", ["generation", "decision"])
+@pytest.mark.parametrize("path", ["generation", "decision", "openrouter"])
 async def test_cancellation_reaches_transport_without_a_second_attempt(
-    wire: _Wire, path: Literal["generation", "decision"]
+    wire: _Wire, path: Literal["generation", "decision", "openrouter"]
 ) -> None:
     """调用方取消传递到实际传输，不等待结果或产生新的尝试。"""
     wire.mode = "pending"

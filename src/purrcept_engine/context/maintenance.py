@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import hashlib
 from collections.abc import Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Literal, Protocol
 
 from purrcept_core.models import ConversationCheckpoint, ConversationState, Message, TextBlock
@@ -154,6 +154,23 @@ def _coverage_id(checkpoint: ConversationCheckpoint, end_turn: int, end_message:
         }
     )
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def shorten_summary_source(source: SummarySource, end_turn: int) -> SummarySource:
+    """在原保护范围内缩短到旧完整轮次前缀，未选历史仍保留在原检查点。
+
+    只改变本次摘要覆盖及其身份，不截断消息或工具配对，也不扩大允许压缩范围。
+    调用方在模型派发前按实际摘要容量选择，候选安装仍须核验整个主脑请求。
+    """
+    if isinstance(end_turn, bool) or not 0 < end_turn <= source.end_turn:
+        raise ValueError("摘要只能缩短到原覆盖内的正整数轮次。")
+    end_message = source.checkpoint.history.turn_boundaries[end_turn - 1]
+    return replace(
+        source,
+        end_turn=end_turn,
+        end_message=end_message,
+        coverage_id=_coverage_id(source.checkpoint, end_turn, end_message),
+    )
 
 
 def candidate_checkpoint(source: SummarySource, summary: Message) -> ConversationCheckpoint:

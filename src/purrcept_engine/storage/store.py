@@ -890,6 +890,27 @@ class Store:
 
         return await self._submit(read)
 
+    async def take_foreground_inputs(self, turn_id: str | None = None) -> tuple[InputRecord, ...]:
+        """原子拉取当前全部新刺激；上限由接管额度限定，不用分页遗留旧输入。
+
+        空闲启动要求存在已唤起输入；提供 turn_id 时直接关联到活动轮次。
+        存储线程串行完成取批和原文读取，晚到的注意判断只能 CAS 失败。
+        """
+        if turn_id is not None:
+            self._validate_id(turn_id)
+
+        def take(connection: sqlite3.Connection) -> tuple[InputRecord, ...]:
+            ids = subject_storage.take_foreground_inputs(connection, turn_id)
+            records: list[InputRecord] = []
+            for input_id in ids:
+                record = self._get_input(connection, input_id)
+                if record is None:
+                    raise StorageError("处理队列引用不存在的原文。", code="invalid_record")
+                records.append(record)
+            return tuple(records)
+
+        return await self._submit(take, control=True, writing=True)
+
     async def decide_inputs(
         self,
         expected: tuple[InputProcessing, ...],
@@ -1105,7 +1126,7 @@ class Store:
         generation: int,
         input_ids: tuple[str, ...],
     ) -> TurnRecord:
-        """先接管主动处理身份，固定输入及会话版本后才借用 Core。"""
+        """先接管主动处理身份和初始输入，固定会话版本后才借用 Core。"""
         return await self._submit(
             lambda connection: subject_storage.begin_turn(
                 connection, turn_id, scope, expected_version, generation, input_ids

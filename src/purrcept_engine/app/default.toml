@@ -34,6 +34,8 @@ capacity_rule = "litellm-token-counter-v1"
 media_rule = "unsupported"
 
 [models.attention]
+# OpenRouter Jev 可使用 openrouter/typesafe/jev-1.13，api_base 为
+# https://openrouter.ai/api；SDK 追加 /alpha/decisions，不使用聊天接口 /v1。
 kind = "decision"
 model = "typesafe/replace-with-decision-model"
 api_base = "http://127.0.0.1:4001/v1"

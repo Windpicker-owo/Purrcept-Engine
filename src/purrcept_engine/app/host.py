@@ -53,7 +53,7 @@ from .config import EngineConfig, ExecutionSettings, GenerationModelSettings
 from .evidence import EvidenceAccess
 from .knowledge_resources import KnowledgeResources
 from .locking import InstanceLock
-from .models import OpenAIGenerationResource, TypeSafeDecisionResource
+from .models import DecisionResource, OpenAIGenerationResource
 from .panel import ControlRequest, PanelController
 from .receipts import LateCallResults
 from .subject import SubjectAssembly, build_subject
@@ -138,7 +138,7 @@ class EngineHost:
         self._version = 0
         self._lock = InstanceLock(config.host.data_dir)
         self._store: Store | None = None
-        self._models: dict[str, OpenAIGenerationResource | TypeSafeDecisionResource] = {}
+        self._models: dict[str, OpenAIGenerationResource | DecisionResource] = {}
         self._plugins: dict[str, PluginRuntime] = {}
         self._audio_output: AudioOutputPort | None = None
         self._input_tasks: set[asyncio.Task[Admission]] = set()
@@ -222,7 +222,7 @@ class EngineHost:
                 else:
                     decision = self._decision_backends.get(name)
                     if decision is None:
-                        resource = TypeSafeDecisionResource.create(settings)
+                        resource = DecisionResource.create(settings)
                         self._models[name] = resource
                         decision = resource.backend
                     decisions[name] = decision
@@ -231,6 +231,7 @@ class EngineHost:
                 for binding in self.catalog.bindings.values()
             }
             foreground_model = self.config.models[self.config.subject.foreground]
+            # TODO
             # 模型声明只说明端点能力；没有已注册的媒体计量依据就不能接管
             # 原声，否则收音成功后每一段都会在真正派发模型前失败。
             native_audio_enabled = (

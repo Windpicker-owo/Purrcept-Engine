@@ -103,6 +103,15 @@ class QQService:
             "gap_counts": dict(self._counts),
         }
 
+    async def prepare_request(self) -> JsonObject:
+        """交付账号、连接阶段和故障原因，诊断队列及协议端实现信息留给查询。
+
+        缺口计数仍需保留，使主体不会把接入丢失误判为没有消息；具体平台
+        消息和未确认发送结果分别由正式输入与行动账本提供。
+        """
+        state = self.snapshot()
+        return {key: state[key] for key in ("account_id", "mode", "state", "reason", "gap_counts")}
+
     def gap(self, payload: JsonObject, reason: str) -> None:
         """未接管诊断不含正文、媒体 URL 或转发内容。"""
         self._counts[reason] = self._counts.get(reason, 0) + 1

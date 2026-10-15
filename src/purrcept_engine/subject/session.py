@@ -1,7 +1,8 @@
 """串行借用 Core 连续会话，冻结整轮预算并在权威提交后采用新历史。
 
 每轮创建一个借用相同模型资源的新 facade，恢复唯一已提交检查点；Core 仍
-独占工具循环和完整轮次边界。失败或取消丢弃本轮临时 facade，真实行动和
+独占工具循环和完整轮次边界。前台可在响应和请求边界拉取追加输入，先关联
+权威轮次再放入 Core 临时历史，整轮预算不重置。失败或取消丢弃临时 facade，真实行动和
 模型尝试已经独立入账。动态尾部由同步 ReminderSource 投影内存值，在实际
 请求边界异步刷新后重投影一次；同一逻辑请求的重试不再次刷新。
 Engine 工具原文在完整下一请求首发前经过交付 Gate；之后请求和最终检查点
@@ -16,6 +17,8 @@ from dataclasses import dataclass, field, replace
 from typing import Protocol
 
 from purrcept_core import AgentDriver, InlineExecutor
+from purrcept_core.context import ExecutionContext
+from purrcept_core.effect import Effect
 from purrcept_core.models import (
     ConversationCheckpoint,
     Message,
@@ -38,6 +41,7 @@ from purrcept_core.models import (
 
 from purrcept_engine.context.capacity import CapacityAssessment
 from purrcept_engine.context.checkpoints import decode_checkpoint, encode_checkpoint
+from purrcept_engine.context.presentation import render_host_state
 from purrcept_engine.errors import HostStateError
 from purrcept_engine.execution.protocol import JsonObject, decode_object
 from purrcept_engine.storage.model_requests import RequestScope, encode
@@ -51,6 +55,7 @@ from .model_requests import (
     RequestEvidenceSink,
     RetryPolicy,
     compile_materials,
+    prepare_off_loop,
 )
 
 
@@ -134,8 +139,10 @@ class DynamicReminder:
 
     def reminder(self) -> SystemReminder:
         """构造唯一 Engine 尾部，保留预算和来源文字的当前表示。"""
+        payload = self.state.host_payload
+        text = self.state.text if payload is None else render_host_state(payload)
         return SystemReminder(
-            (TextBlock(self.state.text),), key=self.source_id, placement=ReminderPlacement.TAIL
+            (TextBlock(text),), key=self.source_id, placement=ReminderPlacement.TAIL
         )
 
     def resolve(self, context: ReminderResolutionContext) -> Iterable[SystemReminder]:
@@ -147,6 +154,18 @@ type CapacityCheck = Callable[[JsonObject], CapacityAssessment]
 type RefreshState = Callable[[RequestBudget], Awaitable[DynamicState]]
 type PresentedGate = Callable[[ModelRequest], Awaitable[None]]
 type TurnInput = Message | Callable[[], Awaitable[Message]]
+type ReceiveInputs = Callable[[TurnRecord], Awaitable[Message | None]]
+
+
+@dataclass(frozen=True)
+class _ReceiveInputs(Effect[tuple[Message, ...]]):
+    """把宿主原子拉取接入 Core 请求/响应边界，不启动独立消费任务。"""
+
+    poll: Callable[[], Awaitable[tuple[Message, ...]]]
+
+    async def execute(self, context: ExecutionContext[object]) -> tuple[Message, ...]:
+        """串行借用本轮拉取器；取消和权威错误按原异常返回 Core。"""
+        return await self.poll()
 
 
 class PrepareHistory(Protocol):
@@ -219,6 +238,27 @@ class PreparedGenerationBackend:
                 self.reminder.reminder(),
             ),
         )
+        current = await prepare_off_loop(lambda: self._prepare(current, model))
+        self.backend.budget.check()
+
+        events: list[ModelStreamEvent] = []
+        response = await self.backend.generate(
+            current, model=model, emit=events.append if emit is not None else None
+        )
+        if self.presented is not None:
+            await self.presented(current)
+        if self.delivery is not None:
+            self.delivery.sent(current)
+        self.backend.budget.check()
+        if emit is not None:
+            for event in events:
+                emit(event)
+            if not events:
+                emit(ModelStreamCompleted(response))
+        return response
+
+    def _prepare(self, current: ModelRequest, model: str) -> ModelRequest:
+        """本轮独占的纯编译/投影/计量；线程不接触设备、事务或模型。"""
         if self.delivery is not None:
             # Ordering: Core 已执行同响应全部工具，真实动态尾部也已经刷新。
             # 只在首次派发前选择尚未呈现原文；历史和真实效果不参与容量裁剪。
@@ -241,21 +281,7 @@ class PreparedGenerationBackend:
             current, metadata={**current.metadata, "engine.capacity": encode(self.last_capacity)}
         )
 
-        events: list[ModelStreamEvent] = []
-        response = await self.backend.generate(
-            current, model=model, emit=events.append if emit is not None else None
-        )
-        if self.presented is not None:
-            await self.presented(current)
-        if self.delivery is not None:
-            self.delivery.sent(current)
-        self.backend.budget.check()
-        if emit is not None:
-            for event in events:
-                emit(event)
-            if not events:
-                emit(ModelStreamCompleted(response))
-        return response
+        return current
 
 
 @dataclass(frozen=True, slots=True)
@@ -301,6 +327,16 @@ class ContinuousSession:
     def busy(self) -> bool:
         """报告 Core 主动处理等待，不把独立已开始行动视为同一代次。"""
         return self._active is not None and not self._active.done()
+
+    async def wait_idle(self) -> None:
+        """等待当前会话释放资格；等待者取消不取消会话，结果由 run 调用方取得。
+
+        数据库最后一次提交通知可能早于任务真正结束，不能仅凭该通知等待
+        空闲，否则注意工作器可能在没有下一次写入时永久睡眠。
+        """
+        active = self._active
+        if active is not None:
+            await asyncio.wait((active,))
 
     def eligible(self, generation: int) -> bool:
         """给新行动派发使用的同步资格，不撤销已经实际开始的效果。"""
@@ -352,8 +388,14 @@ class ContinuousSession:
         delivery: ToolDeliveryGate | None = None,
         accepted_failures: tuple[str, ...] = (),
         prepare_history: PrepareHistory | None = None,
+        receive_inputs: ReceiveInputs | None = None,
     ) -> SessionResult:
-        """从主动处理起计预算，成功提交后返回；重叠调用明确拒绝。"""
+        """从主动处理起计预算，成功提交后返回；重叠调用明确拒绝。
+
+        receive_inputs 由前台调度者提供，在 Core 响应/请求边界串行调用。
+        它须先把取得的输入关联到传入轮次，再返回完整 user 材料；没有输入
+        时立即返回 None。反思不安装该入口，追加输入不扩充本轮请求/时间额度。
+        """
         if self._closing or self.busy:
             raise HostStateError("会话正在处理或收尾。")
         self.can_start()
@@ -384,6 +426,7 @@ class ContinuousSession:
                 delivery=delivery,
                 accepted_failures=accepted_failures,
                 prepare_history=prepare_history,
+                receive_inputs=receive_inputs,
             ),
             name=f"subject-{self.scope}-{generation}",
         )
@@ -411,6 +454,7 @@ class ContinuousSession:
         delivery: ToolDeliveryGate | None,
         accepted_failures: tuple[str, ...],
         prepare_history: PrepareHistory | None,
+        receive_inputs: ReceiveInputs | None,
     ) -> SessionResult:
         """只采用当前权威版本；Core 临时成功不是 Engine 安装历史的提交点。"""
         wrapped: ModelGenerationBackend | None = None
@@ -471,10 +515,35 @@ class ContinuousSession:
             )
             if previous.checkpoint_json is not None:
                 conversation.restore(decode_checkpoint(previous.checkpoint_json))
+            active_turn = turn
+            active_backend = wrapped
+
+            async def poll() -> tuple[Message, ...]:
+                """接管与原文进入历史使用同一预算，后续请求记录扩展后的来源。"""
+                nonlocal active_turn, turn
+                budget.check()
+                self.can_start()
+                if receive_inputs is None:
+                    return ()
+                incoming = await receive_inputs(active_turn)
+                if incoming is None:
+                    return ()
+                latest = await self.store.get_turn(active_turn.turn_id)
+                if latest is None:
+                    raise HostStateError("拉取输入后缺少权威轮次。")
+                active_turn = turn = latest
+                active_backend.scope = replace(active_backend.scope, input_ids=latest.input_ids)
+                budget.check()
+                return (incoming,)
+
             turn_timeout = asyncio.timeout_at(budget.deadline)
             async with turn_timeout:
                 result = await AgentDriver[None](InlineExecutor()).run(
-                    conversation.ask(prepared_message), host=None
+                    conversation.ask(
+                        prepared_message,
+                        input_poll=_ReceiveInputs(poll) if receive_inputs is not None else None,
+                    ),
+                    host=None,
                 )
             budget.check()
             checkpoint = conversation.snapshot()

@@ -250,7 +250,8 @@ class ClockRuntime:
     async def prepare_request(self) -> JsonObject:
         """每次真实请求异步刷新，当前时间/闹铃放动态材料而非固定目录。"""
         clock = await self.read()
-        return {"clock": clock, "status": self.snapshot()}
+        # read 已包含同一次刷新的完整闹铃，不再复制 snapshot 中的第二份安排。
+        return {**clock, "state": self.snapshot()["state"], "failure": self._failure}
 
     async def stop_inputs(self) -> None:
         """停止新的timer交接并等待当前提交，取消观察不取消后台清理。"""

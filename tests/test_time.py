@@ -119,6 +119,12 @@ async def test_default_clock_read_is_full_shanghai_iso_and_timezone(store: Store
             "alarms": [],
         }
         assert clock_factory.prepare("clock", {}, Path.cwd()).required_modules == ("tzdata",)
+        await clock.set_alarm("2026-10-13T19:00:00+08:00", "喝水", "once", "set")
+        material = await clock.prepare_request()
+        assert material["iso"] == result["iso"] and material["timezone"] == result["timezone"]
+        assert len(str(material).split("喝水")) == 2
+        assert "clock" not in material and "status" not in material
+        assert "喝水" in str(clock.snapshot()["alarms"])
     finally:
         await clock.close()
 

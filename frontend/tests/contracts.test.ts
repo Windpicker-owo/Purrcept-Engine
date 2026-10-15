@@ -33,11 +33,11 @@ describe("受理与实际结束", () => {
   it("finished 仍需查询运行中的关联行动", () => {
     const r = result(request());
     expect(controlMark(r).label).toContain("实际结果");
-    expect(awaiting({ request: request(), title: "连接", result: r, sending: false, unresolved: false, rejected: false, error: null })).toBe(true);
+    expect(awaiting({ request: request(), title: "连接", result: r, sending: false, unresolved: false, rejected: false, unavailable: false, error: null })).toBe(true);
   });
   it("活动 accepted 不能显示实际结束，confirmed 才结束观察", () => {
     const r = { ...result(request()), action_id: null, action: null, command_id: "c", activity_command: { command_id: "c", activity_id: "a", status: "accepted", actual_state: null, applied: null, error: null } };
-    const entry = { request: request(), title: "暂停", result: r, sending: false, unresolved: false, rejected: false, error: null };
+    const entry = { request: request(), title: "暂停", result: r, sending: false, unresolved: false, rejected: false, unavailable: false, error: null };
     expect(awaiting(entry)).toBe(true);
     expect(awaiting({ ...entry, result: { ...r, activity_command: { ...r.activity_command, status: "confirmed", actual_state: "paused", applied: true } } })).toBe(false);
   });
