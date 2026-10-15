@@ -18,20 +18,21 @@ from datetime import UTC, datetime
 from pathlib import Path
 from uuid import uuid4
 
-from purrcept_engine.domain.execution.providers import CallContext, CallOutcome
-from purrcept_engine.domain.inputs.models import (
+from purrcept_engine.errors import HostStateError, StorageError
+from purrcept_engine.plugin_system import (
     Admission,
+    CallContext,
+    CallOutcome,
+    EvidencePage,
+    EvidencePort,
+    EvidenceSnapshot,
     InputContext,
     InputSource,
     InputSubmission,
-)
-from purrcept_engine.domain.knowledge.models import (
-    EvidencePage,
-    EvidenceSnapshot,
     KnowledgeInputError,
+    NativeInputPort,
+    PluginPorts,
 )
-from purrcept_engine.errors import HostStateError, StorageError
-from purrcept_engine.plugin_system.contracts import EvidencePort, NativeInputPort, PluginPorts
 from purrcept_engine.plugins.qq.client import QQClient
 from purrcept_engine.plugins.qq.media import MediaBusy, MediaOwner
 from purrcept_engine.plugins.qq.messages import (

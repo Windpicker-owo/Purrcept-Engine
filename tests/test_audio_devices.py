@@ -20,9 +20,11 @@ from contextlib import aclosing
 
 import pytest
 
+from purrcept_engine.domain.audio.errors import AudioError
+from purrcept_engine.infrastructure.audio.wav import encode_wav
 from purrcept_engine.plugins.audio import player as player_module
-from purrcept_engine.plugins.audio.dsp import VoiceProfile, decode_pcm, encode_wav, process_audio
-from purrcept_engine.plugins.audio.models import AudioError, SpeechAudio
+from purrcept_engine.plugins.audio.dsp import VoiceProfile, decode_pcm, process_audio
+from purrcept_engine.plugins.audio.models import SpeechAudio
 from purrcept_engine.plugins.audio.player import FFplayPlayer
 
 

@@ -22,7 +22,8 @@ from test_web import local_asgi_only as local_asgi_only
 from purrcept_engine.app.studio import server
 from purrcept_engine.app.studio.profiles import ProfileConflict, load_profile, save_profile
 from purrcept_engine.app.studio.server import create_studio
-from purrcept_engine.plugins.audio.dsp import VoiceProfile, encode_wav
+from purrcept_engine.infrastructure.audio.wav import encode_wav
+from purrcept_engine.plugins.audio.dsp import VoiceProfile
 from purrcept_engine.values import JsonObject
 
 PORT = 8766

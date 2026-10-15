@@ -14,22 +14,23 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
-from purrcept_engine.domain.execution.catalog import CapabilityDeclaration, ObjectDeclaration
-from purrcept_engine.domain.execution.providers import (
+from purrcept_engine.errors import ConfigError
+from purrcept_engine.plugin_system import (
     CallContext,
     CallOutcome,
+    CapabilityDeclaration,
     CapabilityInputError,
+    DevicePanel,
     FunctionCapability,
-)
-from purrcept_engine.errors import ConfigError
-from purrcept_engine.plugin_system.contracts import (
+    ObjectDeclaration,
+    PanelControl,
     PluginBlueprint,
     PluginFactory,
     PluginPorts,
     PluginRuntime,
+    PreviewFrame,
     typed_factory,
 )
-from purrcept_engine.plugin_system.panels import DevicePanel, PanelControl, PreviewFrame
 from purrcept_engine.plugins.computer.driver import ComputerDriver, ProcessDriver
 from purrcept_engine.plugins.computer.models import ComputerError, Target
 from purrcept_engine.plugins.computer.runtime import ComputerRuntime, load_policy

@@ -12,7 +12,7 @@ import sqlite3
 
 from purrcept_engine.domain.audio.models import AudioFact
 from purrcept_engine.errors import StorageError
-from purrcept_engine.values import JsonObject, decode_object, encode_json
+from purrcept_engine.values import decode_object
 
 SCHEMA = (
     "CREATE TABLE audio_facts ("
@@ -70,10 +70,3 @@ def facts(connection: sqlite3.Connection, plugin_id: str, identity: str) -> tupl
         except ValueError as error:
             raise StorageError("权威音频事实格式无效。", code="invalid_record") from error
     return tuple(result)
-
-
-def make_fact(
-    plugin_id: str, identity: str, fact: str, occurred_at: float, payload: JsonObject
-) -> AudioFact:
-    """在进入队列前冻结事实 JSON，插件不能事后修改已接管材料。"""
-    return AudioFact(plugin_id, identity, fact, occurred_at, encode_json(payload).decode())

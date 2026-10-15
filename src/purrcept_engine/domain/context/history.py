@@ -51,12 +51,14 @@ from purrcept_engine.domain.model_requests.models import (
     RequestOutcome,
     RequestScope,
 )
-from purrcept_engine.domain.model_requests.ports import MaterialCompiler
+from purrcept_engine.domain.model_requests.ports import (
+    MaterialCompiler,
+    RequestEvidenceSink,
+    RetryPolicy,
+)
 from purrcept_engine.domain.model_requests.service import (
     ModelGenerationBackend,
     RequestBudget,
-    RequestEvidenceSink,
-    RetryPolicy,
     prepare_off_loop,
 )
 from purrcept_engine.errors import HostStateError

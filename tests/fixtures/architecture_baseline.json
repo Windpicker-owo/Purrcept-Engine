@@ -1,0 +1,227 @@
+{
+  "baseline": "9329231",
+  "host_methods": {
+    "__init__": {
+      "arguments": "arguments(posonlyargs=[], args=[arg(arg='self'), arg(arg='config', annotation=Name(id='EngineConfig', ctx=Load()))], kwonlyargs=[arg(arg='plugin_factories', annotation=BinOp(left=Subscript(value=Name(id='Mapping', ctx=Load()), slice=Tuple(elts=[Name(id='str', ctx=Load()), Name(id='PluginFactory', ctx=Load())], ctx=Load()), ctx=Load()), op=BitOr(), right=Constant(value=None))), arg(arg='executor_factory', annotation=BinOp(left=Name(id='ExecutorFactory', ctx=Load()), op=BitOr(), right=Constant(value=None))), arg(arg='console_output', annotation=Subscript(value=Name(id='Callable', ctx=Load()), slice=Tuple(elts=[List(elts=[Name(id='str', ctx=Load())], ctx=Load()), Constant(value=None)], ctx=Load()), ctx=Load())), arg(arg='generation_backends', annotation=BinOp(left=Subscript(value=Name(id='Mapping', ctx=Load()), slice=Tuple(elts=[Name(id='str', ctx=Load()), Name(id='ModelBackend', ctx=Load())], ctx=Load()), ctx=Load()), op=BitOr(), right=Constant(value=None))), arg(arg='decision_backends', annotation=BinOp(left=Subscript(value=Name(id='Mapping', ctx=Load()), slice=Tuple(elts=[Name(id='str', ctx=Load()), Name(id='DecisionBackend', ctx=Load())], ctx=Load()), ctx=Load()), op=BitOr(), right=Constant(value=None))), arg(arg='capacity_rules', annotation=BinOp(left=Subscript(value=Name(id='Mapping', ctx=Load()), slice=Tuple(elts=[Name(id='str', ctx=Load()), Name(id='CapacityRule', ctx=Load())], ctx=Load()), ctx=Load()), op=BitOr(), right=Constant(value=None))), arg(arg='embedding_provider', annotation=BinOp(left=Name(id='EmbeddingProvider', ctx=Load()), op=BitOr(), right=Constant(value=None))), arg(arg='reranker', annotation=BinOp(left=Name(id='Reranker', ctx=Load()), op=BitOr(), right=Constant(value=None)))], kw_defaults=[Constant(value=None), Constant(value=None), Name(id='print', ctx=Load()), Constant(value=None), Constant(value=None), Constant(value=None), Constant(value=None), Constant(value=None)], defaults=[])",
+      "returns": "Constant(value=None)",
+      "async": false,
+      "decorators": []
+    },
+    "config": {
+      "arguments": "arguments(posonlyargs=[], args=[arg(arg='self')], kwonlyargs=[], kw_defaults=[], defaults=[])",
+      "returns": "Name(id='EngineConfig', ctx=Load())",
+      "async": false,
+      "decorators": [
+        "Name(id='property', ctx=Load())"
+      ]
+    },
+    "catalog": {
+      "arguments": "arguments(posonlyargs=[], args=[arg(arg='self')], kwonlyargs=[], kw_defaults=[], defaults=[])",
+      "returns": "Name(id='Catalog', ctx=Load())",
+      "async": false,
+      "decorators": [
+        "Name(id='property', ctx=Load())"
+      ]
+    },
+    "start": {
+      "arguments": "arguments(posonlyargs=[], args=[arg(arg='self')], kwonlyargs=[], kw_defaults=[], defaults=[])",
+      "returns": "Name(id='HostSnapshot', ctx=Load())",
+      "async": true,
+      "decorators": []
+    },
+    "submit": {
+      "arguments": "arguments(posonlyargs=[], args=[arg(arg='self'), arg(arg='submission', annotation=Name(id='InputSubmission', ctx=Load()))], kwonlyargs=[], kw_defaults=[], defaults=[])",
+      "returns": "Name(id='Admission', ctx=Load())",
+      "async": true,
+      "decorators": []
+    },
+    "query_input": {
+      "arguments": "arguments(posonlyargs=[], args=[arg(arg='self'), arg(arg='input_id', annotation=Name(id='str', ctx=Load()))], kwonlyargs=[], kw_defaults=[], defaults=[])",
+      "returns": "BinOp(left=Name(id='InputRecord', ctx=Load()), op=BitOr(), right=Constant(value=None))",
+      "async": true,
+      "decorators": []
+    },
+    "query_native_input": {
+      "arguments": "arguments(posonlyargs=[], args=[arg(arg='self'), arg(arg='source', annotation=Name(id='InputSource', ctx=Load()))], kwonlyargs=[], kw_defaults=[], defaults=[])",
+      "returns": "BinOp(left=Name(id='InputRecord', ctx=Load()), op=BitOr(), right=Constant(value=None))",
+      "async": true,
+      "decorators": []
+    },
+    "query_processing": {
+      "arguments": "arguments(posonlyargs=[], args=[arg(arg='self'), arg(arg='input_id', annotation=Name(id='str', ctx=Load()))], kwonlyargs=[], kw_defaults=[], defaults=[])",
+      "returns": "BinOp(left=Name(id='InputProcessing', ctx=Load()), op=BitOr(), right=Constant(value=None))",
+      "async": true,
+      "decorators": []
+    },
+    "execute": {
+      "arguments": "arguments(posonlyargs=[], args=[arg(arg='self'), arg(arg='source', annotation=Name(id='str', ctx=Load()))], kwonlyargs=[arg(arg='input_id', annotation=BinOp(left=Name(id='str', ctx=Load()), op=BitOr(), right=Constant(value=None))), arg(arg='can_start', annotation=BinOp(left=Subscript(value=Name(id='Callable', ctx=Load()), slice=Tuple(elts=[List(elts=[], ctx=Load()), Name(id='bool', ctx=Load())], ctx=Load()), ctx=Load()), op=BitOr(), right=Constant(value=None))), arg(arg='presented_call_ids', annotation=Subscript(value=Name(id='frozenset', ctx=Load()), slice=Name(id='str', ctx=Load()), ctx=Load()))], kw_defaults=[Constant(value=None), Constant(value=None), Call(func=Name(id='frozenset', ctx=Load()), args=[], keywords=[])], defaults=[])",
+      "returns": "Name(id='ActionRecord', ctx=Load())",
+      "async": true,
+      "decorators": []
+    },
+    "query_action": {
+      "arguments": "arguments(posonlyargs=[], args=[arg(arg='self'), arg(arg='action_id', annotation=Name(id='str', ctx=Load()))], kwonlyargs=[], kw_defaults=[], defaults=[])",
+      "returns": "BinOp(left=Name(id='ActionRecord', ctx=Load()), op=BitOr(), right=Constant(value=None))",
+      "async": true,
+      "decorators": []
+    },
+    "invoke": {
+      "arguments": "arguments(posonlyargs=[], args=[arg(arg='self'), arg(arg='path', annotation=Name(id='str', ctx=Load())), arg(arg='arguments', annotation=Name(id='JsonObject', ctx=Load()))], kwonlyargs=[arg(arg='input_id', annotation=BinOp(left=Name(id='str', ctx=Load()), op=BitOr(), right=Constant(value=None))), arg(arg='can_start', annotation=BinOp(left=Subscript(value=Name(id='Callable', ctx=Load()), slice=Tuple(elts=[List(elts=[], ctx=Load()), Name(id='bool', ctx=Load())], ctx=Load()), ctx=Load()), op=BitOr(), right=Constant(value=None))), arg(arg='timeout_seconds', annotation=BinOp(left=Name(id='float', ctx=Load()), op=BitOr(), right=Constant(value=None))), arg(arg='before_start', annotation=BinOp(left=Subscript(value=Name(id='Callable', ctx=Load()), slice=Tuple(elts=[List(elts=[], ctx=Load()), Subscript(value=Name(id='Awaitable', ctx=Load()), slice=BinOp(left=Name(id='float', ctx=Load()), op=BitOr(), right=Constant(value=None)), ctx=Load())], ctx=Load()), ctx=Load()), op=BitOr(), right=Constant(value=None))), arg(arg='on_admitted', annotation=BinOp(left=Subscript(value=Name(id='Callable', ctx=Load()), slice=Tuple(elts=[List(elts=[Name(id='str', ctx=Load())], ctx=Load()), Constant(value=None)], ctx=Load()), ctx=Load()), op=BitOr(), right=Constant(value=None)))], kw_defaults=[Constant(value=None), Constant(value=None), Constant(value=None), Constant(value=None), Constant(value=None)], defaults=[])",
+      "returns": "Name(id='ActionRecord', ctx=Load())",
+      "async": true,
+      "decorators": []
+    },
+    "control_activity": {
+      "arguments": "arguments(posonlyargs=[], args=[arg(arg='self'), arg(arg='command', annotation=Name(id='CommandKind', ctx=Load()))], kwonlyargs=[arg(arg='activity_id', annotation=BinOp(left=Name(id='str', ctx=Load()), op=BitOr(), right=Constant(value=None))), arg(arg='definition', annotation=BinOp(left=Name(id='str', ctx=Load()), op=BitOr(), right=Constant(value=None))), arg(arg='goal', annotation=BinOp(left=Name(id='str', ctx=Load()), op=BitOr(), right=Constant(value=None))), arg(arg='additional_seconds', annotation=BinOp(left=Name(id='float', ctx=Load()), op=BitOr(), right=Constant(value=None))), arg(arg='reason', annotation=BinOp(left=Name(id='str', ctx=Load()), op=BitOr(), right=Constant(value=None)))], kw_defaults=[Constant(value=None), Constant(value=None), Constant(value=None), Constant(value=None), Constant(value=None)], defaults=[])",
+      "returns": "Name(id='ActivityCommand', ctx=Load())",
+      "async": true,
+      "decorators": []
+    },
+    "query_activity": {
+      "arguments": "arguments(posonlyargs=[], args=[arg(arg='self'), arg(arg='activity_id', annotation=Name(id='str', ctx=Load()))], kwonlyargs=[], kw_defaults=[], defaults=[])",
+      "returns": "BinOp(left=Name(id='ActivityRecord', ctx=Load()), op=BitOr(), right=Constant(value=None))",
+      "async": true,
+      "decorators": []
+    },
+    "query_request": {
+      "arguments": "arguments(posonlyargs=[], args=[arg(arg='self'), arg(arg='request_id', annotation=Name(id='str', ctx=Load()))], kwonlyargs=[], kw_defaults=[], defaults=[])",
+      "returns": "BinOp(left=Name(id='RequestRecord', ctx=Load()), op=BitOr(), right=Constant(value=None))",
+      "async": true,
+      "decorators": []
+    },
+    "query_panel": {
+      "arguments": "arguments(posonlyargs=[], args=[arg(arg='self')], kwonlyargs=[], kw_defaults=[], defaults=[])",
+      "returns": "Name(id='JsonObject', ctx=Load())",
+      "async": true,
+      "decorators": []
+    },
+    "submit_control": {
+      "arguments": "arguments(posonlyargs=[], args=[arg(arg='self'), arg(arg='request', annotation=Name(id='ControlRequest', ctx=Load()))], kwonlyargs=[], kw_defaults=[], defaults=[])",
+      "returns": "Name(id='ControlRecord', ctx=Load())",
+      "async": true,
+      "decorators": []
+    },
+    "query_control": {
+      "arguments": "arguments(posonlyargs=[], args=[arg(arg='self'), arg(arg='request_id', annotation=Name(id='str', ctx=Load()))], kwonlyargs=[], kw_defaults=[], defaults=[])",
+      "returns": "BinOp(left=Name(id='JsonObject', ctx=Load()), op=BitOr(), right=Constant(value=None))",
+      "async": true,
+      "decorators": []
+    },
+    "query_preview": {
+      "arguments": "arguments(posonlyargs=[], args=[arg(arg='self'), arg(arg='target', annotation=Name(id='str', ctx=Load()))], kwonlyargs=[], kw_defaults=[], defaults=[])",
+      "returns": "BinOp(left=Name(id='PreviewFrame', ctx=Load()), op=BitOr(), right=Constant(value=None))",
+      "async": false,
+      "decorators": []
+    },
+    "query": {
+      "arguments": "arguments(posonlyargs=[], args=[arg(arg='self')], kwonlyargs=[], kw_defaults=[], defaults=[])",
+      "returns": "Name(id='HostSnapshot', ctx=Load())",
+      "async": false,
+      "decorators": []
+    },
+    "close": {
+      "arguments": "arguments(posonlyargs=[], args=[arg(arg='self')], kwonlyargs=[], kw_defaults=[], defaults=[])",
+      "returns": "Name(id='HostSnapshot', ctx=Load())",
+      "async": true,
+      "decorators": []
+    },
+    "wait_closed": {
+      "arguments": "arguments(posonlyargs=[], args=[arg(arg='self')], kwonlyargs=[arg(arg='wait_seconds', annotation=BinOp(left=Name(id='float', ctx=Load()), op=BitOr(), right=Constant(value=None)))], kw_defaults=[Constant(value=None)], defaults=[])",
+      "returns": "Name(id='HostSnapshot', ctx=Load())",
+      "async": true,
+      "decorators": []
+    }
+  },
+  "root_exports": [
+    "ActionRecord",
+    "Admission",
+    "CallRecord",
+    "ConfigError",
+    "EngineConfig",
+    "EngineError",
+    "EngineHost",
+    "HostSnapshot",
+    "HostStateError",
+    "InputContext",
+    "InputRecord",
+    "InputSource",
+    "InputSubmission",
+    "InstanceLocked",
+    "MediaAsset",
+    "StorageError",
+    "load_config"
+  ],
+  "format_version": 13,
+  "application_id": 1347768901,
+  "statements": [
+    "CREATE TABLE media (media_id TEXT PRIMARY KEY, content BLOB NOT NULL)",
+    "CREATE TABLE inputs (input_id TEXT PRIMARY KEY, adapter_id TEXT NOT NULL, account_id TEXT NOT NULL, conversation_id TEXT NOT NULL, event_kind TEXT NOT NULL, native_event_id TEXT, sender_id TEXT, display_name TEXT, text TEXT NOT NULL, occurred_at TEXT NOT NULL, received_at TEXT NOT NULL, logical_bytes INTEGER NOT NULL CHECK(logical_bytes >= 0), context_json TEXT NOT NULL, dedup_key TEXT UNIQUE, fingerprint TEXT NOT NULL)",
+    "CREATE TABLE input_media (input_id TEXT NOT NULL REFERENCES inputs(input_id), ordinal INTEGER NOT NULL, media_id TEXT NOT NULL REFERENCES media(media_id), media_type TEXT NOT NULL, name TEXT, PRIMARY KEY(input_id, ordinal))",
+    "CREATE TABLE pending_inputs (sequence INTEGER PRIMARY KEY AUTOINCREMENT, input_id TEXT UNIQUE NOT NULL REFERENCES inputs(input_id))",
+    "CREATE TABLE actions (action_id TEXT PRIMARY KEY, catalog_version TEXT NOT NULL, source TEXT NOT NULL, state TEXT NOT NULL CHECK(state IN ('running','completed','failed','timed_out','cancelled')), created_at REAL NOT NULL, finished_at REAL, output TEXT NOT NULL DEFAULT '', result_json TEXT, error TEXT, input_id TEXT)",
+    "CREATE INDEX actions_input ON actions(input_id,created_at)",
+    "CREATE TABLE calls (call_id TEXT PRIMARY KEY, action_id TEXT NOT NULL REFERENCES actions(action_id), sequence INTEGER NOT NULL CHECK(sequence >= 0), path TEXT NOT NULL, target_id TEXT NOT NULL, arguments_json TEXT NOT NULL, state TEXT NOT NULL CHECK(state IN ('prepared','started','confirmed','failed','unknown','not_started')), prepared_at REAL NOT NULL, started_at REAL, receipt_revision INTEGER NOT NULL DEFAULT 0 CHECK(receipt_revision >= 0), UNIQUE(action_id, sequence))",
+    "CREATE TABLE call_results (call_id TEXT NOT NULL REFERENCES calls(call_id), revision INTEGER NOT NULL CHECK(revision > 0), state TEXT NOT NULL CHECK(state IN ('confirmed','failed','unknown','not_started')), finished_at REAL NOT NULL, result_json TEXT, error_type TEXT, error TEXT, PRIMARY KEY(call_id, revision))",
+    "CREATE TABLE pending_call_receipts (sequence INTEGER PRIMARY KEY AUTOINCREMENT, call_id TEXT NOT NULL, revision INTEGER NOT NULL, UNIQUE(call_id, revision), FOREIGN KEY(call_id, revision) REFERENCES call_results(call_id, revision))",
+    "CREATE TABLE call_result_media (call_id TEXT NOT NULL, revision INTEGER NOT NULL, ordinal INTEGER NOT NULL, media_id TEXT NOT NULL REFERENCES media(media_id), media_type TEXT NOT NULL, byte_length INTEGER NOT NULL, name TEXT, PRIMARY KEY(call_id,revision,ordinal), FOREIGN KEY(call_id,revision) REFERENCES call_results(call_id,revision))",
+    "CREATE TABLE model_requests (request_id TEXT PRIMARY KEY, evidence_json TEXT NOT NULL, state TEXT NOT NULL CHECK(state IN ('running','succeeded','failed','timed_out','cancelled','interrupted')), created_at REAL NOT NULL, finished_at REAL)",
+    "CREATE INDEX model_requests_scope ON model_requests (json_extract(evidence_json,'$.scope.owner_id'),json_extract(evidence_json,'$.scope.turn_id'))",
+    "CREATE TABLE model_attempts (attempt_id TEXT PRIMARY KEY, request_id TEXT NOT NULL REFERENCES model_requests(request_id), sequence INTEGER NOT NULL CHECK(sequence > 0), start_json TEXT NOT NULL, result_json TEXT, created_at REAL NOT NULL, finished_at REAL, UNIQUE(request_id,sequence))",
+    "CREATE TABLE model_request_media (request_id TEXT NOT NULL REFERENCES model_requests(request_id), media_id TEXT NOT NULL REFERENCES media(media_id), PRIMARY KEY(request_id,media_id))",
+    "CREATE TABLE model_attempt_media (attempt_id TEXT NOT NULL REFERENCES model_attempts(attempt_id), media_id TEXT NOT NULL REFERENCES media(media_id), PRIMARY KEY(attempt_id,media_id))",
+    "CREATE TABLE model_attempt_diagnostics (attempt_id TEXT PRIMARY KEY REFERENCES model_attempts(attempt_id), events_json TEXT NOT NULL, original_events_digest TEXT NOT NULL, diagnostics_complete INTEGER NOT NULL CHECK(diagnostics_complete IN (0,1)), omitted_events INTEGER NOT NULL CHECK(omitted_events >= 0), created_at REAL NOT NULL, expired_at REAL)",
+    "CREATE INDEX model_attempt_diagnostics_retained ON model_attempt_diagnostics (created_at,attempt_id) WHERE expired_at IS NULL",
+    "CREATE TABLE activities (activity_id TEXT PRIMARY KEY, definition TEXT NOT NULL, goal TEXT NOT NULL, state TEXT NOT NULL, version INTEGER NOT NULL CHECK(version > 0), run_generation INTEGER NOT NULL CHECK(run_generation >= 0), granted_seconds REAL NOT NULL CHECK(granted_seconds > 0), used_seconds REAL NOT NULL CHECK(used_seconds >= 0), checkpoint_at REAL, clock_running INTEGER NOT NULL CHECK(clock_running IN (0,1)), timing_incomplete INTEGER NOT NULL CHECK(timing_incomplete IN (0,1)), needs_reconciliation INTEGER NOT NULL CHECK(needs_reconciliation IN (0,1)), last_command_id TEXT NOT NULL, work_json TEXT NOT NULL, progress_json TEXT, created_at REAL NOT NULL, updated_at REAL NOT NULL, control_version INTEGER NOT NULL CHECK(control_version > 0))",
+    "CREATE TABLE activity_commands (command_id TEXT PRIMARY KEY, activity_id TEXT NOT NULL REFERENCES activities(activity_id), command TEXT NOT NULL, definition TEXT, goal TEXT, additional_seconds REAL, reason TEXT, cause TEXT NOT NULL, prior_state TEXT NOT NULL, run_generation INTEGER NOT NULL, version INTEGER NOT NULL, status TEXT NOT NULL, admitted_at REAL NOT NULL, accepted_at REAL, confirmed_at REAL, actual_state TEXT, applied INTEGER CHECK(applied IN (0,1)), error_type TEXT, error TEXT)",
+    "CREATE TABLE activity_feedback (feedback_id TEXT PRIMARY KEY, activity_id TEXT NOT NULL REFERENCES activities(activity_id), command_id TEXT, run_generation INTEGER NOT NULL, version INTEGER NOT NULL, kind TEXT NOT NULL, payload_json TEXT NOT NULL, occurred_at REAL NOT NULL, applied INTEGER NOT NULL CHECK(applied IN (0,1)))",
+    "CREATE TABLE pending_activity_feedback (sequence INTEGER PRIMARY KEY AUTOINCREMENT, feedback_id TEXT UNIQUE NOT NULL REFERENCES activity_feedback(feedback_id), foreground INTEGER NOT NULL CHECK(foreground IN (0,1)), reflection INTEGER NOT NULL CHECK(reflection IN (0,1)))",
+    "CREATE TABLE input_processing (input_id TEXT PRIMARY KEY REFERENCES inputs(input_id), version INTEGER NOT NULL, stage TEXT NOT NULL, reason TEXT NOT NULL, attention_request_id TEXT, due_at REAL, handed_off INTEGER NOT NULL DEFAULT 0, admitted_at REAL NOT NULL)",
+    "CREATE TABLE minimum_wake_assessments (input_id TEXT PRIMARY KEY REFERENCES inputs(input_id), owner_id TEXT NOT NULL, observed_generation INTEGER NOT NULL, input_version INTEGER NOT NULL, state TEXT NOT NULL, level TEXT, reason TEXT, request_id TEXT)",
+    "CREATE INDEX minimum_wake_pending ON minimum_wake_assessments(owner_id,state)",
+    "CREATE TABLE subject_sessions (scope TEXT PRIMARY KEY, version INTEGER NOT NULL, checkpoint_json TEXT, active_turn TEXT)",
+    "CREATE TABLE session_media (scope TEXT NOT NULL REFERENCES subject_sessions(scope), media_id TEXT NOT NULL REFERENCES media(media_id), PRIMARY KEY(scope,media_id))",
+    "CREATE TABLE subject_turns (turn_id TEXT PRIMARY KEY, scope TEXT NOT NULL, session_version INTEGER NOT NULL, generation INTEGER NOT NULL, state TEXT NOT NULL, started_at REAL NOT NULL, finished_at REAL, error_json TEXT)",
+    "CREATE TABLE turn_inputs (turn_id TEXT NOT NULL REFERENCES subject_turns(turn_id), ordinal INTEGER NOT NULL, input_id TEXT NOT NULL REFERENCES inputs(input_id), PRIMARY KEY(turn_id,ordinal))",
+    "CREATE TABLE failed_turns (turn_id TEXT PRIMARY KEY REFERENCES subject_turns(turn_id), presented_in TEXT REFERENCES subject_turns(turn_id))",
+    "CREATE TABLE knowledge_evidence (evidence_id TEXT NOT NULL, version INTEGER NOT NULL, payload_json TEXT NOT NULL, valid INTEGER NOT NULL CHECK(valid IN(0,1)), created_at REAL NOT NULL, PRIMARY KEY(evidence_id,version))",
+    "CREATE TABLE evidence_media (evidence_id TEXT NOT NULL,version INTEGER NOT NULL, position INTEGER NOT NULL,media_id TEXT NOT NULL REFERENCES media(media_id), PRIMARY KEY(evidence_id,version,position), FOREIGN KEY(evidence_id,version) REFERENCES knowledge_evidence(evidence_id,version))",
+    "CREATE TABLE knowledge_slices (slice_ref TEXT PRIMARY KEY, evidence_id TEXT NOT NULL, version INTEGER NOT NULL, payload_json TEXT NOT NULL, FOREIGN KEY(evidence_id,version) REFERENCES knowledge_evidence(evidence_id,version))",
+    "CREATE TABLE knowledge_cursors (cursor TEXT PRIMARY KEY, evidence_id TEXT NOT NULL, version INTEGER NOT NULL, start INTEGER NOT NULL, page_chars INTEGER NOT NULL, kind TEXT NOT NULL)",
+    "CREATE TABLE pending_knowledge (evidence_id TEXT NOT NULL, version INTEGER NOT NULL, queued_at REAL NOT NULL, state TEXT NOT NULL CHECK(state IN('pending','reviewed','deferred')), reason TEXT, PRIMARY KEY(evidence_id,version))",
+    "CREATE TABLE memories (memory_id TEXT NOT NULL, version INTEGER NOT NULL, payload_json TEXT NOT NULL, learned_at REAL NOT NULL, retired TEXT, PRIMARY KEY(memory_id,version))",
+    "CREATE TABLE memory_sources (memory_id TEXT NOT NULL, version INTEGER NOT NULL, slice_ref TEXT NOT NULL REFERENCES knowledge_slices(slice_ref), PRIMARY KEY(memory_id,version,slice_ref), FOREIGN KEY(memory_id,version) REFERENCES memories(memory_id,version))",
+    "CREATE TABLE memory_conflicts (left_id TEXT NOT NULL, left_version INTEGER NOT NULL, right_id TEXT NOT NULL, right_version INTEGER NOT NULL, PRIMARY KEY(left_id,left_version,right_id,right_version))",
+    "CREATE TABLE knowledge_index (kind TEXT NOT NULL, id TEXT NOT NULL, version INTEGER NOT NULL, terms TEXT NOT NULL, vector_json TEXT, model TEXT, PRIMARY KEY(kind,id,version))",
+    "CREATE TABLE pending_knowledge_index (kind TEXT NOT NULL, id TEXT NOT NULL, version INTEGER NOT NULL, queued_at REAL NOT NULL, route TEXT NOT NULL, PRIMARY KEY(kind,id,version,route))",
+    "CREATE VIRTUAL TABLE knowledge_search USING fts5(kind UNINDEXED,id UNINDEXED,version UNINDEXED,terms)",
+    "CREATE TABLE knowledge_review_ranges (slice_ref TEXT NOT NULL REFERENCES knowledge_slices(slice_ref), batch_id TEXT NOT NULL,batch_version INTEGER NOT NULL,state TEXT NOT NULL,reason TEXT, PRIMARY KEY(slice_ref,batch_id,batch_version))",
+    "CREATE TABLE reflection_batches (batch_id TEXT NOT NULL, version INTEGER NOT NULL, payload_json TEXT NOT NULL, state TEXT NOT NULL, receipt_json TEXT, PRIMARY KEY(batch_id,version))",
+    "CREATE TABLE reflection_presented (batch_id TEXT NOT NULL, version INTEGER NOT NULL, slice_ref TEXT NOT NULL REFERENCES knowledge_slices(slice_ref), PRIMARY KEY(batch_id,version,slice_ref))",
+    "CREATE TABLE reflection_writes (batch_id TEXT NOT NULL, batch_version INTEGER NOT NULL, memory_id TEXT NOT NULL, memory_version INTEGER NOT NULL, PRIMARY KEY(batch_id,batch_version,memory_id,memory_version))",
+    "CREATE TABLE reflection_deliveries(delivery_id TEXT PRIMARY KEY,batch_id TEXT NOT NULL,version INTEGER NOT NULL,kind TEXT NOT NULL CHECK(kind IN('initial','tool')),tool_call_id TEXT,payload_json TEXT NOT NULL,fingerprint TEXT NOT NULL,FOREIGN KEY(batch_id,version) REFERENCES reflection_batches(batch_id,version))",
+    "CREATE INDEX reflection_deliveries_match ON reflection_deliveries(kind,tool_call_id,fingerprint)",
+    "CREATE TABLE reflection_delivery_slices(delivery_id TEXT NOT NULL REFERENCES reflection_deliveries(delivery_id),ordinal INTEGER NOT NULL,slice_ref TEXT NOT NULL REFERENCES knowledge_slices(slice_ref),PRIMARY KEY(delivery_id,ordinal))",
+    "CREATE TABLE reflection_delivery_media(delivery_id TEXT NOT NULL REFERENCES reflection_deliveries(delivery_id),media_id TEXT NOT NULL REFERENCES media(media_id),PRIMARY KEY(delivery_id,media_id))",
+    "CREATE TABLE knowledge_supervision (id TEXT PRIMARY KEY, payload_json TEXT NOT NULL, state TEXT NOT NULL, response TEXT, created_at REAL NOT NULL)",
+    "CREATE TABLE knowledge_plans (id TEXT PRIMARY KEY, payload_json TEXT NOT NULL)",
+    "CREATE TABLE summary_attempts (owner_id TEXT NOT NULL REFERENCES subject_sessions(scope), coverage_id TEXT NOT NULL,source_version INTEGER NOT NULL,source_json TEXT NOT NULL, source_checkpoint_json TEXT NOT NULL,candidate_checkpoint_json TEXT,proposal_json TEXT, summary_request_id TEXT REFERENCES model_requests(request_id),attempted_at REAL NOT NULL, installed_at REAL,installed_version INTEGER,PRIMARY KEY(owner_id,coverage_id))",
+    "CREATE TABLE summary_source_media (owner_id TEXT NOT NULL,coverage_id TEXT NOT NULL, media_id TEXT NOT NULL REFERENCES media(media_id),PRIMARY KEY(owner_id,coverage_id,media_id), FOREIGN KEY(owner_id,coverage_id) REFERENCES summary_attempts(owner_id,coverage_id))",
+    "CREATE TABLE summary_candidate_media (owner_id TEXT NOT NULL,coverage_id TEXT NOT NULL, media_id TEXT NOT NULL REFERENCES media(media_id),PRIMARY KEY(owner_id,coverage_id,media_id), FOREIGN KEY(owner_id,coverage_id) REFERENCES summary_attempts(owner_id,coverage_id))",
+    "CREATE TABLE summary_dependencies (owner_id TEXT NOT NULL,coverage_id TEXT NOT NULL, kind TEXT NOT NULL CHECK(kind IN('evidence','summary')),id TEXT NOT NULL, version INTEGER NOT NULL, PRIMARY KEY(owner_id,coverage_id,kind,id,version), FOREIGN KEY(owner_id,coverage_id) REFERENCES summary_attempts(owner_id,coverage_id))",
+    "CREATE TABLE clock_alarms(id TEXT PRIMARY KEY,clock_id TEXT NOT NULL,at_utc REAL NOT NULL, state TEXT NOT NULL CHECK(state IN('pending','consumed','cancelled')),payload_json TEXT NOT NULL)",
+    "CREATE INDEX clock_alarms_due ON clock_alarms(clock_id,state,at_utc,id)",
+    "CREATE TABLE alarm_firings(occurrence_id TEXT PRIMARY KEY,clock_id TEXT NOT NULL, alarm_id TEXT NOT NULL REFERENCES clock_alarms(id),input_id TEXT NOT NULL UNIQUE REFERENCES inputs(input_id),payload_json TEXT NOT NULL)",
+    "CREATE TABLE subject_rest(id INTEGER PRIMARY KEY CHECK(id=1),version INTEGER NOT NULL,payload_json TEXT)",
+    "CREATE TABLE rest_changes(call_id TEXT PRIMARY KEY,operation TEXT NOT NULL,payload_json TEXT NOT NULL)",
+    "CREATE TABLE feedback_deliveries (kind TEXT NOT NULL,identity TEXT NOT NULL,payload_json TEXT NOT NULL,occurred_at REAL NOT NULL,input_id TEXT REFERENCES inputs(input_id),PRIMARY KEY(kind,identity))",
+    "CREATE TABLE feedback_sources (evidence_id TEXT NOT NULL,version INTEGER NOT NULL,priority INTEGER NOT NULL CHECK(priority IN(0,1)),PRIMARY KEY(evidence_id,version),FOREIGN KEY(evidence_id,version) REFERENCES knowledge_evidence(evidence_id,version))",
+    "CREATE TABLE feedback_failed_turns (turn_id TEXT PRIMARY KEY REFERENCES subject_turns(turn_id))",
+    "CREATE TABLE feedback_delivery_media(kind TEXT NOT NULL,identity TEXT NOT NULL,ordinal INTEGER NOT NULL,media_id TEXT NOT NULL REFERENCES media(media_id),media_type TEXT NOT NULL,name TEXT,PRIMARY KEY(kind,identity,ordinal),FOREIGN KEY(kind,identity) REFERENCES feedback_deliveries(kind,identity))",
+    "CREATE TABLE feedback_supervision_signals(identity TEXT PRIMARY KEY REFERENCES knowledge_supervision(id),observed_generation INTEGER NOT NULL,notified INTEGER NOT NULL CHECK(notified IN(0,1)))",
+    "CREATE TABLE feedback_reflection_attempts (batch_id TEXT NOT NULL,slice_ref TEXT NOT NULL REFERENCES knowledge_slices(slice_ref),epoch INTEGER NOT NULL,successful_turns INTEGER NOT NULL,PRIMARY KEY(slice_ref,epoch))",
+    "CREATE TABLE feedback_reflection_epochs(epoch INTEGER PRIMARY KEY,batch_id TEXT NOT NULL,successful_turns INTEGER NOT NULL)",
+    "CREATE TABLE feedback_reflection_cursors (evidence_id TEXT NOT NULL,version INTEGER NOT NULL,epoch INTEGER NOT NULL,cursor TEXT,exhausted INTEGER NOT NULL CHECK(exhausted IN(0,1)),PRIMARY KEY(evidence_id,version),FOREIGN KEY(evidence_id,version) REFERENCES knowledge_evidence(evidence_id,version))",
+    "CREATE TABLE panel_controls (request_id TEXT PRIMARY KEY, instance_id TEXT NOT NULL, payload_json TEXT NOT NULL, state TEXT NOT NULL, admitted_at REAL NOT NULL, action_id TEXT, command_id TEXT, finished_at REAL, error_code TEXT, error TEXT)",
+    "CREATE TABLE audio_facts (sequence INTEGER PRIMARY KEY AUTOINCREMENT, plugin_id TEXT NOT NULL, identity TEXT NOT NULL, fact TEXT NOT NULL, occurred_at REAL NOT NULL, payload_json TEXT NOT NULL, UNIQUE(plugin_id,identity,fact))"
+  ]
+}

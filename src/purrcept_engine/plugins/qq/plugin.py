@@ -13,21 +13,21 @@ from pathlib import Path
 
 from pydantic import BaseModel
 
-from purrcept_engine.domain.execution.catalog import CapabilityDeclaration, ObjectDeclaration
-from purrcept_engine.domain.execution.providers import (
+from purrcept_engine.plugin_system import (
     CallContext,
     CallOutcome,
+    CapabilityDeclaration,
     CapabilityInputError,
+    DevicePanel,
     FunctionCapability,
-)
-from purrcept_engine.plugin_system.contracts import (
+    ObjectDeclaration,
+    PanelControl,
     PluginBlueprint,
     PluginFactory,
     PluginPorts,
     PluginRuntime,
     typed_factory,
 )
-from purrcept_engine.plugin_system.panels import DevicePanel, PanelControl
 from purrcept_engine.plugins.qq import parameters as p
 from purrcept_engine.plugins.qq.media import QQMediaError
 from purrcept_engine.plugins.qq.messages import (

@@ -6,7 +6,7 @@ import math
 from dataclasses import dataclass
 from typing import Protocol
 
-from purrcept_engine.domain.model_requests.service import RequestEvidenceSink
+from purrcept_engine.domain.model_requests.ports import RequestEvidenceSink
 from purrcept_engine.domain.subject.session_ports import SessionStore
 
 

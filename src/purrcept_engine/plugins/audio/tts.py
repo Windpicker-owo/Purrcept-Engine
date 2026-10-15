@@ -15,8 +15,8 @@ from urllib.parse import quote
 
 import httpx
 
+from purrcept_engine.plugin_system import AudioError
 from purrcept_engine.plugins.audio.models import (
-    AudioError,
     AudioSettings,
     RecordParameters,
     SpeechAudio,

@@ -13,16 +13,15 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from purrcept_engine.domain.execution.catalog import CapabilityDeclaration, ObjectDeclaration
-from purrcept_engine.domain.execution.providers import (
+from purrcept_engine.errors import ConfigError
+from purrcept_engine.plugin_system import (
     CallContext,
     CallOutcome,
+    CapabilityDeclaration,
     CapabilityInputError,
     FunctionCapability,
-)
-from purrcept_engine.domain.knowledge.models import KnowledgeInputError
-from purrcept_engine.errors import ConfigError
-from purrcept_engine.plugin_system.contracts import (
+    KnowledgeInputError,
+    ObjectDeclaration,
     PluginBlueprint,
     PluginFactory,
     PluginPorts,

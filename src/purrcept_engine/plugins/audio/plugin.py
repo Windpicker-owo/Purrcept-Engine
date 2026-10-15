@@ -12,24 +12,24 @@ from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict
 
-from purrcept_engine.domain.execution.catalog import CapabilityDeclaration, ObjectDeclaration
-from purrcept_engine.domain.execution.providers import CallContext, CallOutcome, FunctionCapability
 from purrcept_engine.errors import ConfigError
-from purrcept_engine.plugin_system.contracts import (
+from purrcept_engine.plugin_system import (
+    AudioError,
+    CallContext,
+    CallOutcome,
+    CapabilityDeclaration,
+    DevicePanel,
+    FunctionCapability,
+    ObjectDeclaration,
+    PanelControl,
     PluginBlueprint,
     PluginFactory,
     PluginPorts,
     PluginRuntime,
     typed_factory,
 )
-from purrcept_engine.plugin_system.panels import DevicePanel, PanelControl
 from purrcept_engine.plugins.audio.dsp import check_program
-from purrcept_engine.plugins.audio.models import (
-    AudioError,
-    AudioSettings,
-    RecordParameters,
-    SpeechParameters,
-)
+from purrcept_engine.plugins.audio.models import AudioSettings, RecordParameters, SpeechParameters
 from purrcept_engine.plugins.audio.player import AudioPlayer, FFplayPlayer
 from purrcept_engine.plugins.audio.runtime import AudioRuntime
 from purrcept_engine.plugins.audio.tts import FishSource, SpeechSource

@@ -17,10 +17,14 @@ from pathlib import Path
 from typing import Literal, cast
 from uuid import uuid4
 
-from purrcept_engine.domain.execution.providers import CallOutcome
-from purrcept_engine.domain.inputs.models import MediaAsset, MediaReference
-from purrcept_engine.domain.knowledge.models import EvidencePage, EvidenceSnapshot
-from purrcept_engine.plugin_system.contracts import EvidencePort
+from purrcept_engine.plugin_system import (
+    CallOutcome,
+    EvidencePage,
+    EvidencePort,
+    EvidenceSnapshot,
+    MediaAsset,
+    MediaReference,
+)
 from purrcept_engine.plugins.browser.driver import (
     BrowserActionError,
     BrowserDriver,

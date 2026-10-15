@@ -44,13 +44,15 @@ from purrcept_engine.domain.context.checkpoints import decode_checkpoint, encode
 from purrcept_engine.domain.context.delivery import ToolDeliveryGate
 from purrcept_engine.domain.context.presentation import render_host_state
 from purrcept_engine.domain.model_requests.models import RequestScope
-from purrcept_engine.domain.model_requests.ports import MaterialCompiler
+from purrcept_engine.domain.model_requests.ports import (
+    MaterialCompiler,
+    RequestEvidenceSink,
+    RetryPolicy,
+)
 from purrcept_engine.domain.model_requests.service import (
     ModelGenerationBackend,
     RequestBudget,
     RequestBudgetExceeded,
-    RequestEvidenceSink,
-    RetryPolicy,
     prepare_off_loop,
 )
 from purrcept_engine.domain.subject.models import (

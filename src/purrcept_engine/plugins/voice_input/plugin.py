@@ -11,21 +11,21 @@ from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from purrcept_engine.domain.execution.catalog import CapabilityDeclaration, ObjectDeclaration
-from purrcept_engine.domain.execution.providers import (
+from purrcept_engine.plugin_system import (
     CallContext,
     CallOutcome,
+    CapabilityDeclaration,
     CapabilityInputError,
+    DevicePanel,
     FunctionCapability,
-)
-from purrcept_engine.plugin_system.contracts import (
+    ObjectDeclaration,
+    PanelControl,
     PluginBlueprint,
     PluginFactory,
     PluginPorts,
     PluginRuntime,
     typed_factory,
 )
-from purrcept_engine.plugin_system.panels import DevicePanel, PanelControl
 from purrcept_engine.plugins.voice_input.asr import FunASRTranscriber
 from purrcept_engine.plugins.voice_input.capture import SoundDeviceCapture
 from purrcept_engine.plugins.voice_input.models import (

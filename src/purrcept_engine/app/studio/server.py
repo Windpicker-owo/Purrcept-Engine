@@ -24,8 +24,9 @@ from starlette.types import ASGIApp
 
 from purrcept_engine.app.local_http import LocalHttpBoundary
 from purrcept_engine.app.studio.profiles import ProfileConflict, load_profile, save_profile
-from purrcept_engine.plugins.audio.dsp import VoiceProfile, decode_pcm, encode_wav
-from purrcept_engine.plugins.audio.models import AudioError
+from purrcept_engine.domain.audio.errors import AudioError
+from purrcept_engine.infrastructure.audio.wav import encode_wav
+from purrcept_engine.plugins.audio.dsp import VoiceProfile, decode_pcm
 from purrcept_engine.values import ActionProtocolError, JsonObject, decode_object
 
 MAX_UPLOAD_BYTES = 20 * 1024 * 1024

@@ -9,9 +9,7 @@ from purrcept_engine.domain.context.materials import MediaStore
 from purrcept_engine.domain.execution.models import ActionRecord
 from purrcept_engine.domain.inputs.models import InputRecord
 from purrcept_engine.domain.model_requests.models import RequestRecord
-from purrcept_engine.domain.model_requests.service import (
-    RequestEvidenceSink,
-)
+from purrcept_engine.domain.model_requests.ports import RequestEvidenceSink
 from purrcept_engine.domain.subject.models import (
     AttentionLevel,
     InputProcessing,

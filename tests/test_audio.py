@@ -22,16 +22,16 @@ import pytest
 import pytest_asyncio
 from pydantic import SecretStr
 
+from purrcept_engine.domain.audio.errors import AudioError
+from purrcept_engine.domain.audio.facts import make_fact
 from purrcept_engine.domain.audio.models import AudioFact
 from purrcept_engine.domain.execution.providers import CallContext, CallOutcome
 from purrcept_engine.errors import StorageError
-from purrcept_engine.infrastructure.sqlite.audio import make_fact
+from purrcept_engine.infrastructure.audio.wav import encode_wav
 from purrcept_engine.infrastructure.sqlite.store import Store
 from purrcept_engine.plugin_system.body import BodyIntent
 from purrcept_engine.plugins.audio import player as player_module
-from purrcept_engine.plugins.audio.dsp import encode_wav
 from purrcept_engine.plugins.audio.models import (
-    AudioError,
     AudioSettings,
     PlaybackResult,
     RecordParameters,

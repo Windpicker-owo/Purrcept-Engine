@@ -27,9 +27,9 @@ from purrcept_engine.domain.inputs.models import (
 )
 from purrcept_engine.domain.subject.models import InputProcessing
 from purrcept_engine.domain.time.models import Alarm, AlarmFiring, TimeError
+from purrcept_engine.domain.time.scheduling import next_daily_occurrence, parse_alarm_at
 from purrcept_engine.errors import StorageError
 from purrcept_engine.infrastructure.sqlite.store import Store
-from purrcept_engine.infrastructure.sqlite.time import next_daily_occurrence, parse_alarm_at
 from purrcept_engine.plugin_system.contracts import PluginPorts
 from purrcept_engine.plugins.rest import factory as bed_factory
 from purrcept_engine.plugins.time import ClockRuntime, ClockSettings

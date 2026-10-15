@@ -1,6 +1,6 @@
 """主体的认识读取与有限检索端口，不取得任意 SQL 或另开数据库连接。
 
-KnowledgeStore 由 app 的 Store 实现；KnowledgeService 借用已提交记录，融合
+KnowledgeStore 由 app 注入的 SQLite 账本实现；KnowledgeService 借用已提交记录，融合
 关键词/关系/时间与显式配置的可选语义路线，异步等待后再次核验来源和版本。
 可选服务错误原样报告，不偷偷把已配置语义路线改成关键词路线。模型容量由
 请求装配核验，本模块不按字符数猜 token 或静默裁剪检索结果。

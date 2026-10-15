@@ -29,8 +29,8 @@ from purrcept_core.models import (
 from purrcept_engine.domain.context.materials import UnsupportedMaterial
 from purrcept_engine.domain.context.presentation import render_input, render_material
 from purrcept_engine.domain.inputs.models import InputRecord, MediaReference
-from purrcept_engine.domain.model_requests.ports import MaterialCompiler
-from purrcept_engine.domain.model_requests.service import RetryPolicy, prepare_off_loop
+from purrcept_engine.domain.model_requests.ports import MaterialCompiler, RetryPolicy
+from purrcept_engine.domain.model_requests.service import prepare_off_loop
 from purrcept_engine.domain.subject.session import CapacityCheck
 from purrcept_engine.serialization import encode
 from purrcept_engine.values import JsonObject, decode_object

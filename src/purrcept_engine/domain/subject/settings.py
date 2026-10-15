@@ -9,10 +9,7 @@ from purrcept_core.models import (
     ModelBackend,
 )
 
-from purrcept_engine.domain.model_requests.ports import MaterialCompiler
-from purrcept_engine.domain.model_requests.service import (
-    RetryPolicy,
-)
+from purrcept_engine.domain.model_requests.ports import MaterialCompiler, RetryPolicy
 from purrcept_engine.domain.subject.session import (
     CapacityCheck,
 )

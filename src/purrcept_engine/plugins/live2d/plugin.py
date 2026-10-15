@@ -14,17 +14,20 @@ from urllib.parse import urlsplit
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from purrcept_engine.domain.execution.catalog import CapabilityDeclaration, ObjectDeclaration
-from purrcept_engine.domain.execution.providers import CallContext, CallOutcome, FunctionCapability
-from purrcept_engine.plugin_system.body import BodyIntent
-from purrcept_engine.plugin_system.contracts import (
+from purrcept_engine.plugin_system import (
+    BodyIntent,
+    CallContext,
+    CallOutcome,
+    CapabilityDeclaration,
+    DevicePanel,
+    FunctionCapability,
+    ObjectDeclaration,
     PluginBlueprint,
     PluginFactory,
     PluginPorts,
     PluginRuntime,
     typed_factory,
 )
-from purrcept_engine.plugin_system.panels import DevicePanel
 from purrcept_engine.plugins.live2d.analyzer import AnalyzerProcess
 from purrcept_engine.plugins.live2d.models import BodyStyle, ModelProfile
 from purrcept_engine.plugins.live2d.runtime import Live2DRuntime

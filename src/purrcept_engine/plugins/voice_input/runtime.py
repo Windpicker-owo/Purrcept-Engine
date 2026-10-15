@@ -19,16 +19,16 @@ from uuid import uuid4
 
 from websockets.exceptions import WebSocketException
 
-from purrcept_engine.domain.inputs.models import (
+from purrcept_engine.errors import StorageError
+from purrcept_engine.infrastructure.audio.wav import encode_wav
+from purrcept_engine.plugin_system import (
     Admission,
     InputContext,
+    InputPort,
     InputSource,
     InputSubmission,
     MediaAsset,
 )
-from purrcept_engine.errors import StorageError
-from purrcept_engine.plugin_system.contracts import InputPort
-from purrcept_engine.plugins.audio.dsp import encode_wav
 from purrcept_engine.plugins.voice_input.models import (
     CaptureDriver,
     InputDevice,

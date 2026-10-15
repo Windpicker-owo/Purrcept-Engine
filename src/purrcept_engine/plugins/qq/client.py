@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from typing import Literal
 from uuid import uuid4
 
-from purrcept_engine.domain.execution.providers import CallContext
+from purrcept_engine.plugin_system import CallContext
 from purrcept_engine.plugins.qq.ports import (
     Connection,
     ConnectionRejected,

@@ -16,7 +16,7 @@ from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from purrcept_engine.domain.inputs.models import MediaAsset
+from purrcept_engine.plugin_system import MediaAsset
 from purrcept_engine.plugins.qq.media import QQMediaError
 from purrcept_engine.values import JsonObject, decode_object, encode_json
 

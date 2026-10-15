@@ -8,11 +8,9 @@
 from __future__ import annotations
 
 import asyncio
-import io
 import os
 import shutil
 import subprocess
-import wave
 from collections.abc import AsyncGenerator, AsyncIterator, Awaitable
 from contextlib import aclosing
 from pathlib import Path
@@ -20,24 +18,9 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from purrcept_engine.plugins.audio.models import AudioError, SpeechAudio
-
-
-def encode_wav(pcm: bytes, sample_rate: int) -> bytes:
-    """将非空mono S16LE采样封装为WAV，不解码、不变速或访问设备。
-
-    调音、ASR输入和原生音频共享此容器边界，字节数必须落在完整样本。
-    采样率由已取得的实际PCM格式提供，不能从文件长度猜测。
-    """
-    if not pcm or len(pcm) % 2 or not 8000 <= sample_rate <= 48000:
-        raise AudioError("WAV封装需要非空完整S16样本与8000..48000Hz采样率。")
-    stream = io.BytesIO()
-    with wave.open(stream, "wb") as output:
-        output.setnchannels(1)
-        output.setsampwidth(2)
-        output.setframerate(sample_rate)
-        output.writeframes(pcm)
-    return stream.getvalue()
+from purrcept_engine.infrastructure.audio.wav import encode_wav
+from purrcept_engine.plugin_system import AudioError
+from purrcept_engine.plugins.audio.models import SpeechAudio
 
 
 class VoiceProfile(BaseModel):

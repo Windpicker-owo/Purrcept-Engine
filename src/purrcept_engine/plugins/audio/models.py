@@ -13,13 +13,8 @@ from urllib.parse import urlsplit
 
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, model_validator
 
-from purrcept_engine.errors import EngineError
-from purrcept_engine.plugin_system.body import BodyIntent
+from purrcept_engine.plugin_system import BodyIntent
 from purrcept_engine.values import JsonObject
-
-
-class AudioError(EngineError):
-    """外部合成、设备协议或现场额度失败，不能据此自动重播。"""
 
 
 class AudioSettings(BaseModel):

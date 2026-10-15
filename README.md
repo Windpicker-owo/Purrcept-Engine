@@ -3,17 +3,17 @@
 Engine 在独立仓库实施持续主体宿主。已批准的职责与验收要求见
 [重构契约](docs/refactor/contract.md)，实施状态见 [计划](docs/refactor/plan.md)。
 
-维护入口为 `app/cli.py` → `app/config.py` → `app/host.py`。`app/subject.py`
-连接主体用途、模型与插件；`subject/coordinator.py` 串行筛选并交接前台输入，
-`subject/session.py` 借用 Core 的连续工具循环。动态状态和技能每个逻辑请求
-刷新到 user 尾部，传输重试复用同一份材料；最终文字属于内部结果，只有实际
-能力调用对外输出。`subject/background.py` 接续持久反馈与独立反思批次。
+架构与接手阅读顺序见 [代码架构与调用链](docs/architecture.md)。后端按职责分层：
 
-历史容量预检和摘要见 `context/` 与 `app/history.py`，认识与反思提交见
-`storage/knowledge.py` 和 `subject/reflection.py`。插件纯声明在 `plugins/base.py`，
-装配在 `app/assembly.py`；行动从 `execution/service.py` 进入独立 `worker.py`，
-`storage/execution.py` 保存独立真实回执。活动的控制/真实确认与累计运行额度
-由 `subject/activities.py` 提交，不依赖页面或模型自行填写身份。
+- `app`：配置、显式装配、Host 生命周期，以及 CLI/Web 等应用接入。
+- `domain`：Purrcept 主体、执行契约、活动、认识、上下文和业务值。
+- `infrastructure`：SQLite、模型 SDK、隔离执行器与进程等资源实现。
+- `plugin_system`：插件及替换执行器的统一公开契约；`plugins` 保留具体设备业务。
+
+从 `EngineHost` 进入 `EngineAssembly` 查看装配，进入 `SubjectService` 查看注意、
+前台与独立后台的编排。`ContinuousSession` 继续借用 Core 的工具循环；
+最终文字属于内部结果，只有实际能力调用对外输出。
+
 宿主先取得数据目录锁，正式输入原文、媒体与待处理状态同事务保存。
 关闭的调用者超时或取消不撤销后台收尾，也不提前释放目录锁。
 
@@ -136,7 +136,7 @@ build/install-minimal/Scripts/python.exe -I -X utf8 scripts/verify_installation.
 开发检查沿用 pytest、Ruff、strict Pyright 与 build：
 
 ```powershell
-uv run pytest -q
+uv run python -m pytest -q
 uv run ruff check src tests examples
 uv run ruff format --check src tests examples
 uv run pyright
@@ -150,5 +150,5 @@ uv run python -m build
 
 嵌入调用者可用 `EngineHost.execute` 明确执行行动，结果包括逐次调用回执。
 取消等待不会撤销已开始行动；未知结果不能自动重放。插件与替换执行器的
-契约分别见 `plugins/base.py` 与 `execution/ports.py`。本机示例为
+契约分别见 `plugin_system` 的统一入口与协议文档。本机示例为
 `examples/action.py`，需要配置启用控制台输出。
