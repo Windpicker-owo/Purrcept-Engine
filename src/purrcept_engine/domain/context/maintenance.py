@@ -15,7 +15,7 @@ from typing import Literal, Protocol
 
 from purrcept_core.models import ConversationCheckpoint, ConversationState, Message, TextBlock
 
-from purrcept_engine.context.capacity import CapacityAssessment
+from purrcept_engine.domain.context.capacity import CapacityAssessment
 from purrcept_engine.errors import EngineError
 from purrcept_engine.serialization import encode
 

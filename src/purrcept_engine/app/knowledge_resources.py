@@ -11,18 +11,19 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Callable
 
-from purrcept_engine.domain.knowledge.settings import EmbeddingSettings
-from purrcept_engine.errors import HostStateError
-from purrcept_engine.infrastructure.models.embedding import (
-    OpenAIEmbeddingResource,
-)
-from purrcept_engine.subject.knowledge import KnowledgeService, Reranker
-from purrcept_engine.subject.semantic import (
+from purrcept_engine.domain.knowledge.ports import Reranker
+from purrcept_engine.domain.knowledge.semantic import (
     EmbeddingProvider,
     IndexChanges,
     KnowledgeIndexWorker,
     SemanticStore,
     VectorRetriever,
+)
+from purrcept_engine.domain.knowledge.service import KnowledgeService
+from purrcept_engine.domain.knowledge.settings import EmbeddingSettings
+from purrcept_engine.errors import HostStateError
+from purrcept_engine.infrastructure.models.embedding import (
+    OpenAIEmbeddingResource,
 )
 
 

@@ -17,9 +17,9 @@ from pathlib import Path
 import pytest
 from pydantic import SecretStr
 
+from purrcept_engine.domain.execution.providers import CallContext
 from purrcept_engine.domain.inputs.models import Admission, InputRecord, InputSubmission
 from purrcept_engine.domain.subject.models import InputProcessing
-from purrcept_engine.execution.providers import CallContext
 from purrcept_engine.infrastructure.sqlite.store import Store
 from purrcept_engine.plugin_system.contracts import PluginPorts
 from purrcept_engine.plugins.voice_input.models import (

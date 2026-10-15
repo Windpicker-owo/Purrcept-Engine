@@ -71,18 +71,18 @@ from purrcept_engine.domain.model_requests.models import (
     RequestOutcome,
     RequestScope,
 )
-from purrcept_engine.errors import StorageError
-from purrcept_engine.infrastructure.models.clients import DecisionResource, OpenAIGenerationResource
-from purrcept_engine.infrastructure.sqlite import model_requests as sql
-from purrcept_engine.infrastructure.sqlite.store import Store
-from purrcept_engine.subject.model_requests import (
+from purrcept_engine.domain.model_requests.service import (
     ModelDecisionBackend,
     ModelGenerationBackend,
     RequestBudget,
     RequestBudgetExceeded,
     classify_failure,
-    compile_materials,
 )
+from purrcept_engine.errors import StorageError
+from purrcept_engine.infrastructure.models.clients import DecisionResource, OpenAIGenerationResource
+from purrcept_engine.infrastructure.models.compiler import compile_materials
+from purrcept_engine.infrastructure.sqlite import model_requests as sql
+from purrcept_engine.infrastructure.sqlite.store import Store
 
 
 @dataclass
@@ -214,6 +214,7 @@ def _wrapper(
         policy=policy or RetrySettings(),
         diagnostic_bytes=diagnostic_bytes,
         sleep=sleep,
+        compiler=compile_materials,
     )
 
 
@@ -414,6 +415,7 @@ async def test_timeout_discards_late_response_and_keeps_resource_borrow_visible(
         budget=_budget(),
         policy=RetrySettings(attempts=1, attempt_seconds=0.02, total_seconds=0.1),
         diagnostic_bytes=100,
+        compiler=compile_materials,
     )
     task = asyncio.create_task(wrapper.generate(_request(), model="openai/synthetic"))
     await entered.wait()
@@ -450,6 +452,7 @@ async def test_decision_retains_refusal_and_uses_one_logical_budget() -> None:
         policy=RetrySettings(attempt_seconds=5, total_seconds=8),
         diagnostic_bytes=0,
         sleep=_no_wait,
+        compiler=compile_materials,
     )
     request = DecisionRequest("evidence", (PredicateQuestion("attend", "Should attend?"),))
     response = await wrapper.decide(request, model="typesafe/synthetic")
@@ -565,6 +568,7 @@ async def test_actual_sdk_http_payload_matches_recorded_ordered_materials(
         budget=_budget(),
         policy=RetrySettings(),
         diagnostic_bytes=4096,
+        compiler=compile_materials,
     )
     try:
         response = await wrapper.generate(_request(), model=settings.model)
@@ -661,6 +665,7 @@ async def test_real_sdk_retry_has_two_http_attempts_and_preserves_same_payload(
             policy=RetrySettings(),
             diagnostic_bytes=100,
             sleep=_no_wait,
+            compiler=compile_materials,
         )
         try:
             await wrapper.generate(_request(), model=generation_settings.model)
@@ -687,6 +692,7 @@ async def test_real_sdk_retry_has_two_http_attempts_and_preserves_same_payload(
             policy=RetrySettings(attempt_seconds=5, total_seconds=8),
             diagnostic_bytes=0,
             sleep=_no_wait,
+            compiler=compile_materials,
         )
         request = DecisionRequest(
             (TextBlock("first source"), TextBlock("second source")),
@@ -771,6 +777,7 @@ async def test_dispatch_qualification_is_checked_inside_actual_backend_task() ->
         policy=RetrySettings(),
         diagnostic_bytes=100,
         can_start=can_start,
+        compiler=compile_materials,
     )
     with pytest.raises(ModelRequestError) as caught:
         await wrapper.generate(_request(), model="openai/synthetic")
@@ -899,6 +906,7 @@ async def test_real_store_sink_reconstructs_media_and_independent_attempts(tmp_p
             policy=RetrySettings(),
             diagnostic_bytes=0,
             sleep=_no_wait,
+            compiler=compile_materials,
         )
         try:
             responses: list[ModelResponse] = []
@@ -991,6 +999,7 @@ async def test_real_store_media_reference_failure_rolls_back_whole_commit(
         budget=_budget(),
         policy=RetrySettings(),
         diagnostic_bytes=0,
+        compiler=compile_materials,
     )
     try:
         with pytest.raises(StorageError):
@@ -1025,6 +1034,7 @@ async def test_real_store_request_media_loss_is_explicit(tmp_path: Path, fault: 
         budget=_budget(),
         policy=RetrySettings(),
         diagnostic_bytes=0,
+        compiler=compile_materials,
     )
     try:
         await wrapper.generate(_media_request(), model="openai/synthetic")
@@ -1118,6 +1128,7 @@ async def test_finish_commit_deadline_keeps_fact_but_forwards_no_core_events(
         budget=budget,
         policy=RetrySettings(attempts=1, total_seconds=0.05),
         diagnostic_bytes=4096,
+        compiler=compile_materials,
     )
     progress: list[object] = []
     context = ExecutionContext("run", "effect", 0, object(), _progress_callback=progress.append)

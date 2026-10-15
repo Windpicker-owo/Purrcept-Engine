@@ -16,356 +16,44 @@ SQLite 连接，也不能直接改控制状态或追加额度。
 from __future__ import annotations
 
 import asyncio
-import math
 import time
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass, replace
-from typing import Literal, Protocol
+from dataclasses import replace
+from typing import Literal
 from uuid import uuid4
 
+from purrcept_engine.domain.activities.contracts import (
+    ActivityDefinition,
+    ActivityDriver,
+    ActivityError,
+    ActivityInvoker,
+    ActivityRecovery,
+    ActivityStore,
+    DriverAcceptance,
+    RecoveryObservation,
+)
+from purrcept_engine.domain.activities.control import control_record, validate_request
 from purrcept_engine.domain.activities.models import (
     ActivityCommand,
     ActivityFeedback,
     ActivityRecord,
     ActivityState,
-    CommandCause,
     CommandKind,
     FeedbackKind,
 )
+from purrcept_engine.domain.activities.port import ActivityPort, ActivityStep
+from purrcept_engine.domain.activities.state import ActivityClock, ActivityRequest, RecoveryProof
+from purrcept_engine.domain.activities.validation import positive_seconds, validate_text
 from purrcept_engine.domain.execution.models import ActionRecord
 from purrcept_engine.domain.execution.record_validation import validate_json
-from purrcept_engine.errors import EngineError, HostStateError, StorageError
+from purrcept_engine.errors import HostStateError, StorageError
 from purrcept_engine.values import JsonObject, decode_object, encode_json
-
-
-class ActivityError(EngineError):
-    """可定位的活动参数、状态或容量拒绝，不代表已接管工作被撤销。"""
-
-    def __init__(self, message: str, *, code: str = "activity_state") -> None:
-        """保留接入方可查询的拒绝类别。"""
-        super().__init__(message)
-        self.code = code
-
-
-class ActivityStore(Protocol):
-    """Host 提供的同连接存储端口，不由活动模块创建第二个连接。
-
-    所有方法只在服务所属循环调用。commit_activity 在控制队列执行短事务；
-    等待取消不回滚已接管提交。失败原样传播并停止活动后续派发，不返回空成功。
-    recover_activities 在驱动装配前执行，仅保存中断事实，不回放专业动作。
-    """
-
-    async def activity_records(self) -> tuple[ActivityRecord, ...]:
-        """读取未结束的有限活动集合。"""
-        ...
-
-    async def get_activity(self, activity_id: str) -> ActivityRecord | None:
-        """按身份读取当前控制和工作快照。"""
-        ...
-
-    async def get_activity_command(self, command_id: str) -> ActivityCommand | None:
-        """读取可信命令接管和真实确认，查询不重投。"""
-        ...
-
-    async def get_activity_feedback(self, feedback_id: str) -> ActivityFeedback | None:
-        """查询原始反馈，用稳定身份去重而不改写首次提交事实。"""
-        ...
-
-    async def commit_activity(
-        self,
-        record: ActivityRecord,
-        *,
-        expected_version: int | None,
-        command: ActivityCommand | None = None,
-        feedback: ActivityFeedback | None = None,
-    ) -> None:
-        """原子提交精确版本、命令与反馈；不存在通用可变状态写入口。"""
-        ...
-
-    async def recover_activities(self) -> tuple[ActivityRecord, ...]:
-        """保留累计和未确认命令，仅撤销上次运行的派发资格。"""
-        ...
-
-
-class ActivityInvoker(Protocol):
-    """Host 注入的单能力交接，只供活动所有者借用，不提供脚本或 Provider。
-
-    宿主同步关联已预留的行动身份，再进入真实共享执行器。before_start 在
-    实际 Provider 前重新查询本活动资格，返回剩余时长或拒绝；on_admitted
-    不能修改身份或重投。返回首版 ActionRecord 不代表 Provider 已归还，故
-    ActivityService 同时借用配对的 wait_invocation_released 资源查询。
-    """
-
-    async def __call__(
-        self,
-        path: str,
-        arguments: JsonObject,
-        *,
-        input_id: str,
-        before_start: Callable[[], Awaitable[float | None]],
-        on_admitted: Callable[[str], None],
-        timeout_seconds: float | None,
-    ) -> ActionRecord:
-        """真实共享目录/schema/Journal 路径；原型权威与宿主错误直接传播。"""
-        ...
-
-
-@dataclass(frozen=True, slots=True)
-class DriverAcceptance:
-    """驱动是否已接管控制；accepted=True 不证明已经运行或收尾完成。"""
-
-    accepted: bool
-    reason: str = ""
-
-    def __post_init__(self) -> None:
-        if not isinstance(self.accepted, bool) or not isinstance(self.reason, str):
-            raise ValueError("驱动受理必须包含布尔结论与文本原因。")
-
-
-@dataclass(frozen=True, slots=True)
-class RecoveryObservation:
-    """显式核对取得的真实材料；stopped=None 保留未知并禁止恢复。
-
-    stopped=True 只证明专业驱动已停止派发，不抹掉原命令或未知外部效果。
-    evidence_json 留下核对材料，不能通过重做旧写操作生成这个观察。
-    """
-
-    stopped: bool | None
-    evidence_json: str
-
-    def __post_init__(self) -> None:
-        if self.stopped is not None and not isinstance(self.stopped, bool):
-            raise ValueError("核对停止状态只能是 bool 或 None。")
-        validate_json(self.evidence_json)
-
-
-@dataclass(frozen=True, slots=True)
-class ActivityRecovery:
-    """一次模型调用取得的只读核对材料，没有接管恢复或结束命令。
-
-    同一可信调用身份重投复用首次材料。主脑看到材料后须用新的调用明确选择，
-    普通控制入口不能消费本结果保存的精确版本资格。
-    """
-
-    activity_id: str
-    observation: RecoveryObservation
-
-
-class ActivityDriver(Protocol):
-    """插件工厂创建的专业流程，接收宿主控制并通过端口报告真实事实。
-
-    工厂不得启动领域步骤。accept 只受理控制，必须有界返回；pause/end 与
-    其他 accept 可并发，驱动按命令版本采用最新控制，不能被普通能力队列阻塞。
-    受理后通过 port.confirm 报告实际状态，不靠返回字符串宣称已经完成。
-    标准能力使用 port.invoke，共用实际 schema/回执与资源所有者；其他本地
-    专业步骤经 begin_step/finish_step。取得 Step 不授予绕过执行器调用 Provider
-    的权限，不能只检查旧提示快照。
-    completed/failed/needs_decision 反馈表示专业驱动已停止继续推进；尚在途的
-    宿主能力仍由执行所有者收尾，不能借反馈撤销其真实回执。
-    """
-
-    async def accept(self, command: ActivityCommand, port: ActivityPort) -> DriverAcceptance:
-        """接管明确命令身份；重复/迟到确认由宿主保存并核验资格。"""
-        ...
-
-    async def reconcile(self, record: ActivityRecord) -> RecoveryObservation:
-        """显式恢复前只读核对实际状态，不重放旧命令或启动工作。"""
-        ...
-
-    async def close(self) -> None:
-        """停止专业派发并收回实际后台任务，在途效果仍报告原归属。"""
-        ...
-
-
-@dataclass(frozen=True, slots=True)
-class ActivityDefinition:
-    """插件装配时提供的冻结定义；single_instance 约束未结束的同定义委托。"""
-
-    definition: str
-    factory: Callable[[ActivityPort], ActivityDriver]
-    single_instance: bool = False
-
-
-@dataclass(frozen=True, slots=True)
-class ActivityStep:
-    """宿主执行服务取得的步骤身份，直到真实收尾才归还并发事实。
-
-    此值只用于本服务所属循环。finish 是幂等的等待，取消外部等待不会把仍在途
-    的步骤当作已结束；宿主执行所有者须在取得真实结果之后调用它。
-    """
-
-    activity_id: str
-    run_generation: int
-    step_id: str
-    _service: ActivityService
-
-    async def finish(self) -> None:
-        """报告宿主实际步骤已结束，不改变其独立回执。"""
-        await self._service.finish_step(self)
-
-
-class ActivityPort:
-    """宿主为单项活动创建的驱动端口，没有通用状态或兄弟活动写权限。
-
-    驱动取得当前快照后携命令身份、运行代次和观察版本提交事实。控制状态仅由
-    服务核验后提交。checkpoint 保存专业工作，不把局部产物提升为长期认识。
-    """
-
-    def __init__(self, service: ActivityService, activity_id: str) -> None:
-        """绑定一项不可变活动身份，不启动驱动或建立后台任务。"""
-        self._activity_id = activity_id
-        self._service = service
-
-    @property
-    def activity_id(self) -> str:
-        """返回创建时固定的委托身份，公开端口不能改挂到兄弟活动。"""
-        return self._activity_id
-
-    async def snapshot(self) -> ActivityRecord:
-        """读取本活动的当前权威快照，不产生恢复或控制副作用。"""
-        return await self._service.activity(self.activity_id)
-
-    async def begin_step(self, *, run_generation: int) -> ActivityStep:
-        """在本活动进入专业步骤前复核资格，并取得直到真实收尾才归还的身份。
-
-        端口固定活动身份，不能借此为兄弟活动派发。驱动保存真实结果后调用
-        ActivityStep.finish；取消观察或停止请求不代替实际步骤结束。
-        """
-        return await self._service.begin_step(self.activity_id, run_generation)
-
-    async def invoke(
-        self,
-        path: str,
-        arguments: JsonObject,
-        *,
-        run_generation: int,
-        timeout_seconds: float | None = None,
-    ) -> ActionRecord:
-        """本活动经真实执行服务调用能力，首版 unknown 不归还仍在途步骤。
-
-        驱动可在观察超时后停止并报告 needs_decision；实际所有者仍保存迟到
-        回执。观察取消不撤销已接管调用，不能借此直接运行 Provider 或脚本。
-        """
-        return await self._service.invoke(
-            self.activity_id,
-            path,
-            arguments,
-            run_generation=run_generation,
-            timeout_seconds=timeout_seconds,
-        )
-
-    async def confirm(
-        self,
-        command_id: str,
-        *,
-        run_generation: int,
-        version: int,
-        state: ActivityState,
-    ) -> ActivityCommand:
-        """提交实际控制结果；version 是原命令版本，迟到结果仍保留但不复活。"""
-        return await self._service.confirm(
-            self.activity_id,
-            command_id,
-            run_generation=run_generation,
-            version=version,
-            state=state,
-        )
-
-    async def checkpoint(
-        self, *, run_generation: int, version: int, work_json: str
-    ) -> ActivityRecord:
-        """按当前观察版本保存局部工作，旧代次或旧版本不能覆盖新工作。"""
-        return await self._service.checkpoint_work(
-            self.activity_id,
-            run_generation=run_generation,
-            version=version,
-            work_json=work_json,
-        )
-
-    async def feedback(
-        self,
-        feedback_id: str,
-        kind: FeedbackKind,
-        payload_json: str,
-        *,
-        run_generation: int,
-        version: int,
-        command_id: str | None = None,
-    ) -> ActivityFeedback:
-        """原始反馈可靠保存；旧版本进展不覆盖当前状态，关键事实仍交付。"""
-        return await self._service.feedback(
-            self.activity_id,
-            feedback_id,
-            kind,
-            payload_json,
-            run_generation=run_generation,
-            version=version,
-            command_id=command_id,
-        )
-
-
-@dataclass(slots=True)
-class _Clock:
-    """单调起点仅存于本次宿主运行，不跨崩溃推算未记录时段。"""
-
-    run_generation: int
-    used_at_start: float
-    started_at: float
-    checkpoint_at: float
-
-
-@dataclass(frozen=True, slots=True)
-class _Request:
-    command_id: str
-    command: CommandKind
-    activity_id: str | None
-    definition: str | None
-    goal: str | None
-    additional_seconds: float | None
-    reason: str | None
-    cause: CommandCause = "explicit"
-    expected_version: int | None = None
-    recovery_version: int | None = None
-    action_id: str | None = None
-    presented_call_ids: frozenset[str] = frozenset()
-
-
-@dataclass(frozen=True, slots=True)
-class _RecoveryProof:
-    """只对未改变记录有效的核对，后续行动须有原调用材料的真实呈现证据。"""
-
-    version: int
-    run_generation: int
-    action_id: str
-    call_id: str
-    observation: RecoveryObservation
 
 
 def _observe[Result](task: asyncio.Future[Result]) -> None:
     """取消等待者不取消所有者；即使没有等待者也收回最终异常。"""
     if not task.cancelled():
         task.exception()
-
-
-def _nonempty(value: object, name: str) -> str:
-    if not isinstance(value, str) or not value.strip():
-        raise ActivityError(f"{name} 必须是非空字符串。", code="activity_arguments")
-    try:
-        value.encode("utf-8")
-    except UnicodeEncodeError as error:
-        raise ActivityError(f"{name} 不能表示为 UTF-8。", code="activity_arguments") from error
-    return value
-
-
-def _positive(value: object, name: str) -> float:
-    if (
-        isinstance(value, bool)
-        or not isinstance(value, (int, float))
-        or not math.isfinite(value)
-        or value <= 0
-    ):
-        raise ActivityError(f"{name} 必须是正有限数。", code="activity_arguments")
-    return float(value)
 
 
 class ActivityService:
@@ -407,14 +95,14 @@ class ActivityService:
             raise ValueError("max_steps 必须是正整数。")
         if (invoke is None) != (wait_invocation_released is None):
             raise ValueError("活动调用与实际资源归还端口必须成对提供。")
-        self._initial = _positive(initial_seconds, "initial_seconds")
-        self._maximum = _positive(max_remaining_seconds, "max_remaining_seconds")
-        self._checkpoint = _positive(checkpoint_seconds, "checkpoint_seconds")
+        self._initial = positive_seconds(initial_seconds, "initial_seconds")
+        self._maximum = positive_seconds(max_remaining_seconds, "max_remaining_seconds")
+        self._checkpoint = positive_seconds(checkpoint_seconds, "checkpoint_seconds")
         if self._initial > self._maximum:
             raise ValueError("活动初始额度不能超过剩余额度上限。")
         self._definitions: dict[str, ActivityDefinition] = {}
         for definition in definitions:
-            key = _nonempty(definition.definition, "definition")
+            key = validate_text(definition.definition, "definition")
             if key in self._definitions:
                 raise ValueError("活动定义重复。")
             self._definitions[key] = definition
@@ -431,15 +119,15 @@ class ActivityService:
         self._changed = asyncio.Condition()
         self._change_version = 0
         self._drivers: dict[str, ActivityDriver] = {}
-        self._clocks: dict[str, _Clock] = {}
+        self._clocks: dict[str, ActivityClock] = {}
         self._steps: dict[str, ActivityStep] = {}
         self._invocations: dict[str, asyncio.Task[None]] = {}
         self._steps_changed = asyncio.Event()
-        self._requests: dict[str, tuple[_Request, asyncio.Task[ActivityCommand]]] = {}
+        self._requests: dict[str, tuple[ActivityRequest, asyncio.Task[ActivityCommand]]] = {}
         self._subject_requests: dict[
-            str, tuple[_Request, asyncio.Task[ActivityCommand | ActivityRecovery]]
+            str, tuple[ActivityRequest, asyncio.Task[ActivityCommand | ActivityRecovery]]
         ] = {}
-        self._subject_recoveries: dict[str, _RecoveryProof] = {}
+        self._subject_recoveries: dict[str, RecoveryProof] = {}
         self._deliveries: dict[str, asyncio.Task[None]] = {}
         self._delivery_kinds: dict[str, tuple[str, CommandKind]] = {}
         self._retiring: dict[str, asyncio.Task[None]] = {}
@@ -489,14 +177,14 @@ class ActivityService:
 
     async def activity(self, activity_id: str) -> ActivityRecord:
         """读取实际状态与工作，不启动驱动；关闭期间仍可查询已有事实。"""
-        record = await self._store.get_activity(_nonempty(activity_id, "activity_id"))
+        record = await self._store.get_activity(validate_text(activity_id, "activity_id"))
         if record is None:
             raise ActivityError("活动不存在。", code="activity_missing")
         return record
 
     async def command_record(self, command_id: str) -> ActivityCommand:
         """单独读取接管、受理或真实确认，不把查询解释为再次执行。"""
-        record = await self._store.get_activity_command(_nonempty(command_id, "command_id"))
+        record = await self._store.get_activity_command(validate_text(command_id, "command_id"))
         if record is None:
             raise ActivityError("活动命令不存在。", code="activity_missing")
         return record
@@ -534,7 +222,7 @@ class ActivityService:
         完成；计时与反馈仍使用真实数据库版本提交，不允许旧页面覆盖新状态。
         """
         self._available()
-        request = self._request(
+        request = validate_request(
             command_id,
             command,
             activity_id,
@@ -594,12 +282,12 @@ class ActivityService:
         核对与接管由有限所有者持有，观察取消不释放正在借用的驱动。
         """
         self._available()
-        request = self._request(
+        request = validate_request(
             command_id, command, activity_id, definition, goal, additional_seconds, reason
         )
         request = replace(
             request,
-            action_id=_nonempty(action_id, "action_id"),
+            action_id=validate_text(action_id, "action_id"),
             presented_call_ids=presented_call_ids,
         )
         pending = self._subject_requests.get(command_id)
@@ -622,7 +310,9 @@ class ActivityService:
         owner.add_done_callback(finished)
         return await asyncio.shield(owner)
 
-    async def _subject_command(self, request: _Request) -> ActivityCommand | ActivityRecovery:
+    async def _subject_command(
+        self, request: ActivityRequest
+    ) -> ActivityCommand | ActivityRecovery:
         """首次核对的持久身份与后续控制分开，不将同一调用重投变成恢复。"""
         if request.command not in ("resume", "end"):
             return await self._admit(request)
@@ -685,44 +375,6 @@ class ActivityService:
             return ActivityRecovery(activity_id, observation)
         return await self._admit(request)
 
-    def _request(
-        self,
-        command_id: str,
-        command: CommandKind,
-        activity_id: str | None,
-        definition: str | None,
-        goal: str | None,
-        additional_seconds: float | None,
-        reason: str | None,
-    ) -> _Request:
-        """真实边界精确验证组合，不把无关参数忽略为默认值。"""
-        _nonempty(command_id, "command_id")
-        if command not in ("start", "pause", "resume", "end", "adjust", "extend"):
-            raise ActivityError("活动命令无效。", code="activity_arguments")
-        if command == "start":
-            if activity_id is not None or additional_seconds is not None or reason is not None:
-                raise ActivityError("start 只接受 definition 与 goal。", code="activity_arguments")
-            _nonempty(definition, "definition")
-            _nonempty(goal, "goal")
-        else:
-            _nonempty(activity_id, "activity_id")
-            if definition is not None:
-                raise ActivityError("后续命令不接受 definition。", code="activity_arguments")
-            if command == "adjust":
-                _nonempty(goal, "goal")
-                if additional_seconds is not None or reason is not None:
-                    raise ActivityError("adjust 只接受新 goal。", code="activity_arguments")
-            elif command == "extend":
-                if goal is not None:
-                    raise ActivityError("extend 不接受 goal。", code="activity_arguments")
-                additional_seconds = _positive(additional_seconds, "additional_seconds")
-                _nonempty(reason, "reason")
-            elif goal is not None or additional_seconds is not None or reason is not None:
-                raise ActivityError("该控制只接受 activity_id。", code="activity_arguments")
-        return _Request(
-            command_id, command, activity_id, definition, goal, additional_seconds, reason
-        )
-
     async def _notify(self) -> None:
         async with self._changed:
             self._change_version += 1
@@ -761,7 +413,7 @@ class ActivityService:
     def _in_flight(self, activity_id: str) -> bool:
         return any(step.activity_id == activity_id for step in self._steps.values())
 
-    async def _admit(self, request: _Request) -> ActivityCommand:
+    async def _admit(self, request: ActivityRequest) -> ActivityCommand:
         """接管所有者跨外部等待取消存活，持久提交后才安排实际驱动交接。"""
         async with self._lock:
             self._available()
@@ -887,76 +539,15 @@ class ActivityService:
             return command
 
     def _control_record(
-        self,
-        current: ActivityRecord,
-        request: _Request,
-        now: float,
+        self, current: ActivityRecord, request: ActivityRequest, now: float
     ) -> ActivityRecord:
-        """接管控制立即撤销下一步许可；实际运行计时到真实停止确认才结清。"""
-        if current.state in ("ended", "completed"):
-            raise ActivityError("已结束活动不能恢复或控制。")
-        if request.command == "extend":
-            if (
-                current.state not in ("paused", "budget_exhausted", "interrupted")
-                or current.clock_running
-                or self._in_flight(current.activity_id)
-            ):
-                raise ActivityError("追加仅允许已停止且无在途收尾的活动。")
-            assert request.additional_seconds is not None
-            if current.remaining_seconds + request.additional_seconds > self._maximum:
-                raise ActivityError("追加后剩余额度超过上限。", code="activity_budget")
-            return replace(
-                current,
-                version=current.version + 1,
-                last_command_id=request.command_id,
-                granted_seconds=current.granted_seconds + request.additional_seconds,
-                updated_at=now,
-            )
-        if request.command == "resume":
-            if current.state not in (
-                "paused",
-                "budget_exhausted",
-                "interrupted",
-                "awaiting_decision",
-            ):
-                raise ActivityError("当前状态不能恢复。")
-            if (
-                current.needs_reconciliation
-                or current.clock_running
-                or self._in_flight(current.activity_id)
-            ):
-                raise ActivityError("恢复前需要明确核对停止状态与在途效果。")
-            if current.remaining_seconds <= 0:
-                raise ActivityError("活动预算耗尽，须明确追加后再恢复。", code="activity_budget")
-            state: ActivityState = "resume_requested"
-        elif request.command == "pause":
-            if current.state in (
-                "pause_requested",
-                "end_requested",
-                "paused",
-                "budget_exhausted",
-                "interrupted",
-            ):
-                raise ActivityError("当前状态不能再次暂停。")
-            state = "pause_requested"
-        elif request.command == "end":
-            if current.needs_reconciliation:
-                raise ActivityError("结束前需要主脑核对停止状态与在途效果。")
-            if current.state == "end_requested":
-                raise ActivityError("活动正在结束。")
-            state = "end_requested"
-        else:
-            if current.state not in ("running", "paused", "awaiting_decision"):
-                raise ActivityError("当前状态不能调整目标。")
-            state = "adjust_requested"
-        return replace(
+        """在唯一提交者锁内读取运行事实，再交纯规则生成候选状态。"""
+        return control_record(
             current,
-            state=state,
-            version=current.version + 1,
-            run_generation=current.run_generation + (1 if request.command == "resume" else 0),
-            last_command_id=request.command_id,
-            goal=request.goal if request.goal is not None else current.goal,
-            updated_at=now,
+            request,
+            now,
+            in_flight=self._in_flight(current.activity_id),
+            maximum=self._maximum,
         )
 
     def _schedule_delivery(self, command: ActivityCommand) -> None:
@@ -1108,7 +699,7 @@ class ActivityService:
         """成功提交后才改变单调起点；提交失败不把未记录累计清零。"""
         if record.clock_running and record.activity_id not in self._clocks:
             now = self._monotonic()
-            self._clocks[record.activity_id] = _Clock(
+            self._clocks[record.activity_id] = ActivityClock(
                 record.run_generation,
                 record.used_seconds,
                 now,
@@ -1254,7 +845,7 @@ class ActivityService:
         if invoker is None or released is None:
             raise ActivityError("活动未装配真实能力调用端口。", code="activity_unavailable")
         if timeout_seconds is not None:
-            timeout_seconds = _positive(timeout_seconds, "timeout_seconds")
+            timeout_seconds = positive_seconds(timeout_seconds, "timeout_seconds")
         # 驱动请求在首个持久化等待前冻结，不能被共享可变参数改写本次意图。
         frozen_arguments = decode_object(encode_json(arguments))
         step = await self.begin_step(activity_id, run_generation)
@@ -1371,7 +962,7 @@ class ActivityService:
         command_id: str | None = None,
     ) -> ActivityFeedback:
         """保存业务原文与可靠交接；旧反馈只留事实，不恢复或覆盖当前控制。"""
-        _nonempty(feedback_id, "feedback_id")
+        validate_text(feedback_id, "feedback_id")
         validate_json(payload_json)
         if kind not in ("progress", "completed", "failed", "needs_decision", "reconciled"):
             raise ActivityError("活动反馈类别无效。", code="activity_arguments")
@@ -1430,7 +1021,7 @@ class ActivityService:
         self,
         activity_id: str,
         *,
-        subject_request: _Request | None = None,
+        subject_request: ActivityRequest | None = None,
         feedback_id: str | None = None,
     ) -> RecoveryObservation:
         """事务外取得实际观察，再核同版本；模型核对仅保存待决定资格。"""
@@ -1504,7 +1095,7 @@ class ActivityService:
                     pass
                 else:
                     assert subject_request.action_id is not None
-                    self._subject_recoveries[activity_id] = _RecoveryProof(
+                    self._subject_recoveries[activity_id] = RecoveryProof(
                         record.version,
                         record.run_generation,
                         subject_request.action_id,

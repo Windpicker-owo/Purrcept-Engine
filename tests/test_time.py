@@ -18,6 +18,7 @@ import pytest_asyncio
 from pydantic import ValidationError
 
 from purrcept_engine import EngineConfig, EngineHost
+from purrcept_engine.domain.execution.providers import CallContext, CapabilityInputError
 from purrcept_engine.domain.inputs.models import (
     Admission,
     InputRecord,
@@ -27,7 +28,6 @@ from purrcept_engine.domain.inputs.models import (
 from purrcept_engine.domain.subject.models import InputProcessing
 from purrcept_engine.domain.time.models import Alarm, AlarmFiring, TimeError
 from purrcept_engine.errors import StorageError
-from purrcept_engine.execution.providers import CallContext, CapabilityInputError
 from purrcept_engine.infrastructure.sqlite.store import Store
 from purrcept_engine.infrastructure.sqlite.time import next_daily_occurrence, parse_alarm_at
 from purrcept_engine.plugin_system.contracts import PluginPorts

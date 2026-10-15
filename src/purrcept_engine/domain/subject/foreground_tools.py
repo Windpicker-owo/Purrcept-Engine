@@ -11,19 +11,20 @@ from typing import Protocol
 from purrcept_core.models import ContentBlock, SystemInstruction, TextBlock
 from purrcept_core.models.tools import FunctionTool, ToolContext, ToolResult, ToolSet
 
-from purrcept_engine.domain.execution.models import ActionRecord
-from purrcept_engine.domain.inputs.models import MediaReference
-from purrcept_engine.domain.knowledge.models import EvidenceSnapshot, Version, WakeupPlan
-from purrcept_engine.execution.catalog import Catalog
-from purrcept_engine.serialization import encode
-from purrcept_engine.subject.delivery import (
+from purrcept_engine.domain.context.delivery import (
     ToolDelivery,
     ToolDeliveryGate,
     evidence_fallback,
     presented_evidence_calls,
 )
-from purrcept_engine.subject.knowledge import KnowledgeService, KnowledgeStore, recall_payload
-from purrcept_engine.subject.tool_errors import model_input_boundary
+from purrcept_engine.domain.context.tool_errors import model_input_boundary
+from purrcept_engine.domain.execution.catalog import Catalog
+from purrcept_engine.domain.execution.models import ActionRecord
+from purrcept_engine.domain.inputs.models import MediaReference
+from purrcept_engine.domain.knowledge.models import EvidenceSnapshot, Version, WakeupPlan
+from purrcept_engine.domain.knowledge.ports import KnowledgeStore
+from purrcept_engine.domain.knowledge.service import KnowledgeService, recall_payload
+from purrcept_engine.serialization import encode
 from purrcept_engine.values import decode_object
 
 

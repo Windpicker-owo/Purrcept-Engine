@@ -23,7 +23,7 @@ from typing import cast
 
 from PIL import Image, UnidentifiedImageError
 
-from purrcept_engine.context.capacity import (
+from purrcept_engine.domain.context.capacity import (
     CapacityDeclaration,
     CapacityError,
     CapacityEstimate,

@@ -13,9 +13,9 @@ from typing import Literal, Protocol
 
 from pydantic import BaseModel, ValidationError
 
+from purrcept_engine.domain.execution.catalog import CapabilityDeclaration
 from purrcept_engine.domain.inputs.models import MediaReference
 from purrcept_engine.errors import EngineError
-from purrcept_engine.execution.catalog import CapabilityDeclaration
 from purrcept_engine.values import JsonObject, JsonValue
 
 

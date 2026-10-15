@@ -12,8 +12,8 @@ from purrcept_core.models import TextBlock
 from purrcept_core.models.tools import ToolResult
 from pydantic import ValidationError
 
+from purrcept_engine.domain.execution.validation import ActionSourceError
 from purrcept_engine.domain.knowledge.models import KnowledgeInputError
-from purrcept_engine.execution.validation import ActionSourceError
 from purrcept_engine.serialization import encode
 
 

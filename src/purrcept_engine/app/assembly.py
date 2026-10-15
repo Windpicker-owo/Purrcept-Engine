@@ -18,8 +18,8 @@ from pydantic import ValidationError
 from purrcept_engine.app.activity import ACTIVITY_DECLARATION
 from purrcept_engine.app.config import PluginSettings
 from purrcept_engine.app.console import console_blueprint
+from purrcept_engine.domain.execution.catalog import Catalog, ObjectDeclaration
 from purrcept_engine.errors import ConfigError
-from purrcept_engine.execution.catalog import Catalog, ObjectDeclaration
 from purrcept_engine.plugin_system.contracts import PluginBlueprint, PluginFactory
 from purrcept_engine.plugins.images import images_blueprint
 

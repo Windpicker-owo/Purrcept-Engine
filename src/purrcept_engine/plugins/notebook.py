@@ -33,10 +33,10 @@ from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from purrcept_engine.domain.execution.catalog import CapabilityDeclaration, ObjectDeclaration
+from purrcept_engine.domain.execution.providers import CallContext, CallOutcome, FunctionCapability
 from purrcept_engine.domain.knowledge.models import EvidencePage, EvidenceSnapshot
 from purrcept_engine.errors import EngineError, HostStateError
-from purrcept_engine.execution.catalog import CapabilityDeclaration, ObjectDeclaration
-from purrcept_engine.execution.providers import CallContext, CallOutcome, FunctionCapability
 from purrcept_engine.plugin_system.contracts import (
     EvidencePort,
     PluginBlueprint,

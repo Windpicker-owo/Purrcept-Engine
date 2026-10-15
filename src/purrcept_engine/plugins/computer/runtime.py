@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import cast
 from uuid import uuid4
 
+from purrcept_engine.domain.execution.providers import CallOutcome
 from purrcept_engine.domain.inputs.models import (
     InputContext,
     InputSource,
@@ -29,7 +30,6 @@ from purrcept_engine.domain.inputs.models import (
 )
 from purrcept_engine.domain.knowledge.models import EvidenceSnapshot
 from purrcept_engine.errors import HostStateError
-from purrcept_engine.execution.providers import CallOutcome
 from purrcept_engine.plugin_system.contracts import EvidencePort, InputPort
 from purrcept_engine.plugins.computer.driver import ComputerDriver
 from purrcept_engine.plugins.computer.models import (

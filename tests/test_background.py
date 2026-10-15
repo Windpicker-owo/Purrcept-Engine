@@ -36,8 +36,12 @@ from purrcept_core.models import (
 
 import purrcept_engine.domain.subject.feedback_models as subject_feedback_models
 from purrcept_engine.app.config import RetrySettings
-from purrcept_engine.context.capacity import CapacityAssessment, GenerationCapacity, check_capacity
 from purrcept_engine.domain.activities.models import ActivityFeedback, ActivityRecord
+from purrcept_engine.domain.context.capacity import (
+    CapacityAssessment,
+    GenerationCapacity,
+    check_capacity,
+)
 from purrcept_engine.domain.inputs.models import (
     InputContext,
     InputSource,
@@ -54,17 +58,18 @@ from purrcept_engine.domain.knowledge.models import (
     SupervisionNotice,
     WakeupPlan,
 )
+from purrcept_engine.domain.knowledge.service import KnowledgeService
+from purrcept_engine.domain.model_requests.service import RequestBudget
+from purrcept_engine.domain.subject.background import BackgroundService
+from purrcept_engine.domain.subject.background_ports import BackgroundSettings
 from purrcept_engine.domain.subject.models import TurnOutcome
+from purrcept_engine.domain.subject.session import ContinuousSession, DynamicState
+from purrcept_engine.domain.subject.settings import SubjectModel
 from purrcept_engine.errors import HostStateError, StorageError
+from purrcept_engine.infrastructure.models.compiler import compile_materials
 from purrcept_engine.infrastructure.sqlite import feedback as feedback_sql
 from purrcept_engine.infrastructure.sqlite.store import Store
 from purrcept_engine.infrastructure.sqlite.time import AdmitInput
-from purrcept_engine.subject import background as background_module
-from purrcept_engine.subject.background import BackgroundService, BackgroundSettings
-from purrcept_engine.subject.coordinator import SubjectModel
-from purrcept_engine.subject.knowledge import KnowledgeService
-from purrcept_engine.subject.model_requests import RequestBudget
-from purrcept_engine.subject.session import ContinuousSession, DynamicState
 from purrcept_engine.values import JsonObject, decode_object
 
 
@@ -280,7 +285,14 @@ async def _background(
         store.feedback,
         KnowledgeService(store.knowledge),
         store.knowledge,
-        reflection=SubjectModel(backend, "openai/test", 1000, _capacity, RetrySettings()),
+        reflection=SubjectModel(
+            backend,
+            "openai/test",
+            1000,
+            _capacity,
+            RetrySettings(),
+            compiler=compile_materials,
+        ),
         instructions=(SystemInstruction.from_text("独立反思固定指令"),),
         settings=BackgroundSettings(4096, page_chars=page_chars, batch_seconds=seconds),
         media=media,
@@ -838,7 +850,8 @@ async def test_later_sources_do_not_reset_original_sixty_second_window(
             return self.seconds
 
     clock = Clock()
-    monkeypatch.setattr(background_module, "time", clock)
+    monkeypatch.setattr("purrcept_engine.domain.subject.reflection_service.time", clock)
+    monkeypatch.setattr("purrcept_engine.domain.subject.feedback_service.time", clock)
     await _source(store, "first")
     backend = Backend(store)
     async with AsyncExitStack() as stack:
@@ -916,7 +929,12 @@ async def test_eight_actual_successful_foreground_turns_trigger_before_sixty_sec
 
     backend = Backend(store)
     async with AsyncExitStack() as stack:
-        foreground = ContinuousSession(store, "foreground", can_start=lambda: None)
+        foreground = ContinuousSession(
+            store,
+            "foreground",
+            can_start=lambda: None,
+            compiler=compile_materials,
+        )
         stack.push_async_callback(foreground.close)
         for ordinal in range(8):
             identity = await _admit(store, f"foreground:{ordinal}")

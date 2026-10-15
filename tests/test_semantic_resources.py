@@ -22,16 +22,16 @@ from purrcept_engine.domain.knowledge.models import (
     KnowledgeCandidate,
     KnowledgeReference,
 )
-from purrcept_engine.domain.knowledge.settings import EmbeddingSettings
-from purrcept_engine.errors import HostStateError
-from purrcept_engine.infrastructure.models.embedding import OpenAIEmbeddingResource
-from purrcept_engine.infrastructure.sqlite.store import Store
-from purrcept_engine.subject.knowledge import KnowledgeService, recall_payload
-from purrcept_engine.subject.semantic import (
+from purrcept_engine.domain.knowledge.semantic import (
     EmbeddingProtocolError,
     KnowledgeIndexWorker,
     VectorRetriever,
 )
+from purrcept_engine.domain.knowledge.service import KnowledgeService, recall_payload
+from purrcept_engine.domain.knowledge.settings import EmbeddingSettings
+from purrcept_engine.errors import HostStateError
+from purrcept_engine.infrastructure.models.embedding import OpenAIEmbeddingResource
+from purrcept_engine.infrastructure.sqlite.store import Store
 
 
 @pytest.fixture

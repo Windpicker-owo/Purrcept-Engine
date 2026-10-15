@@ -28,6 +28,11 @@ from purrcept_core.models import (
 from purrcept_core.models.tools import FunctionTool, ToolContext, ToolResult, ToolSet
 from pydantic import Field, StrictBool, StrictStr, ValidationError
 
+from purrcept_engine.domain.context.delivery import (
+    ToolDelivery,
+    ToolDeliveryGate,
+    evidence_fallback,
+)
 from purrcept_engine.domain.inputs.models import MediaReference
 from purrcept_engine.domain.knowledge.models import (
     Deferred,
@@ -46,8 +51,8 @@ from purrcept_engine.domain.knowledge.models import (
     SupervisionRecord,
     Text,
 )
-from purrcept_engine.subject.delivery import ToolDelivery, ToolDeliveryGate, evidence_fallback
-from purrcept_engine.subject.knowledge import KnowledgeService, KnowledgeStore, recall_payload
+from purrcept_engine.domain.knowledge.ports import KnowledgeStore
+from purrcept_engine.domain.knowledge.service import KnowledgeService, recall_payload
 
 Nonnegative = Annotated[int, Field(ge=0, strict=True)]
 Positive = Annotated[int, Field(gt=0, strict=True)]

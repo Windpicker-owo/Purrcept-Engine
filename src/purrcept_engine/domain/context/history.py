@@ -32,8 +32,8 @@ from purrcept_core.models import (
     TextBlock,
 )
 
-from purrcept_engine.context.capacity import CapacityAssessment, CapacityError
-from purrcept_engine.context.maintenance import (
+from purrcept_engine.domain.context.capacity import CapacityAssessment, CapacityError
+from purrcept_engine.domain.context.maintenance import (
     MaintenanceStore,
     Reservation,
     SummaryError,
@@ -43,6 +43,7 @@ from purrcept_engine.context.maintenance import (
     candidate_checkpoint,
     shorten_summary_source,
 )
+from purrcept_engine.domain.context.summary_materials import summary_message
 from purrcept_engine.domain.model_requests.models import (
     AttemptEvidence,
     AttemptStart,
@@ -50,17 +51,16 @@ from purrcept_engine.domain.model_requests.models import (
     RequestOutcome,
     RequestScope,
 )
-from purrcept_engine.errors import HostStateError
-from purrcept_engine.infrastructure.sqlite.maintenance import summary_message
-from purrcept_engine.serialization import encode
-from purrcept_engine.subject.model_requests import (
+from purrcept_engine.domain.model_requests.ports import MaterialCompiler
+from purrcept_engine.domain.model_requests.service import (
     ModelGenerationBackend,
     RequestBudget,
     RequestEvidenceSink,
     RetryPolicy,
-    compile_materials,
     prepare_off_loop,
 )
+from purrcept_engine.errors import HostStateError
+from purrcept_engine.serialization import encode
 from purrcept_engine.values import JsonObject, decode_object
 
 type CapacityCheck = Callable[[JsonObject], CapacityAssessment]
@@ -178,9 +178,11 @@ def summary_request(source: SummarySource, output_tokens: int) -> ModelRequest:
     )
 
 
-def _assessment(request: ModelRequest, model: str, capacity: CapacityCheck) -> CapacityAssessment:
+def _assessment(
+    request: ModelRequest, model: str, capacity: CapacityCheck, compiler: MaterialCompiler
+) -> CapacityAssessment:
     """借用同一冻结SDK纯编译器，计量完整真实payload而不是摘要文字长度。"""
-    materials, _ = compile_materials(request, model=model)
+    materials, _ = compiler(request, model=model)
     envelope = decode_object(materials.encode())
     payload = envelope.get("payload")
     if not isinstance(payload, dict):
@@ -195,6 +197,7 @@ async def prepare_summary_request(
     model: str,
     capacity: CapacityCheck,
     check_budget: Callable[[], None],
+    compiler: MaterialCompiler,
 ) -> tuple[SummarySource, ModelRequest]:
     """派发前有界选择可容纳的旧完整前缀，不消费模型请求或修改存储。
 
@@ -206,7 +209,9 @@ async def prepare_summary_request(
         check_budget()
         request = await prepare_off_loop(partial(summary_request, source, output_tokens))
         try:
-            measured = await prepare_off_loop(partial(_assessment, request, model, capacity))
+            measured = await prepare_off_loop(
+                partial(_assessment, request, model, capacity, compiler)
+            )
         except CapacityError as error:
             if error.code != "over_capacity" or error.assessment is None:
                 raise
@@ -238,6 +243,7 @@ class HistoryMaintenance:
         evidence: RequestEvidenceSink,
         backend: ModelBackend,
         *,
+        compiler: MaterialCompiler,
         model: str,
         summary_capacity: CapacityCheck,
         retry: RetryPolicy,
@@ -246,6 +252,7 @@ class HistoryMaintenance:
         can_start: Callable[[], None] | None = None,
     ) -> None:
         """固定命名资源与计量入口，失败不寻找另一模型或另一容量规则。"""
+        self.compiler = compiler
         if (
             isinstance(output_tokens, bool)
             or not isinstance(output_tokens, int)
@@ -295,6 +302,7 @@ class HistoryMaintenance:
                 model=self.model,
                 capacity=self.summary_capacity,
                 check_budget=budget.check,
+                compiler=self.compiler,
             )
             reservation = await self.store.reserve_summary(source)
             if reservation != "reserved":
@@ -303,7 +311,9 @@ class HistoryMaintenance:
             self._check()
 
             before = await prepare_off_loop(
-                lambda: _assessment(source_layout(source.checkpoint), source_model, source_capacity)
+                lambda: _assessment(
+                    source_layout(source.checkpoint), source_model, source_capacity, self.compiler
+                )
             )
             capture = _RequestCapture(self.evidence)
             reference = "summary:" + source.coverage_id
@@ -315,6 +325,7 @@ class HistoryMaintenance:
                 policy=self.retry,
                 diagnostic_bytes=self.diagnostic_bytes,
                 can_start=self._check,
+                compiler=self.compiler,
             )
             self._wrappers.add(wrapper)
             response = await wrapper.generate(request, model=self.model)
@@ -335,7 +346,9 @@ class HistoryMaintenance:
             summary = summary_message(source, text)
             candidate = candidate_checkpoint(source, summary)
             after = await prepare_off_loop(
-                lambda: _assessment(source_layout(candidate), source_model, source_capacity)
+                lambda: _assessment(
+                    source_layout(candidate), source_model, source_capacity, self.compiler
+                )
             )
             proposal = build_summary_proposal(
                 source, summary, summary_request_id=capture.request_id, before=before, after=after

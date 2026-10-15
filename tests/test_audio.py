@@ -23,8 +23,8 @@ import pytest_asyncio
 from pydantic import SecretStr
 
 from purrcept_engine.domain.audio.models import AudioFact
+from purrcept_engine.domain.execution.providers import CallContext, CallOutcome
 from purrcept_engine.errors import StorageError
-from purrcept_engine.execution.providers import CallContext, CallOutcome
 from purrcept_engine.infrastructure.sqlite.audio import make_fact
 from purrcept_engine.infrastructure.sqlite.store import Store
 from purrcept_engine.plugin_system.body import BodyIntent

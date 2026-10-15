@@ -14,7 +14,15 @@ from typing import Protocol
 
 from pydantic import BaseModel
 
+from purrcept_engine.domain.activities.contracts import ActivityDefinition
+from purrcept_engine.domain.audio.ports import AudioPort
+from purrcept_engine.domain.execution.catalog import CapabilityDeclaration, ObjectDeclaration
 from purrcept_engine.domain.execution.models import CallRecord
+from purrcept_engine.domain.execution.providers import (
+    CallContext,
+    CallOutcome,
+    CapabilityImplementation,
+)
 from purrcept_engine.domain.inputs.models import (
     Admission,
     InputRecord,
@@ -24,14 +32,10 @@ from purrcept_engine.domain.inputs.models import (
 )
 from purrcept_engine.domain.knowledge.models import EvidencePage, EvidenceSnapshot
 from purrcept_engine.domain.subject.models import InputProcessing
-from purrcept_engine.execution.catalog import CapabilityDeclaration, ObjectDeclaration
-from purrcept_engine.execution.providers import CallContext, CallOutcome, CapabilityImplementation
-from purrcept_engine.infrastructure.sqlite.audio_port import AudioPort
-from purrcept_engine.infrastructure.sqlite.time_port import TimePort
+from purrcept_engine.domain.time.ports import TimePort
 from purrcept_engine.plugin_system.audio_port import AudioOutputPort
 from purrcept_engine.plugin_system.body_port import BodyPort
 from purrcept_engine.plugin_system.panels import DevicePanel
-from purrcept_engine.subject.activities import ActivityDefinition
 from purrcept_engine.values import JsonObject
 
 

@@ -24,11 +24,11 @@ from purrcept_core.models import (
 )
 from purrcept_core.models.tools import ToolResult
 
-from purrcept_engine.context.capacity import CapacityAssessment, CapacityError
-from purrcept_engine.context.presentation import render_host_state
+from purrcept_engine.domain.context.capacity import CapacityAssessment, CapacityError
+from purrcept_engine.domain.context.presentation import render_host_state
 from purrcept_engine.domain.knowledge.models import EvidencePage
+from purrcept_engine.domain.model_requests.ports import MaterialCompiler
 from purrcept_engine.serialization import encode
-from purrcept_engine.subject.model_requests import compile_materials
 from purrcept_engine.values import JsonObject, JsonValue, decode_object
 
 type CapacityCheck = Callable[[JsonObject], CapacityAssessment]
@@ -311,8 +311,9 @@ class ToolDeliveryGate:
     等它实际结束（含取消收尾）才继续 stage/project/sent，不并发改变本轮状态。
     """
 
-    def __init__(self) -> None:
+    def __init__(self, *, compiler: MaterialCompiler) -> None:
         """创建尚未派发的登记；会话结束时由本轮调用方释放。"""
+        self.compiler = compiler
         self._pending: list[_PendingDelivery] = []
         self._frozen: list[_FrozenDelivery] = []
         self._sent_prefix = 0
@@ -502,10 +503,11 @@ class ToolDeliveryGate:
             raise RuntimeError("实际请求缺少待投影的 Engine 提醒。")
         return replace(request, reminders=tuple(reminders))
 
-    @staticmethod
-    def _check(request: ModelRequest, *, model: str, capacity: CapacityCheck) -> CapacityAssessment:
+    def _check(
+        self, request: ModelRequest, *, model: str, capacity: CapacityCheck
+    ) -> CapacityAssessment:
         """调用与真实派发相同的 SDK 编译器，完整 schema、媒体及尾部均入账。"""
-        materials, _ = compile_materials(request, model=model)
+        materials, _ = self.compiler(request, model=model)
         payload = decode_object(materials.encode("utf-8"))["payload"]
         if not isinstance(payload, dict):
             raise TypeError("SDK 编译材料必须包含 payload 对象。")

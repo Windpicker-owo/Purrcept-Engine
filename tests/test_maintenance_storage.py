@@ -28,13 +28,10 @@ from purrcept_core.models import (
     TextBlock,
 )
 
-from purrcept_engine.context.capacity import GenerationCapacity, assess_capacity
-from purrcept_engine.context.checkpoints import (
-    encode_checkpoint,
-    intern_checkpoint,
-    restore_checkpoint,
-)
-from purrcept_engine.context.maintenance import (
+import purrcept_engine.domain.context.summary_materials as context_summary_materials
+from purrcept_engine.domain.context.capacity import GenerationCapacity, assess_capacity
+from purrcept_engine.domain.context.checkpoints import encode_checkpoint
+from purrcept_engine.domain.context.maintenance import (
     SummaryError,
     SummaryProposal,
     SummarySource,
@@ -50,6 +47,7 @@ from purrcept_engine.domain.model_requests.models import (
     RequestScope,
 )
 from purrcept_engine.infrastructure.sqlite import knowledge, maintenance, model_requests, subject
+from purrcept_engine.infrastructure.sqlite.checkpoints import intern_checkpoint, restore_checkpoint
 from purrcept_engine.serialization import encode
 
 
@@ -153,7 +151,7 @@ def proposal(
     state: str = "succeeded",
     owner: str = "foreground",
 ) -> SummaryProposal:
-    summary = maintenance.summary_message(source, "实际摘要正文")
+    summary = context_summary_materials.summary_message(source, "实际摘要正文")
     candidate = candidate_checkpoint(source, summary)
     large = GenerationCapacity(100_000, 100, "reference-text-only-v1")
     candidate_size = assess_capacity(assessment_payload(candidate), large).estimate.input_units
@@ -298,7 +296,7 @@ def test_forged_or_failed_candidates_never_replace_committed_history(
     elif field == "protection":
         candidate = replace(candidate, source=replace(source, protected_turns=1))
     elif field == "text":
-        fake = maintenance.summary_message(source, "不是实际响应正文")
+        fake = context_summary_materials.summary_message(source, "不是实际响应正文")
         candidate = replace(candidate, summary=fake, candidate=candidate_checkpoint(source, fake))
     elif field == "capacity":
         candidate = replace(candidate, after=candidate.before)

@@ -39,69 +39,29 @@ from purrcept_core.models import (
     ToolSet,
 )
 
-from purrcept_engine.context.capacity import CapacityAssessment
-from purrcept_engine.context.checkpoints import decode_checkpoint, encode_checkpoint
-from purrcept_engine.context.presentation import render_host_state
+from purrcept_engine.domain.context.capacity import CapacityAssessment
+from purrcept_engine.domain.context.checkpoints import decode_checkpoint, encode_checkpoint
+from purrcept_engine.domain.context.delivery import ToolDeliveryGate
+from purrcept_engine.domain.context.presentation import render_host_state
 from purrcept_engine.domain.model_requests.models import RequestScope
-from purrcept_engine.domain.subject.models import (
-    SessionRecord,
-    SessionScope,
-    TurnOutcome,
-    TurnRecord,
-)
-from purrcept_engine.errors import HostStateError
-from purrcept_engine.serialization import encode
-from purrcept_engine.subject.delivery import ToolDeliveryGate
-from purrcept_engine.subject.model_requests import (
+from purrcept_engine.domain.model_requests.ports import MaterialCompiler
+from purrcept_engine.domain.model_requests.service import (
     ModelGenerationBackend,
     RequestBudget,
     RequestBudgetExceeded,
     RequestEvidenceSink,
     RetryPolicy,
-    compile_materials,
     prepare_off_loop,
 )
+from purrcept_engine.domain.subject.models import (
+    SessionRecord,
+    SessionScope,
+    TurnRecord,
+)
+from purrcept_engine.domain.subject.session_ports import SessionStore
+from purrcept_engine.errors import HostStateError
+from purrcept_engine.serialization import encode
 from purrcept_engine.values import JsonObject, decode_object
-
-
-class SessionStore(Protocol):
-    """主体借用的版本提交端口，生产由 Store 单连接事务实现。
-
-    begin_turn 先于 Core；finish_turn 只接受原会话版本及在途身份，成功时
-    检查点/媒体/输入结案原子安装。失败保留旧检查点和真实失败经历。取消
-    等待不能撤销已接管事务，宿主须持有提交任务直至实际结束。
-    """
-
-    async def get_session(self, scope: SessionScope) -> SessionRecord:
-        """还原已有权威版本；未知或损坏格式不得以空会话替代。"""
-        ...
-
-    async def get_turn(self, turn_id: str) -> TurnRecord | None:
-        """开始等待取消后核对已接管批次，不能留下无人处理的活跃身份。"""
-        ...
-
-    async def begin_turn(
-        self,
-        turn_id: str,
-        scope: SessionScope,
-        expected_version: int,
-        generation: int,
-        input_ids: tuple[str, ...],
-    ) -> TurnRecord:
-        """接管一个主动处理批次，拒绝版本冲突或重复输入交接。"""
-        ...
-
-    async def finish_turn(
-        self,
-        turn: TurnRecord,
-        outcome: TurnOutcome,
-        *,
-        checkpoint_json: str | None = None,
-        error_json: str | None = None,
-        accepted_failures: tuple[str, ...] = (),
-    ) -> SessionRecord:
-        """提交整轮成功或明确失败，返回实际已提交会话。"""
-        ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -274,7 +234,7 @@ class PreparedGenerationBackend:
                 host_state=self.reminder.state.host_payload,
                 reminder_key=self.reminder.source_id,
             )
-        materials, _ = compile_materials(current, model=model)
+        materials, _ = self.backend.compiler(current, model=model)
         envelope = decode_object(materials.encode("utf-8"))
         payload = envelope["payload"]
         if not isinstance(payload, dict):
@@ -308,9 +268,15 @@ class ContinuousSession:
     """
 
     def __init__(
-        self, store: SessionStore, scope: SessionScope, *, can_start: Callable[[], None]
+        self,
+        store: SessionStore,
+        scope: SessionScope,
+        *,
+        compiler: MaterialCompiler,
+        can_start: Callable[[], None],
     ) -> None:
         """保存有限账本和宿主资格，不在构造时打开库或调用模型。"""
+        self.compiler = compiler
         self.store = store
         self.scope: SessionScope = scope
         self.can_start = can_start
@@ -498,6 +464,7 @@ class ContinuousSession:
                 policy=retry,
                 diagnostic_bytes=diagnostic_bytes,
                 can_start=self.can_start,
+                compiler=self.compiler,
             )
             self._backends.add(wrapped)
             reminder = DynamicReminder(dynamic)

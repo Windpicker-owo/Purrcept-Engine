@@ -1,17 +1,14 @@
-"""在公开 Core 值与权威检查点之间进行封闭、无损的类型转换。
+"""在公开 Core 值与检查点 JSON 之间进行封闭、无损转换。
 
-编码沿用模型证据的类型标签；解码只恢复 Core 0.6 的明确内容块和检查点，
-不根据名字导入类、不恢复客户端、工具实现或任意 Python 实例。SQL 媒体
-交接复用 Store 同一连接：调用方开启事务，保存检查点和媒体关系，再提交。
-本模块不打开连接，不拥有会话，也不将未提交候选装入 Conversation。
-"""
+这里只恢复明确的 Core 内容块和状态，不按名字导入任意类型，也不访问 BLOB
+或数据库。媒体引用的同事务保存与恢复属于 infrastructure.sqlite.checkpoints；
+其还原后的完整材料仍须通过本模块校验，不能把缺失媒体假装为空内容。"""
 
 from __future__ import annotations
 
 import base64
 import json
 import math
-import sqlite3
 from collections.abc import Mapping
 from typing import cast
 
@@ -39,10 +36,6 @@ from purrcept_core.models import (
 )
 
 from purrcept_engine.errors import StorageError
-from purrcept_engine.infrastructure.sqlite.model_requests import (
-    intern_core_media,
-    restore_core_media,
-)
 from purrcept_engine.serialization import encode
 
 
@@ -123,29 +116,6 @@ def decode_content(encoded: str) -> tuple[ContentBlock, ...]:
         raise
     except (ValueError, TypeError, RecursionError) as error:
         raise CheckpointError("交付内容不满足公开 Core 值约束。") from error
-
-
-def intern_checkpoint(
-    connection: sqlite3.Connection,
-    encoded: str,
-) -> tuple[str, tuple[str, ...]]:
-    """在调用方事务内保存媒体并返回缩为引用的状态及 media_ids。
-
-    输入须为 encode_checkpoint 的原材料。调用方同时保存返回状态和引用关系；
-    任一步失败由调用方回滚整个事务。本函数不 BEGIN、commit 或创建连接。
-    """
-    decode_checkpoint(encoded)
-    return intern_core_media(connection, encoded)
-
-
-def restore_checkpoint(connection: sqlite3.Connection, encoded: str) -> ConversationCheckpoint:
-    """借用同一读取事务还原媒体及完整状态，缺失 BLOB 不假造空字节。"""
-    # 媒体恢复会重新编码 JSON；先拒绝原始歧义键，不能让重新编码抹去损坏。
-    try:
-        json.loads(encoded, parse_constant=_reject_constant, object_pairs_hook=_unique_fields)
-    except (ValueError, TypeError, RecursionError) as error:
-        raise CheckpointError("已保存检查点 JSON 无效。") from error
-    return decode_checkpoint(restore_core_media(connection, encoded))
 
 
 def _record(value: object, tag: str, *fields: str) -> Mapping[str, object]:
@@ -309,3 +279,11 @@ def _reminder(value: object) -> SystemReminder:
         placement=ReminderPlacement(_text(item["placement"])),
         priority=_integer(item["priority"]),
     )
+
+
+def validate_checkpoint_json(encoded: str) -> None:
+    """先拒绝媒体引用表示中的歧义 JSON，不能让 BLOB 还原掩盖原始损坏。"""
+    try:
+        json.loads(encoded, parse_constant=_reject_constant, object_pairs_hook=_unique_fields)
+    except (ValueError, TypeError, RecursionError) as error:
+        raise CheckpointError("已保存检查点 JSON 无效。") from error

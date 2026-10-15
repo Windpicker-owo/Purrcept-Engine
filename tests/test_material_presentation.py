@@ -6,16 +6,20 @@ from datetime import UTC, datetime
 import pytest
 from purrcept_core.models import ImageBlock, ImageBytes, MessageRole, TextBlock
 
-from purrcept_engine.context.materials import input_message
-from purrcept_engine.context.presentation import render_host_state, render_input, render_material
+from purrcept_engine.domain.context.materials import input_message
+from purrcept_engine.domain.context.presentation import (
+    render_host_state,
+    render_input,
+    render_material,
+)
 from purrcept_engine.domain.inputs.models import (
     InputContext,
     InputRecord,
     InputSource,
     MediaReference,
 )
+from purrcept_engine.domain.subject.session import DynamicReminder, DynamicState
 from purrcept_engine.serialization import encode
-from purrcept_engine.subject.session import DynamicReminder, DynamicState
 from purrcept_engine.values import JsonObject
 
 

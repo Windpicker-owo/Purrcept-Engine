@@ -27,19 +27,19 @@ from purrcept_core.models import (
 from purrcept_engine.app.assembly import prepare_plugins
 from purrcept_engine.app.config import EngineConfig
 from purrcept_engine.app.subject import SubjectAssembly, build_subject
-from purrcept_engine.context.capacity import CapacityError
-from purrcept_engine.context.checkpoints import encode_checkpoint
 from purrcept_engine.domain.activities.models import ActivityRecord
+from purrcept_engine.domain.context.capacity import CapacityError
+from purrcept_engine.domain.context.checkpoints import encode_checkpoint
 from purrcept_engine.domain.execution.models import ActionRecord
 from purrcept_engine.domain.inputs.models import InputContext, InputSource, InputSubmission
 from purrcept_engine.domain.knowledge.models import EvidenceSnapshot, SupervisionNotice, WakeupPlan
+from purrcept_engine.domain.knowledge.service import KnowledgeService
 from purrcept_engine.errors import StorageError
+from purrcept_engine.infrastructure.models.compiler import compile_materials
 from purrcept_engine.infrastructure.sqlite import knowledge as knowledge_sql
 from purrcept_engine.infrastructure.sqlite.store import Store
 from purrcept_engine.plugin_system.contracts import PluginRuntime
 from purrcept_engine.serialization import encode
-from purrcept_engine.subject.knowledge import KnowledgeService
-from purrcept_engine.subject.model_requests import compile_materials
 from purrcept_engine.values import JsonObject, JsonValue, decode_object
 
 
@@ -174,7 +174,7 @@ def assembly(
 
 async def run(assembled: SubjectAssembly, store: Store, identity: str, turn: str) -> None:
     """进入实际 Core 连续会话，每个请求使用 app 的完整当前状态刷新。"""
-    coordinator = assembled.coordinator
+    coordinator = assembled.service
     await coordinator.session.run(
         Message.user("本轮实际输入", metadata={"evidence": (identity,)}),
         turn_id=turn,
@@ -246,12 +246,12 @@ async def test_actual_request_contains_all_open_notices_and_plans_then_refreshes
         assert '"id": > plan:34\n' not in refreshed
         assert "foreground_session_version" not in refreshed
         assert (await store.get_session("foreground")).version == 2
-        attention = await assembled.coordinator.attention_context()
+        attention = await assembled.service.attention_context()
         assert len(array(attention["plans"])) == 32
         assert "supervision" not in attention and "calls" not in attention
         assert "first_32" in str(attention["coverage"])
     finally:
-        await assembled.coordinator.close()
+        await assembled.service.close()
         await assembled.background.close()
         await assembled.foreground_history.close()
         await assembled.reflection_history.close()
@@ -295,7 +295,7 @@ async def test_real_request_uses_explicit_plugin_materials_without_diagnostic_fa
         wire, _ = compile_materials(backend.requests[0], model="openai/offline")
         assert saved["payload"] == decode_object(wire.encode())["payload"]
     finally:
-        await assembled.coordinator.close()
+        await assembled.service.close()
         await assembled.background.close()
         await assembled.foreground_history.close()
         await assembled.reflection_history.close()
@@ -425,7 +425,7 @@ async def test_open_supervision_protects_source_older_than_recent_turns_during_r
         assert "foreground_session_version" not in state_text(backend.requests[0])
         assert (await store.get_session("foreground")).version == 6
     finally:
-        await assembled.coordinator.close()
+        await assembled.service.close()
         await assembled.background.close()
         await assembled.foreground_history.close()
         await assembled.reflection_history.close()
@@ -612,7 +612,7 @@ async def test_full_current_state_exceeds_actual_request_capacity_without_silent
         processing = await store.input_processing(identity)
         assert processing is not None and processing.stage == "failed"
     finally:
-        await assembled.coordinator.close()
+        await assembled.service.close()
         await assembled.background.close()
         await assembled.foreground_history.close()
         await assembled.reflection_history.close()

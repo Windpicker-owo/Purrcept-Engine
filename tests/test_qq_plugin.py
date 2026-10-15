@@ -16,8 +16,8 @@ from pydantic import ValidationError
 from test_qq_transport import Connector, Socket
 
 from purrcept_engine import EngineConfig, EngineHost
+from purrcept_engine.domain.execution.catalog import Catalog, ObjectDeclaration
 from purrcept_engine.domain.execution.models import ActionRecord
-from purrcept_engine.execution.catalog import Catalog, ObjectDeclaration
 from purrcept_engine.plugins.qq import factory
 from purrcept_engine.plugins.qq.plugin import factory_with_connector
 from purrcept_engine.values import JsonObject, JsonValue, decode_object, encode_json

@@ -19,15 +19,16 @@ from test_subject_session import ScriptedBackend, admitted, capacity, refresh
 from test_voice_input import Inputs, Transcriber, settings
 
 from purrcept_engine.app.config import ContextSettings, RetrySettings
-from purrcept_engine.app.history import HistoryPreparation
+from purrcept_engine.domain.context.history import HistoryMaintenance
+from purrcept_engine.domain.context.history_preparation import HistoryPreparation
+from purrcept_engine.domain.model_requests.service import prepare_off_loop
+from purrcept_engine.domain.subject.session import ContinuousSession
+from purrcept_engine.infrastructure.models.compiler import compile_materials
 from purrcept_engine.infrastructure.sqlite.store import Store
 from purrcept_engine.plugins.voice_input import capture
 from purrcept_engine.plugins.voice_input.capture import SoundDeviceCapture
 from purrcept_engine.plugins.voice_input.models import VoiceInputError
 from purrcept_engine.plugins.voice_input.runtime import VoiceInputRuntime
-from purrcept_engine.subject.history import HistoryMaintenance
-from purrcept_engine.subject.model_requests import prepare_off_loop
-from purrcept_engine.subject.session import ContinuousSession
 from purrcept_engine.values import JsonObject
 
 
@@ -251,7 +252,12 @@ async def test_slow_model_preparation_keeps_native_capture_draining(
         return capacity(payload)
 
     store = await Store.open(tmp_path / "responsive.sqlite3")
-    session = ContinuousSession(store, "foreground", can_start=lambda: None)
+    session = ContinuousSession(
+        store,
+        "foreground",
+        can_start=lambda: None,
+        compiler=compile_materials,
+    )
     backend = ScriptedBackend(tuple(ModelResponse(Message.assistant("内部完成")) for _ in range(2)))
     maintenance = HistoryMaintenance(
         store,
@@ -262,6 +268,7 @@ async def test_slow_model_preparation_keeps_native_capture_draining(
         retry=RetrySettings(),
         output_tokens=1000,
         diagnostic_bytes=4096,
+        compiler=compile_materials,
     )
     preparation = HistoryPreparation(
         store,
@@ -270,6 +277,7 @@ async def test_slow_model_preparation_keeps_native_capture_draining(
         model="openai/test",
         assess=slow_capacity,
         context=ContextSettings(),
+        compiler=compile_materials,
     )
     runtime = VoiceInputRuntime(
         "voice",

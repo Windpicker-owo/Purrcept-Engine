@@ -2,7 +2,7 @@
 
 import pytest
 
-from purrcept_engine.execution.validation import ActionSourceError, validate_source
+from purrcept_engine.domain.execution.validation import ActionSourceError, validate_source
 
 
 @pytest.mark.parametrize(

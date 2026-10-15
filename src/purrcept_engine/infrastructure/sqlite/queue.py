@@ -17,7 +17,7 @@ from typing import Protocol
 import purrcept_engine.domain.controls.models as controls_models
 import purrcept_engine.domain.knowledge.models as knowledge_models
 import purrcept_engine.domain.time.models as time_models
-from purrcept_engine.context.maintenance import (
+from purrcept_engine.domain.context.maintenance import (
     SummaryError,
 )
 from purrcept_engine.errors import StorageError

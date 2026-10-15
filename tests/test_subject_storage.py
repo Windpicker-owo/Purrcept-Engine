@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 from purrcept_core.models import ConversationCheckpoint, ConversationState, Message, ReminderState
 
-from purrcept_engine.context.checkpoints import decode_checkpoint, encode_checkpoint
+from purrcept_engine.domain.context.checkpoints import decode_checkpoint, encode_checkpoint
 from purrcept_engine.domain.inputs.models import InputContext, InputSource, InputSubmission
 from purrcept_engine.errors import StorageError
 from purrcept_engine.infrastructure.sqlite.store import Store

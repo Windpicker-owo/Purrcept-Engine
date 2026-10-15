@@ -13,7 +13,11 @@ from typing import TYPE_CHECKING, Protocol, cast
 import pytest
 from PIL import Image
 
-from purrcept_engine.context.capacity import CapacityError, GenerationCapacity, check_capacity
+from purrcept_engine.domain.context.capacity import (
+    CapacityError,
+    GenerationCapacity,
+    check_capacity,
+)
 from purrcept_engine.infrastructure.models.capacity import (
     GEMINI_MEDIA,
     RULE,

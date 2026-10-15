@@ -18,7 +18,7 @@ from purrcept_engine import (
     InstanceLocked,
     StorageError,
 )
-from purrcept_engine.context.capacity import CapacityDeclaration, CapacityEstimate
+from purrcept_engine.domain.context.capacity import CapacityDeclaration, CapacityEstimate
 from purrcept_engine.infrastructure.locking import InstanceLock
 from purrcept_engine.infrastructure.models.clients import OpenAIGenerationResource
 from purrcept_engine.infrastructure.sqlite.store import Store

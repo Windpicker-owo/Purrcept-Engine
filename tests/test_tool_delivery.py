@@ -30,13 +30,14 @@ from purrcept_core.models import (
 )
 
 from purrcept_engine.app.config import RetrySettings
-from purrcept_engine.context.capacity import (
+from purrcept_engine.domain.context.capacity import (
     CapacityDeclaration,
     CapacityError,
     CapacityEstimate,
     GenerationCapacity,
     check_capacity,
 )
+from purrcept_engine.domain.context.delivery import ToolDeliveryGate
 from purrcept_engine.domain.execution.models import ActionRecord, CallOutcome
 from purrcept_engine.domain.inputs.models import (
     InputContext,
@@ -52,16 +53,12 @@ from purrcept_engine.domain.knowledge.models import (
     SupervisionRecord,
     WakeupPlan,
 )
+from purrcept_engine.domain.knowledge.service import KnowledgeService
+from purrcept_engine.domain.model_requests.service import RequestBudget
+from purrcept_engine.domain.subject.foreground_tools import ForegroundTools
 from purrcept_engine.domain.subject.models import SessionScope
-from purrcept_engine.errors import StorageError
-from purrcept_engine.infrastructure.sqlite.store import Store
-from purrcept_engine.serialization import encode
-from purrcept_engine.subject.delivery import ToolDeliveryGate
-from purrcept_engine.subject.foreground import ForegroundTools
-from purrcept_engine.subject.knowledge import KnowledgeService
-from purrcept_engine.subject.model_requests import RequestBudget
-from purrcept_engine.subject.reflection import ReflectionTools
-from purrcept_engine.subject.session import (
+from purrcept_engine.domain.subject.reflection_tools import ReflectionTools
+from purrcept_engine.domain.subject.session import (
     CapacityCheck,
     ContinuousSession,
     DynamicState,
@@ -69,6 +66,10 @@ from purrcept_engine.subject.session import (
     RefreshState,
     SessionResult,
 )
+from purrcept_engine.errors import StorageError
+from purrcept_engine.infrastructure.models.compiler import compile_materials
+from purrcept_engine.infrastructure.sqlite.store import Store
+from purrcept_engine.serialization import encode
 from purrcept_engine.values import JsonObject, JsonValue, decode_object
 
 
@@ -216,7 +217,12 @@ async def run(
         completion=transport,
         default_options={"num_retries": 0, "max_retries": 0, "drop_params": False},
     )
-    session = ContinuousSession(store, scope, can_start=lambda: None)
+    session = ContinuousSession(
+        store,
+        scope,
+        can_start=lambda: None,
+        compiler=compile_materials,
+    )
     input_ids: tuple[str, ...] = ()
     if scope == "foreground":
         if foreground_input is None:
@@ -302,7 +308,7 @@ async def test_oversized_page_can_retry_and_reused_call_id_does_not_rewrite_hist
 ) -> None:
     text = "原文前缀：" + "X" * 60_000
     await source(store, "large", text)
-    gate = ToolDeliveryGate()
+    gate = ToolDeliveryGate(compiler=compile_materials)
     tools = foreground(store, gate)
     result, transport = await run(
         store,
@@ -339,7 +345,7 @@ async def test_oversized_page_can_retry_and_reused_call_id_does_not_rewrite_hist
         assert expected["messages"] == actual["messages"]
         assert expected["tools"] == actual["tools"]
 
-    resumed_gate = ToolDeliveryGate()
+    resumed_gate = ToolDeliveryGate(compiler=compile_materials)
     resumed_tools = foreground(store, resumed_gate)
     resumed, resumed_transport = await run(
         store,
@@ -359,7 +365,7 @@ async def test_multiple_real_results_and_fresh_tail_are_measured_as_one_request(
 ) -> None:
     await source(store, "first", "A" * 8000)
     await source(store, "second", "B" * 8000)
-    gate = ToolDeliveryGate()
+    gate = ToolDeliveryGate(compiler=compile_materials)
     tools = foreground(store, gate)
 
     async def fresh_tail(budget: RequestBudget) -> DynamicState:
@@ -413,7 +419,7 @@ async def test_unknown_media_keeps_native_blob_and_does_not_grant_reflection_cov
         ),
         (asset,),
     )
-    gate = ToolDeliveryGate()
+    gate = ToolDeliveryGate(compiler=compile_materials)
     tools = ReflectionTools(store.knowledge, batch, Ports(store), delivery=gate)
 
     async def presented(request: ModelRequest) -> None:
@@ -448,7 +454,7 @@ async def test_unknown_media_keeps_native_blob_and_does_not_grant_reflection_cov
 async def test_action_capacity_receipt_preserves_each_actual_effect_and_saved_original(
     store: Store,
 ) -> None:
-    gate = ToolDeliveryGate()
+    gate = ToolDeliveryGate(compiler=compile_materials)
     ports = Ports(store)
     tools = foreground(store, gate, ports)
     result, _ = await run(
@@ -474,7 +480,7 @@ async def test_action_capacity_receipt_preserves_each_actual_effect_and_saved_or
 
 async def test_internal_media_failure_is_not_a_correctable_capacity_receipt(store: Store) -> None:
     await source(store, "source", "原文")
-    gate = ToolDeliveryGate()
+    gate = ToolDeliveryGate(compiler=compile_materials)
     ports = Ports(store)
     ports.failure = RuntimeError("真实媒体内部故障")
     tools = foreground(store, gate, ports)
@@ -493,7 +499,7 @@ async def test_direct_tools_preserve_registered_parameters_and_explicit_read_ver
     store: Store,
 ) -> None:
     await source(store, "source", "原文")
-    gate = ToolDeliveryGate()
+    gate = ToolDeliveryGate(compiler=compile_materials)
     tools = foreground(store, gate)
     read = await tools.read_evidence("source")
     assert isinstance(read.content[0], TextBlock) and "原文" in read.content[0].text
@@ -508,7 +514,7 @@ async def test_capacity_receipt_itself_cannot_hide_an_unusable_existing_request(
     store: Store,
 ) -> None:
     await source(store, "source", "X" * 60_000)
-    gate = ToolDeliveryGate()
+    gate = ToolDeliveryGate(compiler=compile_materials)
     tools = foreground(store, gate)
 
     async def oversized_tail(budget: RequestBudget) -> DynamicState:
@@ -545,7 +551,7 @@ async def test_native_media_and_adjacent_tool_order_survive_accepted_delivery(st
         (MediaAsset(content, "image/png"),),
     )
     await source(store, "huge", "X" * 60_000)
-    gate = ToolDeliveryGate()
+    gate = ToolDeliveryGate(compiler=compile_materials)
     tools = foreground(store, gate)
 
     def registered_rule(
@@ -611,7 +617,7 @@ async def test_action_snapshot_save_failure_keeps_actual_effect_and_original_err
     store: Store, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """不可展开的引用不交付；额外原文保存失败也不能覆盖已发生行动。"""
-    gate = ToolDeliveryGate()
+    gate = ToolDeliveryGate(compiler=compile_materials)
     ports = Ports(store)
     tools = foreground(store, gate, ports)
     failure = StorageError("保存真实结果快照失败", code="input_capacity")
@@ -648,7 +654,7 @@ async def test_reflection_small_retry_grants_only_the_actually_presented_range(
     assert initial.slice is not None
     batch = await store.knowledge.begin_reflection("batch", (initial.slice.slice_ref,))
     await source(store, "large", "L" * 60_000)
-    gate = ToolDeliveryGate()
+    gate = ToolDeliveryGate(compiler=compile_materials)
     tools = ReflectionTools(store.knowledge, batch, Ports(store), delivery=gate)
     observed: list[tuple[str, ...]] = []
 
@@ -784,7 +790,7 @@ async def test_current_tail_does_not_duplicate_or_bypass_frozen_action_delivery(
         )
     )
     ports = WorkPorts(store, admission.input_id)
-    gate = ToolDeliveryGate()
+    gate = ToolDeliveryGate(compiler=compile_materials)
     tools = foreground(store, gate, ports)
 
     async def current(budget: RequestBudget) -> DynamicState:
@@ -825,7 +831,7 @@ async def test_current_tail_does_not_duplicate_or_bypass_frozen_action_delivery(
         assert isinstance(instruction, str) and "平台详细字段尚未交付" in instruction
         assert call_material.count('"details_presented": false') == 3
 
-    resumed_gate = ToolDeliveryGate()
+    resumed_gate = ToolDeliveryGate(compiler=compile_materials)
     resumed_tools = foreground(store, resumed_gate)
     _, resumed_transport = await run(
         store,
@@ -847,7 +853,7 @@ async def test_current_tail_does_not_duplicate_or_bypass_frozen_action_delivery(
         error_type=None,
         error=None,
     )
-    late_gate = ToolDeliveryGate()
+    late_gate = ToolDeliveryGate(compiler=compile_materials)
     late_tools = foreground(store, late_gate)
     _, late_transport = await run(
         store,
@@ -873,7 +879,7 @@ async def test_current_tail_does_not_duplicate_or_bypass_frozen_action_delivery(
         await store.feedback.bridge(now=time.time())
         receipt_page = await store.knowledge.read_evidence("call:unknown-send:2")
         assert receipt_page.next_cursor is None and "platform-late-99" in receipt_page.text
-        receipt_gate = ToolDeliveryGate()
+        receipt_gate = ToolDeliveryGate(compiler=compile_materials)
         receipt_tools = foreground(store, receipt_gate)
         _, receipt_transport = await run(
             store,

@@ -9,14 +9,10 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import math
 from collections.abc import Awaitable, Callable, Mapping
 from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
-from importlib import import_module
-from importlib.metadata import version
-from pathlib import Path
 from typing import Literal, Protocol, cast
 from uuid import uuid4
 
@@ -49,6 +45,7 @@ from purrcept_engine.domain.model_requests.models import (
     RequestOutcome,
     RequestScope,
 )
+from purrcept_engine.domain.model_requests.ports import MaterialCompiler
 from purrcept_engine.serialization import encode
 
 
@@ -157,48 +154,6 @@ class RequestBudget:
         self._revoked = True
 
 
-class _GenerationCompiler(Protocol):
-    """冻结 SDK 纯编译入口的精确借用签名，不持有传输资源。"""
-
-    def __call__(
-        self, request: ModelRequest, *, model: str, config: object
-    ) -> dict[str, object]: ...
-
-
-class _DecisionCompiler(Protocol):
-    """专用判断纯编译接缝，保持 SDK 候选与输入表示。"""
-
-    def __call__(
-        self, request: DecisionRequest, *, model: str, config: object
-    ) -> dict[str, object]: ...
-
-
-_TRANSPORT_FIELDS = frozenset(
-    {
-        "api_key",
-        "api_base",
-        "api_version",
-        "timeout",
-        "client",
-        "http_client",
-        "headers",
-        "extra_headers",
-        "authorization",
-        "organization",
-        "project",
-        "success_callback",
-        "failure_callback",
-        "callbacks",
-        "callback",
-        "metadata",
-        "access_token",
-        "refresh_token",
-        "password",
-        "credentials",
-    }
-)
-
-
 async def prepare_off_loop[T](operation: Callable[[], T]) -> T:
     """在线程中串行完成一次本地请求准备，避免阻塞实时收音和停音。
 
@@ -217,44 +172,6 @@ async def prepare_off_loop[T](operation: Callable[[], T]) -> T:
     if cancelled:
         raise asyncio.CancelledError
     return result
-
-
-def compile_materials(request: ModelRequest | DecisionRequest, *, model: str) -> tuple[str, str]:
-    """借用冻结 SDK 的纯编译器，记录真实顺序且不给编译器凭据。
-
-    当前 SDK 未公开编译入口，因此这处接缝精确绑定 0.2.x 的两个模块并记录
-    源码摘要。它不再实现消息或 TypeSafe 协议转换。公开生成参数保持原值；
-    明确传输字段仅记录排除名称，不能将秘密写入原始请求证据。
-    """
-    if isinstance(request, ModelRequest):
-        module = import_module("purrcept_litellm._request")
-        compiler = cast(_GenerationCompiler, module.__dict__["compile_request"])
-        config_module = import_module("purrcept_litellm.config")
-        factory = cast(Callable[..., object], config_module.__dict__["LiteLLMConfig"])
-        config = factory(default_options={"num_retries": 0, "max_retries": 0, "drop_params": False})
-        payload = compiler(request, model=model, config=config)
-    else:
-        module = import_module("purrcept_litellm._decision")
-        decision_compiler = cast(_DecisionCompiler, module.__dict__["compile_decision"])
-        config_module = import_module("purrcept_litellm.decision")
-        factory = cast(Callable[..., object], config_module.__dict__["LiteLLMDecisionConfig"])
-        config = factory(default_options={"num_retries": 0, "max_retries": 0})
-        payload = decision_compiler(request, model=model, config=config)
-
-    for field in ("num_retries", "max_retries"):
-        if payload.get(field, 0) != 0:
-            raise ModelRequestError("SDK 自动重试必须显式关闭", provider="engine", model=model)
-    public = {key: value for key, value in payload.items() if key not in _TRANSPORT_FIELDS}
-    excluded = sorted(key for key in payload if key in _TRANSPORT_FIELDS)
-    filename: object = module.__dict__.get("__file__")
-    if not isinstance(filename, str):
-        raise TypeError("冻结 SDK 编译器没有可核验源码。")
-    fingerprint = hashlib.sha256(Path(filename).read_bytes()).hexdigest()
-    identity = (
-        f"purrcept_litellm/{version('purrcept_litellm')}:litellm/{version('litellm')}:"
-        f"{module.__name__}:{fingerprint}"
-    )
-    return encode({"payload": public, "excluded_transport_fields": excluded}), identity
 
 
 class _EventBuffer:
@@ -321,6 +238,7 @@ class _RetryRunner:
         self,
         sink: RequestEvidenceSink,
         *,
+        compiler: MaterialCompiler,
         scope: RequestScope,
         budget: RequestBudget,
         policy: RetryPolicy,
@@ -330,6 +248,7 @@ class _RetryRunner:
     ) -> None:
         if diagnostic_bytes < 0:
             raise ValueError("诊断字节上限不能为负。")
+        self.compiler = compiler
         self.sink = sink
         self.scope = scope
         self.budget = budget
@@ -461,9 +380,7 @@ class _RetryRunner:
         turn_deadline = self.budget.claim()
         started = asyncio.get_running_loop().time()
         deadline = min(turn_deadline, started + self.policy.total_seconds)
-        materials, compiler = await prepare_off_loop(
-            lambda: compile_materials(request, model=model)
-        )
+        materials, compiler = await prepare_off_loop(lambda: self.compiler(request, model=model))
         self._check()
         capacity_json = request.metadata.get("engine.capacity")
         if capacity_json is not None and not isinstance(capacity_json, str):
@@ -588,6 +505,7 @@ class ModelGenerationBackend(_RetryRunner):
         backend: ModelBackend,
         sink: RequestEvidenceSink,
         *,
+        compiler: MaterialCompiler,
         scope: RequestScope,
         budget: RequestBudget,
         policy: RetryPolicy,
@@ -596,12 +514,14 @@ class ModelGenerationBackend(_RetryRunner):
         can_start: Callable[[], None] | None = None,
     ) -> None:
         """借用底层、权威 sink 与已校验的生成用途预算，不复制配置秘密。"""
+        self.compiler = compiler
         super().__init__(
             sink,
             scope=scope,
             budget=budget,
             policy=policy,
             diagnostic_bytes=diagnostic_bytes,
+            compiler=compiler,
             sleep=sleep,
             can_start=can_start,
         )
@@ -630,6 +550,7 @@ class ModelDecisionBackend(_RetryRunner):
         backend: DecisionBackend,
         sink: RequestEvidenceSink,
         *,
+        compiler: MaterialCompiler,
         scope: RequestScope,
         budget: RequestBudget,
         policy: RetryPolicy,
@@ -638,12 +559,14 @@ class ModelDecisionBackend(_RetryRunner):
         can_start: Callable[[], None] | None = None,
     ) -> None:
         """借用专用判断资源，不取得传输客户端或生成采样配置。"""
+        self.compiler = compiler
         super().__init__(
             sink,
             scope=scope,
             budget=budget,
             policy=policy,
             diagnostic_bytes=diagnostic_bytes,
+            compiler=compiler,
             sleep=sleep,
             can_start=can_start,
         )

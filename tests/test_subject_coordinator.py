@@ -42,36 +42,38 @@ from purrcept_core.models import (
 from pydantic import BaseModel, ConfigDict
 
 from purrcept_engine.app.config import ExecutionSettings
-from purrcept_engine.context.capacity import (
+from purrcept_engine.domain.context.capacity import (
     CapacityAssessment,
     CapacityEstimate,
     DecisionCapacity,
     GenerationCapacity,
     check_capacity,
 )
-from purrcept_engine.context.materials import media_blocks
+from purrcept_engine.domain.context.materials import media_blocks
+from purrcept_engine.domain.execution.catalog import (
+    CapabilityDeclaration,
+    Catalog,
+    ObjectDeclaration,
+)
 from purrcept_engine.domain.execution.models import ActionRecord
+from purrcept_engine.domain.execution.providers import CallContext, CallOutcome, FunctionCapability
 from purrcept_engine.domain.inputs.models import (
     InputContext,
     InputSource,
     InputSubmission,
     MediaAsset,
 )
+from purrcept_engine.domain.knowledge.service import KnowledgeService
 from purrcept_engine.domain.model_requests.models import RequestEvidence
+from purrcept_engine.domain.model_requests.service import RequestBudget
+from purrcept_engine.domain.subject.attention import ATTENTION_QUESTION, AttentionModel
+from purrcept_engine.domain.subject.service import SubjectService
+from purrcept_engine.domain.subject.session import DynamicState
+from purrcept_engine.domain.subject.settings import CoordinatorSettings, SubjectModel
 from purrcept_engine.errors import StorageError
-from purrcept_engine.execution.catalog import CapabilityDeclaration, Catalog, ObjectDeclaration
-from purrcept_engine.execution.providers import CallContext, CallOutcome, FunctionCapability
 from purrcept_engine.execution.service import ExecutionService
+from purrcept_engine.infrastructure.models.compiler import compile_materials
 from purrcept_engine.infrastructure.sqlite.store import Store
-from purrcept_engine.subject.attention import ATTENTION_QUESTION, AttentionModel
-from purrcept_engine.subject.coordinator import (
-    CoordinatorSettings,
-    SubjectCoordinator,
-    SubjectModel,
-)
-from purrcept_engine.subject.knowledge import KnowledgeService
-from purrcept_engine.subject.model_requests import RequestBudget
-from purrcept_engine.subject.session import DynamicState
 from purrcept_engine.values import JsonObject, encode_json
 
 
@@ -162,7 +164,7 @@ class _Decision:
 @dataclass
 class _Rig:
     store: Store
-    coordinator: SubjectCoordinator
+    coordinator: SubjectService
     execution: ExecutionService
     generation: _Generation
     decision: _Decision
@@ -244,7 +246,7 @@ async def _rig(
                 presented_call_ids=presented_call_ids,
             )
 
-        coordinator = SubjectCoordinator(
+        coordinator = SubjectService(
             store,
             KnowledgeService(store.knowledge),
             store.knowledge,
@@ -257,6 +259,7 @@ async def _rig(
                     payload, GenerationCapacity(300_000, 1000, "reference-text-only-v1")
                 ),
                 _Retry(),
+                compiler=compile_materials,
             ),
             attention=AttentionModel(
                 decision if attention_kind == "decision" else chat_attention,
@@ -276,6 +279,7 @@ async def _rig(
                 _Retry(),
                 kind=attention_kind,
                 output_tokens=None if attention_kind == "decision" else 256,
+                compiler=compile_materials,
             )
             if attention
             else None,
@@ -1221,7 +1225,7 @@ async def test_generation_attention_cannot_run_returned_tool_proposals(tmp_path:
 
 
 def test_dynamic_defer_changes_only_configured_value_in_frozen_question() -> None:
-    from purrcept_engine.subject.attention import attention_question
+    from purrcept_engine.domain.subject.attention import attention_question
 
     assert attention_question(30) is ATTENTION_QUESTION
     changed = attention_question(45)
@@ -1241,12 +1245,12 @@ async def test_constructor_failure_closes_already_opened_store(
         await original_close(store)
         closed.append(store)
 
-    def fail_constructor(self: SubjectCoordinator, *arguments: object, **keywords: object) -> None:
+    def fail_constructor(self: SubjectService, *arguments: object, **keywords: object) -> None:
         del self, arguments, keywords
         raise RuntimeError("original constructor failure")
 
     monkeypatch.setattr(Store, "close", observe_close)
-    monkeypatch.setattr(SubjectCoordinator, "__init__", fail_constructor)
+    monkeypatch.setattr(SubjectService, "__init__", fail_constructor)
     with pytest.raises(RuntimeError, match="original constructor failure"):
         await _rig(tmp_path)
     assert len(closed) == 1
@@ -1272,7 +1276,7 @@ async def test_generation_attention_preserves_native_audio_under_explicit_rule(
         encoded = encode_json(payload)
         assert encoded_audio in encoded
         if capacity_kind == "litellm":
-            from purrcept_engine.context.capacity import GenerationCapacity, check_capacity
+            from purrcept_engine.domain.context.capacity import GenerationCapacity, check_capacity
             from purrcept_engine.infrastructure.models.capacity import (
                 GEMINI_MEDIA,
                 RULE,

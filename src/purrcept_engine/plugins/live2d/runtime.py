@@ -15,8 +15,8 @@ from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass
 
+from purrcept_engine.domain.execution.providers import CallContext, CallOutcome
 from purrcept_engine.errors import HostStateError
-from purrcept_engine.execution.providers import CallContext, CallOutcome
 from purrcept_engine.plugin_system.body import BodyIntent
 from purrcept_engine.plugins.live2d.analyzer import VisemeAnalyzer, VisemeFrame
 from purrcept_engine.plugins.live2d.models import VISEMES, BodyError, BodyStyle, BodyUnavailable

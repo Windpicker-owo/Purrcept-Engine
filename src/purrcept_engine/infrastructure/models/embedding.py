@@ -10,12 +10,12 @@ from typing import cast
 
 import httpx
 
-from purrcept_engine.domain.knowledge.settings import EmbeddingSettings
-from purrcept_engine.errors import HostStateError
-from purrcept_engine.subject.semantic import (
+from purrcept_engine.domain.knowledge.semantic import (
     EmbeddingProtocolError,
     validate_vectors,
 )
+from purrcept_engine.domain.knowledge.settings import EmbeddingSettings
+from purrcept_engine.errors import HostStateError
 
 
 def _object(value: object) -> Mapping[str, object]:

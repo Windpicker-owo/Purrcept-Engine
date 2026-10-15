@@ -25,22 +25,23 @@ from purrcept_core.models import (
 )
 
 from purrcept_engine.app.config import ContextSettings, RetrySettings
-from purrcept_engine.app.history import HistoryPreparation, preview_request
-from purrcept_engine.context.capacity import (
+from purrcept_engine.domain.context.capacity import (
     CapacityAssessment,
     GenerationCapacity,
     assess_capacity,
     check_capacity,
 )
-from purrcept_engine.context.checkpoints import encode_checkpoint
+from purrcept_engine.domain.context.checkpoints import encode_checkpoint
+from purrcept_engine.domain.context.history import HistoryMaintenance
+from purrcept_engine.domain.context.history_preparation import HistoryPreparation, preview_request
 from purrcept_engine.domain.inputs.models import InputContext, InputSource, InputSubmission
 from purrcept_engine.domain.knowledge.models import EvidenceSnapshot, WakeupPlan
+from purrcept_engine.domain.model_requests.service import RequestBudget
 from purrcept_engine.domain.subject.models import SessionRecord
+from purrcept_engine.domain.subject.session import ContinuousSession, DynamicState
+from purrcept_engine.infrastructure.models.compiler import compile_materials
 from purrcept_engine.infrastructure.sqlite.store import Store
 from purrcept_engine.serialization import encode
-from purrcept_engine.subject.history import HistoryMaintenance
-from purrcept_engine.subject.model_requests import RequestBudget
-from purrcept_engine.subject.session import ContinuousSession, DynamicState
 from purrcept_engine.values import JsonObject
 
 
@@ -177,6 +178,7 @@ async def test_history_preview_uses_actual_tool_tail_projection(store: Store) ->
         summary_capacity=measure,
         output_tokens=100,
         diagnostic_bytes=1024,
+        compiler=compile_materials,
     )
     preparation = HistoryPreparation(
         store,
@@ -185,6 +187,7 @@ async def test_history_preview_uses_actual_tool_tail_projection(store: Store) ->
         model="openai/main",
         assess=measure,
         context=ContextSettings(),
+        compiler=compile_materials,
     )
     session = await store.get_session("foreground")
     try:
@@ -247,6 +250,7 @@ async def test_idle_summary_is_installed_before_begin_turn_and_real_core_adopts_
         ),
         output_tokens=256,
         diagnostic_bytes=1024,
+        compiler=compile_materials,
     )
     preparation = HistoryPreparation(
         store,
@@ -255,8 +259,14 @@ async def test_idle_summary_is_installed_before_begin_turn_and_real_core_adopts_
         model="openai/main",
         assess=assess,
         context=ContextSettings(),
+        compiler=compile_materials,
     )
-    session = ContinuousSession(store, "foreground", can_start=lambda: None)
+    session = ContinuousSession(
+        store,
+        "foreground",
+        can_start=lambda: None,
+        compiler=compile_materials,
+    )
     current = await admit(store, "current", "本轮完整输入")
     try:
         result = await session.run(
@@ -324,7 +334,12 @@ async def test_preview_is_pure_and_preparation_failure_ends_the_original_input(
         raise RuntimeError("准备内部错误")
 
     identity = await admit(store, "new", "不能重做的输入")
-    session = ContinuousSession(store, "foreground", can_start=lambda: None)
+    session = ContinuousSession(
+        store,
+        "foreground",
+        can_start=lambda: None,
+        compiler=compile_materials,
+    )
     try:
         with pytest.raises(RuntimeError, match="准备内部错误"):
             await session.run(

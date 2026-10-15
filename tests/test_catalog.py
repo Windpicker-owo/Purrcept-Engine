@@ -5,8 +5,12 @@ from dataclasses import FrozenInstanceError, replace
 import pytest
 from pydantic import BaseModel, ConfigDict
 
+from purrcept_engine.domain.execution.catalog import (
+    CapabilityDeclaration,
+    Catalog,
+    ObjectDeclaration,
+)
 from purrcept_engine.errors import ConfigError
-from purrcept_engine.execution.catalog import CapabilityDeclaration, Catalog, ObjectDeclaration
 
 
 class _Parameters(BaseModel):

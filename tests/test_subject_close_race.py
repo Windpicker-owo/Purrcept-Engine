@@ -17,21 +17,19 @@ from uuid import uuid4
 import pytest
 from purrcept_core.models import ModelEventSink, ModelRequest, ModelResponse
 
-from purrcept_engine.context.capacity import GenerationCapacity, check_capacity
-from purrcept_engine.context.materials import media_blocks
+from purrcept_engine.domain.context.capacity import GenerationCapacity, check_capacity
+from purrcept_engine.domain.context.materials import media_blocks
+from purrcept_engine.domain.execution.catalog import Catalog, ObjectDeclaration
 from purrcept_engine.domain.execution.models import ActionRecord
 from purrcept_engine.domain.inputs.models import InputSource, InputSubmission
+from purrcept_engine.domain.knowledge.service import KnowledgeService
+from purrcept_engine.domain.model_requests.service import RequestBudget
+from purrcept_engine.domain.subject.service import SubjectService
+from purrcept_engine.domain.subject.session import DynamicState
+from purrcept_engine.domain.subject.settings import CoordinatorSettings, SubjectModel
 from purrcept_engine.errors import HostStateError
-from purrcept_engine.execution.catalog import Catalog, ObjectDeclaration
+from purrcept_engine.infrastructure.models.compiler import compile_materials
 from purrcept_engine.infrastructure.sqlite.store import Store
-from purrcept_engine.subject.coordinator import (
-    CoordinatorSettings,
-    SubjectCoordinator,
-    SubjectModel,
-)
-from purrcept_engine.subject.knowledge import KnowledgeService
-from purrcept_engine.subject.model_requests import RequestBudget
-from purrcept_engine.subject.session import DynamicState
 from purrcept_engine.values import JsonObject
 
 
@@ -52,7 +50,7 @@ class _UnusedModel:
         raise AssertionError("工作器已在数据库等待处停止，不应开始模型调用。")
 
 
-def _coordinator(store: Store, *, coalesce_seconds: float = 0) -> SubjectCoordinator:
+def _coordinator(store: Store, *, coalesce_seconds: float = 0) -> SubjectService:
     """装配真实账本和认识读取，场景停止在任何模型或行动入口之前。"""
 
     async def refresh(budget: RequestBudget) -> DynamicState:
@@ -70,7 +68,7 @@ def _coordinator(store: Store, *, coalesce_seconds: float = 0) -> SubjectCoordin
     ) -> ActionRecord:
         raise AssertionError("关闭边界不应开始行动。")
 
-    return SubjectCoordinator(
+    return SubjectService(
         store,
         KnowledgeService(store.knowledge),
         store.knowledge,
@@ -83,6 +81,7 @@ def _coordinator(store: Store, *, coalesce_seconds: float = 0) -> SubjectCoordin
                 payload, GenerationCapacity(300_000, 1000, "reference-text-only-v1")
             ),
             _Retry(),
+            compiler=compile_materials,
         ),
         attention=None,
         settings=CoordinatorSettings(4096, coalesce_seconds=coalesce_seconds),

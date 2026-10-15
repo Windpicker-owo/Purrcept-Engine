@@ -13,8 +13,8 @@ from pathlib import Path
 
 from pydantic import BaseModel
 
-from purrcept_engine.execution.catalog import CapabilityDeclaration, ObjectDeclaration
-from purrcept_engine.execution.providers import (
+from purrcept_engine.domain.execution.catalog import CapabilityDeclaration, ObjectDeclaration
+from purrcept_engine.domain.execution.providers import (
     CallContext,
     CallOutcome,
     CapabilityInputError,

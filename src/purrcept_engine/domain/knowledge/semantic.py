@@ -19,8 +19,8 @@ from purrcept_engine.domain.knowledge.models import (
     KnowledgeReference,
     MemoryRecord,
 )
+from purrcept_engine.domain.knowledge.ports import KnowledgeStore
 from purrcept_engine.errors import HostStateError
-from purrcept_engine.subject.knowledge import KnowledgeStore
 
 
 class EmbeddingProtocolError(ValueError):

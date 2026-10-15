@@ -19,7 +19,7 @@ from purrcept_core.models import (
     TextBlock,
 )
 
-from purrcept_engine.context.presentation import render_input
+from purrcept_engine.domain.context.presentation import render_input
 from purrcept_engine.domain.inputs.models import InputRecord, MediaReference
 from purrcept_engine.errors import EngineError, StorageError
 

@@ -28,22 +28,29 @@ from purrcept_engine.app.knowledge_resources import KnowledgeResources
 from purrcept_engine.app.panel import ControlRequest, PanelController
 from purrcept_engine.app.receipts import LateCallResults
 from purrcept_engine.app.subject import SubjectAssembly, build_subject
-from purrcept_engine.context.capacity import CapacityRule
 from purrcept_engine.domain.activities.models import ActivityCommand, ActivityRecord, CommandKind
+from purrcept_engine.domain.activities.service import ActivityService
+from purrcept_engine.domain.context.capacity import CapacityRule
 from purrcept_engine.domain.controls.models import ControlRecord
+from purrcept_engine.domain.execution.catalog import Catalog
 from purrcept_engine.domain.execution.models import ActionRecord
+from purrcept_engine.domain.execution.ports import ActionExecutor, ExecutionJournal
+from purrcept_engine.domain.execution.providers import (
+    CallContext,
+    CallOutcome,
+    CapabilityImplementation,
+)
 from purrcept_engine.domain.inputs.models import (
     Admission,
     InputRecord,
     InputSource,
     InputSubmission,
 )
+from purrcept_engine.domain.knowledge.ports import Reranker
+from purrcept_engine.domain.knowledge.semantic import EmbeddingProvider
 from purrcept_engine.domain.model_requests.models import RequestRecord
 from purrcept_engine.domain.subject.models import InputProcessing
 from purrcept_engine.errors import ConfigError, HostStateError, StorageError
-from purrcept_engine.execution.catalog import Catalog
-from purrcept_engine.execution.ports import ActionExecutor, ExecutionJournal
-from purrcept_engine.execution.providers import CallContext, CallOutcome, CapabilityImplementation
 from purrcept_engine.infrastructure.locking import InstanceLock
 from purrcept_engine.infrastructure.models.capacity import (
     GEMINI_MEDIA,
@@ -56,9 +63,6 @@ from purrcept_engine.infrastructure.sqlite.store import Store
 from purrcept_engine.plugin_system.audio_port import AudioOutputPort
 from purrcept_engine.plugin_system.contracts import PluginFactory, PluginPorts, PluginRuntime
 from purrcept_engine.plugin_system.panels import PreviewFrame
-from purrcept_engine.subject.activities import ActivityService
-from purrcept_engine.subject.knowledge import Reranker
-from purrcept_engine.subject.semantic import EmbeddingProvider
 from purrcept_engine.values import JsonObject, JsonValue
 
 _logger = logging.getLogger(__name__)
@@ -374,8 +378,7 @@ class EngineHost:
             if self._phase == "starting":
                 self._transition("running")
                 await self._knowledge_resources.start()
-                await self._subject.coordinator.start()
-                await self._subject.background.start()
+                await self._subject.service.start()
             for runtime in self._plugins.values():
                 if self._phase == "running" and runtime.start is not None:
                     await runtime.start()
@@ -436,7 +439,7 @@ class EngineHost:
         store = self._running_store()
         self._check_dispatch()
         subject = self._subject
-        observed = 0 if subject is None else subject.coordinator.generation
+        observed = 0 if subject is None else subject.service.generation
         if len(self._input_tasks) >= self.config.execution.max_pending_inputs:
             raise StorageError("输入接管所有者已满。", code="input_capacity")
         task = asyncio.create_task(self._admit_input(store, submission, observed))
@@ -465,7 +468,7 @@ class EngineHost:
                 self._vad_tasks.add(stopped)
                 stopped.add_done_callback(self._vad_done)
             # 抢占绑定接管前观察的旧代次；等待数据库期间新轮次不受迟到信号影响。
-            await subject.coordinator.input_admitted(
+            await subject.service.input_admitted(
                 admission.input_id,
                 observed_generation=observed,
             )
@@ -649,7 +652,7 @@ class EngineHost:
             if self._input_failure is None
             else type(self._input_failure).__name__,
             "devices": devices,
-            "foreground": None if subject is None else subject.coordinator.session.snapshot(),
+            "foreground": None if subject is None else subject.service.session.snapshot(),
             "reflection": None if subject is None else subject.background.session.snapshot(),
             "knowledge": None
             if self._knowledge_resources is None
@@ -761,7 +764,7 @@ class EngineHost:
             if self._activities is not None:
                 resources.append(f"activities:{self._activities.pending_resources}")
             if self._subject is not None:
-                resources.append(f"subject:{self._subject.coordinator.pending_resources}")
+                resources.append(f"subject:{self._subject.service.pending_resources}")
                 resources.append(f"background:{self._subject.background.pending_resources}")
             if self._knowledge_resources is not None:
                 resources.append(f"knowledge:{self._knowledge_resources.pending_resources}")
@@ -1010,7 +1013,7 @@ class EngineHost:
         assert subject is not None
         workers = tuple(
             await asyncio.gather(
-                subject.coordinator.close(), subject.background.close(), return_exceptions=True
+                subject.service.close(), subject.background.close(), return_exceptions=True
             )
         )
         # coordinator/background 会在资源结束后重抛锁存故障，但 session.busy
@@ -1018,17 +1021,17 @@ class EngineHost:
         # 会话的同一关闭任务取得明证，并独立收回两个摘要所有者。
         borrowers = tuple(
             await asyncio.gather(
-                subject.coordinator.session.close(),
+                subject.service.session.close(),
                 subject.background.session.close(),
                 subject.foreground_history.close(),
                 subject.reflection_history.close(),
                 return_exceptions=True,
             )
         )
-        original_failures = (subject.coordinator.failure, subject.background.failure)
+        original_failures = (subject.service.failure, subject.background.failure)
         self._subject_released = (
             all(not isinstance(result, BaseException) for result in borrowers)
-            and subject.coordinator.pending_resources == 0
+            and subject.service.pending_resources == 0
             and subject.background.pending_resources == 0
             and all(
                 not isinstance(result, BaseException) or result is original_failure
@@ -1073,8 +1076,8 @@ class EngineHost:
         if self._maintenance_failure is not None:
             raise self._maintenance_failure
         subject = self._subject
-        if subject is not None and subject.coordinator.failure is not None:
-            raise subject.coordinator.failure
+        if subject is not None and subject.service.failure is not None:
+            raise subject.service.failure
         if subject is not None and subject.background.failure is not None:
             raise subject.background.failure
         if not store.authority_available:

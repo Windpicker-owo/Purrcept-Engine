@@ -16,7 +16,13 @@ import pytest
 from pydantic import BaseModel, ConfigDict
 
 from purrcept_engine import EngineConfig, EngineHost, HostStateError
+from purrcept_engine.domain.activities.contracts import (
+    ActivityDefinition,
+    DriverAcceptance,
+    RecoveryObservation,
+)
 from purrcept_engine.domain.activities.models import ActivityCommand, ActivityRecord, ActivityState
+from purrcept_engine.domain.activities.port import ActivityPort
 from purrcept_engine.infrastructure.sqlite import activities as sql
 from purrcept_engine.plugin_system.contracts import (
     PluginBlueprint,
@@ -24,12 +30,6 @@ from purrcept_engine.plugin_system.contracts import (
     PluginPorts,
     PluginRuntime,
     typed_factory,
-)
-from purrcept_engine.subject.activities import (
-    ActivityDefinition,
-    ActivityPort,
-    DriverAcceptance,
-    RecoveryObservation,
 )
 from purrcept_engine.values import decode_object
 

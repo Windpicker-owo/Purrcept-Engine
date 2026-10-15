@@ -26,15 +26,15 @@ from uuid import uuid4
 import purrcept_engine.domain.execution.record_validation as record_validation
 import purrcept_engine.domain.knowledge.models as knowledge_models
 import purrcept_engine.serialization as serialization
-from purrcept_engine.context.maintenance import (
-    Reservation,
-    SummaryProposal,
-    SummarySource,
-)
 from purrcept_engine.domain.activities.models import (
     ActivityCommand,
     ActivityFeedback,
     ActivityRecord,
+)
+from purrcept_engine.domain.context.maintenance import (
+    Reservation,
+    SummaryProposal,
+    SummarySource,
 )
 from purrcept_engine.domain.execution.models import (
     ActionOutcome,

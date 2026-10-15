@@ -18,15 +18,19 @@ import pytest
 from pydantic import BaseModel, ConfigDict
 
 from purrcept_engine.app.config import ExecutionSettings
-from purrcept_engine.errors import ConfigError
-from purrcept_engine.execution.catalog import CapabilityDeclaration, Catalog, ObjectDeclaration
-from purrcept_engine.execution.protocol import FrameChannel
-from purrcept_engine.execution.providers import (
+from purrcept_engine.domain.execution.catalog import (
+    CapabilityDeclaration,
+    Catalog,
+    ObjectDeclaration,
+)
+from purrcept_engine.domain.execution.providers import (
     CallContext,
     CallOutcome,
     CapabilityImplementation,
     FunctionCapability,
 )
+from purrcept_engine.errors import ConfigError
+from purrcept_engine.execution.protocol import FrameChannel
 from purrcept_engine.execution.service import (
     ExecutionBusy,
     ExecutionClosed,

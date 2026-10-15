@@ -6,7 +6,7 @@ from collections.abc import Mapping
 
 import pytest
 
-from purrcept_engine.context.capacity import (
+from purrcept_engine.domain.context.capacity import (
     CapacityDeclaration,
     CapacityError,
     CapacityEstimate,

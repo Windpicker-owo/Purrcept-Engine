@@ -14,10 +14,14 @@ import pytest
 from pydantic import BaseModel, ConfigDict
 
 from purrcept_engine.app.config import ExecutionSettings
+from purrcept_engine.domain.execution.catalog import (
+    CapabilityDeclaration,
+    Catalog,
+    ObjectDeclaration,
+)
 from purrcept_engine.domain.execution.models import CallRecord
+from purrcept_engine.domain.execution.providers import CallContext, CallOutcome, FunctionCapability
 from purrcept_engine.domain.inputs.models import MediaReference
-from purrcept_engine.execution.catalog import CapabilityDeclaration, Catalog, ObjectDeclaration
-from purrcept_engine.execution.providers import CallContext, CallOutcome, FunctionCapability
 from purrcept_engine.execution.service import (
     ExecutionBusy,
     ExecutionClosed,

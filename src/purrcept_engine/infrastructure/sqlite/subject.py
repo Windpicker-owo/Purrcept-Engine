@@ -14,7 +14,7 @@ import math
 import sqlite3
 import time
 
-from purrcept_engine.context.checkpoints import decode_checkpoint
+from purrcept_engine.domain.context.checkpoints import decode_checkpoint
 from purrcept_engine.domain.subject.models import (
     AttentionLevel,
     InputProcessing,

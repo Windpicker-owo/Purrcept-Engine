@@ -12,9 +12,9 @@ from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict
 
+from purrcept_engine.domain.execution.catalog import CapabilityDeclaration, ObjectDeclaration
+from purrcept_engine.domain.execution.providers import CallContext, CallOutcome, FunctionCapability
 from purrcept_engine.errors import ConfigError
-from purrcept_engine.execution.catalog import CapabilityDeclaration, ObjectDeclaration
-from purrcept_engine.execution.providers import CallContext, CallOutcome, FunctionCapability
 from purrcept_engine.plugin_system.contracts import (
     PluginBlueprint,
     PluginFactory,

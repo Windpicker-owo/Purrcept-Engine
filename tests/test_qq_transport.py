@@ -7,7 +7,7 @@ from collections.abc import Awaitable, Callable
 
 import pytest
 
-from purrcept_engine.execution.providers import CallContext
+from purrcept_engine.domain.execution.providers import CallContext
 from purrcept_engine.plugins.qq.client import QQClient
 from purrcept_engine.plugins.qq.ports import (
     Connection,

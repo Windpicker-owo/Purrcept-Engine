@@ -1,10 +1,8 @@
-"""在真实会话入口维护旧历史，复用 Core 首个 Generate 的公开请求布局。
+"""在真实请求前协调历史容量、保护范围与一次受控摘要维护。
 
-HistoryPreparation 在 Session 开始主动预算但尚未 begin_turn 时运行。预览
-facade 只推进到第一个未执行的模型 effect，取得完整目录、schema、历史、
-当前输入与冻结尾部；不会调用模型、执行工具或采用临时历史。候选由同一
-布局重新计量，安装及原文归档仍归 Store 的空闲版本事务。
-"""
+借用同一会话的已提交版本及保护身份，生成布局与正式派发共用编译端口。
+这里只协调领域步骤，不取得 SQLite 连接、模型凭据或客户端；容量不足明确
+失败，内部故障不能伪装为一个空历史。"""
 
 import logging
 
@@ -21,20 +19,16 @@ from purrcept_core.models import (
 )
 from purrcept_core.models.effects import Generate
 
-from purrcept_engine.app.config import ContextSettings
-from purrcept_engine.context.capacity import CapacityAssessment, CapacityError
-from purrcept_engine.context.checkpoints import decode_checkpoint
-from purrcept_engine.context.maintenance import SummaryError, freeze_summary_source
+from purrcept_engine.domain.context.capacity import CapacityAssessment, CapacityError
+from purrcept_engine.domain.context.checkpoints import decode_checkpoint
+from purrcept_engine.domain.context.delivery import ToolDeliveryGate
+from purrcept_engine.domain.context.history import HistoryMaintenance
+from purrcept_engine.domain.context.history_ports import HistoryContext, HistoryStore
+from purrcept_engine.domain.context.maintenance import SummaryError, freeze_summary_source
+from purrcept_engine.domain.model_requests.ports import MaterialCompiler
+from purrcept_engine.domain.model_requests.service import RequestBudget, prepare_off_loop
 from purrcept_engine.domain.subject.models import SessionRecord
-from purrcept_engine.infrastructure.sqlite.store import Store
-from purrcept_engine.subject.delivery import ToolDeliveryGate
-from purrcept_engine.subject.history import HistoryMaintenance
-from purrcept_engine.subject.model_requests import (
-    RequestBudget,
-    compile_materials,
-    prepare_off_loop,
-)
-from purrcept_engine.subject.session import CapacityCheck, DynamicReminder, DynamicState
+from purrcept_engine.domain.subject.session import CapacityCheck, DynamicReminder, DynamicState
 from purrcept_engine.values import decode_object
 
 _logger = logging.getLogger(__name__)
@@ -85,15 +79,17 @@ class HistoryPreparation:
 
     def __init__(
         self,
-        store: Store,
+        store: HistoryStore,
         maintenance: HistoryMaintenance,
         *,
+        compiler: MaterialCompiler,
         backend: ModelBackend,
         model: str,
         assess: CapacityCheck,
-        context: ContextSettings,
+        context: HistoryContext,
     ) -> None:
         """借用有限模型与同库账本，构造不读库或启动摘要。"""
+        self.compiler = compiler
         self.store, self.maintenance = store, maintenance
         self.backend, self.model, self.assess, self.context = backend, model, assess, context
         self.last_failure: str | None = None
@@ -129,7 +125,7 @@ class HistoryPreparation:
             )
             # 首发预览与真实请求使用同一尾部投影，不能因已经完整交付的回执
             # 正文副本提前触发摘要；没有待工具结果，因此这里只复用纯投影。
-            return ToolDeliveryGate().prepare(
+            return ToolDeliveryGate(compiler=self.compiler).prepare(
                 preview,
                 model=self.model,
                 capacity=self.assess,
@@ -139,7 +135,7 @@ class HistoryPreparation:
 
         def measure() -> CapacityAssessment:
             """首轮完整布局及分词可能耗时数秒，不能阻塞麦克风采集。"""
-            materials, _ = compile_materials(layout(checkpoint), model=self.model)
+            materials, _ = self.compiler(layout(checkpoint), model=self.model)
             payload = decode_object(materials.encode("utf-8")).get("payload")
             if not isinstance(payload, dict):
                 raise TypeError("Core 实际布局缺少 SDK payload。")

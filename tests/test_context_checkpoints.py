@@ -30,16 +30,15 @@ from purrcept_core.models import (
     ToolResultBlock,
 )
 
-from purrcept_engine.context.checkpoints import (
+from purrcept_engine.domain.context.checkpoints import (
     CheckpointError,
     decode_checkpoint,
     decode_content,
     decode_message,
     encode_checkpoint,
-    intern_checkpoint,
-    restore_checkpoint,
 )
 from purrcept_engine.errors import StorageError
+from purrcept_engine.infrastructure.sqlite.checkpoints import intern_checkpoint, restore_checkpoint
 from purrcept_engine.serialization import encode
 
 

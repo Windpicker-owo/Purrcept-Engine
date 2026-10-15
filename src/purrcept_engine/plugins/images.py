@@ -20,16 +20,16 @@ import httpx
 from PIL import Image, UnidentifiedImageError
 from pydantic import BaseModel, ConfigDict, Field
 
-from purrcept_engine.domain.inputs.models import MediaAsset, MediaReference
-from purrcept_engine.domain.knowledge.models import EvidenceSnapshot
-from purrcept_engine.errors import ConfigError, HostStateError
-from purrcept_engine.execution.catalog import CapabilityDeclaration
-from purrcept_engine.execution.providers import (
+from purrcept_engine.domain.execution.catalog import CapabilityDeclaration
+from purrcept_engine.domain.execution.providers import (
     CallContext,
     CallOutcome,
     CapabilityInputError,
     FunctionCapability,
 )
+from purrcept_engine.domain.inputs.models import MediaAsset, MediaReference
+from purrcept_engine.domain.knowledge.models import EvidenceSnapshot
+from purrcept_engine.errors import ConfigError, HostStateError
 from purrcept_engine.plugin_system.contracts import (
     EvidencePort,
     PluginBlueprint,

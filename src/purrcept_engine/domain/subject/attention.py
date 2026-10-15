@@ -26,12 +26,13 @@ from purrcept_core.models import (
     TextBlock,
 )
 
-from purrcept_engine.context.materials import UnsupportedMaterial
-from purrcept_engine.context.presentation import render_input, render_material
+from purrcept_engine.domain.context.materials import UnsupportedMaterial
+from purrcept_engine.domain.context.presentation import render_input, render_material
 from purrcept_engine.domain.inputs.models import InputRecord, MediaReference
+from purrcept_engine.domain.model_requests.ports import MaterialCompiler
+from purrcept_engine.domain.model_requests.service import RetryPolicy, prepare_off_loop
+from purrcept_engine.domain.subject.session import CapacityCheck
 from purrcept_engine.serialization import encode
-from purrcept_engine.subject.model_requests import RetryPolicy, compile_materials, prepare_off_loop
-from purrcept_engine.subject.session import CapacityCheck
 from purrcept_engine.values import JsonObject, decode_object
 
 ATTENTION_QUESTION = ChoiceQuestion(
@@ -64,6 +65,7 @@ class AttentionModel:
     model: str
     capacity: CapacityCheck
     retry: RetryPolicy
+    compiler: MaterialCompiler = field(kw_only=True)
     kind: Literal["decision", "generation"] = field(kw_only=True)
     output_tokens: int | None = field(default=None, kw_only=True)
 
@@ -164,7 +166,7 @@ async def attention_request(
 
     def measure() -> ModelRequest | DecisionRequest:
         """冻结后仅做本地计算，不占用实时输入的事件循环。"""
-        materials, _ = compile_materials(request, model=model.model)
+        materials, _ = model.compiler(request, model=model.model)
         payload = decode_object(materials.encode("utf-8"))["payload"]
         if not isinstance(payload, dict):
             raise TypeError("专用判断编译材料缺少 payload 对象。")

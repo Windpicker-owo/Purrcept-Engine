@@ -4,6 +4,14 @@
 
 ## 当前实施状态
 
+2026-10-15 阶段三：SubjectService 显式连接注意、前台和延期工作器，绑定
+独立反馈/反思后台；各流程借用同一协调状态与原连续会话，不复制资格。
+领域、上下文、活动和认识迁入 domain；活动输入校验与纯控制规则独立，
+实际提交、时钟与驱动仍归单一 ActivityService。SDK 编译通过 MaterialCompiler
+显式注入，检查点媒体持久化与纯 Core 编解码分开，领域不再导入存储实现
+或模型 SDK。1080 项离线测试、Ruff、格式和 strict Pyright 通过。
+
+
 2026-10-15 阶段二：SQL 实现迁入 infrastructure/sqlite，SqliteExecutor
 独占连接、队列、通知和关闭，Store 和各账本共用同一提交器；初始化与原有
 升级事务集中到 schema，不改变格式。模型客户端、向量 HTTP、计量、目录锁

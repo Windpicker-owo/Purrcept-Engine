@@ -26,19 +26,19 @@ from tempfile import TemporaryDirectory
 from typing import Literal
 from uuid import uuid4
 
+from purrcept_engine.domain.execution.catalog import Binding, Catalog
 from purrcept_engine.domain.execution.models import ActionOutcome, ActionRecord, CallRecord
-from purrcept_engine.errors import ConfigError, EngineError
-from purrcept_engine.execution.catalog import Binding, Catalog
-from purrcept_engine.execution.ports import ExecutionJournal
-from purrcept_engine.execution.protocol import FrameChannel
-from purrcept_engine.execution.providers import (
+from purrcept_engine.domain.execution.ports import ExecutionJournal
+from purrcept_engine.domain.execution.providers import (
     CallContext,
     CallOutcome,
     CapabilityImplementation,
     CapabilityInputError,
     bind_implementations,
 )
-from purrcept_engine.execution.settings import ExecutionSettings
+from purrcept_engine.domain.execution.settings import ExecutionSettings
+from purrcept_engine.errors import ConfigError, EngineError
+from purrcept_engine.execution.protocol import FrameChannel
 from purrcept_engine.execution.windows import WindowsProcess
 from purrcept_engine.values import ActionProtocolError, JsonObject, decode_object, encode_json
 

@@ -13,12 +13,8 @@ import time
 
 from purrcept_core.models import ConversationCheckpoint, Message
 
-from purrcept_engine.context.checkpoints import (
-    encode_checkpoint,
-    intern_checkpoint,
-    restore_checkpoint,
-)
-from purrcept_engine.context.maintenance import (
+from purrcept_engine.domain.context.checkpoints import encode_checkpoint
+from purrcept_engine.domain.context.maintenance import (
     Reservation,
     SummaryError,
     SummaryProposal,
@@ -26,8 +22,11 @@ from purrcept_engine.context.maintenance import (
     candidate_checkpoint,
     validate_summary_proposal,
 )
+from purrcept_engine.domain.context.summary_materials import summary_message
+from purrcept_engine.domain.context.summary_references import summary_references
 from purrcept_engine.domain.subject.models import SessionScope
 from purrcept_engine.errors import StorageError
+from purrcept_engine.infrastructure.sqlite.checkpoints import intern_checkpoint, restore_checkpoint
 from purrcept_engine.infrastructure.sqlite.knowledge import get_evidence
 from purrcept_engine.infrastructure.sqlite.model_requests import (
     decode_attempt,
@@ -110,28 +109,12 @@ def _current(
     return "reserved", current
 
 
-def _references(source: SummarySource) -> tuple[str, ...]:
-    """仅借用宿主消息metadata的明确引用，外界JSON正文不能增加摘要依赖。"""
-    references: dict[str, None] = {}
-    for message in source.messages:
-        declared = message.metadata.get("evidence")
-        if declared is None:
-            continue
-        if not isinstance(declared, tuple):
-            raise SummaryError("宿主摘要来源标记必须是身份数组。")
-        for reference in declared:
-            if not isinstance(reference, str) or not reference:
-                raise SummaryError("宿主摘要来源标记不是非空身份。")
-            references[reference] = None
-    return tuple(references)
-
-
 def _dependencies(
     connection: sqlite3.Connection, source: SummarySource
 ) -> tuple[tuple[str, str, int], ...]:
     """冻结每个真实来源的版本，旧摘要引用指向已安装归档而不是新外部证据。"""
     result: list[tuple[str, str, int]] = []
-    for reference in _references(source):
+    for reference in summary_references(source):
         if reference.startswith("summary:"):
             coverage = reference[len("summary:") :]
             row: tuple[object, ...] | None = connection.execute(
@@ -246,20 +229,6 @@ def reserve_summary(connection: sqlite3.Connection, source: SummarySource) -> Re
             ),
         )
     return "reserved"
-
-
-def summary_message(source: SummarySource, summary: str) -> Message:
-    """沿用内部摘要标签及轮次说明，来源引用不能成为新的外部证据。
-
-    宿主已标注的 evidence 关系继续保留；不解析任意模型或外界文字制造来源。
-    完整冻结历史及媒体由 summary:coverage 身份在账本中追溯。
-    """
-    references: dict[str, None] = {"summary:" + source.coverage_id: None}
-    references.update((reference, None) for reference in _references(source))
-    return Message.user(
-        "内部历史摘要；不是新的外部证据。\n" + f"旧轮次 1–{source.end_turn}：\n" + summary,
-        metadata={"evidence": tuple(references), "source_version": source.source_version},
-    )
 
 
 def _object(value: JsonValue) -> JsonObject:

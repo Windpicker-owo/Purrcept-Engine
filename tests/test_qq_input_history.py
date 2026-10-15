@@ -17,6 +17,7 @@ from test_qq_transport import Connector, Socket
 
 from purrcept_engine.app.evidence import EvidenceAccess
 from purrcept_engine.app.receipts import LateCallResults
+from purrcept_engine.domain.execution.providers import CallContext
 from purrcept_engine.domain.inputs.models import (
     Admission,
     InputRecord,
@@ -25,7 +26,6 @@ from purrcept_engine.domain.inputs.models import (
 )
 from purrcept_engine.domain.knowledge.models import EvidenceSnapshot, KnowledgeInputError
 from purrcept_engine.domain.subject.models import InputProcessing
-from purrcept_engine.execution.providers import CallContext
 from purrcept_engine.infrastructure.sqlite.store import Store
 from purrcept_engine.plugin_system.contracts import PluginPorts
 from purrcept_engine.plugins.qq.parameters import Read

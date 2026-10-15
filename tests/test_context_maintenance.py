@@ -15,8 +15,8 @@ from purrcept_core.models import (
     TextBlock,
 )
 
-from purrcept_engine.context.capacity import GenerationCapacity, assess_capacity
-from purrcept_engine.context.maintenance import (
+from purrcept_engine.domain.context.capacity import GenerationCapacity, assess_capacity
+from purrcept_engine.domain.context.maintenance import (
     Reservation,
     SummaryError,
     SummaryProposal,

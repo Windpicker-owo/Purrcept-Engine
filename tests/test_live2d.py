@@ -15,7 +15,7 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from purrcept_engine.execution.providers import CallContext
+from purrcept_engine.domain.execution.providers import CallContext
 from purrcept_engine.plugin_system.body import BodyIntent
 from purrcept_engine.plugins.live2d import analyzer as analyzer_module
 from purrcept_engine.plugins.live2d.analyzer import AnalyzerProcess, VisemeFrame

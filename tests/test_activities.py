@@ -15,21 +15,21 @@ from pathlib import Path
 import pytest
 
 import purrcept_engine.domain.activities.models as activities_models
+from purrcept_engine.domain.activities.contracts import (
+    ActivityDefinition,
+    ActivityError,
+    DriverAcceptance,
+    RecoveryObservation,
+)
 from purrcept_engine.domain.activities.models import (
     ActivityCommand,
     ActivityFeedback,
     ActivityRecord,
 )
+from purrcept_engine.domain.activities.port import ActivityPort
+from purrcept_engine.domain.activities.service import ActivityService
 from purrcept_engine.errors import HostStateError, StorageError
 from purrcept_engine.infrastructure.sqlite import activities as sql
-from purrcept_engine.subject.activities import (
-    ActivityDefinition,
-    ActivityError,
-    ActivityPort,
-    ActivityService,
-    DriverAcceptance,
-    RecoveryObservation,
-)
 
 
 @dataclass(slots=True)

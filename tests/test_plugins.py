@@ -12,9 +12,13 @@ from pydantic import BaseModel, ConfigDict
 from purrcept_engine import EngineConfig, EngineHost
 from purrcept_engine.app.assembly import prepare_plugins
 from purrcept_engine.app.config import PluginSettings
+from purrcept_engine.domain.execution.catalog import (
+    CapabilityDeclaration,
+    Catalog,
+    ObjectDeclaration,
+)
+from purrcept_engine.domain.execution.providers import CallContext, CallOutcome, FunctionCapability
 from purrcept_engine.errors import ConfigError
-from purrcept_engine.execution.catalog import CapabilityDeclaration, Catalog, ObjectDeclaration
-from purrcept_engine.execution.providers import CallContext, CallOutcome, FunctionCapability
 from purrcept_engine.plugin_system.contracts import (
     PluginBlueprint,
     PluginFactory,

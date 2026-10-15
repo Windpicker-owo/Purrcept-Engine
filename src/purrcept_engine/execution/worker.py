@@ -47,8 +47,8 @@ def _install_package_namespace() -> None:
 try:
     if __name__ == "__main__":
         _install_package_namespace()
+    from purrcept_engine.domain.execution.validation import validate_source
     from purrcept_engine.execution.protocol import FrameChannel
-    from purrcept_engine.execution.validation import validate_source
     from purrcept_engine.values import (
         ActionProtocolError,
         JsonObject,

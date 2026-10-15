@@ -14,8 +14,8 @@ import pytest
 from purrcept_core.models import Message, ModelEventSink, ModelRequest, ModelResponse
 
 from purrcept_engine import EngineConfig, EngineHost, InputSource, InputSubmission
+from purrcept_engine.domain.execution.providers import CallContext, CallOutcome
 from purrcept_engine.domain.inputs.models import Admission, InputContext
-from purrcept_engine.execution.providers import CallContext, CallOutcome
 from purrcept_engine.infrastructure.sqlite.store import Store
 from purrcept_engine.plugin_system.body_port import BodyPort
 from purrcept_engine.plugin_system.contracts import (

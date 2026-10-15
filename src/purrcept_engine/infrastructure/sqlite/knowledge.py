@@ -20,7 +20,7 @@ from typing import Literal, cast
 from purrcept_core.models import ContentBlock, Message, MessageRole, ToolResultBlock
 from pydantic import BaseModel, ValidationError
 
-from purrcept_engine.context.checkpoints import decode_content, decode_message
+from purrcept_engine.domain.context.checkpoints import decode_content, decode_message
 from purrcept_engine.domain.knowledge.models import (
     EvidenceDelivery,
     EvidencePage,

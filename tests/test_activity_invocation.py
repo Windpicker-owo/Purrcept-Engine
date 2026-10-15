@@ -18,11 +18,23 @@ from pydantic import BaseModel, ConfigDict
 
 from purrcept_engine import EngineConfig, EngineHost
 from purrcept_engine.app.config import ExecutionSettings
+from purrcept_engine.domain.activities.contracts import (
+    ActivityDefinition,
+    ActivityError,
+    DriverAcceptance,
+    RecoveryObservation,
+)
 from purrcept_engine.domain.activities.models import ActivityCommand, ActivityRecord, ActivityState
+from purrcept_engine.domain.activities.port import ActivityPort
+from purrcept_engine.domain.activities.service import ActivityService
+from purrcept_engine.domain.execution.catalog import (
+    CapabilityDeclaration,
+    Catalog,
+    ObjectDeclaration,
+)
 from purrcept_engine.domain.execution.models import ActionOutcome
+from purrcept_engine.domain.execution.providers import CallContext, CallOutcome, FunctionCapability
 from purrcept_engine.errors import StorageError
-from purrcept_engine.execution.catalog import CapabilityDeclaration, Catalog, ObjectDeclaration
-from purrcept_engine.execution.providers import CallContext, CallOutcome, FunctionCapability
 from purrcept_engine.execution.service import ExecutionService
 from purrcept_engine.infrastructure.sqlite.store import Store
 from purrcept_engine.plugin_system.contracts import (
@@ -31,14 +43,6 @@ from purrcept_engine.plugin_system.contracts import (
     PluginPorts,
     PluginRuntime,
     typed_factory,
-)
-from purrcept_engine.subject.activities import (
-    ActivityDefinition,
-    ActivityError,
-    ActivityPort,
-    ActivityService,
-    DriverAcceptance,
-    RecoveryObservation,
 )
 
 

@@ -37,13 +37,22 @@ from purrcept_core.models import (
 )
 
 from purrcept_engine.app.config import RetrySettings
-from purrcept_engine.context.capacity import GenerationCapacity, assess_capacity, check_capacity
-from purrcept_engine.context.checkpoints import decode_checkpoint, encode_checkpoint
-from purrcept_engine.context.maintenance import SummaryError, SummarySource, freeze_summary_source
+from purrcept_engine.domain.context.capacity import (
+    GenerationCapacity,
+    assess_capacity,
+    check_capacity,
+)
+from purrcept_engine.domain.context.checkpoints import decode_checkpoint, encode_checkpoint
+from purrcept_engine.domain.context.history import HistoryMaintenance, summary_request
+from purrcept_engine.domain.context.maintenance import (
+    SummaryError,
+    SummarySource,
+    freeze_summary_source,
+)
 from purrcept_engine.domain.inputs.models import InputSource, InputSubmission
+from purrcept_engine.domain.model_requests.service import RequestBudgetExceeded
+from purrcept_engine.infrastructure.models.compiler import compile_materials
 from purrcept_engine.infrastructure.sqlite.store import Store
-from purrcept_engine.subject.history import HistoryMaintenance, summary_request
-from purrcept_engine.subject.model_requests import RequestBudgetExceeded, compile_materials
 from purrcept_engine.values import JsonObject
 
 
@@ -142,6 +151,7 @@ def service(store: Store, backend: Backend) -> HistoryMaintenance:
         retry=RetrySettings(attempts=1),
         output_tokens=256,
         diagnostic_bytes=1024,
+        compiler=compile_materials,
     )
 
 
@@ -352,6 +362,7 @@ async def test_single_logical_request_uses_only_the_existing_transport_retry(sto
         retry=RetrySettings(),
         output_tokens=256,
         diagnostic_bytes=1024,
+        compiler=compile_materials,
     )
     try:
         result = await maintenance.run(

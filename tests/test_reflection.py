@@ -44,10 +44,10 @@ from purrcept_engine.domain.knowledge.models import (
     MemoryPatch,
     SupervisionRecord,
 )
+from purrcept_engine.domain.knowledge.service import KnowledgeService
+from purrcept_engine.domain.subject.reflection_tools import EvidenceDeliveries, ReflectionTools
 from purrcept_engine.errors import StorageError
 from purrcept_engine.infrastructure.sqlite.store import Store
-from purrcept_engine.subject.knowledge import KnowledgeService
-from purrcept_engine.subject.reflection import EvidenceDeliveries, ReflectionTools
 from purrcept_engine.values import JsonValue, decode_object, encode_json
 
 

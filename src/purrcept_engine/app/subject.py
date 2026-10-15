@@ -12,8 +12,7 @@ from dataclasses import dataclass
 from purrcept_core.models import ContentBlock, DecisionBackend, ModelBackend
 
 from purrcept_engine.app.config import DecisionModelSettings, EngineConfig, GenerationModelSettings
-from purrcept_engine.app.history import HistoryPreparation
-from purrcept_engine.context.capacity import (
+from purrcept_engine.domain.context.capacity import (
     CapacityAssessment,
     CapacityRule,
     DecisionCapacity,
@@ -21,25 +20,25 @@ from purrcept_engine.context.capacity import (
     assess_capacity,
     check_capacity,
 )
-from purrcept_engine.context.materials import media_blocks
+from purrcept_engine.domain.context.history import HistoryMaintenance
+from purrcept_engine.domain.context.history_preparation import HistoryPreparation
+from purrcept_engine.domain.context.materials import media_blocks
+from purrcept_engine.domain.execution.catalog import Catalog
 from purrcept_engine.domain.inputs.models import MediaReference
-from purrcept_engine.execution.catalog import Catalog
+from purrcept_engine.domain.knowledge.service import KnowledgeService
+from purrcept_engine.domain.model_requests.service import RequestBudget
+from purrcept_engine.domain.subject.attention import AttentionModel
+from purrcept_engine.domain.subject.background import BackgroundService
+from purrcept_engine.domain.subject.background_ports import BackgroundSettings
+from purrcept_engine.domain.subject.foreground_tools import foreground_instructions
+from purrcept_engine.domain.subject.ports import ActionCallback
+from purrcept_engine.domain.subject.reflection_tools import reflection_instructions
+from purrcept_engine.domain.subject.service import SubjectService
+from purrcept_engine.domain.subject.session import DynamicState
+from purrcept_engine.domain.subject.settings import CoordinatorSettings, SubjectModel
+from purrcept_engine.infrastructure.models.compiler import compile_materials
 from purrcept_engine.infrastructure.sqlite.store import Store
 from purrcept_engine.plugin_system.contracts import PluginRuntime
-from purrcept_engine.subject.attention import AttentionModel
-from purrcept_engine.subject.background import BackgroundService, BackgroundSettings
-from purrcept_engine.subject.coordinator import (
-    ActionCallback,
-    CoordinatorSettings,
-    SubjectCoordinator,
-    SubjectModel,
-)
-from purrcept_engine.subject.foreground import foreground_instructions
-from purrcept_engine.subject.history import HistoryMaintenance
-from purrcept_engine.subject.knowledge import KnowledgeService
-from purrcept_engine.subject.model_requests import RequestBudget
-from purrcept_engine.subject.reflection import reflection_instructions
-from purrcept_engine.subject.session import DynamicState
 from purrcept_engine.values import JsonObject
 
 
@@ -47,7 +46,7 @@ from purrcept_engine.values import JsonObject
 class SubjectAssembly:
     """宿主持有的主体及摘要资源，客户端仅借用，不在此重复构造或关闭。"""
 
-    coordinator: SubjectCoordinator
+    service: SubjectService
     foreground_history: HistoryPreparation
     knowledge: KnowledgeService
     background: BackgroundService
@@ -128,6 +127,7 @@ def build_subject(
         output_tokens=summary_settings.max_output_tokens,
         diagnostic_bytes=diagnostic_bytes,
         can_start=can_start,
+        compiler=compile_materials,
     )
     history = HistoryPreparation(
         store,
@@ -136,6 +136,7 @@ def build_subject(
         model=foreground_settings.model,
         assess=capacity_for(foreground_settings, enforce=False),
         context=config.context,
+        compiler=compile_materials,
     )
     reflection_history = HistoryPreparation(
         store,
@@ -149,11 +150,13 @@ def build_subject(
             output_tokens=summary_settings.max_output_tokens,
             diagnostic_bytes=diagnostic_bytes,
             can_start=can_start,
+            compiler=compile_materials,
         ),
         backend=generation[reflection_name],
         model=reflection_settings.model,
         assess=capacity_for(reflection_settings, enforce=False),
         context=config.context,
+        compiler=compile_materials,
     )
 
     async def native(media: tuple[MediaReference, ...]) -> tuple[ContentBlock, ...]:
@@ -226,6 +229,7 @@ def build_subject(
                 capacity_for(settings, enforce=True),
                 config.subject.attention_retry,
                 kind="decision",
+                compiler=compile_materials,
             )
         else:
             attention = AttentionModel(
@@ -235,8 +239,9 @@ def build_subject(
                 config.subject.attention_retry,
                 kind="generation",
                 output_tokens=min(256, settings.max_output_tokens),
+                compiler=compile_materials,
             )
-    subject = SubjectCoordinator(
+    subject = SubjectService(
         store,
         knowledge,
         ledger,
@@ -247,6 +252,7 @@ def build_subject(
             foreground_settings.max_output_tokens,
             capacity_for(foreground_settings, enforce=True),
             config.subject.foreground_retry,
+            compiler=compile_materials,
         ),
         attention=attention,
         settings=CoordinatorSettings(
@@ -277,6 +283,7 @@ def build_subject(
             reflection_settings.max_output_tokens,
             capacity_for(reflection_settings, enforce=True),
             config.subject.reflection_retry,
+            compiler=compile_materials,
         ),
         instructions=reflection_instructions(),
         settings=BackgroundSettings(
@@ -294,4 +301,5 @@ def build_subject(
         interrupt_foreground=subject.session.interrupt,
         can_start=can_start,
     )
+    subject.bind_background(background)
     return SubjectAssembly(subject, history, knowledge, background, reflection_history)

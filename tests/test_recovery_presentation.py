@@ -15,14 +15,19 @@ from purrcept_core.models import (
 )
 from purrcept_core.models.tools import ToolResult
 
-from purrcept_engine.context.capacity import CapacityAssessment, GenerationCapacity, check_capacity
-from purrcept_engine.domain.knowledge.models import EvidencePage, EvidenceSnapshot
-from purrcept_engine.serialization import encode
-from purrcept_engine.subject.delivery import (
+from purrcept_engine.domain.context.capacity import (
+    CapacityAssessment,
+    GenerationCapacity,
+    check_capacity,
+)
+from purrcept_engine.domain.context.delivery import (
     ToolDelivery,
     ToolDeliveryGate,
     presented_evidence_calls,
 )
+from purrcept_engine.domain.knowledge.models import EvidencePage, EvidenceSnapshot
+from purrcept_engine.infrastructure.models.compiler import compile_materials
+from purrcept_engine.serialization import encode
 from purrcept_engine.values import JsonObject
 
 
@@ -31,7 +36,7 @@ def test_only_successfully_sent_complete_receipt_grants_next_action_reading(
     monkeypatch: pytest.MonkeyPatch, large: bool
 ) -> None:
     monkeypatch.setenv("LITELLM_LOCAL_MODEL_COST_MAP", "True")
-    gate = ToolDeliveryGate()
+    gate = ToolDeliveryGate(compiler=compile_materials)
     call = ToolCallBlock("model-tool", "play_action", arguments={"action_code": "pass"})
     result = gate.stage(
         call,
