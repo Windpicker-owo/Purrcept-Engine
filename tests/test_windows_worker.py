@@ -16,8 +16,8 @@ from typing import Protocol
 
 import pytest
 
-from purrcept_engine.execution import windows
-from purrcept_engine.execution.windows import WindowsProcess
+import purrcept_engine.infrastructure.processes.windows as windows
+from purrcept_engine.infrastructure.processes.windows import WindowsProcess
 
 
 class _NativeFunction(Protocol):
@@ -287,7 +287,7 @@ async def test_failed_ownership_confirmation_reclaims_created_process(
         return 0
 
     monkeypatch.setattr(
-        "purrcept_engine.execution.windows._Kernel32.IsProcessInJob",
+        "purrcept_engine.infrastructure.processes.windows._Kernel32.IsProcessInJob",
         staticmethod(denied),
         raising=False,
     )

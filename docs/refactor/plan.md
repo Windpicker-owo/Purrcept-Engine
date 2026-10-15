@@ -4,6 +4,14 @@
 
 ## 当前实施状态
 
+2026-10-15 阶段四：默认 ExecutionService 归入 infrastructure/execution，
+WorkerSession 负责进程/帧资源，CallDispatcher 负责共享能力队列与真实回执，
+二者借用同一行动状态。领域保留目录、Provider 契约、执行端口和源码校验。
+Worker 新路径继续绕过顶层导出，明确建立标准库命名空间；Windows 进程实现
+独立为技术工具。原 1080 项全量测试、101 项执行相关验证及新增隔离导入测试
+通过；Ruff、格式和 strict Pyright 通过。AST、builtin、IPC 和额度不变。
+
+
 2026-10-15 阶段三：SubjectService 显式连接注意、前台和延期工作器，绑定
 独立反馈/反思后台；各流程借用同一协调状态与原连续会话，不复制资格。
 领域、上下文、活动和认识迁入 domain；活动输入校验与纯控制规则独立，

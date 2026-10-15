@@ -23,6 +23,11 @@ from purrcept_engine.domain.execution.catalog import (
     Catalog,
     ObjectDeclaration,
 )
+from purrcept_engine.domain.execution.errors import (
+    ExecutionBusy,
+    ExecutionClosed,
+    ExecutionLimitError,
+)
 from purrcept_engine.domain.execution.providers import (
     CallContext,
     CallOutcome,
@@ -30,14 +35,9 @@ from purrcept_engine.domain.execution.providers import (
     FunctionCapability,
 )
 from purrcept_engine.errors import ConfigError
-from purrcept_engine.execution.protocol import FrameChannel
-from purrcept_engine.execution.service import (
-    ExecutionBusy,
-    ExecutionClosed,
-    ExecutionLimitError,
-    ExecutionService,
-)
-from purrcept_engine.execution.windows import WindowsProcess
+from purrcept_engine.infrastructure.execution.protocol import FrameChannel
+from purrcept_engine.infrastructure.execution.service import ExecutionService
+from purrcept_engine.infrastructure.processes.windows import WindowsProcess
 from purrcept_engine.infrastructure.sqlite.store import Store
 from purrcept_engine.values import JsonObject
 

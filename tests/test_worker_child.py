@@ -17,8 +17,8 @@ from pathlib import Path
 
 import pytest
 
-from purrcept_engine.execution.protocol import FrameChannel
-from purrcept_engine.execution.windows import WindowsProcess
+from purrcept_engine.infrastructure.execution.protocol import FrameChannel
+from purrcept_engine.infrastructure.processes.windows import WindowsProcess
 from purrcept_engine.values import ActionProtocolError, JsonObject, JsonValue, encode_json
 
 _FRAME_BYTES = 2 * 1024 * 1024
@@ -60,7 +60,9 @@ class _Child:
         os.set_inheritable(reading, True)
         os.set_inheritable(writing, True)
         executable = Path(sys.base_prefix) / "python.exe"
-        worker_path = Path(__file__).parents[1] / "src/purrcept_engine/execution/worker.py"
+        worker_path = (
+            Path(__file__).parents[1] / "src/purrcept_engine/infrastructure/execution/worker.py"
+        )
         try:
             process = WindowsProcess.launch(
                 (

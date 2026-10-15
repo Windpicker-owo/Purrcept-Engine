@@ -324,7 +324,7 @@ class EngineHost:
                 ),
             )
             if self._executor_factory is None:
-                from purrcept_engine.execution.service import ExecutionService
+                from purrcept_engine.infrastructure.execution.service import ExecutionService
 
                 self._execution = ExecutionService(
                     self.catalog,

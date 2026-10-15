@@ -17,8 +17,8 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Protocol, cast
 
-from purrcept_engine.execution.protocol import FrameChannel
-from purrcept_engine.execution.windows import WindowsProcess
+from purrcept_engine.infrastructure.execution.protocol import FrameChannel
+from purrcept_engine.infrastructure.processes.windows import WindowsProcess
 from purrcept_engine.plugins.computer.models import (
     ComputerError,
     ComputerFrame,

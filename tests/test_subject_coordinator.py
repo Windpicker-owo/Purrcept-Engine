@@ -71,7 +71,7 @@ from purrcept_engine.domain.subject.service import SubjectService
 from purrcept_engine.domain.subject.session import DynamicState
 from purrcept_engine.domain.subject.settings import CoordinatorSettings, SubjectModel
 from purrcept_engine.errors import StorageError
-from purrcept_engine.execution.service import ExecutionService
+from purrcept_engine.infrastructure.execution.service import ExecutionService
 from purrcept_engine.infrastructure.models.compiler import compile_materials
 from purrcept_engine.infrastructure.sqlite.store import Store
 from purrcept_engine.values import JsonObject, encode_json

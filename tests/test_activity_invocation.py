@@ -35,7 +35,7 @@ from purrcept_engine.domain.execution.catalog import (
 from purrcept_engine.domain.execution.models import ActionOutcome
 from purrcept_engine.domain.execution.providers import CallContext, CallOutcome, FunctionCapability
 from purrcept_engine.errors import StorageError
-from purrcept_engine.execution.service import ExecutionService
+from purrcept_engine.infrastructure.execution.service import ExecutionService
 from purrcept_engine.infrastructure.sqlite.store import Store
 from purrcept_engine.plugin_system.contracts import (
     PluginBlueprint,

@@ -28,7 +28,7 @@ from purrcept_engine.domain.inputs.models import Admission, InputRecord, InputSu
 from purrcept_engine.domain.knowledge.models import EvidenceSnapshot
 from purrcept_engine.domain.subject.models import InputProcessing
 from purrcept_engine.errors import ConfigError, StorageError
-from purrcept_engine.execution.service import ExecutionService
+from purrcept_engine.infrastructure.execution.service import ExecutionService
 from purrcept_engine.infrastructure.sqlite.store import Store
 from purrcept_engine.plugin_system.contracts import PluginPorts, PluginRuntime
 from purrcept_engine.plugins import images

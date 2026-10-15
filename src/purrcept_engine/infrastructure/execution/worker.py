@@ -35,20 +35,25 @@ from typing import Protocol, TypeGuard, cast
 
 def _install_package_namespace() -> None:
     """脚本启动仅暴露已安装代码路径，不执行父包 __init__ 的 SDK 导入。"""
-    package_directory = Path(__file__).resolve().parent.parent
-    package = ModuleType("purrcept_engine")
-    package.__dict__["__path__"] = [str(package_directory)]
-    execution = ModuleType("purrcept_engine.execution")
-    execution.__dict__["__path__"] = [str(package_directory / "execution")]
-    sys.modules["purrcept_engine"] = package
-    sys.modules["purrcept_engine.execution"] = execution
+    package_directory = Path(__file__).resolve().parents[2]
+    # Ordering: 只建立标准库命名空间；不能执行顶层嵌入入口或应用装配。
+    for name, relative in (
+        ("purrcept_engine", ""),
+        ("purrcept_engine.infrastructure", "infrastructure"),
+        ("purrcept_engine.infrastructure.execution", "infrastructure/execution"),
+        ("purrcept_engine.domain", "domain"),
+        ("purrcept_engine.domain.execution", "domain/execution"),
+    ):
+        package = ModuleType(name)
+        package.__dict__["__path__"] = [str(package_directory / relative)]
+        sys.modules[name] = package
 
 
 try:
     if __name__ == "__main__":
         _install_package_namespace()
     from purrcept_engine.domain.execution.validation import validate_source
-    from purrcept_engine.execution.protocol import FrameChannel
+    from purrcept_engine.infrastructure.execution.protocol import FrameChannel
     from purrcept_engine.values import (
         ActionProtocolError,
         JsonObject,

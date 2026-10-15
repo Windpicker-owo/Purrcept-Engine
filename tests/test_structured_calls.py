@@ -19,15 +19,15 @@ from purrcept_engine.domain.execution.catalog import (
     Catalog,
     ObjectDeclaration,
 )
-from purrcept_engine.domain.execution.models import CallRecord
-from purrcept_engine.domain.execution.providers import CallContext, CallOutcome, FunctionCapability
-from purrcept_engine.domain.inputs.models import MediaReference
-from purrcept_engine.execution.service import (
+from purrcept_engine.domain.execution.errors import (
     ExecutionBusy,
     ExecutionClosed,
     ExecutionLimitError,
-    ExecutionService,
 )
+from purrcept_engine.domain.execution.models import CallRecord
+from purrcept_engine.domain.execution.providers import CallContext, CallOutcome, FunctionCapability
+from purrcept_engine.domain.inputs.models import MediaReference
+from purrcept_engine.infrastructure.execution.service import ExecutionService
 from purrcept_engine.infrastructure.sqlite.store import Store
 from purrcept_engine.values import ActionProtocolError, JsonObject
 

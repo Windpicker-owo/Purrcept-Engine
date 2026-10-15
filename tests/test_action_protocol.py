@@ -10,7 +10,7 @@ from types import MappingProxyType
 
 import pytest
 
-from purrcept_engine.execution.protocol import FrameChannel, read_frame, write_frame
+from purrcept_engine.infrastructure.execution.protocol import FrameChannel, read_frame, write_frame
 from purrcept_engine.values import ActionProtocolError, JsonObject, decode_object, encode_json
 
 
@@ -235,7 +235,7 @@ def test_concurrent_channel_writers_do_not_interleave_partial_frames(
 
 
 def test_channel_cannot_close_a_live_receiver(monkeypatch: pytest.MonkeyPatch) -> None:
-    from purrcept_engine.execution import protocol
+    import purrcept_engine.infrastructure.execution.protocol as protocol
 
     original_read_frame = read_frame
     reading = threading.Event()

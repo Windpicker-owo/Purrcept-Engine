@@ -17,10 +17,10 @@ from purrcept_engine.domain.activities.contracts import ActivityError
 from purrcept_engine.domain.activities.service import ActivityService
 from purrcept_engine.domain.controls.models import ControlError, ControlRecord
 from purrcept_engine.domain.execution.catalog import Catalog
+from purrcept_engine.domain.execution.errors import ExecutionBusy, ExecutionLimitError
 from purrcept_engine.domain.execution.models import ActionRecord
 from purrcept_engine.domain.execution.providers import CapabilityInputError
 from purrcept_engine.errors import HostStateError
-from purrcept_engine.execution.service import ExecutionBusy, ExecutionLimitError
 from purrcept_engine.infrastructure.sqlite.controls import ControlLedger
 from purrcept_engine.plugin_system.contracts import PluginRuntime
 from purrcept_engine.plugin_system.panels import PanelControl, PreviewFrame
