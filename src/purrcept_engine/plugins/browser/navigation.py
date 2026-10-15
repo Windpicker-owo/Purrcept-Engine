@@ -19,7 +19,19 @@ def normalize_and_authorize_url(
     allowed_hosts: tuple[str, ...],
     blocked_hosts: tuple[str, ...],
 ) -> str:
-    """补全 https、限制 http(s)，并按黑名单优先规则验证完整主机名。"""
+    """补全 https、限制 http(s)，并按黑名单优先规则验证完整主机名。
+
+    Args:
+        url: 本次明确访问的资源 URL，实际请求仍须通过对应策略。
+        allowed_hosts: 允许访问的主机名称集合，实际文档请求逐跳核验。
+        blocked_hosts: 明确禁止访问的主机名称集合。
+
+    Returns:
+        通过协议、凭据和主机限制校验的规范 HTTP(S) URL。
+
+    Raises:
+        ValueError: 参数值或组合不满足本入口的明确约束，错误正文指出具体字段。
+    """
 
     if not isinstance(url, str) or not url.strip():
         raise ValueError("url must not be empty.")

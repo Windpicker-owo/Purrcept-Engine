@@ -51,7 +51,17 @@ class VoiceInputSettings(BaseModel):
 
     @model_validator(mode="after")
     def validate_order(self) -> VoiceInputSettings:
-        """前置缓存覆盖起音；连续人声确认不能早于起音或跨越分段长停顿。"""
+        """前置缓存覆盖起音。
+
+        Returns:
+            已校验并固定 VAD 等资源路径的收音配置。
+
+        Raises:
+            ValueError: 参数值或组合不满足本入口的明确约束，错误正文指出具体字段。
+
+        Note:
+            连续人声确认不能早于起音或跨越分段长停顿。
+        """
         if self.pre_roll_ms < self.start_ms:
             raise ValueError("前置缓存必须覆盖起音确认。")
         if self.interrupt_ms < self.start_ms or self.interrupt_gap_ms >= self.end_ms:
@@ -63,7 +73,15 @@ class VoiceInputSettings(BaseModel):
 
 @dataclass(frozen=True, slots=True)
 class InputDevice:
-    """设备枚举事实；枚举不打开输入流，ID 仅在本机当前 PortAudio 列表内有效。"""
+    """设备枚举事实；枚举不打开输入流，ID 仅在本机当前 PortAudio 列表内有效。
+
+    Attributes:
+        device_id: 捕获库枚举的原生输入设备序号。
+        name: 当前声明、字段或协议操作的明确名称。
+
+    Note:
+        实例字段在构造后不可重新赋值；嵌套值的冻结范围由字段所属契约决定。
+    """
 
     device_id: int
     name: str
@@ -77,11 +95,22 @@ class CaptureDriver(Protocol):
     """
 
     async def devices(self) -> tuple[InputDevice, ...]:
-        """只枚举设备名称与 ID，不采集音频。"""
+        """只枚举设备名称与 ID，不采集音频。
+
+        Returns:
+            捕获库实际枚举的输入设备及采样信息。
+        """
         ...
 
     def frames(self, device: int | None) -> AsyncGenerator[bytes]:
-        """打开一次输入流，取消或失败归还原生资源。"""
+        """打开一次输入流，取消或失败归还原生资源。
+
+        Args:
+            device: 显式选定的输入设备序号；None 交由设备适配器解析。
+
+        Returns:
+            按原始采集、解码或播放顺序逐块交付的完整字节流。
+        """
         ...
 
 
@@ -93,13 +122,26 @@ class VoiceDetector(Protocol):
     """
 
     def probability(self, pcm: bytes) -> float:
-        """返回当前帧人声概率，不把语义、音量或身份当作人声判断。"""
+        """返回当前帧人声概率，不把语义、音量或身份当作人声判断。
+
+        Args:
+            pcm: 已解码的 PCM 字节或按播放顺序产生的字节流。
+        """
         ...
 
 
 @dataclass(frozen=True, slots=True)
 class TranscriptUpdate:
-    """一次识别任务内的句子修订，final 不等同于整个任务完成。"""
+    """一次识别任务内的句子修订，final 不等同于整个任务完成。
+
+    Attributes:
+        sentence_id: 同一捕获会话内本次发言的稳定身份。
+        text: 本次明确传输、输入或呈现的完整文本。
+        final: 此次转写是否为端点确认的最终结果。
+
+    Note:
+        实例字段在构造后不可重新赋值；嵌套值的冻结范围由字段所属契约决定。
+    """
 
     sentence_id: str
     text: str
@@ -115,7 +157,14 @@ class StreamingTranscriber(Protocol):
     """
 
     def transcribe(self, frames: AsyncIterator[bytes]) -> AsyncIterator[TranscriptUpdate]:
-        """并行发送音频与接收修订，正常结束代表最终结果完整。"""
+        """并行发送音频与接收修订，正常结束代表最终结果完整。
+
+        Args:
+            frames: 当前捕获块的帧数或顺序产生的 PCM 帧流。
+
+        Returns:
+            按真实接收顺序产生的转写更新，保留临时与最终文本区别。
+        """
         ...
 
 

@@ -53,9 +53,17 @@ ACTIVITY_DECLARATION = CapabilityDeclaration(
 
 
 def activity_capability(service: ActivityService) -> CapabilityImplementation:
-    """把同一实际服务绑定到目录声明，内部/权威错误保留原型。"""
+    """把同一实际服务绑定到目录声明，内部/权威错误保留原型。
+
+    Args:
+        service: 已装配的业务服务，能力入口借用其已有状态。
+
+    Returns:
+        已绑定业务所有者的宿主能力实现，实际派发仍经过共享执行器。
+    """
 
     async def invoke(parameters: _ActivityParameters, context: CallContext) -> CallOutcome:
+        """在已有业务边界内调用原入口，保留已分类失败和真实回执。"""
         try:
             control = await service.subject_command(
                 context.call_id,

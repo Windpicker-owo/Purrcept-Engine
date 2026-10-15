@@ -19,7 +19,12 @@ function count(value: Json | undefined): number | undefined {
   return undefined;
 }
 
-/** 卡片上的一两句关键事实；用户语言，不含实现标识。 */
+/**
+ * 从已提供字段构造设备简要事实。
+ *
+ * @param device 宿主实际装配的设备及其已校验状态。
+ * @returns 当前可确认的摘要行，缺失字段不补造为成功或离线。
+ */
 export function deviceSummary(device: Device): string[] {
   const s = device.state;
   const lines: string[] = [];
@@ -77,7 +82,12 @@ export function deviceSummary(device: Device): string[] {
   return lines;
 }
 
-/** 卡片下方的行为说明，解释控制的实际范围。 */
+/**
+ * 给出当前设备类别的操作边界说明。
+ *
+ * @param device 宿主实际装配的设备及其已校验状态。
+ * @returns 已知类别的一句使用提示；无对应说明时为 null。
+ */
 export function deviceNote(device: Device): string | null {
   switch (device.kind) {
     case "qq": return "重新连接不会重发旧消息或结果未知的发送。";
@@ -89,7 +99,12 @@ export function deviceNote(device: Device): string | null {
   }
 }
 
-/** Inspector 技术细节：全部原始字段与身份，原样保留。 */
+/**
+ * 保留设备完整技术事实供 Inspector 核对。
+ *
+ * @param device 宿主实际装配的设备及其已校验状态。
+ * @returns 具名关键字段及未消费的原始 JSON 字段，不改写权威状态。
+ */
 export function deviceTechnical(device: Device): [string, Json | undefined][] {
   const s = device.state;
   const known: [string, Json | undefined][] = (() => {
@@ -105,7 +120,13 @@ export function deviceTechnical(device: Device): [string, Json | undefined][] {
   return [["实例", device.instance_id], ["类别", device.kind], ["控制版本", device.revision], ["状态值", s.state], ...known];
 }
 
-/** 控制资格用明确连接/观察事实，缺失字段不会假设设备处于安全初始态。 */
+/**
+ * 检查当前电脑观察控制是否满足页面条件。
+ *
+ * @param device 实际设备状态，只有 computer 类型采用此规则。
+ * @param operation 明确的连接、断开、开始观察或暂停操作。
+ * @returns 拒绝操作的原因；undefined 表示本规则不阻止，宿主仍会核验。
+ */
 export function computerReason(device: Device, operation: string): string | undefined {
   if (device.kind !== "computer") return undefined;
   if (typeof device.state.connected !== "boolean" || typeof device.state.observing !== "boolean") return "电脑连接或观察状态未提供。";

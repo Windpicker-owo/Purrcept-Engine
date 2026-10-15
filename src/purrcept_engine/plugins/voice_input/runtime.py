@@ -83,7 +83,20 @@ class VoiceInputRuntime:
         *,
         native_audio_enabled: bool,
     ) -> None:
-        """保存明确依赖；构造不打开声卡、VAD 或付费模型。"""
+        """保存明确依赖。
+
+        Args:
+            instance_id: 本次装配中唯一的插件或宿主实例身份。
+            settings: 当前组件已校验的配置或纯声明。
+            inputs: 正式接管与查询输入的有限端口，不持有主脑或通用存储。
+            capture_factory: 为当前插件实例创建独立捕获驱动的工厂。
+            vad_factory: 创建当前输入实例 VAD 检测器的工厂。
+            transcriber: 当前运行实例借用的流式转写资源。
+            native_audio_enabled: 宿主确认模型音频声明与媒体计量规则均可用于原声准入。
+
+        Note:
+            构造不打开声卡、VAD 或付费模型。
+        """
         self.instance_id, self.settings, self.inputs = instance_id, settings, inputs
         self.capture_factory, self.vad_factory, self.transcriber = (
             capture_factory,
@@ -114,7 +127,12 @@ class VoiceInputRuntime:
         self.device_cache: tuple[InputDevice, ...] | None = None
 
     def snapshot(self) -> JsonObject:
-        """读取实际阶段和来源，识别完成不冒充主体已处理或已经回应。"""
+        """读取实际阶段和来源，识别完成不冒充主体已处理或已经回应。
+
+        Returns:
+            业务对象，按实际结果提供 state、session_id、mode、device、source_name、
+            utterance_id、level、partial、error、asr_ready 等 字段。
+        """
         return {
             "state": self.state,
             "session_id": self.session,
@@ -142,10 +160,13 @@ class VoiceInputRuntime:
         }
 
     async def prepare_request(self) -> JsonObject:
-        """交付收音能力与实际阶段；不把未定识别文本或历史预览当作新发言。
+        """交付收音能力与实际阶段。
 
-        已接管发言沿正式输入进入上下文。缺口保留来源和原因，不能因省去
-        采样电平、缓存计数和设备枚举而隐藏收音失败。
+        Note:
+            不把未定识别文本或历史预览当作新发言。
+
+            已接管发言沿正式输入进入上下文。缺口保留来源和原因，不能因省去
+            采样电平、缓存计数和设备枚举而隐藏收音失败。
         """
         state = self.snapshot()
         return {
@@ -164,7 +185,11 @@ class VoiceInputRuntime:
         }
 
     async def status(self) -> JsonObject:
-        """按 input_id 查询真实处理阶段，观察不重投已接管音频或文字。"""
+        """查询最近发言的权威处理阶段，返回当前收音状态。
+
+        Note:
+            按 input_id 查询真实处理阶段，观察不重投已接管音频或文字。
+        """
         for item in tuple(self.history):
             input_id = item.get("input_id")
             if isinstance(input_id, str):
@@ -174,7 +199,11 @@ class VoiceInputRuntime:
         return self.snapshot()
 
     async def devices(self) -> JsonObject:
-        """明确枚举输入设备，不开始收音。"""
+        """明确枚举输入设备，不开始收音。
+
+        Returns:
+            业务对象，按实际结果提供 devices、devices_loaded 字段。
+        """
         devices = await self.capture_factory().devices()
         self.device_cache = devices
         return {
@@ -183,7 +212,19 @@ class VoiceInputRuntime:
         }
 
     async def start(self, mode: InputMode, device: int | None) -> JsonObject:
-        """串行取得设备；第一帧实际到达后才确认 listening，不自动重新启动。"""
+        """按明确模式与设备启动收音，首帧到达后确认 listening。
+
+        Args:
+            mode: 明确的 asr（转写）或 audio（原声）模式，不接受缺省模式。
+            device: 显式选定的输入设备序号；None 交由设备适配器解析。
+
+        Raises:
+            VoiceInputError: 设备、捕获格式、VAD/ASR 协议或有界帧队列不满足收音要求。
+            TimeoutError: 麦克风启动超过 20 秒，当前启动已取消。
+
+        Note:
+            串行取得设备；第一帧实际到达后才确认 listening，不自动重新启动。
+        """
         async with self.control:
             if self.closed:
                 raise VoiceInputError("收音插件已关闭。")
@@ -232,7 +273,11 @@ class VoiceInputRuntime:
             self.state, self.error = "failed", "收音内部失败：" + type(error).__name__
 
     async def stop(self) -> JsonObject:
-        """停止新采样并释放未接管缓存，不能承担停止已有音频输出。"""
+        """停止新采样并等待当前捕获资源归还。
+
+        Note:
+            停止新采样并释放未接管缓存，不能承担停止已有音频输出。
+        """
         async with self.control:
             await self._stop()
             return self.snapshot()
@@ -450,6 +495,7 @@ class VoiceInputRuntime:
         sentences: dict[str, TranscriptUpdate] = {}
 
         async def frames() -> AsyncIterator[bytes]:
+            """按捕获先后交付本次发言的完整 PCM 帧，终止标记结束读取。"""
             while (pcm := await utterance.queue.get()) is not None:
                 yield pcm
 

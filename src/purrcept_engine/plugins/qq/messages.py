@@ -22,7 +22,17 @@ from purrcept_engine.values import (
 
 
 def id_text(value: JsonValue) -> str:
-    """原生整数/字符串身份保留符号；bool 不能充当 QQ 号或消息身份。"""
+    """原生整数/字符串身份保留符号。
+
+    Args:
+        value: 平台实际返回的整数或字符串身份，拒绝将 bool 解释为号码。
+
+    Returns:
+        平台原始身份的字符串表示；缺失或不支持的值返回空字符串。
+
+    Note:
+        bool 不能充当 QQ 号或消息身份。
+    """
     if isinstance(value, str):
         return value
     if type(value) is int:
@@ -31,12 +41,26 @@ def id_text(value: JsonValue) -> str:
 
 
 def object_value(value: JsonValue) -> JsonObject:
-    """仅把实际 JSON 对象视为字段集合，不从字符串或序列猜对象。"""
+    """仅把实际 JSON 对象视为字段集合，不从字符串或序列猜对象。
+
+    Args:
+        value: 待核验的原生 JSON 值，仅真实对象可展开字段。
+
+    Returns:
+        原生 JSON 对象本身；其他 JSON 值返回空映射。
+    """
     return value if isinstance(value, dict) else {}
 
 
 def message_text(value: JsonValue) -> str:
-    """保留完整文字和非文字段的可辨识位置，不裁剪正文或声明已看媒体。"""
+    """保留完整文字和非文字段的可辨识位置，不裁剪正文或声明已看媒体。
+
+    Args:
+        value: 平台实际返回的原生消息值，包含文字或 OneBot 消息分段。
+
+    Returns:
+        包含完整文字与非文字段位置提示的消息文本。
+    """
     if isinstance(value, str):
         return value
     if not isinstance(value, list):
@@ -66,7 +90,14 @@ def message_text(value: JsonValue) -> str:
 
 
 def image_references(value: JsonValue) -> list[JsonValue]:
-    """返回实际图片段原字段，既不下载也不补造 URL/id。"""
+    """返回实际图片段原字段，既不下载也不补造 URL/id。
+
+    Args:
+        value: 平台实际返回的原生消息值，包含文字或 OneBot 消息分段。
+
+    Returns:
+        实际图片分段的原字段，不下载或补造 URL 与身份。
+    """
     result: list[JsonValue] = []
     if isinstance(value, list):
         for segment in value:
@@ -83,7 +114,12 @@ def image_references(value: JsonValue) -> list[JsonValue]:
 
 
 def filter_reason(payload: JsonObject, settings: QQSettings) -> str | None:
-    """只过滤自动推送的会话/直接发送者，不能递归屏蔽引用或限制能力调用。"""
+    """只过滤自动推送的会话/直接发送者，不能递归屏蔽引用或限制能力调用。
+
+    Args:
+        payload: 当前平台推送的完整原生消息事件。
+        settings: 当前组件已校验的配置或纯声明。
+    """
     group = id_text(payload.get("group_id"))
     sender = id_text(payload.get("user_id"))
     if sender in settings.ban_user_id:
@@ -98,7 +134,20 @@ def filter_reason(payload: JsonObject, settings: QQSettings) -> str | None:
 
 
 def project_message(payload: JsonObject, *, chat: str, target_id: str) -> JsonObject:
-    """保留旧公开字段及实际原段；欠缺平台字段为空值并列出覆盖未知。"""
+    """投影消息公开字段，并保留平台实际返回的原生分段。
+
+    Args:
+        payload: 当前平台推送的完整原生消息事件。
+        chat: 原生会话身份，私聊与群聊按 QQ 协议区分。
+        target_id: 能力绑定的目标对象身份。
+
+    Returns:
+        业务对象，按实际结果提供 chat、target_id、target_name、sender_id、sender_name、
+        message_id、text、self_id、time、images 等 字段。
+
+    Note:
+        欠缺平台字段为空值并列出覆盖未知。
+    """
     sender = object_value(payload.get("sender"))
     raw = payload.get("message", payload.get("raw_message"))
     self_id = id_text(payload.get("self_id"))
@@ -141,7 +190,14 @@ def project_message(payload: JsonObject, *, chat: str, target_id: str) -> JsonOb
 
 
 def forward_ids(value: JsonValue) -> tuple[str, ...]:
-    """保留 Runtime 的 forward/JSON/XML resid 识别，不把普通链接当作转发。"""
+    """保留 Runtime 的 forward/JSON/XML resid 识别，不把普通链接当作转发。
+
+    Args:
+        value: 平台实际返回的原生消息值，包含文字或 OneBot 消息分段。
+
+    Returns:
+        按实际出现顺序取得的原生转发身份。
+    """
     if not isinstance(value, list):
         return ()
     found: list[str] = []
@@ -188,7 +244,15 @@ def forward_ids(value: JsonValue) -> tuple[str, ...]:
 
 
 def directory(data: JsonValue, *, kind: str) -> JsonObject:
-    """保留好友/群/成员公开字段及字符串身份，异常条目按实际位置报告。"""
+    """保留好友/群/成员公开字段及字符串身份，异常条目按实际位置报告。
+
+    Args:
+        data: 好友、群或成员列表接口实际返回的原生 data。
+        kind: 此业务值所属的稳定种类。
+
+    Returns:
+        业务对象，按实际结果提供 issues 字段。
+    """
     if not isinstance(data, list):
         return {kind: None, "issues": [{"position": None, "reason": "平台未提供实际列表"}]}
     rows: list[JsonValue] = []
@@ -214,6 +278,8 @@ def directory(data: JsonValue, *, kind: str) -> JsonObject:
 
 @dataclass(slots=True)
 class _Conversation:
+    """保存当前 QQ 会话的有限消息关系索引。"""
+
     messages: list[JsonObject]
     size: int
 
@@ -226,7 +292,11 @@ class HistoryCache:
     """
 
     def __init__(self, settings: QQSettings) -> None:
-        """只配置内存额度，不读取磁盘或构造额外权威数据库。"""
+        """只配置内存额度，不读取磁盘或构造额外权威数据库。
+
+        Args:
+            settings: 当前组件已校验的配置或纯声明。
+        """
         self._settings = settings
         self._conversations: OrderedDict[tuple[str, str, str], _Conversation] = OrderedDict()
         self._bytes = 0
@@ -234,7 +304,15 @@ class HistoryCache:
     def remember(self, scope: str, message: JsonObject) -> None:
         """同一消息身份替换投影，额度只覆盖有限的历史与回复关系材料。
 
-        原生重放由宿主已接管原文核对，不能依赖本缓存的存在或淘汰顺序。
+        Args:
+            scope: 当前账号下明确区分私聊或群聊的会话范围。
+            message: 已解码的原生协议对象。
+
+        Raises:
+            ValueError: QQ 缓存消息缺少实际会话。
+
+        Note:
+            原生重放由宿主已接管原文核对，不能依赖本缓存的存在或淘汰顺序。
         """
         chat, target = message.get("chat"), message.get("target_id")
         if not isinstance(chat, str) or not isinstance(target, str):
@@ -261,12 +339,26 @@ class HistoryCache:
             self._bytes -= removed.size
 
     def read(self, scope: str, chat: str, target_id: str, count: int) -> list[JsonValue]:
-        """只返回当前已知范围，缺缓存由调用者报告故障而不是空历史。"""
+        """只返回当前已知范围，缺缓存由调用者报告故障而不是空历史。
+
+        Args:
+            scope: 当前账号下明确区分私聊或群聊的会话范围。
+            chat: 原生会话身份，私聊与群聊按 QQ 协议区分。
+            target_id: 能力绑定的目标对象身份。
+            count: 原生缓冲区或句柄数组的有效元素数量。
+        """
         value = self._conversations.get((scope, chat, target_id))
         return [] if value is None else list(value.messages[-count:])
 
     def find(self, scope: str, chat: str, target_id: str, message_id: str) -> JsonObject | None:
-        """回复关系只在同账号同会话的已取得消息中核验，不跨会话猜发送者。"""
+        """回复关系只在同账号同会话的已取得消息中核验，不跨会话猜发送者。
+
+        Args:
+            scope: 当前账号下明确区分私聊或群聊的会话范围。
+            chat: 原生会话身份，私聊与群聊按 QQ 协议区分。
+            target_id: 能力绑定的目标对象身份。
+            message_id: 平台返回的原生消息身份，不由请求文本推断。
+        """
         value = self._conversations.get((scope, chat, target_id))
         if value is None:
             return None

@@ -61,11 +61,29 @@ class EngineState:
         embedding_provider: EmbeddingProvider | None = None,
         reranker: Reranker | None = None,
     ) -> None:
-        """保存配置并核验纯声明；具体资源与可替换执行器仅在 Host 的 start 装配。
+        """保存配置并核验纯声明。
 
-        plugin_factories 显式登记可信工厂，不触发自动扫描。executor_factory
-        可替换平台执行器，但仍借用有限 ExecutionJournal 并满足 ActionExecutor
-        的资格、真实效果与资源寿命契约，不能降级成宿主 exec。
+        Args:
+            config: 已校验的宿主配置声明，不在构造时连接外部服务。
+            plugin_factories: 显式插件工厂表；None 使用内置登记，不扫描外部包。
+            executor_factory: 可替换隔离执行器的工厂；None 使用默认执行器。
+            console_output: 显式控制台能力使用的文字输出回调。
+            generation_backends: 按配置名注入的生成后端，由嵌入调用者负责最终关闭。
+            decision_backends: 按配置名注入的判断后端，由嵌入调用者负责最终关闭。
+            capacity_rules: 按规则名显式登记的纯容量计量函数。
+            embedding_provider: 嵌入调用者注入的向量 Provider；None 按显式配置装配。
+            reranker: 可选重排器，只能对给定候选排序。 None 表示不重排。
+
+        Raises:
+            HostStateError: 创建宿主前必须显式解析数据目录。
+            ConfigError: 配置字段、资源声明或目录绑定不满足本入口的装配要求。
+
+        Note:
+            具体资源与可替换执行器仅在 Host 的 start 装配。
+
+            plugin_factories 显式登记可信工厂，不触发自动扫描。executor_factory
+            可替换平台执行器，但仍借用有限 ExecutionJournal 并满足 ActionExecutor
+            的资格、真实效果与资源寿命契约，不能降级成宿主 exec。
         """
         if not config.host.data_dir.is_absolute():
             raise HostStateError("创建宿主前必须显式解析数据目录。")

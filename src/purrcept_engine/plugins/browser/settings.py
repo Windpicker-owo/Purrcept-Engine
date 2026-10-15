@@ -53,17 +53,35 @@ class BrowserSettings(BaseModel):
     @field_validator("allowed_hosts", "blocked_hosts")
     @classmethod
     def known_host_strings(cls, value: tuple[str, ...]) -> tuple[str, ...]:
-        """配置边界拒空主机，规范大小写，不把正文内容解释成许可。"""
+        """配置边界拒空主机，规范大小写，不把正文内容解释成许可。
+
+        Args:
+            value: 显式允许或禁止的主机名列表，拒绝空白条目并规范大小写。
+
+        Raises:
+            ValueError: 主机名单不能包含空项。
+        """
         if any(not host.strip() for host in value):
             raise ValueError("主机名单不能包含空项。")
         return tuple(host.strip().lower() for host in value)
 
     def typing_pause_seconds(self, text: str) -> float:
-        """沿用每字0.04秒、总1.2秒的输入停顿，0关闭停顿。"""
+        """沿用每字0.04秒、总1.2秒的输入停顿，0关闭停顿。
+
+        Args:
+            text: 本次明确传输、输入或呈现的完整文本。
+        """
         return min(len(text) * self.typing_delay_per_char_seconds, self.typing_delay_max_seconds)
 
     def resolve_paths(self, base_dir: Path) -> BrowserSettings:
-        """纯路径装配，不查文件、不展开另一个配置来源。"""
+        """纯路径装配，不查文件、不展开另一个配置来源。
+
+        Args:
+            base_dir: 解析相对配置路径的基准目录。
+
+        Returns:
+            相对路径已沿明确配置目录解析的浏览器设置。
+        """
         replacements: dict[str, object] = {}
         for name in ("user_data_dir", "screenshot_dir", "executable_path"):
             value: object = getattr(self, name)

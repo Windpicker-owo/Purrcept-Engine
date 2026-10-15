@@ -20,10 +20,18 @@ from purrcept_engine.serialization import encode
 def model_input_boundary[**P, R](
     function: Callable[P, Awaitable[R]],
 ) -> Callable[P, Awaitable[R | ToolResult]]:
-    """保留公开签名及工具说明，仅转译有限可纠正错误，不重置本轮预算。"""
+    """保留公开签名及工具说明，仅转译有限可纠正错误，不重置本轮预算。
+
+    Args:
+        function: 待包装的工具入口，保留原有参数和调用身份注入。
+
+    Returns:
+        保留原签名的工具包装；只将已分类输入错误转为结构化回执。
+    """
 
     @wraps(function)
     async def invoke(*args: P.args, **kwargs: P.kwargs) -> R | ToolResult:
+        """在已有业务边界内调用原入口，保留已分类失败和真实回执。"""
         try:
             return await function(*args, **kwargs)
         except (KnowledgeInputError, ActionSourceError, ValidationError) as error:

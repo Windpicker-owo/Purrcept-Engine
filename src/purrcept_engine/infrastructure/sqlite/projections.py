@@ -16,7 +16,17 @@ from purrcept_engine.values import JsonObject, JsonValue
 
 
 def runtime(connection: sqlite3.Connection) -> JsonObject:
-    """读取积压、当前会话、有限最近行动和活动，不运行模型或回放工作。"""
+    """读取积压、当前会话、有限最近行动和活动，不运行模型或回放工作。
+
+    Args:
+        connection: 仅在 Store 专属线程当前短事务中借用的连接，不在回调中等待设备或模型。
+
+    Returns:
+        业务对象，按实际结果提供 pending_inputs、sessions、recent_actions、activities 字段。
+
+    Raises:
+        StorageError: 行动概况关联损坏。
+    """
     counts: list[tuple[object, ...]] = connection.execute(
         "SELECT s.stage,count(*),sum(i.logical_bytes) FROM pending_inputs p "
         "JOIN inputs i USING(input_id) JOIN input_processing s USING(input_id) GROUP BY s.stage"
@@ -78,7 +88,14 @@ def runtime(connection: sqlite3.Connection) -> JsonObject:
 
 
 def action_projection(action: execution_models.ActionRecord) -> JsonObject:
-    """用逐次真实状态表达部分结果，长正文只给明确截断的有限预览。"""
+    """用逐次真实状态表达部分结果，长正文只给明确截断的有限预览。
+
+    Args:
+        action: 本次执行服务接管的冻结脚本或结构化调用。
+
+    Returns:
+        业务对象，按实际结果提供 action_id、state、created_at、finished_at、error、calls 字段。
+    """
     return {
         "action_id": action.action_id,
         "state": action.state,

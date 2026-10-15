@@ -24,18 +24,39 @@ class HostLifecycle:
     """应用创建的HostLifecycle；职责和借用只属于当前 Engine 实例。"""
 
     def __init__(self, state: EngineState) -> None:
-        """借用唯一资源台账，不取得模型、插件或存储连接。"""
+        """借用唯一资源台账，不取得模型、插件或存储连接。
+
+        Args:
+            state: 此宿主唯一的内部资源台账，不跨实例或插件共享。
+        """
         self.state = state
         self.start_operation: Callable[[], Awaitable[None]] | None = None
 
     def bind_start(self, operation: Callable[[], Awaitable[None]]) -> None:
-        """由 Host 在构造末尾绑定唯一装配操作，不能运行期替换。"""
+        """由 Host 在构造末尾绑定唯一装配操作，不能运行期替换。
+
+        Args:
+            operation: 同一宿主的异步生命周期入口，创建者须负责其真实收尾。
+
+        Raises:
+            HostStateError: 启动操作已经装配。
+        """
         if self.start_operation is not None:
             raise HostStateError("启动操作已经装配。")
         self.start_operation = operation
 
     async def start(self) -> HostSnapshot:
-        """取得单实例与核心存储；失败清理自身资源，重复调用等待同次启动。"""
+        """取得单实例与核心存储。
+
+        Returns:
+            当前实例、生命周期阶段和未归还资源的不可变快照；closing 表示收尾仍在继续。
+
+        Raises:
+            HostStateError: 该宿主不能启动；宿主启动操作尚未装配。
+
+        Note:
+            失败清理自身资源，重复调用等待同次启动。
+        """
         if self.state.phase in ("closing", "closed", "failed"):
             raise HostStateError("该宿主不能启动。")
         if self.start_operation is None:
@@ -77,12 +98,23 @@ class HostLifecycle:
                 continue
 
     def maintenance_done(self, task: asyncio.Task[None]) -> None:
-        """只消费并锁存真实维护程序/权威故障；明确诊断失败已在查询值中表达。"""
+        """只消费并锁存真实维护程序/权威故障。
+
+        Args:
+            task: 当前所有者创建并负责回收结果的任务。
+
+        Note:
+            明确诊断失败已在查询值中表达。
+        """
         if not task.cancelled() and (error := task.exception()) is not None:
             self.state.maintenance_failure = error
 
     def query(self) -> HostSnapshot:
-        """返回生命周期快照，不触发存储读取、设备或模型调用。"""
+        """返回生命周期快照，不触发存储读取、设备或模型调用。
+
+        Returns:
+            当前实例、生命周期阶段和未归还资源的不可变快照；closing 表示收尾仍在继续。
+        """
         resources: list[str] = []
         if self.state.phase in ("closing", "failed"):
             if self.state.start_task is not None and not self.state.start_task.done():
@@ -113,7 +145,14 @@ class HostLifecycle:
         )
 
     async def close(self) -> HostSnapshot:
-        """关闭新入口并等待同一总期限；超时返回 closing，继续持有收尾资源。"""
+        """关闭新入口并等待同一总期限。
+
+        Returns:
+            当前实例、生命周期阶段和未归还资源的不可变快照；closing 表示收尾仍在继续。
+
+        Note:
+            超时返回 closing，继续持有收尾资源。
+        """
         if self.state.close_task is None:
             loop = asyncio.get_running_loop()
             self.state.close_deadline = loop.time() + self.state.config.host.close_seconds
@@ -141,7 +180,20 @@ class HostLifecycle:
         return self.query()
 
     async def wait_closed(self, *, wait_seconds: float | None = None) -> HostSnapshot:
-        """继续等待已发起的关闭；新的观察期限不重置原关闭期限或清理任务。"""
+        """继续等待已发起的关闭。
+
+        Args:
+            wait_seconds: 本次观察关闭进度的等待秒数；None 表示等待实际结束。
+
+        Returns:
+            当前实例、生命周期阶段和未归还资源的不可变快照；closing 表示收尾仍在继续。
+
+        Raises:
+            HostStateError: 尚未发起关闭。
+
+        Note:
+            新的观察期限不重置原关闭期限或清理任务。
+        """
         if self.state.close_task is None:
             raise HostStateError("尚未发起关闭。")
         async with asyncio.timeout(wait_seconds):
@@ -149,7 +201,11 @@ class HostLifecycle:
         return self.query()
 
     async def finish_close(self) -> None:
-        """先收回启动所有权，再排空库；连接实际释放前不能解除目录锁。"""
+        """先收回启动所有权，再排空库。
+
+        Note:
+            连接实际释放前不能解除目录锁。
+        """
         try:
             if self.state.start_task is not None:
                 try:
@@ -171,10 +227,15 @@ class HostLifecycle:
     async def release_resources(self) -> None:
         """按依赖收回借用并汇总原始错误，独立失败不阻断其余资源归还。
 
-        close 报错可能是已排空工作重新报告原始故障，也可能是资源释放未被
-        确认。只有成功或组件明确给出的归还证据才清引用；未归还的借用者
-        继续保留母 Store 和目录锁。各关闭任务由 Host 登记一次，启动失败
-        后的关闭观察也不会盲目重做已经部分执行的插件清理。
+        Raises:
+            BaseExceptionGroup: 宿主资源收尾失败。
+            HostStateError: 资源关闭已结束，但尚未确认全部借用归还。
+
+        Note:
+            close 报错可能是已排空工作重新报告原始故障，也可能是资源释放未被
+            确认。只有成功或组件明确给出的归还证据才清引用；未归还的借用者
+            继续保留母 Store 和目录锁。各关闭任务由 Host 登记一次，启动失败
+            后的关闭观察也不会盲目重做已经部分执行的插件清理。
         """
         errors: list[BaseException] = []
         self.state.maintenance_stop.set()
@@ -346,13 +407,21 @@ class HostLifecycle:
     async def call_lifecycle(self, operation: Callable[[], Awaitable[None]]) -> None:
         """将生命周期调用本身纳入唯一任务，返回 Awaitable 前的故障也保留。
 
-        插件可交回协程或已有 Future；宿主登记后才调用它。同步构造等待对象
-        失败仍属于同一关闭进度，不能跳出资源汇总或在后续观察中再次调用。
+        Args:
+            operation: 同一宿主的异步生命周期入口，创建者须负责其真实收尾。
+
+        Note:
+            插件可交回协程或已有 Future；宿主登记后才调用它。同步构造等待对象
+            失败仍属于同一关闭进度，不能跳出资源汇总或在后续观察中再次调用。
         """
         await operation()
 
     async def close_subject(self) -> None:
-        """撤销主体等待并收回摘要，真实执行借用由并行执行收尾继续持有。"""
+        """撤销主体等待并收回摘要，真实执行借用由并行执行收尾继续持有。
+
+        Raises:
+            BaseExceptionGroup: 主体与摘要收尾失败。
+        """
         subject = self.state.subject
         assert subject is not None
         workers = tuple(
@@ -387,7 +456,11 @@ class HostLifecycle:
             raise BaseExceptionGroup("主体与摘要收尾失败。", errors)
 
     def projection(self) -> JsonObject:
-        """插件借用提交后的宿主状态，不取得主脑会话或可变配置。"""
+        """插件借用提交后的宿主状态，不取得主脑会话或可变配置。
+
+        Returns:
+            业务对象，按实际结果提供 instance_id、version、phase、pending_resources 字段。
+        """
         snapshot = self.query()
         return {
             "instance_id": snapshot.instance_id,
@@ -397,7 +470,11 @@ class HostLifecycle:
         }
 
     def check_dispatch(self) -> None:
-        """新派发在实际开始前核验宿主和权威资格，收尾查询不使用此门槛。"""
+        """新派发在实际开始前核验宿主和权威资格，收尾查询不使用此门槛。
+
+        Raises:
+            StorageError: 权威存储当前不能接管新派发。
+        """
         store = self.running_store()
         if self.state.input_failure is not None:
             raise self.state.input_failure
@@ -414,20 +491,35 @@ class HostLifecycle:
     def check_owned_dispatch(self) -> None:
         """将宿主正常关闭传入工作器取消链，内部故障仍保持原始类型。
 
-        phase 先关闭新入口，再启动各实际收尾任务。这个短窗口里的固定工作器
-        必须停止等待，不能把正常关闭当程序故障锁存；公开入口仍报 HostStateError。
+        Note:
+            phase 先关闭新入口，再启动各实际收尾任务。这个短窗口里的固定工作器
+            必须停止等待，不能把正常关闭当程序故障锁存；公开入口仍报 HostStateError。
         """
         if self.state.phase in ("closing", "closed"):
             raise asyncio.CancelledError
         self.check_dispatch()
 
     def running_store(self) -> Store:
-        """新业务只在 running 阶段借用权威库；收尾查询另走只读入口。"""
+        """新业务只在 running 阶段借用权威库。
+
+        Returns:
+            同一宿主借出的权威库，连接关闭仍归原所有者。
+
+        Raises:
+            HostStateError: 宿主当前不接管新输入。
+
+        Note:
+            收尾查询另走只读入口。
+        """
         if self.state.phase != "running" or self.state.store is None:
             raise HostStateError("宿主当前不接管新输入。")
         return self.state.store
 
     def transition(self, phase: HostPhase) -> None:
-        """生命周期版本与实际状态一起前进，查询不会制造新版本。"""
+        """生命周期版本与实际状态一起前进，查询不会制造新版本。
+
+        Args:
+            phase: 宿主实际生命周期阶段，与查询版本同时更新。
+        """
         self.state.phase = phase
         self.state.version += 1

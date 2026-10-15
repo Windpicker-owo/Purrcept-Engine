@@ -25,7 +25,11 @@ SCHEMA = (
 
 
 def initialize(connection: sqlite3.Connection) -> None:
-    """借用调用方启动事务保留旧未确认控制，不提交或重放设备调用。"""
+    """借用调用方启动事务保留旧未确认控制，不提交或重放设备调用。
+
+    Args:
+        connection: 仅在 Store 专属线程当前短事务中借用的连接，不在回调中等待设备或模型。
+    """
     connection.execute("SELECT * FROM panel_controls LIMIT 0")
     # 启动事务由 Store 持有；恢复失败不能单独提交任何子系统。
     connection.execute(
@@ -37,7 +41,19 @@ def initialize(connection: sqlite3.Connection) -> None:
 
 
 def get(connection: sqlite3.Connection, request_id: str) -> ControlRecord | None:
-    """按稳定身份读取，查询不改变设备或重新派发。"""
+    """按稳定身份读取，查询不改变设备或重新派发。
+
+    Args:
+        connection: 仅在 Store 专属线程当前短事务中借用的连接，不在回调中等待设备或模型。
+        request_id: 逻辑请求的稳定身份，用于查询或关联同一次受理。
+
+    Returns:
+        稳定请求身份的受理记录与当前实际业务关联。 未取得对应记录或素材时返回 None；
+        读取故障仍抛出。
+
+    Raises:
+        StorageError: 面板控制状态损坏。
+    """
     row: tuple[object, ...] | None = connection.execute(
         "SELECT request_id,instance_id,payload_json,state,admitted_at,action_id,command_id,"
         "finished_at,error_code,error FROM panel_controls WHERE request_id=?",
@@ -65,7 +81,23 @@ def get(connection: sqlite3.Connection, request_id: str) -> ControlRecord | None
 def admit(
     connection: sqlite3.Connection, request_id: str, instance_id: str, payload_json: str
 ) -> tuple[ControlRecord, bool]:
-    """同事务去重和限额；不同参数复用身份明确拒绝，不覆盖原操作。"""
+    """同事务去重和限额。
+
+    Args:
+        connection: 仅在 Store 专属线程当前短事务中借用的连接，不在回调中等待设备或模型。
+        request_id: 逻辑请求的稳定身份，用于查询或关联同一次受理。
+        instance_id: 本次装配中唯一的插件或宿主实例身份。
+        payload_json: 已编码的业务事实，不包含任意 Python 对象。
+
+    Returns:
+        权威接管记录及是否为重复请求；重复身份不会重新派发。
+
+    Raises:
+        ControlError: 控制身份对应不同请求；快捷控制接管已满。
+
+    Note:
+        不同参数复用身份明确拒绝，不覆盖原操作。
+    """
     with connection:
         connection.execute("BEGIN IMMEDIATE")
         previous = get(connection, request_id)
@@ -93,7 +125,17 @@ def link(
     action_id: str | None = None,
     command_id: str | None = None,
 ) -> None:
-    """记录执行器实际分配的身份，不能用页面自填值或重新派发恢复关联。"""
+    """记录执行器实际分配的身份，不能用页面自填值或重新派发恢复关联。
+
+    Args:
+        connection: 仅在 Store 专属线程当前短事务中借用的连接，不在回调中等待设备或模型。
+        request_id: 逻辑请求的稳定身份，用于查询或关联同一次受理。
+        action_id: 执行器分配的行动身份，用于关联逐次调用和真实回执。
+        command_id: 控制命令的稳定身份；重复提交须沿用原身份和内容。
+
+    Raises:
+        StorageError: 控制业务关联重复分配。
+    """
     with connection:
         connection.execute("BEGIN IMMEDIATE")
         record = _required(connection, request_id)
@@ -108,7 +150,20 @@ def link(
 def finish(
     connection: sqlite3.Connection, request_id: str, *, error_code: str | None, error: str | None
 ) -> ControlRecord:
-    """只结束页面业务观察，保留真实行动回执；拒绝不伪造业务成功。"""
+    """只结束页面业务观察，保留真实行动回执。
+
+    Args:
+        connection: 仅在 Store 专属线程当前短事务中借用的连接，不在回调中等待设备或模型。
+        request_id: 逻辑请求的稳定身份，用于查询或关联同一次受理。
+        error_code: 供查询和调用方分类处理的稳定错误码。
+        error: 当前流程已经取得的真实故障或失败说明。
+
+    Returns:
+        稳定请求身份的受理记录与当前实际业务关联。
+
+    Note:
+        拒绝不伪造业务成功。
+    """
     with connection:
         connection.execute("BEGIN IMMEDIATE")
         _required(connection, request_id)
@@ -160,7 +215,17 @@ class _Submit(Protocol):
         control: bool = False,
         writing: bool = False,
     ) -> Awaitable[Result]:
-        """接管真实 UTF-8 字节，取消等待不撤销已入队事务。"""
+        """接管真实 UTF-8 字节，取消等待不撤销已入队事务。
+
+        Args:
+            operation: 在专属数据库线程执行的同步短事务，返回值交回原事件循环。
+            logical_bytes: 本次操作占用的逻辑载荷字节数，用于接管前背压。 默认 0。
+            control: 是否使用独立控制名额，避免普通输入阻塞真实回执收尾。 默认 False。
+            writing: 是否属于写操作，以便关闭或权威故障时撤销派发资格。 默认 False。
+
+        Returns:
+            当前所有者持有的工作观察入口，等待取消不等于实际资源已归还。
+        """
         ...
 
 
@@ -168,17 +233,38 @@ class ControlLedger:
     """Store 创建的有限控制账本，与母 Store 同循环及同资源寿命。"""
 
     def __init__(self, submit: _Submit) -> None:
-        """借用唯一数据库队列，不创建第二连接或业务工作器。"""
+        """借用唯一数据库队列，不创建第二连接或业务工作器。
+
+        Args:
+            submit: 借用同一 Store 有界队列执行同步短事务的入口。
+        """
         self._submit = submit
 
     async def get(self, request_id: str) -> ControlRecord | None:
-        """读取持久控制事实，不在查询中恢复设备。"""
+        """读取持久控制事实，不在查询中恢复设备。
+
+        Args:
+            request_id: 逻辑请求的稳定身份，用于查询或关联同一次受理。
+
+        Returns:
+            稳定请求身份的受理记录与当前实际业务关联。 未取得对应记录或素材时返回 None；
+            读取故障仍抛出。
+        """
         return await self._submit(lambda connection: get(connection, request_id))
 
     async def admit(
         self, request_id: str, instance_id: str, payload: JsonObject
     ) -> tuple[ControlRecord, bool]:
-        """原子接管或返回已有身份，参数冲突保留原事实。"""
+        """原子接管或返回已有身份，参数冲突保留原事实。
+
+        Args:
+            request_id: 逻辑请求的稳定身份，用于查询或关联同一次受理。
+            instance_id: 本次装配中唯一的插件或宿主实例身份。
+            payload: 当前边界采用的业务 JSON 或完整模型请求材料。
+
+        Returns:
+            权威接管记录及是否为重复请求；重复身份不会重新派发。
+        """
         encoded = encode_json(payload)
         return await self._submit(
             lambda connection: admit(connection, request_id, instance_id, encoded.decode()),
@@ -190,7 +276,13 @@ class ControlLedger:
     async def link(
         self, request_id: str, *, action_id: str | None = None, command_id: str | None = None
     ) -> None:
-        """提交真实业务关联，观察者取消后仍由 app 持有提交。"""
+        """提交真实业务关联，观察者取消后仍由 app 持有提交。
+
+        Args:
+            request_id: 逻辑请求的稳定身份，用于查询或关联同一次受理。
+            action_id: 执行器分配的行动身份，用于关联逐次调用和真实回执。
+            command_id: 控制命令的稳定身份；重复提交须沿用原身份和内容。
+        """
         await self._submit(
             lambda connection: link(
                 connection, request_id, action_id=action_id, command_id=command_id
@@ -203,7 +295,19 @@ class ControlLedger:
     async def finish(
         self, request_id: str, *, error_code: str | None = None, error: str | None = None
     ) -> ControlRecord:
-        """保存取得业务返回或明确拒绝；权威错误原样停止工作。"""
+        """保存取得业务返回或明确拒绝。
+
+        Args:
+            request_id: 逻辑请求的稳定身份，用于查询或关联同一次受理。
+            error_code: 供查询和调用方分类处理的稳定错误码。
+            error: 当前流程已经取得的真实故障或失败说明。 None 表示没有错误说明。
+
+        Returns:
+            稳定请求身份的受理记录与当前实际业务关联。
+
+        Note:
+            权威错误原样停止工作。
+        """
         return await self._submit(
             lambda connection: finish(connection, request_id, error_code=error_code, error=error),
             logical_bytes=len(encode_json((request_id, error_code, error))),

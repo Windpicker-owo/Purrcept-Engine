@@ -13,6 +13,13 @@ import { duration, EmptyState, PageHeading, StateMark, Unavailable } from "../ui
 
 const OPERATIONS = { pause: ["暂停", "暂停活动"], resume: ["恢复", "恢复活动"], end: ["结束", "结束活动"] } as const;
 
+/**
+ * 展示持续目标，并提供明确的暂停、恢复与结束入口。
+ *
+ * client/state 来自共享观察者；selected 是路由身份，go 只改变导航。
+ *
+ * @returns 仅呈现当前输入事实的 React 元素。
+ */
 export function Activities({ client, state, selected, go }: { client: PanelClient; state: PanelState; selected: string | null; go: (route: Route) => void }): ReactElement {
   const activities = state.snapshot?.activities ?? [];
   const liveId = activities.find((activity) => isLive(mark(activity.state).state))?.activity_id;

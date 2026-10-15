@@ -82,12 +82,31 @@ class ActivityService:
     ) -> None:
         """绑定冻结定义与时钟，构造不恢复或启动任何专业驱动。
 
-        can_start 是 Host/Store 的同步门槛，在控制派发和步骤提交等待后复核；
-        它抛出的原型错误直接传播。已有反馈、确认和收尾不借此拒绝真实事实。
-        max_steps 由宿主既有执行等待界注入，覆盖待提交与真实在途步骤，不能
-        在驱动内部给每次请求再建立一个无界等待队列。
-        invoke 与 wait_invocation_released 必须成对，由 Host 注入同一实际
-        执行所有者；只控制的服务可不借用，但不能在缺失时伪造执行成功。
+        Args:
+            store: 应用借出的领域存储端口，实际连接和关闭归资源所有者。
+            definitions: 启动时冻结的专业活动定义集合。
+            max_steps: 同时接管的专业步骤数量上限。
+            max_active: 同时保留的未结束活动数量上限。 默认 8。
+            initial_seconds: 新活动首次取得的秒数预算。 默认 3600.0。
+            max_remaining_seconds: 活动可持有的剩余预算上限（秒）。 默认 3600.0。
+            checkpoint_seconds: 连续运行累计写回权威记录的间隔（秒）。 默认 5.0。
+            can_start: 实际派发前重新检查的资格回调，等待后仍须复核。 None
+                表示不附加调用方资格条件，宿主固定门槛仍生效。
+            invoke: 借用共享目录与执行器调用单能力的有限入口。
+            wait_invocation_released: 等待指定结构化调用真实资源归还的配对入口。
+            monotonic: 本实例使用的单调时钟，不与持久化墙钟混用。
+            wall_time: 提供 Unix 时间戳的墙钟函数，供事实记账。
+
+        Raises:
+            ValueError: 参数值或组合不满足本入口的明确约束，错误正文指出具体字段。
+
+        Note:
+            can_start 是 Host/Store 的同步门槛，在控制派发和步骤提交等待后复核；
+            它抛出的原型错误直接传播。已有反馈、确认和收尾不借此拒绝真实事实。
+            max_steps 由宿主既有执行等待界注入，覆盖待提交与真实在途步骤，不能
+            在驱动内部给每次请求再建立一个无界等待队列。
+            invoke 与 wait_invocation_released 必须成对，由 Host 注入同一实际
+            执行所有者；只控制的服务可不借用，但不能在缺失时伪造执行成功。
         """
         if isinstance(max_active, bool) or not isinstance(max_active, int) or max_active <= 0:
             raise ValueError("max_active 必须是正整数。")
@@ -140,7 +159,14 @@ class ActivityService:
         self._failure: BaseException | None = None
 
     async def start(self) -> None:
-        """装载中断与核对事实，不调用 factory、accept 或自动恢复。"""
+        """恢复活动账本并启动本实例的固定调度任务。
+
+        Raises:
+            ActivityError: 活动服务不能重复启动；已有活动超过配置活跃上限。
+
+        Note:
+            装载中断与核对事实，不调用 factory、accept 或自动恢复。
+        """
         async with self._lock:
             if self._started or self._closing:
                 raise ActivityError("活动服务不能重复启动。")
@@ -162,8 +188,9 @@ class ActivityService:
     def pending_resources(self) -> int:
         """只读统计仍归服务的驱动、步骤和接管/控制/计时所有者，关闭等待不重计。
 
-        关闭任务和驱动关闭任务只是等待同一批资源，不再算一份资源。此计数不
-        代表数据库提交已经完成；Host 仍单独持有权威连接直到服务实际收尾。
+        Note:
+            关闭任务和驱动关闭任务只是等待同一批资源，不再算一份资源。此计数不
+            代表数据库提交已经完成；Host 仍单独持有权威连接直到服务实际收尾。
         """
         return (
             len(self._drivers)
@@ -176,21 +203,54 @@ class ActivityService:
         )
 
     async def activity(self, activity_id: str) -> ActivityRecord:
-        """读取实际状态与工作，不启动驱动；关闭期间仍可查询已有事实。"""
+        """读取实际状态与工作，不启动驱动。
+
+        Args:
+            activity_id: 已创建活动的稳定身份。
+
+        Returns:
+            活动的控制、预算、运行代次与工作快照。
+
+        Raises:
+            ActivityError: 活动不存在。
+
+        Note:
+            关闭期间仍可查询已有事实。
+        """
         record = await self._store.get_activity(validate_text(activity_id, "activity_id"))
         if record is None:
             raise ActivityError("活动不存在。", code="activity_missing")
         return record
 
     async def command_record(self, command_id: str) -> ActivityCommand:
-        """单独读取接管、受理或真实确认，不把查询解释为再次执行。"""
+        """单独读取接管、受理或真实确认，不把查询解释为再次执行。
+
+        Args:
+            command_id: 控制命令的稳定身份；重复提交须沿用原身份和内容。
+
+        Returns:
+            命令接管与实际确认记录；受理成功不等于驱动已完成。
+
+        Raises:
+            ActivityError: 活动命令不存在。
+        """
         record = await self._store.get_activity_command(validate_text(command_id, "command_id"))
         if record is None:
             raise ActivityError("活动命令不存在。", code="activity_missing")
         return record
 
     async def wait_command(self, command_id: str) -> ActivityCommand:
-        """等待真实确认、明确拒绝或未知结论；取消只结束当前等待者。"""
+        """等待真实确认、明确拒绝或未知结论。
+
+        Args:
+            command_id: 控制命令的稳定身份；重复提交须沿用原身份和内容。
+
+        Returns:
+            命令接管与实际确认记录；受理成功不等于驱动已完成。
+
+        Note:
+            取消只结束当前等待者。
+        """
         while True:
             async with self._changed:
                 observed = self._change_version
@@ -216,10 +276,29 @@ class ActivityService:
     ) -> ActivityCommand:
         """用可信身份接管有效参数组合，先返回受理，不等驱动真实完成。
 
-        command_id 由宿主调用身份分配，不是模型参数。start 由宿主分配活动 ID。
-        同一身份重投只返回已有记录；参数不同明确冲突，不按目标文本合并请求。
-        expected_version 用于页面等已观察当前状态的控制方，核验在同一接管锁内
-        完成；计时与反馈仍使用真实数据库版本提交，不允许旧页面覆盖新状态。
+        Args:
+            command_id: 控制命令的稳定身份；重复提交须沿用原身份和内容。
+            command: 明确的活动控制种类，目标与预算字段须满足对应命令。
+            activity_id: 已创建活动的稳定身份。 None 只适用于不需要已有活动身份的控制。
+            definition: 新活动使用的已装配定义名。 None 不指定新活动定义。
+            goal: 明确委托给专业活动的目标文本。 None 不附加新目标。
+            additional_seconds: 本次明确增加的活动预算秒数。 None 不增加预算。
+            reason: 供后续核对的明确处置原因。 None 不附加原因。
+            expected_version: 提交前观察到的版本，用于拒绝并发覆盖。 None 表示未提供先前版本，
+                创建与覆盖规则由具体提交入口核验。
+
+        Returns:
+            命令接管与实际确认记录；受理成功不等于驱动已完成。
+
+        Raises:
+            ActivityError: 典型拒绝原因：控制版本必须是正整数；start 不接受已有活动版本；
+                命令身份对应不同参数；活动控制接管已满。
+
+        Note:
+            command_id 由宿主调用身份分配，不是模型参数。start 由宿主分配活动 ID。
+            同一身份重投只返回已有记录；参数不同明确冲突，不按目标文本合并请求。
+            expected_version 用于页面等已观察当前状态的控制方，核验在同一接管锁内
+            完成；计时与反馈仍使用真实数据库版本提交，不允许旧页面覆盖新状态。
         """
         self._available()
         request = validate_request(
@@ -252,6 +331,7 @@ class ActivityService:
         self._requests[command_id] = (request, task)
 
         def finished(owner: asyncio.Task[ActivityCommand]) -> None:
+            """收回已结束的工作所有者，并保留原任务中的真实故障。"""
             self._requests.pop(command_id, None)
             if not owner.cancelled():
                 owner.exception()
@@ -272,14 +352,34 @@ class ActivityService:
         additional_seconds: float | None = None,
         reason: str | None = None,
     ) -> ActivityCommand | ActivityRecovery:
-        """主脑控制先交付重启核对材料，再由新调用明确恢复或结束。
+        """受理主脑活动控制，必要时先返回只读恢复核对材料。
 
-        复用现有命令与参数，不为核对增加模型命令。待核对活动的首次
-        resume/end 只调用驱动的只读观察并保存真实材料；状态门槛仍保持。
-        后续新命令只可采用同版本、同运行代次且已完整交给模型的核对材料。
-        resume 还须确认停止；未知时明确 end 仍交驱动取得实际停止确认。普通 command
-        不取得这项资格，页面恢复不能代替主脑在收到材料后的选择。
-        核对与接管由有限所有者持有，观察取消不释放正在借用的驱动。
+        Args:
+            command_id: 控制命令的稳定身份；重复提交须沿用原身份和内容。
+            command: 明确的活动控制种类，目标与预算字段须满足对应命令。
+            action_id: 执行器分配的行动身份，用于关联逐次调用和真实回执。
+            presented_call_ids: 主体交付门槛确认已完整呈现的调用身份；空集合不授予恢复资格。
+            activity_id: 已创建活动的稳定身份。 None 只适用于不需要已有活动身份的控制。
+            definition: 新活动使用的已装配定义名。 None 不指定新活动定义。
+            goal: 明确委托给专业活动的目标文本。 None 不附加新目标。
+            additional_seconds: 本次明确增加的活动预算秒数。 None 不增加预算。
+            reason: 供后续核对的明确处置原因。 None 不附加原因。
+
+        Returns:
+            已受理命令，或要求主体先完整阅读的只读恢复核对材料。
+
+        Raises:
+            ActivityError: 命令身份对应不同参数；活动控制接管已满。
+
+        Note:
+            主脑控制先交付重启核对材料，再由新调用明确恢复或结束。
+
+            复用现有命令与参数，不为核对增加模型命令。待核对活动的首次
+            resume/end 只调用驱动的只读观察并保存真实材料；状态门槛仍保持。
+            后续新命令只可采用同版本、同运行代次且已完整交给模型的核对材料。
+            resume 还须确认停止；未知时明确 end 仍交驱动取得实际停止确认。普通 command
+            不取得这项资格，页面恢复不能代替主脑在收到材料后的选择。
+            核对与接管由有限所有者持有，观察取消不释放正在借用的驱动。
         """
         self._available()
         request = validate_request(
@@ -303,6 +403,7 @@ class ActivityService:
         self._subject_requests[command_id] = (request, owner)
 
         def finished(task: asyncio.Task[ActivityCommand | ActivityRecovery]) -> None:
+            """收回已结束的工作所有者，并保留原任务中的真实故障。"""
             self._subject_requests.pop(command_id, None)
             if not task.cancelled():
                 task.exception()
@@ -557,6 +658,7 @@ class ActivityService:
         self._delivery_kinds[command.command_id] = (command.activity_id, command.command)
 
         def finished(owner: asyncio.Task[None]) -> None:
+            """收回已结束的工作所有者，并保留原任务中的真实故障。"""
             self._deliveries.pop(command.command_id, None)
             self._delivery_kinds.pop(command.command_id, None)
             if not owner.cancelled():
@@ -631,8 +733,23 @@ class ActivityService:
     ) -> ActivityCommand:
         """保存原控制身份的真实确认，迟到确认不覆盖终态或更新代次。
 
-        普通计时检查点改变当前版本，但不改原命令版本；确认仍核验原命令身份。
-        applied=False 保留发生过的控制事实，不将它冒充当前运行状态。
+        Args:
+            activity_id: 已创建活动的稳定身份。
+            command_id: 控制命令的稳定身份；重复提交须沿用原身份和内容。
+            run_generation: 活动当前运行代次；旧代次只能留下历史事实。
+            version: 目标记录的确切版本，区别于可变的当前版本。
+            state: 驱动实际确认的当前活动状态。
+
+        Returns:
+            命令接管与实际确认记录；受理成功不等于驱动已完成。
+
+        Raises:
+            ActivityError: 典型拒绝原因：确认与命令身份或运行代次不符；同一控制收到冲突确认；
+                已明确拒绝的控制不能追加相反确认；真实确认状态不适用于该控制。
+
+        Note:
+            普通计时检查点改变当前版本，但不改原命令版本；确认仍核验原命令身份。
+            applied=False 保留发生过的控制事实，不将它冒充当前运行状态。
         """
         async with self._lock:
             command = await self.command_record(command_id)
@@ -752,8 +869,20 @@ class ActivityService:
     async def begin_step(self, activity_id: str, run_generation: int) -> ActivityStep:
         """执行所有者在进入真实 Provider 前取得许可，等待提交后再次核验资格。
 
-        服务不会替执行者释放步骤。关闭或暂停在存储等待期间发生时，禁止启动；
-        已取得的步骤继续由执行所有者保存真实结果，再调用 finish。
+        Args:
+            activity_id: 已创建活动的稳定身份。
+            run_generation: 活动当前运行代次；旧代次只能留下历史事实。
+
+        Returns:
+            当前运行代次下获得执行资格的专业步骤凭证。
+
+        Raises:
+            ActivityError: 典型拒绝原因：活动运行代次必须是正整数；活动步骤接管名额已满；
+                活动当前没有新步骤资格；活动运行额度耗尽。
+
+        Note:
+            服务不会替执行者释放步骤。关闭或暂停在存储等待期间发生时，禁止启动；
+            已取得的步骤继续由执行所有者保存真实结果，再调用 finish。
         """
         self._available()
         if (
@@ -839,7 +968,22 @@ class ActivityService:
         run_generation: int,
         timeout_seconds: float | None = None,
     ) -> ActionRecord:
-        """预留既有步骤名额，再由独立所有者交给共用执行器并跟踪真实归还。"""
+        """预留既有步骤名额，再由独立所有者交给共用执行器并跟踪真实归还。
+
+        Args:
+            activity_id: 已创建活动的稳定身份。
+            path: 冻结目录中的完整能力调用路径，例如 me.console.output。
+            arguments: 按已装配参数模型校验的能力关键字参数。
+            run_generation: 活动当前运行代次；旧代次只能留下历史事实。
+            timeout_seconds: 本次操作的等待上限（秒），不得扩大所属行动或活动期限。 None
+                使用所属能力或行动的既定期限。
+
+        Returns:
+            已保存的行动记录，包含逐次真实调用及结果历史；unknown 不证明效果未发生。
+
+        Raises:
+            ActivityError: 活动未装配真实能力调用端口。
+        """
         self._available()
         invoker, released = self._invoke, self._wait_invocation_released
         if invoker is None or released is None:
@@ -860,6 +1004,7 @@ class ActivityService:
         self._invocations[step.step_id] = owner
 
         def finished(task: asyncio.Task[None]) -> None:
+            """收回已结束的工作所有者，并保留原任务中的真实故障。"""
             self._invocations.pop(step.step_id)
             if not task.cancelled() and (error := task.exception()) is not None:
                 self._failure = error
@@ -881,9 +1026,11 @@ class ActivityService:
         admitted_ids: list[str] = []
 
         def admitted(identifier: str) -> None:
+            """保存执行器分配的真实身份，供后续等待资源归还。"""
             admitted_ids.append(identifier)
 
         async def before_start() -> float | None:
+            """在 Provider 启动前取得当前活动的剩余执行预算。"""
             return await self._execution_budget(step.activity_id, step.run_generation)
 
         try:
@@ -912,7 +1059,14 @@ class ActivityService:
             await step.finish()
 
     async def finish_step(self, step: ActivityStep) -> None:
-        """仅在实际收尾后释放宿主步骤事实，重复完成不会重复扣减或反馈。"""
+        """仅在实际收尾后释放宿主步骤事实，重复完成不会重复扣减或反馈。
+
+        Args:
+            step: 宿主签发的专业步骤身份及其运行代次。
+
+        Raises:
+            ActivityError: 步骤不属于本服务。
+        """
         async with self._lock:
             current = self._steps.get(step.step_id)
             if current is None:
@@ -935,7 +1089,23 @@ class ActivityService:
         version: int,
         work_json: str,
     ) -> ActivityRecord:
-        """只提交当前代次和版本的专业工作；它不修改控制或权威长期认识。"""
+        """只提交当前代次和版本的专业工作。
+
+        Args:
+            activity_id: 已创建活动的稳定身份。
+            run_generation: 活动当前运行代次；旧代次只能留下历史事实。
+            version: 目标记录的确切版本，区别于可变的当前版本。
+            work_json: 驱动报告的工作快照 JSON，不替代宿主控制状态。
+
+        Returns:
+            活动的控制、预算、运行代次与工作快照。
+
+        Raises:
+            ActivityError: 活动工作检查点已经过期。
+
+        Note:
+            它不修改控制或权威长期认识。
+        """
         validate_json(work_json)
         async with self._lock:
             current = await self.activity(activity_id)
@@ -961,7 +1131,26 @@ class ActivityService:
         version: int,
         command_id: str | None = None,
     ) -> ActivityFeedback:
-        """保存业务原文与可靠交接；旧反馈只留事实，不恢复或覆盖当前控制。"""
+        """保存业务原文与可靠交接。
+
+        Args:
+            activity_id: 已创建活动的稳定身份。
+            feedback_id: 驱动反馈的稳定身份，用于去重和查询实际确认。
+            kind: 此业务值所属的稳定种类。
+            payload_json: 已编码的业务事实，不包含任意 Python 对象。
+            run_generation: 活动当前运行代次；旧代次只能留下历史事实。
+            version: 目标记录的确切版本，区别于可变的当前版本。
+            command_id: 控制命令的稳定身份；重复提交须沿用原身份和内容。
+
+        Returns:
+            已经按身份去重并保存的真实驱动反馈。
+
+        Raises:
+            ActivityError: 活动反馈类别无效；反馈身份对应不同材料。
+
+        Note:
+            旧反馈只留事实，不恢复或覆盖当前控制。
+        """
         validate_text(feedback_id, "feedback_id")
         validate_json(payload_json)
         if kind not in ("progress", "completed", "failed", "needs_decision", "reconciled"):
@@ -1010,10 +1199,19 @@ class ActivityService:
             return notice
 
     async def reconcile(self, activity_id: str) -> RecoveryObservation:
-        """明确只读核对后保存材料；未知或仍运行时不解除恢复前提。
+        """明确只读核对后保存材料。
 
-        此入口只有明确核对调用才构造驱动；start 的恢复装载永远不调用工厂。
-        工厂契约禁止构造即执行。观察在事务外取得，返回时再次核当前版本。
+        Args:
+            activity_id: 已创建活动的稳定身份。
+
+        Returns:
+            显式只读核对的实际证据；停止状态未知时禁止恢复。
+
+        Note:
+            未知或仍运行时不解除恢复前提。
+
+            此入口只有明确核对调用才构造驱动；start 的恢复装载永远不调用工厂。
+            工厂契约禁止构造即执行。观察在事务外取得，返回时再次核当前版本。
         """
         return await self._reconcile(activity_id)
 
@@ -1107,7 +1305,11 @@ class ActivityService:
             return observation
 
     async def checkpoint(self) -> None:
-        """结清本次已观察累计，并立即核预算；用于计时任务与正常关闭前检查。"""
+        """结清本次已观察累计，并立即核预算。
+
+        Note:
+            用于计时任务与正常关闭前检查。
+        """
         async with self._lock:
             for activity_id in tuple(self._clocks):
                 current = await self.activity(activity_id)
@@ -1203,8 +1405,9 @@ class ActivityService:
     async def close(self) -> None:
         """立即禁止下一步，等待实际驱动、控制与已接管提交后结清运行累计。
 
-        无法收回的真实步骤保持关闭未完成，不能提前释放业务资源。Host 的有限
-        关闭期限只限制其等待；本所有者仍负责实际收尾，不把超时伪报为已关闭。
+        Note:
+            无法收回的真实步骤保持关闭未完成，不能提前释放业务资源。Host 的有限
+            关闭期限只限制其等待；本所有者仍负责实际收尾，不把超时伪报为已关闭。
         """
         if self._closing_task is None:
             self._closing = True

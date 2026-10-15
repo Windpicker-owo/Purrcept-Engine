@@ -21,7 +21,14 @@ class _Output(BaseModel):
 
 
 def console_blueprint(output: Callable[[str], None]) -> PluginBlueprint:
-    """纯声明实际 me.console.output 路径，只有调用实现时才使用显示函数。"""
+    """纯声明实际 me.console.output 路径，只有调用实现时才使用显示函数。
+
+    Args:
+        output: 明确发出控制台文字时使用的同步回调。
+
+    Returns:
+        对象、能力、依赖与延后构造入口组成的纯声明。
+    """
     declaration = CapabilityDeclaration(
         "console.output",
         "console",
@@ -35,9 +42,11 @@ def console_blueprint(output: Callable[[str], None]) -> PluginBlueprint:
     )
 
     async def build(ports: PluginPorts) -> PluginRuntime:
+        """借用本实例的有限端口，创建能力实现与插件资源所有者。"""
         del ports
 
         async def deliver(parameters: _Output, context: CallContext) -> CallOutcome:
+            """通过显式控制台回调发出一次文字，并返回实际调用回执。"""
             del context
             output(parameters.text)
             return CallOutcome("confirmed", {"channel": "console", "text": parameters.text})

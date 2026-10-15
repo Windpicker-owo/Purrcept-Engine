@@ -9,7 +9,14 @@ from purrcept_engine.domain.context.maintenance import (
 
 
 def summary_references(source: SummarySource) -> tuple[str, ...]:
-    """仅借用宿主消息metadata的明确引用，外界JSON正文不能增加摘要依赖。"""
+    """仅借用宿主消息metadata的明确引用，外界JSON正文不能增加摘要依赖。
+
+    Args:
+        source: 已冻结的历史范围及所属会话版本。
+
+    Raises:
+        SummaryError: 宿主摘要来源标记必须是身份数组；宿主摘要来源标记不是非空身份。
+    """
     references: dict[str, None] = {}
     for message in source.messages:
         declared = message.metadata.get("evidence")

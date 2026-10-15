@@ -34,15 +34,34 @@ if TYPE_CHECKING:
 
 
 class ReflectionService:
-    """领域运行时创建的工作所有者，启动一次；取消和汇总关闭由运行时统一协调。"""
+    """冻结有限复核批次，在独立连续会话中完成有据反思。
+
+    Note:
+        BackgroundService 持有该协作者和反思会话；批次内共用原预算与材料
+        呈现登记。认识逐次提交，结案依赖结构化回执，不提供世界执行工具。
+    """
 
     def __init__(self, runtime: BackgroundService) -> None:
-        """借用同一协调状态，不复制会话、生成资格或失败事实。"""
+        """借用同一协调状态，不复制会话、生成资格或失败事实。
+
+        Args:
+            runtime: 创建此协作者的领域或执行运行实例，不跨实例共享状态。
+        """
         self.runtime = runtime
         self.task: asyncio.Task[None] | None = None
 
     def start(self) -> asyncio.Task[None]:
-        """创建唯一固定任务并交给运行时汇总关闭；重复启动明确拒绝。"""
+        """创建唯一固定任务并交给运行时汇总关闭。
+
+        Returns:
+            当前所有者持有的工作观察入口，等待取消不等于实际资源已归还。
+
+        Raises:
+            HostStateError: 领域工作器已经启动。
+
+        Note:
+            重复启动明确拒绝。
+        """
         if self.task is not None:
             raise HostStateError("领域工作器已经启动。")
         self.task = asyncio.create_task(self.reflection(), name="background-reflection")
@@ -78,7 +97,16 @@ class ReflectionService:
             await self.reflect(sources, state)
 
     async def reflect(self, sources: tuple[ReflectionSource, ...], state: ReflectionState) -> None:
-        """有限来源共用一个批次和预算，未覆盖部分等待新独立事实再纳入。"""
+        """有限来源共用一个批次和预算，未覆盖部分等待新独立事实再纳入。
+
+        Args:
+            sources: 为本次修订或监管提供依据的原文片段身份。
+            state: 当前所有者持有的状态或待提交状态值。
+
+        Raises:
+            KnowledgeConflict: 后台候选必须对应确切原文版本和真实范围。
+            TimeoutError: 反思材料组装达到整批期限。
+        """
         started = asyncio.get_running_loop().time()
         pages: list[EvidencePage] = []
         references: list[str] = []
@@ -138,11 +166,13 @@ class ReflectionService:
         )
 
         async def message() -> Message:
+            """构造本批实际冻结原文页面的完整反思输入。"""
             return await tools.initial_message(frozen_pages)
 
         async def presented(request: ModelRequest) -> None:
             # Ordering: Core 已恢复并完成容量检查的真实请求决定当前历史。
             # 即使发生进程恢复或摘要安装，也只接回其中完整存在的原交付。
+            """核对当前请求完整材料与持久交付记录，再提交真实呈现范围。"""
             restored = await self.runtime.knowledge_store.deliveries_for_history(request.messages)
             self.runtime.deliveries.restore_history(restored)
             self.runtime.deliveries.retain_history(request.messages)

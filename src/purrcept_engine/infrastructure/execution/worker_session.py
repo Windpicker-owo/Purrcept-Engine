@@ -33,7 +33,11 @@ class WorkerSession:
     """由执行器构造并独占，借用同一运行状态；资源关闭仍归执行器。"""
 
     def __init__(self, runtime: ExecutionService) -> None:
-        """固定唯一执行器借用，不取得额外 Provider、账本或后台任务。"""
+        """固定唯一执行器借用，不取得额外 Provider、账本或后台任务。
+
+        Args:
+            runtime: 创建此协作者的领域或执行运行实例，不跨实例共享状态。
+        """
         self.runtime = runtime
 
     async def release_worker(
@@ -44,9 +48,19 @@ class WorkerSession:
     ) -> BaseException | None:
         """逐项收回实际资源，管道错误不能跳过 Job 收尾或抹掉原始失败。
 
-        只有确认 Job 已退出才清理宿主持有的临时目录。任何收回失败都保留
-        action 对资源的引用，供关闭状态报告；不重建另一 Worker 或重复关闭
-        可能已经被操作系统复用的 FD。
+        Args:
+            worker: 当前会话实际拥有的隔离进程资源。
+            action: 本次执行服务接管的冻结脚本或结构化调用。
+            monitor: 观察当前 Worker 资源限制的任务；None 表示尚未创建。
+
+        Returns:
+            当前所有者锁存的原始故障，调用者可据此停止后续派发。 未取得对应记录或素材时返回
+            None；读取故障仍抛出。
+
+        Note:
+            只有确认 Job 已退出才清理宿主持有的临时目录。任何收回失败都保留
+            action 对资源的引用，供关闭状态报告；不重建另一 Worker 或重复关闭
+            可能已经被操作系统复用的 FD。
         """
         errors: list[BaseException] = []
         try:
@@ -95,7 +109,15 @@ class WorkerSession:
         return None
 
     def launch(self) -> WorkerHandle:
-        """在文件工作线程建立仅本次拥有的目录和管道，Job 创建原子交接句柄。"""
+        """在文件工作线程建立仅本次拥有的目录和管道，Job 创建原子交接句柄。
+
+        Returns:
+            实际创建的隔离进程及其 IPC 与 Job 资源所有权。
+
+        Raises:
+            ValueError: 行动临时目录越过指定根路径。
+            RuntimeError: CPython 未提供真实基础解释器路径。
+        """
         root = self.runtime.scratch_root.resolve()
         root.mkdir(parents=True, exist_ok=True)
         directory = TemporaryDirectory(prefix="action-", dir=root)
@@ -142,19 +164,28 @@ class WorkerSession:
         return WorkerHandle(process, channel, directory)
 
     def start_reader(self, action: ScriptAction) -> None:
-        """每个 Worker 只有一个真实接收线程，队列容量来自单行动帧数上界。"""
+        """每个 Worker 只有一个真实接收线程，队列容量来自单行动帧数上界。
+
+        Args:
+            action: 本次执行服务接管的冻结脚本或结构化调用。
+
+        Raises:
+            RuntimeError: Worker 尚未接管。
+        """
         worker = action.worker
         if worker is None:
             raise RuntimeError("Worker 尚未接管。")
         loop = asyncio.get_running_loop()
 
         def publish(message: JsonObject | BaseException) -> None:
+            """在所属事件循环公开已完成的结果，线程不直接修改 Future。"""
             try:
                 action.messages.put_nowait(message)
             except asyncio.QueueFull:
                 self.runtime.stop(action, "ProtocolQueueLimit")
 
         def receive() -> None:
+            """持续读取当前 Worker 的有界 IPC 帧，并交回所属事件循环。"""
             try:
                 while True:
                     message = worker.channel.read()
@@ -168,7 +199,14 @@ class WorkerSession:
         worker.reader.start()
 
     async def bootstrap(self, action: ScriptAction) -> None:
-        """完整目录以摘要绑定的 UTF-8 分块交付，不因单帧上限删掉声明。"""
+        """完整目录以摘要绑定的 UTF-8 分块交付，不因单帧上限删掉声明。
+
+        Args:
+            action: 本次执行服务接管的冻结脚本或结构化调用。
+
+        Raises:
+            RuntimeError: Worker 尚未接管。
+        """
         worker = action.worker
         if worker is None:
             raise RuntimeError("Worker 尚未接管。")
@@ -238,7 +276,17 @@ class WorkerSession:
             )
 
     async def monitor(self, action: ScriptAction) -> None:
-        """监督整个 Job 的总 CPU 与接管起算墙钟；结束资格先于终止请求。"""
+        """监督整个 Job 的总 CPU 与接管起算墙钟。
+
+        Args:
+            action: 本次执行服务接管的冻结脚本或结构化调用。
+
+        Raises:
+            RuntimeError: Worker 尚未接管。
+
+        Note:
+            结束资格先于终止请求。
+        """
         worker = action.worker
         if worker is None:
             raise RuntimeError("Worker 尚未接管。")
@@ -261,7 +309,15 @@ class WorkerSession:
             action.stop_error = action.stop_error or "WorkerCpuLimit"
 
     async def frames(self, action: ScriptAction) -> None:
-        """严格关联每次连续调用，先保存准备事实，再进入有界普通/控制队列。"""
+        """严格关联每次连续调用，先保存准备事实，再进入有界普通/控制队列。
+
+        Args:
+            action: 本次执行服务接管的冻结脚本或结构化调用。
+
+        Raises:
+            ActionProtocolError: 字段不符合冻结 IPC 协议，帧被截断、超限，或通道所有权/I/O
+                失败。
+        """
         while True:
             message = await action.messages.get()
             if isinstance(message, BaseException):
@@ -345,7 +401,21 @@ class WorkerSession:
             self.runtime.call_dispatcher.dispatch()
 
     def terminal(self, message: JsonObject) -> WorkerTerminal:
-        """只保存脚本整体结果；真实能力效果只能来自独立 Provider 回执。"""
+        """只保存脚本整体结果。
+
+        Args:
+            message: 已解码的原生协议对象。
+
+        Returns:
+            Worker 报告的终态及协议材料；实际能力事实仍以宿主账本为准。
+
+        Raises:
+            ActionProtocolError: 字段不符合冻结 IPC 协议，帧被截断、超限，或通道所有权/I/O
+                失败。
+
+        Note:
+            真实能力效果只能来自独立 Provider 回执。
+        """
         output = message.get("stdout")
         if (
             not isinstance(output, str)
@@ -368,7 +438,18 @@ class WorkerSession:
             return WorkerTerminal("failed", None, output, f"{error_type}: {error}")
 
     async def deliver(self, call: CapabilityCall, response: JsonObject) -> None:
-        """只向仍接收结果的 Worker 交付；管道失败不覆盖已入账的真实效果。"""
+        """只向仍接收结果的 Worker 交付。
+
+        Args:
+            call: 当前真实能力或 Core 工具调用的冻结材料。
+            response: 当前后端或原生协议实际交付的完整响应。
+
+        Raises:
+            RuntimeError: Worker 交付只能使用真实脚本所有者。
+
+        Note:
+            管道失败不覆盖已入账的真实效果。
+        """
         action = call.action
         if not isinstance(action, ScriptAction):
             raise RuntimeError("Worker 交付只能使用真实脚本所有者。")

@@ -10,19 +10,33 @@ import type { Json } from "../contracts";
 import type { Mark } from "../semantics";
 
 /**
- * 状态标记。每屏只允许一处持续运动：由页面指定唯一的 live 对象，
- * 其余标记保留颜色与形状但不播放循环。
+ * 展示同一份 Cel 状态形状与文案。
+ *
+ * state/label 来自统一语义映射；live 默认 false，每屏只允许一处持续运动。
+ *
+ * @returns 仅呈现当前输入事实的 React 元素。
  */
 export function StateMark({ state, label, live = false }: Mark & { live?: boolean }): ReactElement {
   const mark = <StatusMark state={state} label={label} />;
   return live ? mark : <MotionConfig reducedMotion="always">{mark}</MotionConfig>;
 }
 
-/** 将宿主秒级时间转换为本机可读时间；缺失值不推断为当前时刻。 */
+/**
+ * 展示宿主真实时间。
+ *
+ * @param value 宿主使用的 Unix 秒级时间；null 表示未提供。
+ * @returns 按本机区域显示的时间，或明确的缺失占位。
+ */
 export function time(value: number | null): string {
   return value === null ? "未提供" : new Date(value * 1000).toLocaleString("zh-CN", { hour12: false });
 }
-/** 相对时间只用于扫描；精确时间保留在 title 中。 */
+/**
+ * 将已知发生时间转换为便于扫描的相对文案。
+ *
+ * @param value 宿主实际保存的 Unix 秒级时间，null 表示未知。
+ * @param now 调用者传入的当前毫秒时间，不与 value 的单位混用。
+ * @returns 用于扫描的相对时间；超过一天时回到精确时间显示。
+ */
 export function relative(value: number | null, now: number): string {
   if (value === null) return "时间未知";
   const seconds = Math.max(0, Math.floor(now / 1000 - value));
@@ -31,7 +45,12 @@ export function relative(value: number | null, now: number): string {
   if (seconds < 86400) return `${Math.floor(seconds / 3600)} 小时前`;
   return time(value);
 }
-/** 展示快照中给出的余额，不在浏览器内自行扣减。 */
+/**
+ * 将宿主提供的预算秒数格式化为可读时长。
+ *
+ * @param value 宿主快照中的剩余秒数，浏览器不自行扣减。
+ * @returns 按小时、分钟与秒呈现的预算余额。
+ */
 export function duration(value: number): string {
   const minutes = Math.floor(value / 60);
   return minutes >= 60 ? `${Math.floor(minutes / 60)} 小时 ${minutes % 60} 分` : `${minutes} 分 ${Math.floor(value % 60)} 秒`;
@@ -42,11 +61,23 @@ function fact(value: Json | undefined): string {
   if (typeof value === "object") return JSON.stringify(value).slice(0, 512);
   return String(value);
 }
-/** 将已命名的宿主事实排成定义列表，保留未知值的明确占位。 */
+/**
+ * 将具名业务事实排为可扫描列表。
+ *
+ * items 是标签与 JSON 值的顺序对；缺失值显示占位，对象仅展示有限预览。
+ *
+ * @returns 仅呈现当前输入事实的 React 元素。
+ */
 export function Facts({ items }: { items: [string, Json | undefined][] }): ReactElement {
   return <dl className="facts">{items.map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{fact(value)}</dd></div>)}</dl>;
 }
-/** Inspector 末尾的技术细节，默认折叠；内容原样保留供排障与核对。 */
+/**
+ * 在详情末尾保留可展开的技术事实。
+ *
+ * items 原样交给 Facts；children 可补充核对说明，默认折叠不隐藏原始事实。
+ *
+ * @returns 仅呈现当前输入事实的 React 元素。
+ */
 export function TechDetails({ items, children }: { items: [string, Json | undefined][]; children?: ReactNode }): ReactElement {
   return <details className="tech-details">
     <summary className="pc-focusable">技术细节</summary>
@@ -54,16 +85,34 @@ export function TechDetails({ items, children }: { items: [string, Json | undefi
     {children}
   </details>;
 }
-/** 在内容原位说明信息缺失，不用成功或空闲状态替代。 */
+/**
+ * 在原位说明当前信息缺失。
+ *
+ * children 应写明缺少什么，不能用空闲或成功文案替代未知状态。
+ *
+ * @returns 仅呈现当前输入事实的 React 元素。
+ */
 export function Unavailable({ children }: { children: ReactNode }): ReactElement { return <p className="muted">{children}</p>; }
-/** 静态单色猫头随导航文字取色，不接收状态；首页动态吉祥物仍由 Design 独占。 */
+/**
+ * 绘制随导航文字取色的静态品牌猫头。
+ *
+ * 图标不接受主体状态；持续动态吉祥物由页面和 Design 组件持有。
+ *
+ * @returns 仅呈现当前输入事实的 React 元素。
+ */
 export function BrandMark(): ReactElement {
   return <svg viewBox="0 0 32 32" aria-hidden="true" focusable="false">
     <path fill="currentColor" d="M5 15V5l8 5a22 22 0 0 1 6 0l8-5v10c2 3 2 7-1 10-5 5-15 5-20 0-3-3-3-7-1-10Z" />
     <path className="brand-eyes" d="M11 16v4m10-4v4" fill="none" strokeWidth="2.5" strokeLinecap="round" />
   </svg>;
 }
-/** 页面标题区：headline + 一句说明，右侧可放本页的辅助信息。首页不使用。 */
+/**
+ * 组织页面标题、说明和可选辅助信息。
+ *
+ * title 是主标题，aside 放辅助信息，children 是一句页面说明；首页不使用。
+ *
+ * @returns 仅呈现当前输入事实的 React 元素。
+ */
 export function PageHeading({ title, aside, children }: { title: string; aside?: ReactNode; children: ReactNode }): ReactElement {
   return <header className="page-heading">
     <div className="page-title-row"><h1>{title}</h1>{aside}</div>
@@ -71,8 +120,11 @@ export function PageHeading({ title, aside, children }: { title: string; aside?:
   </header>;
 }
 /**
- * 区域：只靠标题、距离和共同左轴线成组，不加底色与轮廓。
- * ``more`` 是进入完整页面的入口，以“标题 ›”的形式跟在标题后；``aside`` 放计数等右侧信息。
+ * 通过标题与阅读轴线组织一个页面区域。
+ *
+ * id 关联无障碍标题；more 只承担导航，aside 放计数，children 是区域内容。
+ *
+ * @returns 仅呈现当前输入事实的 React 元素。
  */
 export function Section({ id, title, more, aside, children }: { id: string; title: string; more?: () => void; aside?: ReactNode; children: ReactNode }): ReactElement {
   return <section className="section" aria-labelledby={id}>
@@ -86,8 +138,11 @@ export function Section({ id, title, more, aside, children }: { id: string; titl
   </section>;
 }
 /**
- * 条目行：图标底 + 主标题 + 一行说明 + 尾部状态或操作。
- * 给了 ``onClick`` 时整行是一个按钮；尾部若包含按钮则不要给 ``onClick``，避免按钮嵌套。
+ * 展示对象标题、说明与尾部状态或操作。
+ *
+ * onClick 存在时整行是按钮；trailing 内含按钮时应省略 onClick，避免嵌套交互。
+ *
+ * @returns 仅呈现当前输入事实的 React 元素。
  */
 export function ItemRow({ icon, title, subtitle, trailing, onClick, current = false }: {
   icon: IconName; title: ReactNode; subtitle?: ReactNode; trailing?: ReactNode; onClick?: () => void; current?: boolean;
@@ -101,11 +156,23 @@ export function ItemRow({ icon, title, subtitle, trailing, onClick, current = fa
     ? <button className="item-row pc-focusable" data-interactive="true" aria-current={current ? "true" : undefined} onClick={onClick}>{body}</button>
     : <div className="item-row">{body}</div>;
 }
-/** 区域内的空状态：与条目行同一轴线的一句说明，写清楚什么时候会出现内容。 */
+/**
+ * 在现有区域中解释何时会出现内容。
+ *
+ * icon 默认 check，children 说明当前为空的实际条件。
+ *
+ * @returns 仅呈现当前输入事实的 React 元素。
+ */
 export function EmptyNote({ icon = "check", children }: { icon?: IconName; children: ReactNode }): ReactElement {
   return <div className="item-row empty-note"><span className="item-icon" aria-hidden="true"><Icon name={icon} /></span><span className="item-text">{children}</span></div>;
 }
-/** 整页空状态：图标 + 标题 + 说明 + 可选的去处，留在页面左轴线上。 */
+/**
+ * 为整页提供具名空状态和可选去处。
+ *
+ * title/children 解释缺少内容的原因；action 是明确导航或操作入口。
+ *
+ * @returns 仅呈现当前输入事实的 React 元素。
+ */
 export function EmptyState({ icon = "check", title, children, action }: { icon?: IconName; title: string; children: ReactNode; action?: ReactNode }): ReactElement {
   return <section className="empty-state">
     <span className="item-icon" aria-hidden="true"><Icon name={icon} /></span>

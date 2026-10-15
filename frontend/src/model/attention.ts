@@ -10,6 +10,7 @@ import { deviceMark } from "../semantics";
 import { actionSubjects, deviceName } from "./names";
 import type { Route } from "./routes";
 
+/** 有当前事实依据的待处理事项及其导航入口，条件消失即从列表移除。 */
 export interface AttentionItem {
   /** 稳定身份，用作列表 key 与动画身份。 */
   id: string;
@@ -25,7 +26,13 @@ export interface AttentionItem {
   needsUser: boolean;
 }
 
-/** 顺序：存储 → 设备 → 结果未知 → 活动 → 容量 → 本页控制。 */
+/**
+ * 汇总当前仍待核对或等待处理的业务事实。
+ *
+ * @param snapshot 已校验的宿主快照；null 时没有可推导事项。
+ * @param entries 本标签页持有的控制观察记录。
+ * @returns 由事实持续支撑的事项列表；条件消失即退出，查询不发起控制。
+ */
 export function attentionItems(snapshot: Snapshot | null, entries: readonly Entry[]): AttentionItem[] {
   if (snapshot === null) return [];
   const items: AttentionItem[] = [];

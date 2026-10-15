@@ -1,4 +1,8 @@
-"""定义领域协作契约与不可变设置；调用与所有权由应用显式连接。"""
+"""定义专业活动驱动、控制接管和只读恢复的插件契约。
+
+应用从 ActivityDefinition 构造驱动，ActivityService 独占状态提交；驱动通过
+ActivityPort 确认实际工作。这里不取得设备资源，也不执行领域步骤。
+"""
 
 from __future__ import annotations
 
@@ -22,7 +26,12 @@ class ActivityError(EngineError):
     """可定位的活动参数、状态或容量拒绝，不代表已接管工作被撤销。"""
 
     def __init__(self, message: str, *, code: str = "activity_state") -> None:
-        """保留接入方可查询的拒绝类别。"""
+        """保留接入方可查询的拒绝类别。
+
+        Args:
+            message: 对调用方公开的原因或错误说明。
+            code: 供调用方分类处理的稳定错误码。 默认 'activity_state'。
+        """
         super().__init__(message)
         self.code = code
 
@@ -36,19 +45,47 @@ class ActivityStore(Protocol):
     """
 
     async def activity_records(self) -> tuple[ActivityRecord, ...]:
-        """读取未结束的有限活动集合。"""
+        """读取未结束的有限活动集合。
+
+        Returns:
+            条目集合：活动的控制、预算、运行代次与工作快照。
+        """
         ...
 
     async def get_activity(self, activity_id: str) -> ActivityRecord | None:
-        """按身份读取当前控制和工作快照。"""
+        """按身份读取当前控制和工作快照。
+
+        Args:
+            activity_id: 已创建活动的稳定身份。
+
+        Returns:
+            活动的控制、预算、运行代次与工作快照。 未取得对应记录或素材时返回 None；
+            读取故障仍抛出。
+        """
         ...
 
     async def get_activity_command(self, command_id: str) -> ActivityCommand | None:
-        """读取可信命令接管和真实确认，查询不重投。"""
+        """读取可信命令接管和真实确认，查询不重投。
+
+        Args:
+            command_id: 控制命令的稳定身份；重复提交须沿用原身份和内容。
+
+        Returns:
+            命令接管与实际确认记录；受理成功不等于驱动已完成。 未取得对应记录或素材时返回 None；
+            读取故障仍抛出。
+        """
         ...
 
     async def get_activity_feedback(self, feedback_id: str) -> ActivityFeedback | None:
-        """查询原始反馈，用稳定身份去重而不改写首次提交事实。"""
+        """查询原始反馈，用稳定身份去重而不改写首次提交事实。
+
+        Args:
+            feedback_id: 驱动反馈的稳定身份，用于去重和查询实际确认。
+
+        Returns:
+            已经按身份去重并保存的真实驱动反馈。 未取得对应记录或素材时返回 None；
+            读取故障仍抛出。
+        """
         ...
 
     async def commit_activity(
@@ -59,11 +96,26 @@ class ActivityStore(Protocol):
         command: ActivityCommand | None = None,
         feedback: ActivityFeedback | None = None,
     ) -> None:
-        """原子提交精确版本、命令与反馈；不存在通用可变状态写入口。"""
+        """原子提交精确版本、命令与反馈。
+
+        Args:
+            record: 待查询、核对或提交的当前活动快照。
+            expected_version: 提交前观察到的版本，用于拒绝并发覆盖。
+            command: 与状态变化同事务保存的控制命令；None 表示本次没有命令。 None
+                表示本次没有伴随命令。
+            feedback: 与活动状态同事务保存的驱动反馈；None 表示没有新反馈。
+
+        Note:
+            不存在通用可变状态写入口。
+        """
         ...
 
     async def recover_activities(self) -> tuple[ActivityRecord, ...]:
-        """保留累计和未确认命令，仅撤销上次运行的派发资格。"""
+        """保留累计和未确认命令，仅撤销上次运行的派发资格。
+
+        Returns:
+            条目集合：活动的控制、预算、运行代次与工作快照。
+        """
         ...
 
 
@@ -86,13 +138,36 @@ class ActivityInvoker(Protocol):
         on_admitted: Callable[[str], None],
         timeout_seconds: float | None,
     ) -> ActionRecord:
-        """真实共享目录/schema/Journal 路径；原型权威与宿主错误直接传播。"""
+        """真实共享目录/schema/Journal 路径。
+
+        Args:
+            path: 冻结目录中的完整能力调用路径，例如 me.console.output。
+            arguments: 按已装配参数模型校验的能力关键字参数。
+            input_id: 正式接管返回的输入身份，用于关联原文与后续处理。
+            before_start: Provider 启动前的异步核验；返回 None 拒绝，正有限秒数只收紧期限。
+            on_admitted: 首次等待前接收执行器分配身份的同步回调，不授予重投资格。
+            timeout_seconds: 本次操作的等待上限（秒），不得扩大所属行动或活动期限。
+
+        Returns:
+            已保存的行动记录，包含逐次真实调用及结果历史；unknown 不证明效果未发生。
+
+        Note:
+            原型权威与宿主错误直接传播。
+        """
         ...
 
 
 @dataclass(frozen=True, slots=True)
 class DriverAcceptance:
-    """驱动是否已接管控制；accepted=True 不证明已经运行或收尾完成。"""
+    """驱动是否已接管控制；accepted=True 不证明已经运行或收尾完成。
+
+    Attributes:
+        accepted: 接受新连接时移交实际连接所有权的异步函数。
+        reason: 供后续核对的明确处置原因。
+
+    Note:
+        实例字段在构造后不可重新赋值；嵌套值的冻结范围由字段所属契约决定。
+    """
 
     accepted: bool
     reason: str = ""
@@ -106,8 +181,15 @@ class DriverAcceptance:
 class RecoveryObservation:
     """显式核对取得的真实材料；stopped=None 保留未知并禁止恢复。
 
-    stopped=True 只证明专业驱动已停止派发，不抹掉原命令或未知外部效果。
-    evidence_json 留下核对材料，不能通过重做旧写操作生成这个观察。
+    Attributes:
+        stopped: 实际派发是否已停止；None 保留未知并禁止恢复。
+        evidence_json: 本次只读核对取得的真实证据 JSON。
+
+    Note:
+        实例字段在构造后不可重新赋值；嵌套值的冻结范围由字段所属契约决定。
+
+        stopped=True 只证明专业驱动已停止派发，不抹掉原命令或未知外部效果。
+        evidence_json 留下核对材料，不能通过重做旧写操作生成这个观察。
     """
 
     stopped: bool | None
@@ -123,8 +205,15 @@ class RecoveryObservation:
 class ActivityRecovery:
     """一次模型调用取得的只读核对材料，没有接管恢复或结束命令。
 
-    同一可信调用身份重投复用首次材料。主脑看到材料后须用新的调用明确选择，
-    普通控制入口不能消费本结果保存的精确版本资格。
+    Attributes:
+        activity_id: 已创建活动的稳定身份。
+        observation: 显式核对取得的实际观察，不能通过重放旧写操作生成。
+
+    Note:
+        实例字段在构造后不可重新赋值；嵌套值的冻结范围由字段所属契约决定。
+
+        同一可信调用身份重投复用首次材料。主脑看到材料后须用新的调用明确选择，
+        普通控制入口不能消费本结果保存的精确版本资格。
     """
 
     activity_id: str
@@ -145,11 +234,29 @@ class ActivityDriver(Protocol):
     """
 
     async def accept(self, command: ActivityCommand, port: ActivityPort) -> DriverAcceptance:
-        """接管明确命令身份；重复/迟到确认由宿主保存并核验资格。"""
+        """接管明确命令身份。
+
+        Args:
+            command: 宿主已接管的不可变控制命令。
+            port: 宿主借给专业驱动的控制确认、步骤与受控能力端口。
+
+        Returns:
+            驱动是否接管命令的确认及理由，不证明已经执行完成。
+
+        Note:
+            重复/迟到确认由宿主保存并核验资格。
+        """
         ...
 
     async def reconcile(self, record: ActivityRecord) -> RecoveryObservation:
-        """显式恢复前只读核对实际状态，不重放旧命令或启动工作。"""
+        """显式恢复前只读核对实际状态，不重放旧命令或启动工作。
+
+        Args:
+            record: 待查询、核对或提交的当前活动快照。
+
+        Returns:
+            显式只读核对的实际证据；停止状态未知时禁止恢复。
+        """
         ...
 
     async def close(self) -> None:
@@ -159,7 +266,16 @@ class ActivityDriver(Protocol):
 
 @dataclass(frozen=True, slots=True)
 class ActivityDefinition:
-    """插件装配时提供的冻结定义；single_instance 约束未结束的同定义委托。"""
+    """插件装配时提供的冻结定义；single_instance 约束未结束的同定义委托。
+
+    Attributes:
+        definition: 新活动使用的已装配定义名。
+        factory: 应用按定义创建专业驱动的工厂，不在声明阶段启动工作。
+        single_instance: 是否限制同一定义同时只有一个未结束活动。
+
+    Note:
+        实例字段在构造后不可重新赋值；嵌套值的冻结范围由字段所属契约决定。
+    """
 
     definition: str
     factory: Callable[[ActivityPort], ActivityDriver]

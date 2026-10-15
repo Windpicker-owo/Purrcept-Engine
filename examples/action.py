@@ -11,7 +11,14 @@ from purrcept_engine import ConfigError, EngineHost, load_config
 
 
 async def main() -> None:
-    """使用新 Engine 入口；旧 Runtime 的单次 ask 命令不做转发。"""
+    """读取本地配置，执行一次明确控制台行动并等待宿主归还资源。
+
+    Raises:
+        ConfigError: 配置不合法，或未明确启用 console 输出。
+
+    Note:
+        关闭期限到达后继续等待同一次收尾，不把观察超时当作资源已释放。
+    """
     config = load_config(Path("purrcept.toml"))
     if not config.console:
         raise ConfigError("本示例要求配置 console = true。")

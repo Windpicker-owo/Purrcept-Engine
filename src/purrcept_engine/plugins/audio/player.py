@@ -46,11 +46,29 @@ class AudioPlayer(Protocol):
         started: Callable[[], Awaitable[None]],
         progress: Callable[[float, float], None],
     ) -> PlaybackResult:
-        """等待资源实际终止，期限覆盖设备等待；取消保留真实终态。"""
+        """等待资源实际终止，期限覆盖设备等待。
+
+        Args:
+            pcm: 已解码的 PCM 字节或按播放顺序产生的字节流。
+            playback_id: 本次实际播放的稳定身份，用于拒绝迟到口型或停止确认。
+            deadline: 所属事件循环的绝对单调截止时间，不是 Unix 时间戳。
+            started: 播放器实际开始后调用的异步确认函数。
+            progress: 接收实际播放位置和能量的同步回调。
+
+        Returns:
+            实际播放开始、停止和完成的事实，区别于仅合成成功。
+
+        Note:
+            取消保留真实终态。
+        """
         ...
 
     async def interrupt(self, playback_id: str | None = None) -> None:
-        """撤当前启动/播放资格并等待当前进程真正退出。"""
+        """撤当前启动/播放资格并等待当前进程真正退出。
+
+        Args:
+            playback_id: 本次实际播放的稳定身份，用于拒绝迟到口型或停止确认。
+        """
         ...
 
     async def close(self) -> None:
@@ -59,10 +77,19 @@ class AudioPlayer(Protocol):
 
 
 async def launch(*arguments: str) -> asyncio.subprocess.Process:
-    """拥有启动任务直到实际返回；取消窗口也收回已创建子进程。
+    """拥有启动任务直到实际返回。
 
-    shield 保护的是资源取得，不赋予迟到播放资格。取消后先取回进程并
-    终止，再重新抛出取消，避免 Windows 启动期间遗留无主资源。
+    Args:
+        arguments: 按已装配参数模型校验的能力关键字参数。
+
+    Returns:
+        当前所有者实际启动的解码或播放子进程。
+
+    Note:
+        取消窗口也收回已创建子进程。
+
+        shield 保护的是资源取得，不赋予迟到播放资格。取消后先取回进程并
+        终止，再重新抛出取消，避免 Windows 启动期间遗留无主资源。
     """
     task = asyncio.create_task(
         asyncio.create_subprocess_exec(
@@ -93,7 +120,13 @@ class FFplayPlayer:
         sample_rate: int = 32000,
         monotonic: Callable[[], float] = time.monotonic,
     ) -> None:
-        """保存冻结程序/采样率，构造不创建播放器。"""
+        """保存冻结程序/采样率，构造不创建播放器。
+
+        Args:
+            executable: 显式配置的外部程序路径，不自动寻找或安装替代程序。 默认 'ffplay'。
+            sample_rate: PCM 的明确采样率（Hz）。 默认 32000。
+            monotonic: 本实例使用的单调时钟，不与持久化墙钟混用。
+        """
         self._executable, self._rate, self._clock = executable, sample_rate, monotonic
         self._process: asyncio.subprocess.Process | None = None
         self._closed, self._revoked = False, False
@@ -101,7 +134,11 @@ class FFplayPlayer:
         self._identity: str | None = None
 
     def check_available(self) -> None:
-        """关闭或缺失程序在任何付费合成前明确失败。"""
+        """关闭或缺失程序在任何付费合成前明确失败。
+
+        Raises:
+            AudioError: 音频播放器已关闭。
+        """
         if self._closed:
             raise AudioError("音频播放器已关闭。")
         check_program(self._executable)
@@ -115,7 +152,21 @@ class FFplayPlayer:
         started: Callable[[], Awaitable[None]],
         progress: Callable[[float, float], None],
     ) -> PlaybackResult:
-        """一个媒体时钟对应一个身份，真实 started 之后才联动视觉。"""
+        """一个媒体时钟对应一个身份，真实 started 之后才联动视觉。
+
+        Args:
+            pcm: 已解码的 PCM 字节或按播放顺序产生的字节流。
+            playback_id: 本次实际播放的稳定身份，用于拒绝迟到口型或停止确认。
+            deadline: 所属事件循环的绝对单调截止时间，不是 Unix 时间戳。
+            started: 播放器实际开始后调用的异步确认函数。
+            progress: 接收实际播放位置和能量的同步回调。
+
+        Returns:
+            实际播放开始、停止和完成的事实，区别于仅合成成功。
+
+        Raises:
+            RuntimeError: 音频队列违反单播放器不变量；播放器缺少已请求管道。
+        """
         self.check_available()
         if self._playing:
             raise RuntimeError("音频队列违反单播放器不变量。")
@@ -270,7 +321,11 @@ class FFplayPlayer:
                 self._identity = None
 
     async def interrupt(self, playback_id: str | None = None) -> None:
-        """启动与进程共享撤销标记，不能让迟到启动重新发声。"""
+        """启动与进程共享撤销标记，不能让迟到启动重新发声。
+
+        Args:
+            playback_id: 本次实际播放的稳定身份，用于拒绝迟到口型或停止确认。
+        """
         if playback_id is not None and playback_id != self._identity:
             return
         self._revoked = True

@@ -43,22 +43,45 @@ if TYPE_CHECKING:
 
 
 class AttentionService:
-    """领域运行时创建的工作所有者，启动一次；取消和汇总关闭由运行时统一协调。"""
+    """合批取得待判断输入，按原版本采用注意选择和紧急升级。
+
+    Note:
+        SubjectService 在同一事件循环创建并持有该协作者；固定工作器的启动、
+        取消和故障汇总归主体。判断期间不占用状态提交事务，迟到结果须 CAS。
+    """
 
     def __init__(self, runtime: SubjectService) -> None:
-        """借用同一协调状态，不复制会话、生成资格或失败事实。"""
+        """借用同一协调状态，不复制会话、生成资格或失败事实。
+
+        Args:
+            runtime: 创建此协作者的领域或执行运行实例，不跨实例共享状态。
+        """
         self.runtime = runtime
         self.task: asyncio.Task[None] | None = None
 
     def start(self) -> asyncio.Task[None]:
-        """创建唯一固定任务并交给运行时汇总关闭；重复启动明确拒绝。"""
+        """创建唯一固定任务并交给运行时汇总关闭。
+
+        Returns:
+            当前所有者持有的工作观察入口，等待取消不等于实际资源已归还。
+
+        Raises:
+            HostStateError: 领域工作器已经启动。
+
+        Note:
+            重复启动明确拒绝。
+        """
         if self.task is not None:
             raise HostStateError("领域工作器已经启动。")
         self.task = asyncio.create_task(self.attention(), name="subject-attention")
         return self.task
 
     async def attention(self) -> None:
-        """空闲时判断普通输入；主脑活动期间保持缓冲开放，由请求边界取尽。"""
+        """空闲时判断普通输入。
+
+        Note:
+            主脑活动期间保持缓冲开放，由请求边界取尽。
+        """
         while True:
             self.runtime.check()
             revision = self.runtime.store.change_revision
@@ -152,7 +175,15 @@ class AttentionService:
                 break
 
     async def upgrade_minimum_wake(self, assessment: MinimumWakeAssessment) -> None:
-        """仅评估仍在旧生成后排队的直接唤起，失效观察结案而不换代续做。"""
+        """仅评估仍在旧生成后排队的直接唤起，失效观察结案而不换代续做。
+
+        Args:
+            assessment: 已取得并需按原版本核验的判断结果。
+
+        Raises:
+            StorageError: 最低唤起升级引用缺少原文或处置身份。
+            RuntimeError: 最低唤起升级缺少装配的注意模型。
+        """
         record = await self.runtime.store.get_input(assessment.input_id)
         processing = await self.runtime.store.input_processing(assessment.input_id)
         if record is None or processing is None:
@@ -225,7 +256,22 @@ class AttentionService:
         *,
         minimum_wake: MinimumWakeAssessment | None = None,
     ) -> None:
-        """判断证据独立入账，处置 CAS 后才抢占，有限服务失败交前台一次。"""
+        """判断证据独立入账，处置 CAS 后才抢占，有限服务失败交前台一次。
+
+        Args:
+            records: 按接管顺序取得的完整输入记录。
+            expected: 此次比较或提交必须仍匹配的原始观察值。
+            request: 已按 Core 协议组装的完整判断或生成请求。
+            observed_generation: 接管或判断开始时观察到的前台生成代次。
+            minimum_wake: 直接唤起所建立的最低 WAKE 事实或对应升级判断资格。
+
+        Raises:
+            RuntimeError: 注意工作器缺少装配的模型。
+            TypeError: 专用判断必须使用专用请求；生成注意必须使用生成请求。
+            DecisionResponseError: 典型拒绝原因：注意判断明确拒答；注意判断未返回声明的选择；
+                无工具注意响应不能包含工具调用；生成注意没有返回完整 JSON 对象。
+            StorageError: 注意判断缺少唯一逻辑请求证据。
+        """
         if self.runtime.attention is None:
             raise RuntimeError("注意工作器缺少装配的模型。")
         identity = uuid4().hex
@@ -235,6 +281,7 @@ class AttentionService:
         )
 
         def can_assess() -> None:
+            """复核当前注意判断仍拥有所观察前台代次的升级资格。"""
             self.runtime.check()
             if minimum_wake is not None and not self.runtime.session.eligible(observed_generation):
                 # 旧生成结束后不重试升级请求。已启动尝试仍按原证据/借用机制

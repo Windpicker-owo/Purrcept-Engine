@@ -81,8 +81,18 @@ class ActionSourceError(EngineError):
 def validate_source(code: str, *, max_bytes: int = 64 * 1024) -> str:
     """校验 UTF-8 大小与 AST，返回供 Worker 使用的异步包装源码。
 
-    白名单固定于此实现，不让模型通过 bootstrap 或 import 参数扩大范围。
-    不在宿主编译或执行模型代码。空源码等价于返回 None。
+    Args:
+        code: 供调用方分类处理的稳定错误码。
+        max_bytes: 此边界允许保留或接管的最大字节数。
+
+    Raises:
+        ActionSourceError: 典型拒绝原因：行动源码必须是字符串；行动源码包含无效 UTF-8 字符；
+            参数、材料或当前状态不满足此入口的约束。
+        ValueError: 源码字节上限必须是正整数。
+
+    Note:
+        白名单固定于此实现，不让模型通过 bootstrap 或 import 参数扩大范围。
+        不在宿主编译或执行模型代码。空源码等价于返回 None。
     """
     if not isinstance(code, str):
         raise ActionSourceError("行动源码必须是字符串。")

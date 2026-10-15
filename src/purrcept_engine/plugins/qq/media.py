@@ -33,13 +33,30 @@ class MediaBusy(QQMediaError):
 
 
 def is_url(value: str) -> bool:
-    """仅接受有实际主机且无用户凭据的 http(s) 媒体来源。"""
+    """仅接受有实际主机且无用户凭据的 http(s) 媒体来源。
+
+    Args:
+        value: 待判断的原始媒体来源，只有含真实主机且无用户凭据的 HTTP(S) URL 才成立。
+
+    Returns:
+        仅当来源为含真实主机且无用户凭据的 HTTP(S) URL 时为 True。
+    """
     parsed = urlparse(value)
     return parsed.scheme in {"http", "https"} and bool(parsed.hostname) and parsed.username is None
 
 
 def sniff_type(data: bytes) -> str:
-    """按已验证字节签名辨识常用图片，不把 HTTP 声明当成像素证明。"""
+    """按已验证字节签名辨识常用图片，不把 HTTP 声明当成像素证明。
+
+    Args:
+        data: 已经读取并受大小限制的媒体原始字节。
+
+    Returns:
+        按已知字节签名辨识的图片 MIME 类型。
+
+    Raises:
+        QQMediaError: 媒体字节不是支持的 PNG/GIF/JPEG/WebP 图片。
+    """
     if data.startswith(b"\x89PNG\r\n\x1a\n"):
         return "image/png"
     if data.startswith((b"GIF87a", b"GIF89a")):
@@ -59,7 +76,12 @@ class MediaOwner:
     """
 
     def __init__(self, settings: QQSettings, base_dir: Path) -> None:
-        """固定根目录和有限 HTTP 客户端，不探测媒体或创建目录。"""
+        """固定根目录和有限 HTTP 客户端，不探测媒体或创建目录。
+
+        Args:
+            settings: 当前组件已校验的配置或纯声明。
+            base_dir: 解析相对配置路径的基准目录。
+        """
         self.settings = settings
         self.base_dir = base_dir
         self.media_dir = resolve_path(settings.media_dir, base_dir)
@@ -79,13 +101,28 @@ class MediaOwner:
         self._closed = False
 
     async def io[Result](self, operation: Callable[[], Result]) -> Result:
-        """实际文件操作由独立任务拥有；取消等待不取消已运行的线程。"""
+        """实际文件操作由独立任务拥有。
+
+        Args:
+            operation: 当前所有者负责推进并回收结果的操作。
+
+        Returns:
+            同步操作完成后的真实返回值，异常保持原类型。
+
+        Raises:
+            RuntimeError: QQ 媒体资源已关闭。
+            MediaBusy: QQ 实际文件工作名额已满。
+
+        Note:
+            取消等待不取消已运行的线程。
+        """
         if self._closed:
             raise RuntimeError("QQ 媒体资源已关闭。")
         if len(self._threads) >= self.settings.pending_calls:
             raise MediaBusy("QQ 实际文件工作名额已满。")
 
         async def run() -> Result:
+            """将已校验参数交给当前冻结能力绑定的真实实现。"""
             async with self._file_lock:
                 return await asyncio.to_thread(operation)
 
@@ -93,6 +130,7 @@ class MediaOwner:
         self._threads.add(task)
 
         def finished(owner: asyncio.Task[Result]) -> None:
+            """收回已结束的工作所有者，并保留原任务中的真实故障。"""
             self._threads.discard(owner)
             if not owner.cancelled():
                 error = owner.exception()
@@ -112,7 +150,20 @@ class MediaOwner:
             raise
 
     def path(self, raw: str) -> Path:
-        """验证完整实际路径和大小；HTTP URI 不能充当本地文件。"""
+        """验证完整实际路径和大小。
+
+        Args:
+            raw: 需要完整读取的本地文件路径；HTTP URI 不是本地路径。
+
+        Returns:
+            沿显式基准目录解析的实际路径。
+
+        Raises:
+            QQMediaError: 媒体路径、真实格式、大小或贴纸身份不满足当前读取与保存要求。
+
+        Note:
+            HTTP URI 不能充当本地文件。
+        """
         if raw.startswith("file:"):
             parsed = urlparse(raw)
             if parsed.netloc:
@@ -127,7 +178,14 @@ class MediaOwner:
         return path
 
     def read(self, raw: str) -> bytes:
-        """按实际流再次约束大小，避免 stat 后文件增长绕过容量。"""
+        """按实际流再次约束大小，避免 stat 后文件增长绕过容量。
+
+        Args:
+            raw: 需要完整读取的本地文件路径；HTTP URI 不是本地路径。
+
+        Raises:
+            QQMediaError: QQ 文件读取时为空或已超过容量。
+        """
         path = self.path(raw)
         with path.open("rb") as stream:
             content = stream.read(self.settings.file_max_bytes + 1)
@@ -136,7 +194,21 @@ class MediaOwner:
         return content
 
     async def image(self, raw: str) -> MediaAsset:
-        """取得完整有限图片后才构造原生媒体；获取故障不伪造像素。"""
+        """取得完整有限图片后才构造原生媒体。
+
+        Args:
+            raw: 明确的 HTTP(S) 图片 URL 或允许路径内的本地图片来源。
+
+        Returns:
+            包含完整原始字节和内容引用的媒体素材。
+
+        Raises:
+            QQMediaError: QQ 图片下载超过 file_max_bytes；参数、
+                材料或当前状态不满足此入口的约束。
+
+        Note:
+            获取故障不伪造像素。
+        """
         if is_url(raw):
             try:
                 async with self._http.stream("GET", raw) as response:
@@ -158,7 +230,14 @@ class MediaOwner:
         return MediaAsset(content, sniff_type(content))
 
     def decode_base64(self, raw: str) -> bytes:
-        """标准 base64 在解码前后均有界，不把任意路径探测失败当成编码。"""
+        """标准 base64 在解码前后均有界，不把任意路径探测失败当成编码。
+
+        Args:
+            raw: 待解码的标准 base64 字符串，编码与解码字节均受预算限制。
+
+        Raises:
+            QQMediaError: 媒体路径、真实格式、大小或贴纸身份不满足当前读取与保存要求。
+        """
         if len(raw) > (self.settings.file_max_bytes + 2) // 3 * 4 + 4096:
             raise QQMediaError("QQ 内联媒体编码超过容量。")
         try:
@@ -170,7 +249,17 @@ class MediaOwner:
         return data
 
     def prepare(self, parameters: Send) -> tuple[JsonValue, tuple[Path, ...]]:
-        """在文件线程构造原 OneBot 消息段，纯文字仍为字符串。"""
+        """在文件线程构造原 OneBot 消息段，纯文字仍为字符串。
+
+        Args:
+            parameters: 已通过能力参数模型校验的调用参数。
+
+        Returns:
+            可发送的原生消息分段及其需要保留到真实调用结束的临时文件。
+
+        Raises:
+            BaseExceptionGroup: QQ 附件准备与临时文件收回失败。
+        """
         previous = set(self._temporary)
         try:
             return self._prepare(parameters)
@@ -193,6 +282,7 @@ class MediaOwner:
         prepared_bytes = 2
 
         def add(segment: JsonValue) -> None:
+            """先核验聚合载荷预算，再接纳一个原生消息分段。"""
             nonlocal prepared_bytes
             proposed = prepared_bytes + len(encode_json(segment)) + int(bool(segments))
             if proposed > self.settings.frame_bytes:
@@ -249,7 +339,14 @@ class MediaOwner:
         return segments, tuple(temporary)
 
     def image_source(self, raw: str) -> str:
-        """沿旧规则小图片内联，较大图片发送 file URI；URL 仅交给平台。"""
+        """为小图片构造内联来源，较大图片使用受限本地 file URI。
+
+        Args:
+            raw: 明确的 HTTP(S) 图片 URL 或允许路径内的本地图片来源。
+
+        Note:
+            URL 仅交给平台。
+        """
         if is_url(raw):
             return raw
         if raw.startswith("base64://"):
@@ -261,7 +358,14 @@ class MediaOwner:
         return "base64://" + base64.b64encode(self.read(raw)).decode("ascii")
 
     def qzone_sources(self, values: list[str]) -> list[JsonValue]:
-        """逐项核验空间图片组合容量，不先把全部本地图片展开到内存。"""
+        """逐项核验空间图片组合容量，不先把全部本地图片展开到内存。
+
+        Args:
+            values: 待校验、编码或构造数组的原始值集合。
+
+        Raises:
+            QQMediaError: QZone 图片组合超过请求帧容量，尚未发送。
+        """
         sources: list[JsonValue] = []
         size = 2
         for raw in values:
@@ -273,14 +377,22 @@ class MediaOwner:
         return sources
 
     def release(self, paths: tuple[Path, ...]) -> None:
-        """只删除本所有者实际登记的语音文件，不接收任意路径清理。"""
+        """只删除本所有者实际登记的语音文件，不接收任意路径清理。
+
+        Args:
+            paths: 当前端口允许关联的冻结能力路径集合。
+        """
         for path in paths:
             if path in self._temporary:
                 path.unlink(missing_ok=True)
                 self._temporary.remove(path)
 
     async def close(self) -> None:
-        """等文件工作归还后释放 HTTP 与本次临时文件，用户媒体和贴纸保留。"""
+        """等文件工作归还后释放 HTTP 与本次临时文件，用户媒体和贴纸保留。
+
+        Raises:
+            BaseExceptionGroup: 取消等待后的 QQ 文件工作失败。
+        """
         if self._closed:
             return
         if self._threads:

@@ -182,7 +182,19 @@ def _check_dependencies(connection: sqlite3.Connection, owner_id: str, coverage_
 
 
 def reserve_summary(connection: sqlite3.Connection, source: SummarySource) -> Reservation:
-    """同事务取得一次覆盖资格并保留完整原历史，查询不会安装摘要或重置预算。"""
+    """同事务取得一次覆盖资格并保留完整原历史，查询不会安装摘要或重置预算。
+
+    Args:
+        connection: 仅在 Store 专属线程当前短事务中借用的连接，不在回调中等待设备或模型。
+        source: 已冻结的历史范围及所属会话版本。
+
+    Returns:
+        reserved 表示已登记本覆盖的唯一尝试；already_attempted 表示此前已尝试；stale 或 busy
+        表示当前版本或空闲条件不允许维护。
+
+    Raises:
+        SummaryError: 摘要来源版本必须是非负整数。
+    """
     _scope(source.owner_id)
     if (
         isinstance(source.source_version, bool)
@@ -297,7 +309,20 @@ def _verified_response(connection: sqlite3.Connection, proposal: SummaryProposal
 
 
 def install_summary(connection: sqlite3.Connection, proposal: SummaryProposal) -> int | None:
-    """版本及idle仍有效时原子保存候选与归档关系，返回提交完成的新会话版本。"""
+    """版本及idle仍有效时原子保存候选与归档关系，返回提交完成的新会话版本。
+
+    Args:
+        connection: 仅在 Store 专属线程当前短事务中借用的连接，不在回调中等待设备或模型。
+        proposal: 已冻结来源和内容的候选提案，提交前仍须验证。
+
+    Returns:
+        实际安装的新会话版本；None 表示来源过期或会话忙碌。
+
+    Raises:
+        SummaryError: 摘要来源覆盖没有在模型开始前保留尝试资格；
+            摘要尝试的冻结保护或完整来源被改变。
+        StorageError: 已安装摘要仍指向旧会话版本。
+    """
     validate_summary_proposal(proposal)
     source = proposal.source
     _scope(source.owner_id)
@@ -364,7 +389,14 @@ def install_summary(connection: sqlite3.Connection, proposal: SummaryProposal) -
 
 
 def initialize(connection: sqlite3.Connection) -> None:
-    """只核验当前格式必需表；尝试覆盖跨重启保留，不自动迁移或重新计算。"""
+    """只核验当前格式必需表。
+
+    Args:
+        connection: 仅在 Store 专属线程当前短事务中借用的连接，不在回调中等待设备或模型。
+
+    Note:
+        尝试覆盖跨重启保留，不自动迁移或重新计算。
+    """
     for table in (
         "summary_attempts",
         "summary_source_media",

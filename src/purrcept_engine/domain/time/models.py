@@ -1,4 +1,8 @@
-"""保存公开值及其语义校验，不打开数据库或调用设备。"""
+"""定义带明确时区的闹铃、触发记录与主体休息状态。
+
+模型负责值校验和业务 JSON 投影，时间规则位于 scheduling，同库提交由
+TimePort 实现；这里不启动定时器，也不在预计休息到期时自动离开。
+"""
 
 from __future__ import annotations
 
@@ -23,7 +27,12 @@ class TimeError(EngineError):
     """明确时间参数或业务拒绝，不把SQLite/内部故障改成可纠正参数错误。"""
 
     def __init__(self, message: str, *, code: str) -> None:
-        """保留未知身份、额度及时间原因，供插件报告真实拒绝。"""
+        """保留未知身份、额度及时间原因，供插件报告真实拒绝。
+
+        Args:
+            message: 对调用方公开的原因或错误说明。
+            code: 供调用方分类处理的稳定错误码。
+        """
         super().__init__(message)
         self.code = code
 
@@ -32,6 +41,11 @@ class _Record(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True, frozen=True)
 
 
+# 维护者属性契约（类说明参与 schema，保持原 docstring）。
+# Attributes:
+#     at: 带明确时区的计划触发时刻。
+#     timezone: 每日重复采用的墙钟时区，不读取机器默认时区。
+#     occurrence_id: 当前这一次触发的持久身份，交接时同事务去重。
 class Alarm(_Record):
     """一个时钟的正式定义和当前发生身份，at保存配置时区中的下一应响时刻。"""
 
@@ -47,7 +61,11 @@ class Alarm(_Record):
     call_id: Text | None = None
 
     def to_json(self) -> JsonObject:
-        """保留read/set/cancel的原有id/at/timezone/message/repeat字段。"""
+        """保留read/set/cancel的原有id/at/timezone/message/repeat字段。
+
+        Returns:
+            业务对象，按实际结果提供 id、at、timezone、message、repeat 字段。
+        """
         return {
             "id": self.id,
             "at": self.at.isoformat(),
@@ -69,6 +87,11 @@ class AlarmFiring(_Record):
     next_at: AwareDatetime | None = None
 
 
+# 维护者属性契约（类说明参与 schema，保持原 docstring）。
+# Attributes:
+#     expected_duration_minutes: 预计休息分钟数，期限已过也不自动解除 resting。
+#     started_at: 这次明确休息实际开始的带时区时刻。
+#     version: 同一主体休息事实的已提交版本。
 class RestState(_Record):
     """主体明确休息的当前事实；elapsed按读取时刻投影，不持久化另一份时长。"""
 
@@ -78,7 +101,15 @@ class RestState(_Record):
     version: Version
 
     def to_json(self, now: datetime) -> JsonObject:
-        """按客观UTC时差给整分钟数，下限0，到预计期限后仍resting。"""
+        """按客观UTC时差给整分钟数，下限0，到预计期限后仍resting。
+
+        Args:
+            now: 带明确时区的本次墙钟时刻。
+
+        Returns:
+            业务对象，按实际结果提供 resting、expected_duration_minutes、started_at、
+            elapsed_minutes、bed_id 字段。
+        """
         validate_aware_datetime(now)
         elapsed = max(
             0, int((now.astimezone(UTC) - self.started_at.astimezone(UTC)).total_seconds() // 60)
@@ -102,7 +133,11 @@ class RestChange(_Record):
     updated: bool = False
 
     def to_json(self) -> JsonObject:
-        """沿用rest/leave结果，醒着leave只返回resting=false/changed=false。"""
+        """沿用rest/leave结果，醒着leave只返回resting=false/changed=false。
+
+        Returns:
+            业务对象，按实际结果提供 changed、updated、resting 字段。
+        """
         if self.state is not None:
             return {**self.state.to_json(self.at), "changed": self.changed, "updated": self.updated}
         if self.previous is not None:
@@ -111,6 +146,13 @@ class RestChange(_Record):
 
 
 def validate_aware_datetime(value: datetime) -> None:
-    """拒绝无明确时区的业务时间，避免本机时区改变持久化含义。"""
+    """拒绝无明确时区的业务时间，避免本机时区改变持久化含义。
+
+    Args:
+        value: 必须带有效 tzinfo 和 UTC 偏移的业务时刻。
+
+    Raises:
+        TimeError: 时间必须带明确时区。
+    """
     if not isinstance(value, datetime) or value.utcoffset() is None:
         raise TimeError("时间必须带明确时区。", code="invalid_time")

@@ -38,7 +38,20 @@ class Submit(Protocol):
         control: bool = False,
         writing: bool = False,
     ) -> Awaitable[Result]:
-        """等待实际提交结果；取消观察不撤销已经接管的事务。"""
+        """等待实际提交结果。
+
+        Args:
+            operation: 在专属数据库线程执行的同步短事务，返回值交回原事件循环。
+            logical_bytes: 本次操作占用的逻辑载荷字节数，用于接管前背压。 默认 0。
+            control: 是否使用独立控制名额，避免普通输入阻塞真实回执收尾。 默认 False。
+            writing: 是否属于写操作，以便关闭或权威故障时撤销派发资格。 默认 False。
+
+        Returns:
+            当前所有者持有的工作观察入口，等待取消不等于实际资源已归还。
+
+        Note:
+            取消观察不撤销已经接管的事务。
+        """
         ...
 
 
@@ -50,14 +63,30 @@ class FeedbackLedger:
     """
 
     def __init__(self, submit: Submit, admit: AdmitInput) -> None:
-        """借入队列和同事务接管函数，不建立后台任务或第二连接。"""
+        """借入队列和同事务接管函数，不建立后台任务或第二连接。
+
+        Args:
+            submit: 借用同一 Store 有界队列执行同步短事务的入口。
+            admit: 在调用方当前事务中正式接管输入的同步入口，不另开事务。
+        """
         self._submit = submit
         self._admit = admit
 
     async def bridge(
         self, *, now: float, limit: int = 16
     ) -> subject_feedback_models.FeedbackBridge:
-        """桥接实际回执、活动双消费者、前台失败及到期计划和有效监管。"""
+        """桥接实际回执、活动双消费者、前台失败及到期计划和有效监管。
+
+        Args:
+            now: 本次规则计算采用的时刻，便于同一操作保持一致。
+            limit: 本次读取或更新的最大条目数。 默认 16。
+
+        Returns:
+            实际提交的消费者交接与仍需等待容量的状态。
+
+        Raises:
+            ValueError: 反馈观察时刻必须是有限时间。
+        """
         _limit(limit)
         if isinstance(now, bool) or not math.isfinite(now):
             raise ValueError("反馈观察时刻必须是有限时间。")
@@ -84,7 +113,15 @@ class FeedbackLedger:
     async def dispatch_supervision(
         self, record: SupervisionRecord, *, observed_generation: int
     ) -> subject_feedback_models.FeedbackBridge:
-        """即时交接提交前已观察代次的新意见，迟到扫描不能重绑当前代次。"""
+        """即时交接提交前已观察代次的新意见，迟到扫描不能重绑当前代次。
+
+        Args:
+            record: 带原始依据与版本约束的监管记录。
+            observed_generation: 接管或判断开始时观察到的前台生成代次。
+
+        Returns:
+            实际提交的消费者交接与仍需等待容量的状态。
+        """
         _nonnegative(observed_generation)
         return await self._submit(
             lambda connection: sql.dispatch_supervision(
@@ -96,13 +133,29 @@ class FeedbackLedger:
         )
 
     async def reflection_state(self) -> subject_feedback_models.ReflectionState:
-        """读取独立来源和真正成功轮数，不改变复核资格。"""
+        """读取独立来源和真正成功轮数，不改变复核资格。
+
+        Returns:
+            反思来源序号与实际成功前台轮数。
+        """
         return await self._submit(sql.reflection_state)
 
     async def reflection_sources(
         self, *, epoch: int, limit: int = 32, after: int = 0
     ) -> tuple[subject_feedback_models.ReflectionSource, ...]:
-        """分页读取具体版本；已耗尽的相同覆盖不会反复排到第一批。"""
+        """分页读取具体版本。
+
+        Args:
+            epoch: 后台可靠来源的已提交单调序号，不等同于模型输出次数。
+            limit: 本次读取或更新的最大条目数。 默认 32。
+            after: 已观察的变更序号。 默认 0。
+
+        Returns:
+            条目集合：待复核来源的确切版本与可靠游标。
+
+        Note:
+            已耗尽的相同覆盖不会反复排到第一批。
+        """
         _limit(limit)
         _nonnegative(epoch)
         _nonnegative(after)
@@ -118,7 +171,20 @@ class FeedbackLedger:
     async def reserve_reflection(
         self, *, batch_id: str, epoch: int, pages: tuple[EvidencePage, ...], successful_turns: int
     ) -> bool:
-        """在实际模型请求前持久接管原文范围；失败不退回自动重跑。"""
+        """在实际模型请求前持久接管原文范围。
+
+        Args:
+            batch_id: 独立反思批次的身份，须与批次版本配对使用。
+            epoch: 后台可靠来源的已提交单调序号，不等同于模型输出次数。
+            pages: 当前批次实际取得的完整原文页面。
+            successful_turns: 已提交成功的前台轮数，用于后台调度判断。
+
+        Raises:
+            ValueError: 反思接管必须有批次身份和真实页面。
+
+        Note:
+            失败不退回自动重跑。
+        """
         _nonnegative(epoch)
         _nonnegative(successful_turns)
         if not batch_id.strip() or not pages:

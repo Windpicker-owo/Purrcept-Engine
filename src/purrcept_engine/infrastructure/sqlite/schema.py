@@ -75,7 +75,17 @@ def _text(value: object) -> str:
 
 
 def initialize(connection: sqlite3.Connection) -> None:
-    """初始化空库或升级已知格式12；未知格式和完整性故障保留原库。"""
+    """初始化空库或升级已知格式12。
+
+    Args:
+        connection: 仅在 Store 专属线程当前短事务中借用的连接，不在回调中等待设备或模型。
+
+    Raises:
+        StorageError: 权威记录缺失、版本不一致、载荷无效或提交条件不成立。
+
+    Note:
+        未知格式和完整性故障保留原库。
+    """
     connection.execute("PRAGMA foreign_keys = ON")
     version_row: tuple[object, ...] = connection.execute("PRAGMA user_version").fetchone()
     identity_row: tuple[object, ...] = connection.execute("PRAGMA application_id").fetchone()

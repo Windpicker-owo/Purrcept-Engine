@@ -92,14 +92,28 @@ class Studio:
     """
 
     def __init__(self, path: Path, sample_rate: int, executable: str, token: str) -> None:
-        """只保存独立 CLI 指定的路径与程序，不读取主体密钥或配置。"""
+        """只保存独立 CLI 指定的路径与程序，不读取主体密钥或配置。
+
+        Args:
+            path: 此操作定位的明确路径。
+            sample_rate: PCM 的明确采样率（Hz）。
+            executable: 显式配置的外部程序路径，不自动寻找或安装替代程序。
+            token: 当前本机控制实例的随机 ASCII 凭据。
+        """
         self.path, self.rate, self.executable, self.token = path, sample_rate, executable, token
         self.lock = asyncio.Lock()
         self.pcm = b""
         self.clip = ""
 
     async def session(self, request: Request) -> Response:
-        """同源页面取得会话令牌和样本事实，刷新不改变样本或设备。"""
+        """同源页面取得会话令牌和样本事实，刷新不改变样本或设备。
+
+        Args:
+            request: 当前本机 HTTP 请求，正文和路径仍须由路由校验。
+
+        Returns:
+            已按本机路由契约编码的 HTTP 响应。
+        """
         del request
         return _json(
             {
@@ -111,7 +125,14 @@ class Studio:
         )
 
     async def profile(self, request: Request) -> Response:
-        """版本冲突明确拒绝，已保存预设只在后续输出或试听采用。"""
+        """版本冲突明确拒绝，已保存预设只在后续输出或试听采用。
+
+        Args:
+            request: 当前本机 HTTP 请求，正文和路径仍须由路由校验。
+
+        Returns:
+            已按本机路由契约编码的 HTTP 响应。
+        """
         try:
             if request.method == "GET":
                 profile, revision = await _work(lambda: load_profile(self.path))
@@ -156,6 +177,7 @@ class Studio:
         """共享现场 DSP，展开过程中限制实际 PCM，取消归还同一解码进程。"""
 
         async def chunks() -> AsyncIterator[bytes]:
+            """按原始顺序交付完整字节块，不改变素材内容。"""
             for offset in range(0, len(raw), 16384):
                 yield raw[offset : offset + 16384]
 
@@ -179,7 +201,14 @@ class Studio:
         return bytes(pcm)
 
     async def upload(self, request: Request) -> Response:
-        """成功解码才替换当前样本，文件名从不参与磁盘路径。"""
+        """成功解码才替换当前样本，文件名从不参与磁盘路径。
+
+        Args:
+            request: 当前本机 HTTP 请求，正文和路径仍须由路由校验。
+
+        Returns:
+            已按本机路由契约编码的 HTTP 响应。
+        """
         if self.lock.locked():
             return _json({"error": "studio_busy", "message": "当前试听尚未完成，请稍后上传。"}, 409)
         async with self.lock:
@@ -199,7 +228,17 @@ class Studio:
             return _json({"clip_id": self.clip, "duration": len(pcm) / 2 / self.rate})
 
     async def original(self, request: Request) -> Response:
-        """返回同采样率无损原声；旧样本不能读取或混用新样本。"""
+        """返回同采样率无损原声。
+
+        Args:
+            request: 当前本机 HTTP 请求，正文和路径仍须由路由校验。
+
+        Returns:
+            已按本机路由契约编码的 HTTP 响应。
+
+        Note:
+            旧样本不能读取或混用新样本。
+        """
         if request.path_params["clip"] != self.clip or not self.pcm:
             return _json(
                 {"error": "clip_stale", "message": "样本已经替换，请重新载入当前样本。"}, 404
@@ -211,7 +250,14 @@ class Studio:
         )
 
     async def render(self, request: Request) -> Response:
-        """冻结草稿只处理当前 clip，失败不修改有效原声或磁盘预设。"""
+        """冻结草稿只处理当前 clip，失败不修改有效原声或磁盘预设。
+
+        Args:
+            request: 当前本机 HTTP 请求，正文和路径仍须由路由校验。
+
+        Returns:
+            已按本机路由契约编码的 HTTP 响应。
+        """
         if self.lock.locked():
             return _json(
                 {"error": "studio_busy", "message": "当前试听尚未完成，请稍后重新试听。"}, 409
@@ -254,7 +300,24 @@ def create_studio(
     executable: str = "ffmpeg",
     token: str | None = None,
 ) -> ASGIApp:
-    """构造独立有限路由，不启动主体、设备或监听器；调用方拥有 ASGI 生命周期。"""
+    """构造独立有限路由，不启动主体、设备或监听器。
+
+    Args:
+        path: 此操作定位的明确路径。
+        port: 已绑定的本机 HTTP 端口。
+        sample_rate: PCM 的明确采样率（Hz）。 默认 32000。
+        executable: 显式配置的外部程序路径，不自动寻找或安装替代程序。 默认 'ffmpeg'。
+        token: 当前本机控制实例的随机 ASCII 凭据。
+
+    Returns:
+        使用同一已装配宿主和本机请求边界的 ASGI 应用。
+
+    Raises:
+        ValueError: 调音室采样率或监听端口无效。
+
+    Note:
+        调用方拥有 ASGI 生命周期。
+    """
     if sample_rate not in {16000, 24000, 32000, 44100, 48000} or not 1 <= port <= 65535:
         raise ValueError("调音室采样率或监听端口无效。")
     session_token = token or secrets.token_urlsafe(32)
@@ -262,6 +325,7 @@ def create_studio(
     static = files("purrcept_engine.app.studio").joinpath("static")
 
     async def index(request: Request) -> Response:
+        """返回独立调音室首页及本机资源策略。"""
         del request
         return Response(
             static.joinpath("index.html").read_bytes(),
@@ -275,6 +339,7 @@ def create_studio(
         )
 
     async def asset(request: Request) -> Response:
+        """从固定资源白名单返回调音室静态文件。"""
         name = request.path_params["name"]
         media = {
             "studio.css": "text/css",

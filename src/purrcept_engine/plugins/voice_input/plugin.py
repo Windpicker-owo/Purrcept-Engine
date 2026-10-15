@@ -58,9 +58,20 @@ def make_factory(
     *,
     required_modules: tuple[str, ...] = (),
 ) -> PluginFactory:
-    """注入有限设备与转写实现，替身不绕过真实配置、接管或生命周期规则。"""
+    """注入有限设备与转写实现，替身不绕过真实配置、接管或生命周期规则。
+
+    Args:
+        capture_factory: 为当前插件实例创建独立捕获驱动的工厂。
+        vad_factory: 创建当前输入实例 VAD 检测器的工厂。
+        transcriber_factory: 按当前收音配置创建流式转写客户端的工厂。
+        required_modules: 显式启用插件时必须安装的可选模块名，不自动安装。 默认不附加此类条目。
+
+    Returns:
+        接收实例身份、原始配置及基准目录的纯配置工厂。
+    """
 
     def declare(instance_id: str, settings: VoiceInputSettings, base_dir: Path) -> PluginBlueprint:
+        """解析已校验配置，生成对象、能力和资源构造声明。"""
         model = settings.vad_model_path
         if not model.is_absolute():
             settings = settings.model_copy(update={"vad_model_path": base_dir / model})
@@ -108,6 +119,7 @@ def make_factory(
         )
 
         async def build(ports: PluginPorts) -> PluginRuntime:
+            """借用本实例的有限端口，创建能力实现与插件资源所有者。"""
             runtime = VoiceInputRuntime(
                 instance_id,
                 settings,
@@ -119,14 +131,17 @@ def make_factory(
             )
 
             async def run_devices(parameters: _Empty, context: CallContext) -> CallOutcome:
+                """明确枚举当前可用输入设备并更新本实例缓存。"""
                 del parameters, context
                 return CallOutcome("confirmed", await runtime.devices())
 
             async def run_status(parameters: _Empty, context: CallContext) -> CallOutcome:
+                """只读当前插件已取得的业务状态。"""
                 del parameters, context
                 return CallOutcome("confirmed", await runtime.status())
 
             async def run_start(parameters: _Start, context: CallContext) -> CallOutcome:
+                """按明确设备与模式开始收音，拒绝不满足准入的配置。"""
                 del context
                 try:
                     return CallOutcome(
@@ -136,6 +151,7 @@ def make_factory(
                     raise CapabilityInputError(str(error)) from error
 
             async def run_stop(parameters: _Empty, context: CallContext) -> CallOutcome:
+                """明确停止当前收音并等待捕获资源归还。"""
                 del parameters, context
                 return CallOutcome("confirmed", await runtime.stop())
 

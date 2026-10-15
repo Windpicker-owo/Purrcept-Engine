@@ -13,15 +13,34 @@ if TYPE_CHECKING:
 
 
 class FeedbackService:
-    """领域运行时创建的工作所有者，启动一次；取消和汇总关闭由运行时统一协调。"""
+    """将真实调用、活动和计划反馈可靠交接给前台与反思。
+
+    Note:
+        BackgroundService 创建并持有固定工作任务；同库待办在实际消费者接管
+        后确认。不会以通知丢失重放效果，也不通过事件订阅顺序推进关键步骤。
+    """
 
     def __init__(self, runtime: BackgroundService) -> None:
-        """借用同一协调状态，不复制会话、生成资格或失败事实。"""
+        """借用同一协调状态，不复制会话、生成资格或失败事实。
+
+        Args:
+            runtime: 创建此协作者的领域或执行运行实例，不跨实例共享状态。
+        """
         self.runtime = runtime
         self.task: asyncio.Task[None] | None = None
 
     def start(self) -> asyncio.Task[None]:
-        """创建唯一固定任务并交给运行时汇总关闭；重复启动明确拒绝。"""
+        """创建唯一固定任务并交给运行时汇总关闭。
+
+        Returns:
+            当前所有者持有的工作观察入口，等待取消不等于实际资源已归还。
+
+        Raises:
+            HostStateError: 领域工作器已经启动。
+
+        Note:
+            重复启动明确拒绝。
+        """
         if self.task is not None:
             raise HostStateError("领域工作器已经启动。")
         self.task = asyncio.create_task(self.bridge(), name="background-feedback")

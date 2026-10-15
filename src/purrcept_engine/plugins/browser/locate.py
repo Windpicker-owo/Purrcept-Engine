@@ -1,4 +1,4 @@
-"""浏览器程序选择，保留旧默认Chrome→Edge→已安装bundled Chromium规则。
+"""按显式配置或 Chrome、Edge、已安装 bundled Chromium 的顺序选择程序。
 
 显式executable_path优先；文件/注册表检查仅在实际start运行，不安装或下载
 软件。Windows为首版平台，具体已选择程序失败不再启动另一实例重试。
@@ -16,7 +16,16 @@ from purrcept_engine.plugins.browser.settings import BrowserSettings
 
 @dataclass(frozen=True, slots=True)
 class BrowserLaunch:
-    """供SDK调用的互斥executable/channel，不携带另一个隐式配置来源。"""
+    """供SDK调用的互斥executable/channel，不携带另一个隐式配置来源。
+
+    Attributes:
+        executable_path: 显式浏览器程序路径；None 按当前解析规则确定。
+        channel: 当前 Worker 唯一借用的有界 IPC 帧通道。
+        kind: 此业务值所属的稳定种类。
+
+    Note:
+        实例字段在构造后不可重新赋值；嵌套值的冻结范围由字段所属契约决定。
+    """
 
     executable_path: str | None
     channel: str | None
@@ -26,7 +35,18 @@ class BrowserLaunch:
 def resolve_launch(
     settings: BrowserSettings, *, environ: Mapping[str, str] | None = None
 ) -> BrowserLaunch:
-    """按原具体程序查找选择一次，操作在资源所有者的启动线程执行。"""
+    """按原具体程序查找选择一次，操作在资源所有者的启动线程执行。
+
+    Args:
+        settings: 当前组件已校验的配置或纯声明。
+        environ: 用于解析浏览器启动设置的显式环境快照。 None 在此解析入口读取当前进程环境。
+
+    Returns:
+        已解析的浏览器启动声明，不会因此启动浏览器。
+
+    Raises:
+        FileNotFoundError: 配置的浏览器executable_path不是文件。
+    """
     configured = settings.executable_path
     if configured is not None:
         if not configured.is_file():

@@ -41,10 +41,21 @@ def count_litellm_capacity(
 ) -> CapacityEstimate:
     """按显式规则计量请求副本，原始 SDK 请求及其媒体始终不变。
 
-    文本采用 LiteLLM 内置 cl100k tokenizer 的参考口径，适用于网关自定义
-    模型别名；不声称拥有 Gemini 私有 tokenizer。完整 JSON 而非仅 messages
-    参与计量，以保留任意工具 schema 字段。gemini-3-inline-v1 补入 WAV/MP3
-    音频及单帧内联图片；其他媒体或分辨率覆盖明确拒绝，不能按零量放行。
+    Args:
+        payload: 当前边界采用的业务 JSON 或完整模型请求材料。
+        declaration: 待绑定或计量的不可变声明。
+
+    Returns:
+        包含计量方法与适用范围的估算，不是服务端实际 usage。
+
+    Raises:
+        CapacityError: 完整请求缺少适用计量依据、包含不支持材料或超出当前输入预算。
+
+    Note:
+        文本采用 LiteLLM 内置 cl100k tokenizer 的参考口径，适用于网关自定义
+        模型别名；不声称拥有 Gemini 私有 tokenizer。完整 JSON 而非仅 messages
+        参与计量，以保留任意工具 schema 字段。gemini-3-inline-v1 补入 WAV/MP3
+        音频及单帧内联图片；其他媒体或分辨率覆盖明确拒绝，不能按零量放行。
     """
     if not isinstance(declaration, GenerationCapacity):
         raise CapacityError("LiteLLM 规则只适用于生成请求。", code="unsupported_rule")

@@ -26,11 +26,19 @@ class ASRSocket(Protocol):
     """识别适配器借用的有限帧传输，测试可替换而不连接付费端点。"""
 
     async def send(self, data: str | bytes) -> None:
-        """有序发送控制帧或原始 PCM。"""
+        """有序发送控制帧或原始 PCM。
+
+        Args:
+            data: 当前边界接收的原始协议或媒体内容。
+        """
         ...
 
     async def recv(self) -> str | bytes:
-        """接收供应商原始帧，协议校验由转写器负责。"""
+        """接收供应商原始帧，协议校验由转写器负责。
+
+        Returns:
+            当前原生连接实际交付的文本或二进制消息。
+        """
         ...
 
 
@@ -41,18 +49,40 @@ class _ConnectedSocket:
     """将 websockets 的通用分片接口收敛到 ASR 单帧传输契约。"""
 
     def __init__(self, connection: ClientConnection) -> None:
+        """借用当前 ASR 原生连接，不改变外层连接资源所有权。
+
+        Args:
+            connection: 当前所有者实际取得的协议连接。
+        """
         self.connection = connection
 
     async def send(self, data: str | bytes) -> None:
+        """按输入顺序发送当前 ASR 会话的控制消息与 PCM 帧。
+
+        Args:
+            data: 当前边界接收的原始协议或媒体内容。
+        """
         await self.connection.send(data)
 
     async def recv(self) -> str | bytes:
+        """等待当前原生连接交付下一条文本或二进制消息。
+
+        Returns:
+            当前原生连接实际交付的文本或二进制消息。
+        """
         return await self.connection.recv()
 
 
 @asynccontextmanager
 async def connect_asr(settings: VoiceInputSettings) -> AsyncGenerator[ASRSocket]:
-    """生产连接只采用显式凭据及端点，不读取 SDK 环境默认值。"""
+    """生产连接只采用显式凭据及端点，不读取 SDK 环境默认值。
+
+    Args:
+        settings: 当前组件已校验的配置或纯声明。
+
+    Yields:
+        本次连接实际取得的 ASR 套接字，退出上下文后释放。
+    """
     headers = {"Authorization": "Bearer " + settings.asr_api_key.get_secret_value()}
     if settings.workspace_id:
         headers["X-DashScope-WorkSpace"] = settings.workspace_id
@@ -78,11 +108,26 @@ class FunASRTranscriber:
     """runtime 创建的可复用适配器，每次 transcribe 私有网络与任务身份。"""
 
     def __init__(self, settings: VoiceInputSettings, connector: ASRConnect = connect_asr) -> None:
-        """注入有限传输接缝，构造不启动网络。"""
+        """注入有限传输接缝，构造不启动网络。
+
+        Args:
+            settings: 当前组件已校验的配置或纯声明。
+            connector: 创建实际协议连接的显式工厂。
+        """
         self.settings, self.connector = settings, connector
 
     async def transcribe(self, frames: AsyncIterator[bytes]) -> AsyncIterator[TranscriptUpdate]:
-        """EOF 发送 finish-task，供应商最终确认后才允许正常退出。"""
+        """EOF 发送 finish-task，供应商最终确认后才允许正常退出。
+
+        Args:
+            frames: 当前捕获块的帧数或顺序产生的 PCM 帧流。
+
+        Yields:
+            按真实接收顺序产生的转写更新，保留临时与最终文本区别。
+
+        Raises:
+            VoiceInputError: 设备、捕获格式、VAD/ASR 协议或有界帧队列不满足收音要求。
+        """
         settings = self.settings
         if not settings.asr_api_key.get_secret_value():
             raise VoiceInputError("ASR 未配置显式密钥。")

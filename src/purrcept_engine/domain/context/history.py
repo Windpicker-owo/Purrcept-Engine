@@ -87,8 +87,16 @@ _INSTRUCTIONS = (
 class HistoryResult:
     """一次维护结果，只有installed_version存在时宿主才可采用candidate。
 
-    reserved且版本为None表示提案已因目标状态变化失效，不是摘要安装成功；
-    already_attempted/stale/busy不创建模型请求，原始覆盖记录不清除。
+    Attributes:
+        reservation: 当前所有者持有的工作名额，实际结束后才可归还。
+        proposal: 已冻结来源和内容的候选提案，提交前仍须验证。
+        installed_version: 本次摘要实际安装后的会话版本；None 表示没有安装。
+
+    Note:
+        实例字段在构造后不可重新赋值；嵌套值的冻结范围由字段所属契约决定。
+
+        reserved且版本为None表示提案已因目标状态变化失效，不是摘要安装成功；
+        already_attempted/stale/busy不创建模型请求，原始覆盖记录不清除。
     """
 
     reservation: Reservation
@@ -100,22 +108,51 @@ class _RequestCapture:
     """确认begin_request后取得真实身份，其余提交完整委托原权威sink。"""
 
     def __init__(self, sink: RequestEvidenceSink) -> None:
+        """借用原证据端口，并为当前摘要记录真实逻辑请求身份。
+
+        Args:
+            sink: 接收逻辑请求及各次尝试事实的权威提交端口。
+        """
         self.sink = sink
         self.request_id: str | None = None
 
     async def begin_request(self, request: RequestEvidence) -> None:
+        """保存本次摘要的真实逻辑请求身份，并委托原证据端口提交。
+
+        Args:
+            request: 本次逻辑请求冻结的完整公开材料与因果身份。
+
+        Raises:
+            RuntimeError: 摘要只能提交一个逻辑请求。
+        """
         if self.request_id is not None:
             raise RuntimeError("摘要只能提交一个逻辑请求。")
         await self.sink.begin_request(request)
         self.request_id = request.request_id
 
     async def begin_attempt(self, start: AttemptStart) -> None:
+        """将实际尝试开始事实交给原权威证据端口。
+
+        Args:
+            start: 真实尝试开始前须持久化的编号、身份和截止事实。
+        """
         await self.sink.begin_attempt(start)
 
     async def finish_attempt(self, result: AttemptEvidence) -> None:
+        """将本次实际响应或失败证据提交到原证据端口。
+
+        Args:
+            result: 本次尝试的实际响应、失败分类与有限诊断。
+        """
         await self.sink.finish_attempt(result)
 
     async def finish_request(self, request_id: str, state: RequestOutcome) -> None:
+        """将逻辑请求终态提交到原证据端口。
+
+        Args:
+            request_id: 逻辑请求的稳定身份，用于查询或关联同一次受理。
+            state: 逻辑请求最终状态，独立于各次传输尝试。
+        """
         await self.sink.finish_request(request_id, state)
 
 
@@ -155,8 +192,16 @@ def _public_history(value: object, media: list[ImageBlock | AudioBlock]) -> obje
 def summary_request(source: SummarySource, output_tokens: int) -> ModelRequest:
     """把完整可压缩轮次包为历史资料，不携近期/当前后缀或任何可调用工具。
 
-    提示全文及JSON分组表达沿用已有维护路径，媒体通过attachment序号关联原生
-    附件。调用方先选择能容纳的完整前缀，仍只派发一次逻辑请求，不重置预算。
+    Args:
+        source: 已冻结的历史范围及所属会话版本。
+        output_tokens: 为本次生成预留的最大输出 token 数。
+
+    Returns:
+        按实际消息顺序构造的完整 Core 请求。
+
+    Note:
+        提示全文及JSON分组表达沿用已有维护路径，媒体通过attachment序号关联原生
+        附件。调用方先选择能容纳的完整前缀，仍只派发一次逻辑请求，不重置预算。
     """
     turns: list[dict[str, object]] = []
     media: list[ImageBlock | AudioBlock] = []
@@ -203,9 +248,24 @@ async def prepare_summary_request(
 ) -> tuple[SummarySource, ModelRequest]:
     """派发前有界选择可容纳的旧完整前缀，不消费模型请求或修改存储。
 
-    全部旧历史装不下时逐次减半轮数，最多检查对数次，不逐条删除正文。
-    保留检查点的其余历史供候选拼接；候选仍超额时不安装、不继续循环摘要。
-    缺少媒体计量依据等错误不能被当成长度问题；最早一轮也装不下则明确失败。
+    Args:
+        source: 已冻结的历史范围及所属会话版本。
+        output_tokens: 为本次生成预留的最大输出 token 数。
+        model: 本次调用使用的显式模型名，不在领域层推断替代模型。
+        capacity: 对完整实际请求执行容量核验的函数。
+        check_budget: 在准备和等待边界复核原批次预算的函数。
+        compiler: 按实际 SDK 布局冻结完整请求材料的纯编译器。
+
+    Returns:
+        冻结的摘要来源及按摘要模型实际布局构造的完整请求。
+
+    Raises:
+        SummaryError: 最早一个完整历史轮次超过摘要输入预算，原文保持不变。
+
+    Note:
+        全部旧历史装不下时逐次减半轮数，最多检查对数次，不逐条删除正文。
+        保留检查点的其余历史供候选拼接；候选仍超额时不安装、不继续循环摘要。
+        缺少媒体计量依据等错误不能被当成长度问题；最早一轮也装不下则明确失败。
     """
     while True:
         check_budget()
@@ -253,7 +313,24 @@ class HistoryMaintenance:
         diagnostic_bytes: int,
         can_start: Callable[[], None] | None = None,
     ) -> None:
-        """固定命名资源与计量入口，失败不寻找另一模型或另一容量规则。"""
+        """固定命名资源与计量入口，失败不寻找另一模型或另一容量规则。
+
+        Args:
+            store: 应用借出的领域存储端口，实际连接和关闭归资源所有者。
+            evidence: 接收逻辑请求及各次真实尝试的权威提交口。
+            backend: 显式注入的模型后端，资源取得和关闭归装配层。
+            compiler: 按实际 SDK 布局冻结完整请求材料的纯编译器。
+            model: 本次调用使用的显式模型名，不在领域层推断替代模型。
+            summary_capacity: 摘要模型自身的完整请求容量检查。
+            retry: 唯一传输重试策略，不额外叠加 SDK 隐式重试。
+            output_tokens: 为本次生成预留的最大输出 token 数。
+            diagnostic_bytes: 单次尝试允许保留的流诊断字节数，不裁剪原参数或完整响应。
+            can_start: 实际派发前重新检查的资格回调，等待后仍须复核。 None
+                表示不附加调用方资格条件，宿主固定门槛仍生效。
+
+        Raises:
+            ValueError: 摘要输出上限必须是正整数。
+        """
         self.compiler = compiler
         if (
             isinstance(output_tokens, bool)
@@ -288,7 +365,27 @@ class HistoryMaintenance:
         source_capacity: CapacityCheck,
         deadline: float,
     ) -> HistoryResult:
-        """只计算一次覆盖；有效响应及完整候选通过后委托目标idle/CAS事务。"""
+        """只计算一次覆盖。
+
+        Args:
+            source: 已冻结的历史范围及所属会话版本。
+            source_layout: 用原会话布局重建完整候选请求的函数。
+            source_model: 需要安装摘要的原会话模型名。
+            source_capacity: 原会话模型的候选历史容量检查。
+            deadline: 所属事件循环的绝对单调截止时间，不是 Unix 时间戳。
+
+        Returns:
+            本次维护结果；只有存在 installed_version 时才可采用候选历史。
+
+        Raises:
+            HostStateError: 同一历史维护所有者已有计算在途。
+            SummaryError: 典型拒绝原因：摘要需要完整无工具的STOP响应；摘要响应不是完整JSON对象；
+                摘要响应缺少非空summary正文。
+            RuntimeError: 摘要响应缺少真实请求提交身份。
+
+        Note:
+            有效响应及完整候选通过后委托目标idle/CAS事务。
+        """
         self._check()
         if self._active:
             raise HostStateError("同一历史维护所有者已有计算在途。")

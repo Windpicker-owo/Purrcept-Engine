@@ -13,7 +13,15 @@ from purrcept_engine.values import JsonObject, JsonValue
 
 
 def cards(data: JsonValue, *, feeds: bool) -> JsonObject:
-    """只投影文档实际 msglist/feeds 字段，不因旧别名猜测全页已解析。"""
+    """只投影文档实际 msglist/feeds 字段，不因旧别名猜测全页已解析。
+
+    Args:
+        data: 平台实际返回的空间 data，未知字段不得用请求值补成实际值。
+        feeds: 是否投影好友动态而非当前账号列表。
+
+    Returns:
+        业务对象，按实际结果提供 total、has_more、issues、coverage 字段。
+    """
     mapping = object_value(data)
     field = "feeds" if feeds else "msglist"
     items = mapping.get(field)
@@ -77,7 +85,20 @@ def cards(data: JsonValue, *, feeds: bool) -> JsonObject:
 
 
 def write_result(name: str, data: JsonValue, request: JsonObject) -> JsonObject:
-    """分离 requested 与 actual；成功信封不补成平台未返回的 tid/right/id。"""
+    """分离 requested 与 actual。
+
+    Args:
+        name: 九项已声明空间能力中的当前操作名。
+        data: 平台实际返回的空间 data，未知字段不得用请求值补成实际值。
+        request: 按真实 SDK 布局编译的完整请求 JSON。
+
+    Returns:
+        业务对象，按实际结果提供 requested、platform_reported_success、actual、unknown_fields
+        字段。
+
+    Note:
+        成功信封不补成平台未返回的 tid/right/id。
+    """
     mapping = object_value(data)
     result: JsonObject = {
         "requested": request,

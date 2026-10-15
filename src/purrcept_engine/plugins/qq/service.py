@@ -53,7 +53,18 @@ from purrcept_engine.values import JsonObject, JsonValue, decode_object, encode_
 
 
 def platform_data(reply: Reply) -> JsonValue:
-    """检查标准 SnowLuma 信封，缺字段和伪整数不能成为成功或缓存降级依据。"""
+    """检查标准 SnowLuma 信封，缺字段和伪整数不能成为成功或缓存降级依据。
+
+    Args:
+        reply: 传输层实际收到的回包，保留接受状态与原生 data。
+
+    Returns:
+        通过当前边界校验的 JSON 业务值。
+
+    Raises:
+        ConnectionRejected: QQ 回包不符合已冻结 status/retcode/data 信封。
+        QQCallError: 参数、材料或当前状态不满足此入口的约束。
+    """
     response = reply.response
     status, retcode = response.get("status"), response.get("retcode")
     if status not in ("ok", "failed") or type(retcode) is not int or "data" not in response:
@@ -86,7 +97,21 @@ class QQService:
         ports: PluginPorts,
         connector: Connector,
     ) -> None:
-        """只建立本地所有权；连接在 start 后发生。"""
+        """只建立本地所有权。
+
+        Args:
+            instance_id: 本次装配中唯一的插件或宿主实例身份。
+            settings: 当前组件已校验的配置或纯声明。
+            base_dir: 解析相对配置路径的基准目录。
+            ports: 应用显式借出的有限端口，不包含设备客户端或通用服务定位器。
+            connector: 创建实际协议连接的显式工厂。
+
+        Raises:
+            RuntimeError: QQ 必须装配宿主原文、原生接管查询与迟到回执端口。
+
+        Note:
+            连接在 start 后发生。
+        """
         if ports.evidence is None or ports.late_results is None or ports.native_inputs is None:
             raise RuntimeError("QQ 必须装配宿主原文、原生接管查询与迟到回执端口。")
         self.instance_id = instance_id
@@ -104,7 +129,11 @@ class QQService:
         self._counts: dict[str, int] = {}
 
     def snapshot(self) -> JsonObject:
-        """返回实际接入与有限缺口，不执行隐式登录/版本探测。"""
+        """返回实际接入与有限缺口，不执行隐式登录/版本探测。
+
+        Returns:
+            业务对象，按实际结果提供 account_id、diagnostics、gap_counts 字段。
+        """
         return {
             **self.client.snapshot(),
             "account_id": self._account or None,
@@ -115,14 +144,20 @@ class QQService:
     async def prepare_request(self) -> JsonObject:
         """交付账号、连接阶段和故障原因，诊断队列及协议端实现信息留给查询。
 
-        缺口计数仍需保留，使主体不会把接入丢失误判为没有消息；具体平台
-        消息和未确认发送结果分别由正式输入与行动账本提供。
+        Note:
+            缺口计数仍需保留，使主体不会把接入丢失误判为没有消息；具体平台
+            消息和未确认发送结果分别由正式输入与行动账本提供。
         """
         state = self.snapshot()
         return {key: state[key] for key in ("account_id", "mode", "state", "reason", "gap_counts")}
 
     def gap(self, payload: JsonObject, reason: str) -> None:
-        """未接管诊断不含正文、媒体 URL 或转发内容。"""
+        """未接管诊断不含正文、媒体 URL 或转发内容。
+
+        Args:
+            payload: 当前边界采用的业务 JSON 或完整模型请求材料。
+            reason: 供后续核对的明确处置原因。
+        """
         self._counts[reason] = self._counts.get(reason, 0) + 1
         self._diagnostics.append(
             {
@@ -136,7 +171,14 @@ class QQService:
         )
 
     def scope(self, generation: int) -> str:
-        """未知新连接账号不能借用旧账号缓存；确认账号后才跨同账号代次查阅。"""
+        """未知新连接账号不能借用旧账号缓存。
+
+        Args:
+            generation: 当前会话或设备的代次，用于拒绝迟到结果更新新状态。
+
+        Note:
+            确认账号后才跨同账号代次查阅。
+        """
         return (
             self._account
             if self._account and self._account_generation == generation
@@ -144,11 +186,27 @@ class QQService:
         )
 
     def confirm_account(self, account: str, generation: int) -> None:
-        """实际平台事件/显式登录回应确认账号，不以请求或旧连接状态猜账号。"""
+        """实际平台事件/显式登录回应确认账号，不以请求或旧连接状态猜账号。
+
+        Args:
+            account: 当前接入账号的原生身份。
+            generation: 当前会话或设备的代次，用于拒绝迟到结果更新新状态。
+        """
         self._account, self._account_generation = account, generation
 
     async def event(self, payload: JsonObject, generation: int) -> None:
-        """先过滤、核对已有原生事实、再补原文并接管；推送媒体只保存引用。"""
+        """先过滤、核对已有原生事实、再补原文并接管。
+
+        Args:
+            payload: 当前边界采用的业务 JSON 或完整模型请求材料。
+            generation: 当前会话或设备的代次，用于拒绝迟到结果更新新状态。
+
+        Raises:
+            ConnectionRejected: QQ 事件时间超出实际时间范围；QQ 事件 time 必须为有限 Unix 秒。
+
+        Note:
+            推送媒体只保存引用。
+        """
         post_type = payload.get("post_type")
         if post_type not in ("message", "message_sent", "notice"):
             return
@@ -320,10 +378,23 @@ class QQService:
         generation: int,
         context: CallContext | None = None,
     ) -> JsonObject:
-        """有限补取旧转发入口，完整节点仍保留；超界/平台拒绝显式列出缺口。
+        """有限补取旧转发入口，完整节点仍保留。
 
-        原事件先由调用者过滤，本方法不递归过滤被引用发送者。最多 12 次补取、
-        嵌套 3 层沿用旧展开边界；请求仅绑定原连接代次，换代不借新账号续取。
+        Args:
+            payload: 当前边界采用的业务 JSON 或完整模型请求材料。
+            chat: 原生会话身份，私聊与群聊按 QQ 协议区分。
+            target_id: 能力绑定的目标对象身份。
+            generation: 当前会话或设备的代次，用于拒绝迟到结果更新新状态。
+            context: 宿主或 Core 注入的可信调用上下文，不由模型自行填写。
+
+        Raises:
+            ConnectionRejected: get_forward_msg 缺少实际节点数组。
+
+        Note:
+            超界/平台拒绝显式列出缺口。
+
+            原事件先由调用者过滤，本方法不递归过滤被引用发送者。最多 12 次补取、
+            嵌套 3 层沿用旧展开边界；请求仅绑定原连接代次，换代不借新账号续取。
         """
         result = project_message(payload, chat=chat, target_id=target_id)
         image_items = result.get("images")
@@ -403,7 +474,14 @@ class QQService:
         return result
 
     async def raw_reply(self, reply: Reply) -> JsonObject:
-        """完整信封先入快照，拒绝/缺字段也不丢实际平台原文。"""
+        """完整信封先入快照，拒绝/缺字段也不丢实际平台原文。
+
+        Args:
+            reply: 传输层实际收到的回包，保留接受状态与原生 data。
+
+        Returns:
+            业务对象，按实际结果提供 evidence_ref、version、level、entry、arguments 字段。
+        """
         snapshot = EvidenceSnapshot(
             evidence_id=self.instance_id + ":qq:rpc:" + reply.echo,
             version=1,
@@ -431,7 +509,18 @@ class QQService:
     async def reply_outcome(
         self, reply: Reply, project: Callable[[JsonValue], JsonObject]
     ) -> CallOutcome:
-        """保存后核验协议；缺少确认字段不是默认成功。"""
+        """保存后核验协议。
+
+        Args:
+            reply: 传输层实际收到的回包，保留接受状态与原生 data。
+            project: 将原生 data 转为模型可见业务值的投影函数。
+
+        Returns:
+            实际确认、失败或未知结论，以及可 JSON 化的业务值和原生媒体引用。
+
+        Note:
+            缺少确认字段不是默认成功。
+        """
         reference = await self.raw_reply(reply)
         try:
             data = platform_data(reply)
@@ -460,7 +549,15 @@ class QQService:
         return CallOutcome("confirmed", value)
 
     def error_outcome(self, error: QQCallError, reference: JsonObject | None = None) -> CallOutcome:
-        """发送阶段决定未开始/未知/拒绝，断线和 timeout 不撤销真实效果。"""
+        """发送阶段决定未开始/未知/拒绝，断线和 timeout 不撤销真实效果。
+
+        Args:
+            error: 当前流程已经取得的真实故障或失败说明。
+            reference: 包含身份与确切版本的认识或原文引用。 None 表示本次没有附加引用。
+
+        Returns:
+            实际确认、失败或未知结论，以及可 JSON 化的业务值和原生媒体引用。
+        """
         value: JsonObject = {
             "action": error.action,
             "phase": error.phase,
@@ -485,12 +582,30 @@ class QQService:
         *,
         temporary: tuple[Path, ...] = (),
     ) -> CallOutcome:
-        """一次真实调用与同身份迟到提交；不在迟到查询后继续产生新写入。"""
+        """一次真实调用与同身份迟到提交。
+
+        Args:
+            action: 原生 OneBot 操作名，与回包 echo 分别关联。
+            params: 当前原生协议方法使用的显式参数。
+            context: 宿主或 Core 注入的可信调用上下文，不由模型自行填写。
+            project: 将原生 data 转为模型可见业务值的投影函数。
+            temporary: 本次调用持有的临时媒体路径，真实借用结束后才清理。 默认不附加此类条目。
+
+        Returns:
+            实际确认、失败或未知结论，以及可 JSON 化的业务值和原生媒体引用。
+
+        Raises:
+            RuntimeError: QQ 迟到回执端口消失。
+
+        Note:
+            不在迟到查询后继续产生新写入。
+        """
         late_port = self.ports.late_results
         if late_port is None:
             raise RuntimeError("QQ 迟到回执端口消失。")
 
         async def late(reply: Reply) -> None:
+            """将原调用的真实迟到协议回包追加到既有结果历史。"""
             try:
                 await late_port.record(context, await self.reply_outcome(reply, project))
             finally:
@@ -511,7 +626,16 @@ class QQService:
     async def lookup(
         self, action: str, params: JsonObject, context: CallContext
     ) -> tuple[JsonValue, JsonObject]:
-        """多阶段写入的前置只读步骤超时后不续写，实际原响应仍保存。"""
+        """多阶段写入的前置只读步骤超时后不续写，实际原响应仍保存。
+
+        Args:
+            action: 原生 OneBot 操作名，与回包 echo 分别关联。
+            params: 当前原生协议方法使用的显式参数。
+            context: 宿主或 Core 注入的可信调用上下文，不由模型自行填写。
+
+        Returns:
+            平台实际 data 以及保留接受状态的原生业务事实。
+        """
         reply = await self.client.request(action, params, context=context)
         reference = await self.raw_reply(reply)
         return platform_data(reply), reference
@@ -521,8 +645,19 @@ class QQService:
     ) -> CallOutcome:
         """有限拥有一次真实贴纸写入，取消观察后仍把实际结果交原调用回执。
 
-        observed 门槛让完成与取消竞争保持同一个所有者：首版正常结果直接返回，
-        观察已取消才等待宿主首版提交并追加结果；不回滚文件或重新执行操作。
+        Args:
+            context: 宿主或 Core 注入的可信调用上下文，不由模型自行填写。
+            operation: 当前所有者负责推进并回收结果的操作。
+
+        Returns:
+            实际确认、失败或未知结论，以及可 JSON 化的业务值和原生媒体引用。
+
+        Raises:
+            RuntimeError: QQ 迟到回执端口消失。
+
+        Note:
+            observed 门槛让完成与取消竞争保持同一个所有者：首版正常结果直接返回，
+            观察已取消才等待宿主首版提交并追加结果；不回滚文件或重新执行操作。
         """
         late_port = self.ports.late_results
         if late_port is None:
@@ -532,12 +667,14 @@ class QQService:
         detached = False
 
         def consume(owner: asyncio.Future[CallOutcome]) -> None:
+            """取回无人继续观察的真实结果，避免丢失任务故障。"""
             if not owner.cancelled():
                 owner.exception()
 
         future.add_done_callback(consume)
 
         async def actual() -> None:
+            """持有原始协议工作到真实结束，再交付原调用的回执。"""
             try:
                 outcome = await operation()
             except BaseException as error:
@@ -561,7 +698,22 @@ class QQService:
             observed.set()
 
     async def read(self, parameters: Read, context: CallContext) -> CallOutcome:
-        """平台首读保存完整消息快照；续读既不连平台也不混用新路由。"""
+        """平台首读保存完整消息快照。
+
+        Args:
+            parameters: 已通过能力参数模型校验的调用参数。
+            context: 宿主或 Core 注入的可信调用上下文，不由模型自行填写。
+
+        Returns:
+            实际确认、失败或未知结论，以及可 JSON 化的业务值和原生媒体引用。
+
+        Raises:
+            RuntimeError: QQ 首读参数未经真实边界校验。
+            ConnectionRejected: QQ 历史响应没有完整 messages 对象数组。
+
+        Note:
+            续读既不连平台也不混用新路由。
+        """
         if parameters.cursor is not None:
             page = await self.evidence.read_evidence_cursor(
                 parameters.cursor, max_chars=self.evidence.page_chars
@@ -684,8 +836,17 @@ class QQService:
     async def history_item(self, message: JsonObject, source: JsonObject) -> JsonObject:
         """过大的结构化消息另存完整正文和原字段，不截断对象制造完整页面。
 
-        返回卡片明确没有正文；read_evidence 可按字符读取独立 body_ref，因此
-        原结构对象再大也不会让正文只能通过永远失败的列表分页访问。
+        Args:
+            message: 已解码的原生协议对象。
+            source: 本次原生读取实际取得并需要保存的来源字段。
+
+        Returns:
+            业务对象，按实际结果提供 chat、target_id、message_id、sender_id、time、text、
+            raw_message、level、body_ref、original_ref 等 字段。
+
+        Note:
+            返回卡片明确没有正文；read_evidence 可按字符读取独立 body_ref，因此
+            原结构对象再大也不会让正文只能通过永远失败的列表分页访问。
         """
         if len(encode_json(message).decode()) + 2 <= self.evidence.page_chars:
             return message
@@ -733,7 +894,17 @@ class QQService:
         }
 
     def history_page(self, page: EvidencePage) -> CallOutcome:
-        """核验宿主快照实际归属，返回旧字段和确切本地续读范围。"""
+        """核验宿主快照实际归属，返回旧字段和确切本地续读范围。
+
+        Args:
+            page: 与原版本绑定的完整原文页及媒体引用。
+
+        Returns:
+            实际确认、失败或未知结论，以及可 JSON 化的业务值和原生媒体引用。
+
+        Raises:
+            KnowledgeInputError: 游标不是 QQ 历史快照；QQ 历史游标不属于当前插件。
+        """
         snapshot = page.snapshot
         if snapshot is None or snapshot.kind != "qq.history":
             raise KnowledgeInputError("游标不是 QQ 历史快照。")
@@ -757,7 +928,14 @@ class QQService:
         return CallOutcome("confirmed", value, media=snapshot.media)
 
     async def close(self) -> None:
-        """先结束 echo/迟到提交，再收文件；一个资源失败不跳过另一资源收尾。"""
+        """先结束 echo/迟到提交，再收文件。
+
+        Raises:
+            BaseExceptionGroup: QQ 插件资源收尾失败。
+
+        Note:
+            一个资源失败不跳过另一资源收尾。
+        """
         results = list(await asyncio.gather(self.client.close(), return_exceptions=True))
         results.extend(await asyncio.gather(self.media.close(), return_exceptions=True))
         errors = [result for result in results if isinstance(result, BaseException)]

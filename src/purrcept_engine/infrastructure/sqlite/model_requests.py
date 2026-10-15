@@ -58,7 +58,18 @@ SCHEMA = (
 
 
 def begin_request(connection: sqlite3.Connection, request: RequestEvidence) -> None:
-    """原子保存逻辑材料；同身份同材料幂等，不覆盖已有材料。"""
+    """原子保存逻辑材料。
+
+    Args:
+        connection: 仅在 Store 专属线程当前短事务中借用的连接，不在回调中等待设备或模型。
+        request: 本次逻辑请求冻结的完整公开材料与因果身份。
+
+    Raises:
+        StorageError: 模型请求身份与材料冲突。
+
+    Note:
+        同身份同材料幂等，不覆盖已有材料。
+    """
     with connection:
         connection.execute("BEGIN IMMEDIATE")
         materials, media = intern_request_media(connection, request.materials_json)
@@ -81,7 +92,15 @@ def begin_request(connection: sqlite3.Connection, request: RequestEvidence) -> N
 
 
 def begin_attempt(connection: sqlite3.Connection, start: AttemptStart) -> None:
-    """一次开始门槛只能提交一次，重复身份不提供重复发送许可。"""
+    """一次开始门槛只能提交一次，重复身份不提供重复发送许可。
+
+    Args:
+        connection: 仅在 Store 专属线程当前短事务中借用的连接，不在回调中等待设备或模型。
+        start: 真实尝试开始前须持久化的编号、身份和截止事实。
+
+    Raises:
+        StorageError: 逻辑请求不再接受尝试；模型尝试顺序冲突。
+    """
     with connection:
         connection.execute("BEGIN IMMEDIATE")
         row: tuple[object, ...] | None = connection.execute(
@@ -102,7 +121,15 @@ def begin_attempt(connection: sqlite3.Connection, start: AttemptStart) -> None:
 
 
 def finish_attempt(connection: sqlite3.Connection, result: AttemptEvidence) -> None:
-    """独立提交公开响应、失败和流证据，后续尝试不能抹掉此项。"""
+    """独立提交公开响应、失败和流证据，后续尝试不能抹掉此项。
+
+    Args:
+        connection: 仅在 Store 专属线程当前短事务中借用的连接，不在回调中等待设备或模型。
+        result: 本次尝试的实际响应、失败分类与有限诊断。
+
+    Raises:
+        StorageError: 模型尝试身份不存在或不匹配；模型尝试结果不能被覆盖。
+    """
     with connection:
         connection.execute("BEGIN IMMEDIATE")
         media: tuple[str, ...] = ()
@@ -172,7 +199,19 @@ def _encode_authority_attempt(result: AttemptEvidence) -> str:
 
 
 def finish_request(connection: sqlite3.Connection, request_id: str, state: RequestOutcome) -> None:
-    """结束逻辑状态；不修改任何独立尝试的公开结果。"""
+    """结束逻辑状态。
+
+    Args:
+        connection: 仅在 Store 专属线程当前短事务中借用的连接，不在回调中等待设备或模型。
+        request_id: 逻辑请求的稳定身份，用于查询或关联同一次受理。
+        state: 逻辑请求最终状态，独立于各次传输尝试。
+
+    Raises:
+        StorageError: 模型请求身份不存在；模型请求结束结果冲突。
+
+    Note:
+        不修改任何独立尝试的公开结果。
+    """
     with connection:
         connection.execute("BEGIN IMMEDIATE")
         row: tuple[object, ...] | None = connection.execute(
@@ -191,7 +230,22 @@ def finish_request(connection: sqlite3.Connection, request_id: str, state: Reque
 
 
 def get_request(connection: sqlite3.Connection, request_id: str) -> RequestRecord | None:
-    """在单一读快照中重建公开值；损坏材料显式报告，不生成空结果。"""
+    """在单一读快照中重建公开值。
+
+    Args:
+        connection: 仅在 Store 专属线程当前短事务中借用的连接，不在回调中等待设备或模型。
+        request_id: 逻辑请求的稳定身份，用于查询或关联同一次受理。
+
+    Returns:
+        一个逻辑模型请求的冻结材料及按实际顺序保存的尝试。 未取得对应记录或素材时返回 None；
+        读取故障仍抛出。
+
+    Raises:
+        StorageError: 模型请求状态损坏。
+
+    Note:
+        损坏材料显式报告，不生成空结果。
+    """
     with connection:
         connection.execute("BEGIN")
         row: tuple[object, ...] | None = connection.execute(
@@ -226,7 +280,11 @@ def get_request(connection: sqlite3.Connection, request_id: str) -> RequestRecor
 
 
 def initialize(connection: sqlite3.Connection) -> None:
-    """在调用方启动事务内记录旧请求中断，不提交或声称模型物理停止。"""
+    """在调用方启动事务内记录旧请求中断，不提交或声称模型物理停止。
+
+    Args:
+        connection: 仅在 Store 专属线程当前短事务中借用的连接，不在回调中等待设备或模型。
+    """
     connection.execute("SELECT request_id,evidence_json,state FROM model_requests LIMIT 0")
     connection.execute("SELECT attempt_id,start_json,result_json FROM model_attempts LIMIT 0")
     connection.execute("SELECT request_id,media_id FROM model_request_media LIMIT 0")
@@ -263,9 +321,17 @@ def intern_request_media(
 ) -> tuple[str, tuple[str, ...]]:
     """在调用方事务内缩为同库媒体引用，保持 SDK 公开消息和输入结构。
 
-    仅识别编译 content 中的 image_url/input_image data URI 与 input_audio。
-    文本、远端 URL、工具 schema/参数和未知 Provider 项保持原文，不能因为
-    字符串看起来像媒体而修改它。返回引用由调用方与请求关系同事务保存。
+    Args:
+        connection: 仅在 Store 专属线程当前短事务中借用的连接，不在回调中等待设备或模型。
+        encoded: 冻结 SDK 公开 payload 的完整 JSON 编码。
+
+    Returns:
+        当前状态文本和其实际引用的来源身份，供同一请求记录关联。
+
+    Note:
+        仅识别编译 content 中的 image_url/input_image data URI 与 input_audio。
+        文本、远端 URL、工具 schema/参数和未知 Provider 项保持原文，不能因为
+        字符串看起来像媒体而修改它。返回引用由调用方与请求关系同事务保存。
     """
     media: set[str] = set()
     result = _request_media(connection, encoded, media, restore=False)
@@ -273,7 +339,12 @@ def intern_request_media(
 
 
 def restore_request_media(connection: sqlite3.Connection, encoded: str) -> str:
-    """用同库 BLOB 还原原编译 payload，不取远端 URL 或创建模型请求。"""
+    """用同库 BLOB 还原原编译 payload，不取远端 URL 或创建模型请求。
+
+    Args:
+        connection: 仅在 Store 专属线程当前短事务中借用的连接，不在回调中等待设备或模型。
+        encoded: 冻结 SDK 公开 payload 的完整 JSON 编码。
+    """
     return _request_media(connection, encoded, set(), restore=True)
 
 
@@ -313,10 +384,18 @@ def intern_core_media(
 ) -> tuple[str, tuple[str, ...]]:
     """在调用方事务内缩为 Core 编码的媒体引用，供响应及检查点共用。
 
-    输入是 encode 产生的请求、响应、消息或完整 ConversationCheckpoint。
-    只沿 Core 的内容关系读取 ImageBytes/AudioBytes.data，不深入工具参数、
-    Provider 元数据或 continuation。调用方负责将返回引用与其检查点或尝试
-    关系同事务保存；本函数不开始、提交或回滚事务。
+    Args:
+        connection: 仅在 Store 专属线程当前短事务中借用的连接，不在回调中等待设备或模型。
+        encoded: 按 Engine 公开 Core 编码协议保存的完整材料 JSON。
+
+    Returns:
+        当前状态文本和其实际引用的来源身份，供同一请求记录关联。
+
+    Note:
+        输入是 encode 产生的请求、响应、消息或完整 ConversationCheckpoint。
+        只沿 Core 的内容关系读取 ImageBytes/AudioBytes.data，不深入工具参数、
+        Provider 元数据或 continuation。调用方负责将返回引用与其检查点或尝试
+        关系同事务保存；本函数不开始、提交或回滚事务。
     """
     value = _load_json(encoded)
     media: set[str] = set()
@@ -324,7 +403,12 @@ def intern_core_media(
 
 
 def restore_core_media(connection: sqlite3.Connection, encoded: str) -> str:
-    """还原同库 Core 媒体字节表示，缺失或摘要不符属于权威材料损坏。"""
+    """还原同库 Core 媒体字节表示，缺失或摘要不符属于权威材料损坏。
+
+    Args:
+        connection: 仅在 Store 专属线程当前短事务中借用的连接，不在回调中等待设备或模型。
+        encoded: 按 Engine 公开 Core 编码协议保存的完整材料 JSON。
+    """
     value = _load_json(encoded)
     return encode(_core_media(connection, value, set(), restore=True))
 
@@ -405,6 +489,7 @@ def _core_media(
     *,
     restore: bool,
 ) -> object:
+    """恢复同库保存的完整原生媒体，缺失或损坏时保留权威错误。"""
     if isinstance(value, list):
         return [
             _core_media(connection, item, media, restore=restore)
@@ -567,7 +652,17 @@ def _strings(value: object) -> tuple[str, ...]:
 
 
 def decode_request(encoded: str) -> RequestEvidence:
-    """重建逻辑身份与冻结材料，不解码为可执行请求或客户端。"""
+    """重建逻辑身份与冻结材料，不解码为可执行请求或客户端。
+
+    Args:
+        encoded: 数据库保存的一份完整 RequestEvidence JSON。
+
+    Returns:
+        可重建的完整逻辑请求材料。
+
+    Raises:
+        StorageError: 模型请求种类损坏。
+    """
     row = _object(encoded)
     scope = _object(encode(row["scope"]))
     kind = row["kind"]
@@ -593,7 +688,14 @@ def decode_request(encoded: str) -> RequestEvidence:
 
 
 def decode_start(encoded: str) -> AttemptStart:
-    """重建已保存开始身份，单调截止只用于本次宿主的诊断。"""
+    """重建已保存开始身份，单调截止只用于本次宿主的诊断。
+
+    Args:
+        encoded: 数据库保存的一份完整 AttemptStart JSON。
+
+    Returns:
+        该次真实尝试的开始事实。
+    """
     row = _object(encoded)
     return AttemptStart(
         _text(row["request_id"]),
@@ -604,7 +706,20 @@ def decode_start(encoded: str) -> AttemptStart:
 
 
 def decode_attempt(encoded: str) -> AttemptEvidence:
-    """重建一项独立结果；不将失败诊断转换成可执行助手响应。"""
+    """重建一项独立结果。
+
+    Args:
+        encoded: 数据库保存的一份完整 AttemptEvidence JSON。
+
+    Returns:
+        该次尝试实际响应或失败的不可变证据。
+
+    Raises:
+        StorageError: 模型尝试结果损坏；诊断覆盖标记损坏。
+
+    Note:
+        不将失败诊断转换成可执行助手响应。
+    """
     row = _object(encoded)
     state = row["state"]
     if state not in ("succeeded", "failed", "timed_out", "cancelled", "interrupted"):

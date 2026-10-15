@@ -63,8 +63,20 @@ def _is_mapping(value: object) -> TypeGuard[Mapping[object, object]]:
 def read_frame(fd: int, *, max_bytes: int) -> JsonObject:
     """读取一帧，在读取或分配正文前拒绝超限长度。
 
-    完整帧之间的 EOF 抛出 EOFError；长度头或正文截断抛出不同 code 的
-    ActionProtocolError。调用者须保证该 FD 同时只有一个读取者。
+    Args:
+        fd: 已由当前所有者取得的 IPC 文件描述符。
+        max_bytes: 此边界允许保留或接管的最大字节数。
+
+    Returns:
+        下一帧完整解析后的 JSON 对象，长度头或正文损坏不会返回半帧。
+
+    Raises:
+        ActionProtocolError: FD、长度或 JSON 无效，帧被截断、超限或读取失败。
+        EOFError: 在完整帧之间读到正常 EOF。
+
+    Note:
+        完整帧之间的 EOF 抛出 EOFError；长度头或正文截断抛出不同 code 的
+        ActionProtocolError。调用者须保证该 FD 同时只有一个读取者。
     """
     _validate_fd(fd)
     _validate_limit(max_bytes)
@@ -90,10 +102,21 @@ def _write_all(fd: int, data: bytes) -> None:
 
 
 def write_frame(fd: int, payload: object, *, max_bytes: int) -> None:
-    """核验并发送整帧；超限在写入长度头前拒绝。
+    """核验并发送整帧。
 
-    顶层必须是对象，发送方也执行接收方的 JSON 值约束。此函数不拥有 FD
-    或并发锁；多个发送者共用 FD 时应使用 FrameChannel。
+    Args:
+        fd: 已由当前所有者取得的 IPC 文件描述符。
+        payload: 只含受支持 JSON 值的完整 IPC 帧对象。
+        max_bytes: 此边界允许保留或接管的最大字节数。
+
+    Raises:
+        ActionProtocolError: FD、JSON 或帧大小不合法，或底层写入失败。
+
+    Note:
+        超限在写入长度头前拒绝。
+
+        顶层必须是对象，发送方也执行接收方的 JSON 值约束。此函数不拥有 FD
+        或并发锁；多个发送者共用 FD 时应使用 FrameChannel。
     """
     _validate_fd(fd)
     _validate_limit(max_bytes)
@@ -114,7 +137,13 @@ class FrameChannel:
     """
 
     def __init__(self, read_fd: int, write_fd: int, max_bytes: int) -> None:
-        """接管已有管道端，构造失败时 FD 仍归调用者清理。"""
+        """接管已有管道端，构造失败时 FD 仍归调用者清理。
+
+        Args:
+            read_fd: 子进程接收 IPC 帧的文件描述符。
+            write_fd: 子进程发送 IPC 帧的文件描述符。
+            max_bytes: 此边界允许保留或接管的最大字节数。
+        """
         _validate_fd(read_fd)
         _validate_fd(write_fd)
         _validate_limit(max_bytes)
@@ -129,7 +158,14 @@ class FrameChannel:
     def send(self, payload: object) -> None:
         """进入发送锁后编码并发送整帧，关闭不会交错使用写 FD。
 
-        调用者在本次发送返回前不得并发修改载荷。
+        Args:
+            payload: 只含受支持 JSON 值的完整 IPC 帧对象。
+
+        Raises:
+            ActionProtocolError: 行动通道已关闭。
+
+        Note:
+            调用者在本次发送返回前不得并发修改载荷。
         """
         with self._send_lock:
             if self._closed:
@@ -137,7 +173,14 @@ class FrameChannel:
             write_frame(self._write_fd, payload, max_bytes=self._max_bytes)
 
     def read(self) -> JsonObject:
-        """取得完整下一帧；并发读取明确拒绝，EOF 沿用 read_frame 契约。"""
+        """取得完整下一帧。
+
+        Raises:
+            ActionProtocolError: 行动通道已有实际读取者；行动通道已关闭。
+
+        Note:
+            并发读取明确拒绝，EOF 沿用 read_frame 契约。
+        """
         if not self._read_lock.acquire(blocking=False):
             raise ActionProtocolError("行动通道已有实际读取者。", code="active_reader")
         try:
@@ -148,10 +191,16 @@ class FrameChannel:
             self._read_lock.release()
 
     def close(self) -> None:
-        """实际读取结束后关闭两个端点；失败仍尝试释放另一个端点。
+        """实际读取结束后关闭两个端点。
 
-        不等待或强行中断读取线程。重复调用不再次关闭 FD；错误通过异常链
-        保留，所有者不能把异常当成资源已成功释放。
+        Raises:
+            ActionProtocolError: 实际接收尚未结束，不能关闭 FD。
+
+        Note:
+            失败仍尝试释放另一个端点。
+
+            不等待或强行中断读取线程。重复调用不再次关闭 FD；错误通过异常链
+            保留，所有者不能把异常当成资源已成功释放。
         """
         if not self._read_lock.acquire(blocking=False):
             raise ActionProtocolError("实际接收尚未结束，不能关闭 FD。", code="active_reader")

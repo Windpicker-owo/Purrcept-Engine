@@ -17,15 +17,34 @@ export type TimelineItem =
   | { kind: "action"; id: string; at: number | null; title: string; status: Mark; needsCheck: boolean; action: Action }
   | { kind: "control"; id: string; at: number | null; title: string; status: Mark | null; needsCheck: boolean; entry: Entry };
 
-/** 选中身份：行动用 action_id，控制加 control: 前缀，避免两类身份碰撞。 */
+/**
+ * 为本页控制生成与行动身份不冲突的选择键。
+ *
+ * @param entry 保留原 request_id 的本页控制记录。
+ * @returns 带 control: 前缀的稳定选择身份，不改变原业务请求身份。
+ */
 export function controlId(entry: Entry): string { return `control:${entry.request.request_id}`; }
 
-/** 行动的人话标题：涉及哪些对象，没有调用时如实说明。 */
+/**
+ * 根据实际调用对象生成行动标题。
+ *
+ * @param action 包含逐调用真实路径的行动记录。
+ * @param snapshot 解析可配置插件实例名称的当前快照。
+ * @returns 按首次出现顺序去重的对象标题；没有调用时明确说明。
+ */
 export function actionTitle(action: Action, snapshot: Snapshot | null): string {
   const subjects = actionSubjects(action.calls.map((call) => call.path), snapshot);
   return subjects.length === 0 ? "一次没有外部操作的行动" : `使用${subjects.join("、")}`;
 }
 
+/**
+ * 合并宿主近期行动与本标签页控制，生成筛选后的时间线。
+ *
+ * @param snapshot 当前已校验快照；null 时仍保留本页控制。
+ * @param entries 只属于当前标签页的原控制观察。
+ * @param filter all、actions、controls 或 check，不修改原记录。
+ * @returns 按已知时间倒序排列的结果；未知时间保留原相对顺序，不猜测为当前时间。
+ */
 export function timelineItems(snapshot: Snapshot | null, entries: readonly Entry[], filter: TimelineFilter): TimelineItem[] {
   const items: TimelineItem[] = [];
   for (const action of snapshot?.recent_actions ?? []) {

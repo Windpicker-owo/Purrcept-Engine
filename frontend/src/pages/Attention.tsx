@@ -8,6 +8,13 @@ import type { AttentionItem } from "../model/attention";
 import type { Route } from "../model/routes";
 import { EmptyState, PageHeading } from "../ui/common";
 
+/**
+ * 展示当前仍有事实依据的待处理事项。
+ *
+ * items 是共享推导结果，go 用于进入对应详情，不确认或删除权威待办。
+ *
+ * @returns 仅呈现当前输入事实的 React 元素。
+ */
 export function Attention({ items, go }: { items: readonly AttentionItem[]; go: (route: Route) => void }): ReactElement {
   return <>
     <PageHeading title="待处理">这里汇总需要你看一下的事。问题解决后会自动消失。</PageHeading>

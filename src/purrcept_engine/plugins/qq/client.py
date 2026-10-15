@@ -40,6 +40,8 @@ State = Literal[
 
 @dataclass(slots=True)
 class _Pending:
+    """关联一次原生请求的等待者、期限与迟到回包处理。"""
+
     action: str
     generation: int
     echo: str
@@ -72,7 +74,16 @@ class QQClient:
         monotonic: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
     ) -> None:
-        """只绑定配置与有限回调，不连接网络或建立后台任务。"""
+        """只绑定配置与有限回调，不连接网络或建立后台任务。
+
+        Args:
+            settings: 当前组件已校验的配置或纯声明。
+            connector: 创建实际协议连接的显式工厂。
+            event_handler: 接收原生协议事件的异步入口。
+            gap_handler: 连接恢复后报告接入缺口的异步入口。
+            monotonic: 本实例使用的单调时钟，不与持久化墙钟混用。
+            sleep: 等待退避间隔的异步函数，可注入确定性的测试时钟。
+        """
         self.settings = settings
         self._connector = connector
         self._event_handler = event_handler
@@ -106,7 +117,12 @@ class QQClient:
         return self._generation
 
     def snapshot(self) -> JsonObject:
-        """只读取本所有者事实，不试探账号或远端服务。"""
+        """只读取本所有者事实，不试探账号或远端服务。
+
+        Returns:
+            业务对象，按实际结果提供 mode、state、generation、attempts、recovery_id、
+            bound_port、reason、pending_calls、pending_late_results、queued_events 等 字段。
+        """
         return {
             "mode": self.settings.mode,
             "state": self._state,
@@ -124,7 +140,12 @@ class QQClient:
         }
 
     async def wait_state(self, state: State, *, timeout_seconds: float = 10.0) -> None:
-        """本地所有者测试/观察的有界等待，不发起连接或增加恢复预算。"""
+        """本地所有者测试/观察的有界等待，不发起连接或增加恢复预算。
+
+        Args:
+            state: 当前所有者持有的状态或待提交状态值。
+            timeout_seconds: 本次操作的等待上限（秒），不得扩大所属行动或活动期限。 默认 10.0。
+        """
         async with asyncio.timeout(timeout_seconds):
             while self._state != state:
                 self._changed.clear()
@@ -139,7 +160,14 @@ class QQClient:
         self._changed.set()
 
     async def start(self) -> None:
-        """reverse 取得真实监听；direct 只启动已配置的有限恢复所有者。"""
+        """reverse 取得真实监听。
+
+        Raises:
+            RuntimeError: QQ 连接所有者不能重复启动。
+
+        Note:
+            direct 只启动已配置的有限恢复所有者。
+        """
         if self._state != "new" or self._stopping:
             raise RuntimeError("QQ 连接所有者不能重复启动。")
         self._consumer = asyncio.create_task(self._consume(), name="qq-input-consumer")
@@ -157,7 +185,17 @@ class QQClient:
             await self.reconnect("startup-" + uuid4().hex)
 
     async def reconnect(self, recovery_id: str) -> JsonObject:
-        """受理一次有限恢复；已有恢复/在线时只查询，不并行重开或重发消息。"""
+        """受理一次有限恢复。
+
+        Args:
+            recovery_id: 本次连接恢复过程的身份，关闭后不得继续使用。
+
+        Raises:
+            RuntimeError: QQ 正在关闭接入，不能恢复。
+
+        Note:
+            已有恢复/在线时只查询，不并行重开或重发消息。
+        """
         if self._failure is not None:
             raise self._failure
         if self._stopping:
@@ -233,6 +271,7 @@ class QQClient:
                 await self._set_state("waiting", str(error))
 
     async def _adopt(self, connection: Connection) -> asyncio.Task[None] | None:
+        """只让仍有恢复资格的连接成为当前代次，旧连接响应保留原归属。"""
         if self._stopping or self._adopting:
             await connection.close()
             return None
@@ -313,12 +352,14 @@ class QQClient:
         """一项超时 echo 最多建立一个迟到提交，数量受原 pending_calls 界约束。"""
 
         async def commit() -> None:
+            """在既有权威边界完成已经接管的事实提交。"""
             await operation
 
         task = asyncio.create_task(commit(), name="qq-late-result")
         self._late.add(task)
 
         def done(owner: asyncio.Task[None]) -> None:
+            """收回已结束的迟到提交任务，并登记其真实故障。"""
             self._late.discard(owner)
             self._task_failed(owner)
 
@@ -327,8 +368,15 @@ class QQClient:
     def own_file_result(self, operation: Callable[[], Awaitable[None]]) -> None:
         """本地贴纸写入与 echo 共用有限后台名额，调用等待取消不丢真实结果。
 
-        在创建写任务前取得名额；所有者等到文件实际完成和必要回执提交后才释放。
-        stop_inputs 不取消它，close 与 echo 迟到提交一起等待。
+        Args:
+            operation: 当前所有者负责推进并回收结果的操作。
+
+        Raises:
+            QQCallError: QQ 在途文件/协议结果名额已满。
+
+        Note:
+            在创建写任务前取得名额；所有者等到文件实际完成和必要回执提交后才释放。
+            stop_inputs 不取消它，close 与 echo 迟到提交一起等待。
         """
         if self._failure is not None:
             raise self._failure
@@ -390,7 +438,22 @@ class QQClient:
         generation: int | None = None,
         on_late: LateHandler | None = None,
     ) -> Reply:
-        """一次 SDK 请求，不重试。超时后的 echo 仍有限保留供实际迟到回执关联。"""
+        """一次 SDK 请求，不重试。超时后的 echo 仍有限保留供实际迟到回执关联。
+
+        Args:
+            action: 原生 OneBot 操作名，与回包 echo 分别关联。
+            params: 当前原生协议方法使用的显式参数。
+            context: 宿主或 Core 注入的可信调用上下文，不由模型自行填写。
+            generation: 当前会话或设备的代次，用于拒绝迟到结果更新新状态。 None
+                不指定额外的观察代次。
+            on_late: 观察结束后接收真实协议回包的回调。
+
+        Returns:
+            实际原生回包及接受状态，不从请求参数补齐结果。
+
+        Raises:
+            QQCallError: 平台明确拒绝、连接资格已变化，或在原期限内无法取得真实确认。
+        """
         if self._failure is not None:
             raise self._failure
         connection = self._connection
@@ -480,7 +543,11 @@ class QQClient:
             raise
 
     async def stop_inputs(self) -> None:
-        """停止新业务、建连与监听；不提前关闭既有 echo 收包通路。"""
+        """停止新业务、建连与监听。
+
+        Note:
+            不提前关闭既有 echo 收包通路。
+        """
         self._stopping = True
         await self._set_state("stopping")
         if self._listener is not None:
@@ -500,7 +567,11 @@ class QQClient:
             self._events.task_done()
 
     async def close(self) -> None:
-        """资源关闭只执行一次；回包/迟到提交实际结束前宿主不能先关闭 Store。"""
+        """资源关闭只执行一次。
+
+        Note:
+            回包/迟到提交实际结束前宿主不能先关闭 Store。
+        """
         if self._closing is None:
             self._closing = asyncio.create_task(self._close(), name="qq-close")
             self._closing.add_done_callback(_observe)

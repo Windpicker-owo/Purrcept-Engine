@@ -28,7 +28,13 @@ function SessionRow({ title, description, session }: { title: string; descriptio
   </div>;
 }
 
-/** 展示宿主健康与只读配置事实，设备入口通过路由交给设备页。 */
+/**
+ * 展示宿主、预算、积压与配置工具入口。
+ *
+ * state 保留最近观察事实，go 只切换页面；组件不取得模型或设备资源。
+ *
+ * @returns 仅呈现当前输入事实的 React 元素。
+ */
 export function System({ state, go }: { state: PanelState; go: (route: Route) => void }): ReactElement {
   const s: Snapshot | null = state.snapshot;
   if (s === null) return <><PageHeading title="系统">Engine 的运行状况与辅助工具。</PageHeading><Unavailable>还没有取得本机服务的状态。</Unavailable></>;

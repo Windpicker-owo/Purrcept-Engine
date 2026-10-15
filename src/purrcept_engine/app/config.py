@@ -237,7 +237,11 @@ class CharacterSettings(_Settings):
         return None if value == "" else value
 
     def record(self) -> dict[str, str | None]:
-        """返回旧固定提示中的同序六字段，缺省值不会被序列化时省略。"""
+        """返回旧固定提示中的同序六字段，缺省值不会被序列化时省略。
+
+        Returns:
+            固定身份卡字段的独立副本，保留未填写字段。
+        """
         return {
             "name": self.name,
             "one_line": self.one_line,
@@ -384,7 +388,21 @@ class EngineConfig(_Settings):
 
     @classmethod
     def validate(cls, value: object, *, base_dir: Path | None = None) -> Self:
-        """统一校验外部值并解析路径；失败只报告字段位置与不含输入的原因。"""
+        """统一校验外部值并解析路径。
+
+        Args:
+            value: 待解析的完整配置字段，错误只输出字段位置与脱敏原因。
+            base_dir: 解析相对配置路径的基准目录。 None 的路径基准由当前配置入口明确决定。
+
+        Returns:
+            校验完成的当前值或解析后的新配置，具体是否复制由实现说明。
+
+        Raises:
+            ConfigError: 参数、材料或当前状态不满足此入口的约束。
+
+        Note:
+            失败只报告字段位置与不含输入的原因。
+        """
         try:
             config = cls.model_validate(value)
         except ValidationError as error:
@@ -397,7 +415,20 @@ class EngineConfig(_Settings):
         return config.resolve(base_dir=base_dir)
 
     def resolve(self, *, base_dir: Path | None = None) -> Self:
-        """以显式绝对目录解析启动路径；不打开资源或依赖进程工作目录。"""
+        """以显式绝对目录解析启动路径。
+
+        Args:
+            base_dir: 解析相对配置路径的基准目录。 None 的路径基准由当前配置入口明确决定。
+
+        Returns:
+            校验完成的当前值或解析后的新配置，具体是否复制由实现说明。
+
+        Raises:
+            ConfigError: 配置字段、资源声明或目录绑定不满足本入口的装配要求。
+
+        Note:
+            不打开资源或依赖进程工作目录。
+        """
         data_dir = self.host.data_dir
         if not data_dir.is_absolute():
             if base_dir is None or not base_dir.is_absolute():
@@ -429,14 +460,28 @@ class EngineConfig(_Settings):
 
     @property
     def plugin_base_dir(self) -> Path:
-        """返回已固定的配置基准目录；空插件配置无需额外路径信息。"""
+        """返回已固定的配置基准目录。
+
+        Note:
+            空插件配置无需额外路径信息。
+        """
         if self._plugin_base_dir is not None:
             return self._plugin_base_dir
         return self.host.data_dir
 
 
 def load_config(path: Path) -> EngineConfig:
-    """读取一份 TOML，以文件所在目录解析路径，并以脱敏错误拒绝不合法配置。"""
+    """读取一份 TOML，以文件所在目录解析路径，并以脱敏错误拒绝不合法配置。
+
+    Args:
+        path: 此操作定位的明确路径。
+
+    Returns:
+        路径已按基准目录解析、字段已校验的不可变宿主配置。
+
+    Raises:
+        ConfigError: TOML 语法无效，请检查配置文件结构；无法读取配置文件，请检查路径与读取权限。
+    """
     config_path = path.absolute()
     try:
         with config_path.open("rb") as source:

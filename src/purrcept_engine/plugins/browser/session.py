@@ -49,7 +49,15 @@ _CHALLENGE = (
 
 
 def detect_block(view: PageView, html: str) -> str | None:
-    """沿用标题/URL/HTML前8000字符的验证码线索，线索不等于验证成功。"""
+    """沿用标题/URL/HTML前8000字符的验证码线索，线索不等于验证成功。
+
+    Args:
+        view: 当前驱动实际取得的页面身份与状态。
+        html: 当次实际取得的完整 HTML，抽取前不按模型页长裁剪。
+
+    Returns:
+        实际已有拦截原因，或 captcha/challenge 线索；未发现时返回 None。
+    """
     if view.blocked is not None:
         return view.blocked
     haystack = (view.title + "\n" + view.url + "\n" + html[:8000]).lower()
@@ -73,7 +81,14 @@ class BrowserSession:
         settings: BrowserSettings,
         evidence: EvidencePort,
     ) -> None:
-        """登记资源和配置，不在构造读取浏览器或创建目录。"""
+        """登记资源和配置，不在构造读取浏览器或创建目录。
+
+        Args:
+            instance_id: 本次装配中唯一的插件或宿主实例身份。
+            driver: 当前会话唯一借用的浏览器驱动。
+            settings: 当前组件已校验的配置或纯声明。
+            evidence: 完整原文、媒体及不可变分页服务。
+        """
         self.instance_id, self.driver, self.settings = instance_id, driver, settings
         self.evidence = evidence
         self._lock = asyncio.Lock()
@@ -101,7 +116,14 @@ class BrowserSession:
             task.exception()
 
     async def start(self) -> None:
-        """取消等待不丢失取得中的资源；重复加入同一次真实启动。"""
+        """启动当前浏览器会话并安装逐跳导航策略。
+
+        Raises:
+            BrowserError: 浏览器已关闭。
+
+        Note:
+            取消等待不丢失取得中的资源；重复加入同一次真实启动。
+        """
         if self._close_task is not None:
             raise BrowserError("浏览器已关闭。")
         if self._start_task is None:
@@ -118,7 +140,17 @@ class BrowserSession:
         self._started = True
 
     def check_url(self, url: str) -> str:
-        """声明主机约束同一函数由入口与真实逐跳请求使用。"""
+        """声明主机约束同一函数由入口与真实逐跳请求使用。
+
+        Args:
+            url: 本次明确访问的资源 URL，实际请求仍须通过对应策略。
+
+        Returns:
+            经协议与主机策略校验的规范 URL，实际文档请求仍逐跳核验。
+
+        Raises:
+            BrowserInputError: 参数、材料或当前状态不满足此入口的约束。
+        """
         try:
             return normalize_and_authorize_url(
                 url,
@@ -149,7 +181,11 @@ class BrowserSession:
         return result
 
     async def status(self) -> JsonObject:
-        """实际读页面身份，不额外读正文或取图。"""
+        """查询当前实际页面身份与可用状态。
+
+        Note:
+            实际读页面身份，不额外读正文或取图。
+        """
         self._check()
         async with self._lock:
             view = await self.driver.view()
@@ -157,7 +193,11 @@ class BrowserSession:
             return view.payload()
 
     async def open(self, url: str) -> JsonObject:
-        """预检后真实导航，保留加载/验证码状态，不自动再请求。"""
+        """预检后真实导航，保留加载/验证码状态，不自动再请求。
+
+        Args:
+            url: 本次明确访问的资源 URL，实际请求仍须通过对应策略。
+        """
         self._check()
         normalized = self.check_url(url)
         async with self._lock:
@@ -185,7 +225,21 @@ class BrowserSession:
         max_chars: int | None = None,
         cursor: str | None = None,
     ) -> JsonObject:
-        """首读保存完整HTML/正文，游标只续同一快照，不刷新平台或猜cursor。"""
+        """取得完整页面快照，按指定正文格式提供不可变分页。
+
+        Args:
+            mode: markdown 或 text；None 使用配置默认模式。
+            max_chars: 本页正文的字符上限；分页游标继续绑定原快照。 None
+                使用本实例配置的统一页长。
+            cursor: 宿主签发并保存的不透明续读游标，续读同一快照版本。 None 表示首次读取。
+
+        Raises:
+            BrowserInputError: cursor续读不能同时指定新的mode；max_chars必须为正整数。
+            BrowserActionError: 读取期间页面URL改变，已保存取得原文。
+
+        Note:
+            首读保存完整HTML/正文，游标只续同一快照，不刷新平台或猜cursor。
+        """
         if cursor is not None and mode is not None:
             raise BrowserInputError("cursor续读不能同时指定新的mode。")
         limit = (
@@ -262,7 +316,14 @@ class BrowserSession:
         }
 
     async def search(self, query: str) -> JsonObject:
-        """保留原搜索引擎/条数，同时保存完整结果页HTML，不把空解析冒充全部无结果。"""
+        """保留原搜索引擎/条数，同时保存完整结果页HTML，不把空解析冒充全部无结果。
+
+        Args:
+            query: 用于关键词或语义检索的意图文本。
+
+        Raises:
+            BrowserInputError: query不能为空。
+        """
         self._check()
         stripped = query.strip()
         if not stripped:
@@ -309,7 +370,17 @@ class BrowserSession:
             return payload
 
     async def snapshot(self, *, interactive: bool) -> JsonObject:
-        """刷新最近ref映射；目录稳定，页面树不进入固定目录前缀。"""
+        """刷新最近ref映射。
+
+        Args:
+            interactive: 是否仅投影可交互节点。
+
+        Returns:
+            业务对象，按实际结果提供 snapshot、interactive、ref_count 字段。
+
+        Note:
+            目录稳定，页面树不进入固定目录前缀。
+        """
         self._check()
         async with self._lock:
             view = await self.driver.view()
@@ -329,7 +400,14 @@ class BrowserSession:
         return handle
 
     async def click(self, ref: str) -> JsonObject:
-        """真实点击完成后清旧ref，后续读取失败不触发重新点击。"""
+        """真实点击完成后清旧ref，后续读取失败不触发重新点击。
+
+        Args:
+            ref: 当前页面快照签发的节点引用，页面变化后不可复用旧引用。
+
+        Returns:
+            业务对象，按实际结果提供 ref 字段。
+        """
         self._check()
         async with self._lock:
             handle = self._ref(ref)
@@ -338,7 +416,22 @@ class BrowserSession:
             return {**await self._decorate(view, "click"), "ref": ref}
 
     async def type_text(self, ref: str, text: str, *, submit: bool) -> JsonObject:
-        """保留每字/封顶停顿；空文本拒绝，不清空已填框作为降级。"""
+        """保留每字/封顶停顿。
+
+        Args:
+            ref: 当前页面快照签发的节点引用，页面变化后不可复用旧引用。
+            text: 本次明确传输、输入或呈现的完整文本。
+            submit: 是否在完成文字输入后明确发送 Enter。
+
+        Returns:
+            业务对象，按实际结果提供 ref、submit 字段。
+
+        Raises:
+            BrowserInputError: text不能为空。
+
+        Note:
+            空文本拒绝，不清空已填框作为降级。
+        """
         self._check()
         if not text:
             raise BrowserInputError("text不能为空。")
@@ -350,7 +443,16 @@ class BrowserSession:
             return {**await self._decorate(view, "type"), "ref": ref, "submit": submit}
 
     async def scroll(self, direction: str, ref: str | None, amount: int) -> JsonObject:
-        """保留可选元素滚动与默认600像素，不自行调整当前页面来源。"""
+        """保留可选元素滚动与默认600像素，不自行调整当前页面来源。
+
+        Args:
+            direction: 明确的滚动方向，由浏览器边界校验。
+            ref: 当前页面快照签发的节点引用，页面变化后不可复用旧引用。
+            amount: 本次滚动的像素数量。
+
+        Returns:
+            业务对象，按实际结果提供 direction 字段。
+        """
         self._check()
         async with self._lock:
             handle = None if ref is None else self._ref(ref)
@@ -358,7 +460,15 @@ class BrowserSession:
             return {**await self._decorate(view, "scroll"), "direction": direction}
 
     async def image(self, *, ref: str | None, full_page: bool = False) -> CallOutcome:
-        """原生BLOB确认后才写可发送镜像，镜像失败仍保留已取得媒体。"""
+        """原生BLOB确认后才写可发送镜像，镜像失败仍保留已取得媒体。
+
+        Args:
+            ref: 当前页面快照签发的节点引用，页面变化后不可复用旧引用。
+            full_page: 是否截取完整页面，而非仅当前视口。 默认 False。
+
+        Returns:
+            实际确认、失败或未知结论，以及可 JSON 化的业务值和原生媒体引用。
+        """
         self._check()
         async with self._lock:
             view = await self.driver.view()
@@ -438,7 +548,11 @@ class BrowserSession:
         return CallOutcome("confirmed", value, media=committed.media)
 
     def state(self) -> JsonObject:
-        """只投影已观察的页面，不在查询时导航、取图或重新读正文。"""
+        """只投影已观察的页面，不在查询时导航、取图或重新读正文。
+
+        Returns:
+            业务对象，按实际结果提供 phase、page、observed_at 字段。
+        """
         if self._closed:
             phase = "closed"
         elif self._close_task is not None:

@@ -13,15 +13,34 @@ if TYPE_CHECKING:
 
 
 class DeferredInputService:
-    """领域运行时创建的工作所有者，启动一次；取消和汇总关闭由运行时统一协调。"""
+    """等待最早延期到期，将原输入身份交回前台一次。
+
+    Note:
+        SubjectService 持有唯一固定等待任务；延期沿用权威待办，不另建输入状态
+        或为每条输入创建定时任务，也不在到期时重新发起注意模型判断。
+    """
 
     def __init__(self, runtime: SubjectService) -> None:
-        """借用同一协调状态，不复制会话、生成资格或失败事实。"""
+        """借用同一协调状态，不复制会话、生成资格或失败事实。
+
+        Args:
+            runtime: 创建此协作者的领域或执行运行实例，不跨实例共享状态。
+        """
         self.runtime = runtime
         self.task: asyncio.Task[None] | None = None
 
     def start(self) -> asyncio.Task[None]:
-        """创建唯一固定任务并交给运行时汇总关闭；重复启动明确拒绝。"""
+        """创建唯一固定任务并交给运行时汇总关闭。
+
+        Returns:
+            当前所有者持有的工作观察入口，等待取消不等于实际资源已归还。
+
+        Raises:
+            HostStateError: 领域工作器已经启动。
+
+        Note:
+            重复启动明确拒绝。
+        """
         if self.task is not None:
             raise HostStateError("领域工作器已经启动。")
         self.task = asyncio.create_task(self.deferred(), name="subject-deferred")

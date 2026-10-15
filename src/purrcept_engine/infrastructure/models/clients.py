@@ -43,7 +43,17 @@ class OpenAIGenerationResource:
     """
 
     def __init__(self, settings: ModelConnection) -> None:
-        """固定凭据、端点与客户端所有权；不建立真实连接。"""
+        """固定凭据、端点与客户端所有权。
+
+        Args:
+            settings: 当前组件已校验的配置或纯声明。
+
+        Raises:
+            ConfigError: 首批生成路径需要显式 openai/ 模型协议标识。
+
+        Note:
+            不建立真实连接。
+        """
         if not settings.model.startswith("openai/"):
             raise ConfigError("首批生成路径需要显式 openai/ 模型协议标识")
 
@@ -65,7 +75,14 @@ class OpenAIGenerationResource:
 
     @classmethod
     def create(cls, settings: ModelConnection) -> OpenAIGenerationResource:
-        """从已校验配置建立一个独立所有者，不读取环境凭据或探测服务。"""
+        """从已校验配置建立一个独立所有者，不读取环境凭据或探测服务。
+
+        Args:
+            settings: 当前组件已校验的配置或纯声明。
+
+        Returns:
+            宿主新取得的生成资源；注入的外部资源不由此重复取得。
+        """
         return cls(settings)
 
     @property
@@ -76,7 +93,20 @@ class OpenAIGenerationResource:
     async def generate(
         self, request: ModelRequest, *, model: str, emit: ModelEventSink | None = None
     ) -> ModelResponse:
-        """首次调用才初始化 SDK，关闭开始后拒绝新生成。"""
+        """首次调用才初始化 SDK，关闭开始后拒绝新生成。
+
+        Args:
+            request: 已经按 Core 协议组装的完整生成请求。
+            model: 本次调用使用的显式模型名，不在领域层推断替代模型。
+            emit: 流事件观察回调；None 表示不向外部观察者投递。 None
+                表示不向外部观察者发送流事件。
+
+        Returns:
+            通过协议与证据提交门槛的真实模型响应。
+
+        Raises:
+            ModelRequestError: 生成模型资源已开始关闭。
+        """
         if self._close_task is not None:
             raise ModelRequestError("生成模型资源已开始关闭", provider="engine")
         if self._backend is None:
@@ -93,7 +123,11 @@ class OpenAIGenerationResource:
         return await self._backend.generate(request, model=model, emit=emit)
 
     async def close(self) -> None:
-        """等待同一次客户端收回；等待者取消不取消资源清理。"""
+        """等待同一次客户端收回。
+
+        Note:
+            等待者取消不取消资源清理。
+        """
         if self._close_task is None:
             self._close_task = asyncio.create_task(self._client.close(), name="generation-close")
         await asyncio.shield(self._close_task)
@@ -126,7 +160,14 @@ class DecisionResource:
     """
 
     def __init__(self, settings: ModelConnection) -> None:
-        """记录已校验配置，首次调用前不导入 SDK 或取得 HTTP 传输。"""
+        """记录已校验配置，首次调用前不导入 SDK 或取得 HTTP 传输。
+
+        Args:
+            settings: 当前组件已校验的配置或纯声明。
+
+        Raises:
+            ConfigError: 专用判断路径需要显式 typesafe/ 或 openrouter/ 模型协议标识。
+        """
         # 只接入已核验传输契约的提供商；端点地址不能代替模型前缀选择协议。
         if not settings.model.startswith(("typesafe/", "openrouter/")):
             raise ConfigError("专用判断路径需要显式 typesafe/ 或 openrouter/ 模型协议标识")
@@ -139,16 +180,39 @@ class DecisionResource:
 
     @classmethod
     def create(cls, settings: ModelConnection) -> DecisionResource:
-        """建立显式判断所有者，不探测端点或修改全局 SDK 配置。"""
+        """建立显式判断所有者，不探测端点或修改全局 SDK 配置。
+
+        Args:
+            settings: 当前组件已校验的配置或纯声明。
+
+        Returns:
+            宿主新取得的判断资源，隐式传输重试已经关闭。
+        """
         return cls(settings)
 
     @property
     def backend(self) -> DecisionResource:
-        """借出本资源的 Core 判断边界；读取不初始化 SDK 或传输。"""
+        """借出本资源的 Core 判断边界。
+
+        Note:
+            读取不初始化 SDK 或传输。
+        """
         return self
 
     async def decide(self, request: DecisionRequest, *, model: str) -> DecisionResponse:
-        """首次请求才取得 SDK handler，关闭后不重建资源或启动判断。"""
+        """首次请求才取得 SDK handler，关闭后不重建资源或启动判断。
+
+        Args:
+            request: 已经按 Core 协议组装的专用判断请求。
+            model: 本次调用使用的显式模型名，不在领域层推断替代模型。
+
+        Returns:
+            真实判断响应，概率和拒答仍由所属判断流程解释。
+
+        Raises:
+            ModelRequestError: 判断模型资源已开始关闭。
+            TypeError: LiteLLM 判断 handler 未提供 HTTPX AsyncClient。
+        """
         if self._close_task is not None:
             raise ModelRequestError("判断模型资源已开始关闭", provider="engine")
         if self._backend is None:

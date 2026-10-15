@@ -18,9 +18,23 @@ class HistoryStore(Protocol):
     """提供版本与原文保护事实，不授予数据库访问。"""
 
     async def get_session(self, scope: SessionScope) -> SessionRecord:
-        """读取同一连续会话已提交版本。"""
+        """读取同一连续会话已提交版本。
+
+        Args:
+            scope: 目标连续会话，foreground 与 reflection 拥有独立历史。
+
+        Returns:
+            会话已提交版本与完整检查点，不包含尚未提交的临时历史。
+        """
         ...
 
     async def protected_input_ids(self, input_ids: tuple[str, ...]) -> frozenset[str]:
-        """返回尚受未决工作保护的原始输入身份。"""
+        """返回尚受未决工作保护的原始输入身份。
+
+        Args:
+            input_ids: 本轮接管的输入身份集合，保留真实因果关联。
+
+        Returns:
+            由完整请求材料确认的不可变身份集合，不从正文标记推断资格。
+        """
         ...

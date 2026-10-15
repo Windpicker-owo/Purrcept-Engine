@@ -20,7 +20,17 @@ _HEADINGS = {f"h{level}": level for level in range(1, 7)}
 
 
 def html_to_markdown(html: str) -> tuple[str, str]:
-    """完整Markdown及实际renderer；未识别主体时使用原有基础转换。"""
+    """完整Markdown及实际renderer。
+
+    Args:
+        html: 当次实际取得的完整 HTML，抽取前不按模型页长裁剪。
+
+    Returns:
+        基于完整 HTML 抽取得到的 Markdown 正文，未按模型页长截断。
+
+    Note:
+        未识别主体时使用原有基础转换。
+    """
     from trafilatura import extract
 
     extracted = extract(
@@ -39,7 +49,14 @@ def html_to_markdown(html: str) -> tuple[str, str]:
 
 
 def html_to_text(html: str) -> str:
-    """完整可见文本，保留换行，不提前取前8000字符。"""
+    """完整可见文本，保留换行，不提前取前8000字符。
+
+    Args:
+        html: 当次实际取得的完整 HTML，抽取前不按模型页长裁剪。
+
+    Returns:
+        基于完整 HTML 抽取得到的纯文本正文。
+    """
     parser = _TextParser()
     parser.feed(html)
     parser.close()
@@ -50,6 +67,7 @@ class _MarkdownParser(HTMLParser):
     """保留基础块级/链接呈现；跳过区域用深度计数，防止内部文本混入正文。"""
 
     def __init__(self) -> None:
+        """为一次 HTML 转 Markdown 创建独立的标签和正文收集状态。"""
         super().__init__(convert_charrefs=True)
         self._chunks: list[str] = []
         self._skip_depth = 0
@@ -57,6 +75,12 @@ class _MarkdownParser(HTMLParser):
         self._link_text: list[str] = []
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        """按文档顺序采用当前开始标签，更新抽取器的嵌套状态。
+
+        Args:
+            tag: HTMLParser 按文档顺序交付的标签名。
+            attrs: 当前 HTML 开始标签的属性列表。
+        """
         if tag in _SKIP_TAGS:
             self._skip_depth += 1
             return
@@ -83,6 +107,11 @@ class _MarkdownParser(HTMLParser):
             self._chunks.append("`")
 
     def handle_endtag(self, tag: str) -> None:
+        """按文档顺序闭合当前标签，结束对应文本收集范围。
+
+        Args:
+            tag: HTMLParser 按文档顺序交付的标签名。
+        """
         if tag in _SKIP_TAGS and self._skip_depth:
             self._skip_depth -= 1
             return
@@ -105,6 +134,11 @@ class _MarkdownParser(HTMLParser):
             self._chunks.append("\n")
 
     def handle_data(self, data: str) -> None:
+        """收集当前允许范围内的正文，不采用被跳过标签的内容。
+
+        Args:
+            data: HTMLParser 解码字符实体后交付的当前正文片段。
+        """
         if self._skip_depth:
             return
         if self._href is not None:
@@ -113,6 +147,7 @@ class _MarkdownParser(HTMLParser):
         self._chunks.append(data)
 
     def text(self) -> str:
+        """合并已收集正文，规范段落空白后返回完整文本。"""
         joined = "".join(self._chunks)
         joined = _WHITESPACE.sub("\n", joined)
         joined = _MULTI_BLANK.sub("\n\n", joined)
@@ -123,11 +158,18 @@ class _TextParser(HTMLParser):
     """保留可见标签文本和块换行，嵌套跳过区域必须完整结束才恢复收集。"""
 
     def __init__(self) -> None:
+        """为一次 HTML 纯文本抽取创建独立的跳过范围和正文缓冲。"""
         super().__init__(convert_charrefs=True)
         self._chunks: list[str] = []
         self._skip_depth = 0
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        """按文档顺序采用当前开始标签，更新抽取器的嵌套状态。
+
+        Args:
+            tag: HTMLParser 按文档顺序交付的标签名。
+            attrs: 当前 HTML 开始标签的属性列表。
+        """
         del attrs
         if tag in _SKIP_TAGS:
             self._skip_depth += 1
@@ -138,15 +180,26 @@ class _TextParser(HTMLParser):
             self._chunks.append("\n")
 
     def handle_endtag(self, tag: str) -> None:
+        """按文档顺序闭合当前标签，结束对应文本收集范围。
+
+        Args:
+            tag: HTMLParser 按文档顺序交付的标签名。
+        """
         if tag in _SKIP_TAGS and self._skip_depth:
             self._skip_depth -= 1
 
     def handle_data(self, data: str) -> None:
+        """收集当前允许范围内的正文，不采用被跳过标签的内容。
+
+        Args:
+            data: HTMLParser 解码字符实体后交付的当前正文片段。
+        """
         if self._skip_depth:
             return
         self._chunks.append(data)
 
     def text(self) -> str:
+        """合并已收集正文，规范段落空白后返回完整文本。"""
         joined = "".join(self._chunks)
         joined = _WHITESPACE.sub("\n", joined)
         joined = _MULTI_BLANK.sub("\n\n", joined)

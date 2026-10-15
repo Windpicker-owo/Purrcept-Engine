@@ -5,6 +5,7 @@
 import type { IconName } from "@purrcept/cel";
 
 export type Page = "home" | "attention" | "timeline" | "devices" | "activities" | "system";
+/** 已知页面和可选对象身份，仅定位观察内容，不附带业务执行资格。 */
 export interface Route { page: Page; id: string | null }
 
 /** 导航按主体概览、行动记录、连接与系统排列，同级页面立即切换。 */
@@ -17,7 +18,12 @@ export const PAGES: readonly { id: Page; label: string; icon: IconName; descript
   { id: "system", label: "系统", icon: "settings", description: "运行状况与工具" },
 ];
 
-/** 无法识别的 hash 回到首页，不抛错也不保留伪造的选中对象。 */
+/**
+ * 将本机 hash 解析为页面与可选选择身份。
+ *
+ * @param hash 包含或省略 # 前缀的浏览器 location.hash。
+ * @returns 已知页面及解码后的选择身份；未知页面回首页，坏编码仅清除选择。
+ */
 export function parseRoute(hash: string): Route {
   const [page, ...rest] = hash.replace(/^#\/?/, "").split("/");
   const known = PAGES.find((item) => item.id === page);
@@ -32,7 +38,12 @@ export function parseRoute(hash: string): Route {
     return { page: known.id, id: null };
   }
 }
-/** 生成可分享的本机深链。 */
+/**
+ * 为当前页面和选择生成本机深链。
+ *
+ * @param route 已知页面及可选对象身份；null 身份只定位页面。
+ * @returns 对象身份经 URI 编码的 hash 链接，不触发宿主操作。
+ */
 export function routeHref(route: Route): string {
   return route.id === null ? `#/${route.page}` : `#/${route.page}/${encodeURIComponent(route.id)}`;
 }

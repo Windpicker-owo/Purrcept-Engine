@@ -1,7 +1,7 @@
-"""保留旧 QQ 模型入口的参数名，在 FunctionCapability 边界一次严格校验。
+"""定义 QQ 能力的 Pydantic 参数模型及模型可见字段说明。
 
-来源过滤不是能力权限。这里仅约束 QQ 原生身份、首读/续读组合和已批准的
-QZone 范围；不加入身份角色、幂等假设或端点别名探测。
+CapabilityDeclaration 引用这些模型生成 schema，FunctionCapability 在实际
+调用边界解析参数；这里不连接 OneBot、不读取媒体或执行平台操作。
 """
 
 from typing import Annotated, Literal, Self
@@ -47,7 +47,17 @@ class Send(Target):
 
     @model_validator(mode="after")
     def valid_message(self) -> Self:
-        """私聊 @ 明确拒绝；空消息不发送给平台试错。"""
+        """私聊 @ 明确拒绝。
+
+        Returns:
+            校验完成的当前值或解析后的新配置，具体是否复制由实现说明。
+
+        Raises:
+            ValueError: 私聊不支持 at；不能发送空消息。
+
+        Note:
+            空消息不发送给平台试错。
+        """
         if self.chat == "private" and self.at:
             raise ValueError("私聊不支持 at。")
         if not any((self.text.strip(), self.images, self.files, self.voice.strip())):
@@ -65,7 +75,15 @@ class Read(Parameters):
 
     @model_validator(mode="after")
     def source_or_cursor(self) -> Self:
-        """续读不混入新的会话或取数条件，防止把旧快照当成新查询。"""
+        """续读不混入新的会话或取数条件，防止把旧快照当成新查询。
+
+        Returns:
+            校验完成的当前值或解析后的新配置，具体是否复制由实现说明。
+
+        Raises:
+            ValueError: cursor 续读不能同时指定 chat、target_id 或 count；首次读取必须指定 chat
+                和 target_id。
+        """
         if self.cursor is not None:
             if any(value is not None for value in (self.chat, self.target_id, self.count)):
                 raise ValueError("cursor 续读不能同时指定 chat、target_id 或 count。")
@@ -120,7 +138,14 @@ class Forward(Target):
 
     @model_validator(mode="after")
     def one_source(self) -> Self:
-        """至少提供一个真实来源，不生成转发身份。"""
+        """至少提供一个真实来源，不生成转发身份。
+
+        Returns:
+            校验完成的当前值或解析后的新配置，具体是否复制由实现说明。
+
+        Raises:
+            ValueError: 必须提供 message_id 或 forward_id。
+        """
         if not self.message_id and not self.forward_id.strip():
             raise ValueError("必须提供 message_id 或 forward_id。")
         return self
@@ -152,7 +177,14 @@ class SaveSticker(Parameters):
 
     @model_validator(mode="after")
     def one_source(self) -> Self:
-        """不能把无来源的保存伪装成完成。"""
+        """不能把无来源的保存伪装成完成。
+
+        Returns:
+            校验完成的当前值或解析后的新配置，具体是否复制由实现说明。
+
+        Raises:
+            ValueError: 必须提供 message_id 或 url；url 必须为实际 http(s) 图片 URL。
+        """
         if not self.message_id and not self.url.strip():
             raise ValueError("必须提供 message_id 或 url。")
         if self.url:
@@ -170,7 +202,14 @@ class SendSticker(Target):
 
     @model_validator(mode="after")
     def actual_source(self) -> Self:
-        """至少提供一种贴纸检索身份。"""
+        """至少提供一种贴纸检索身份。
+
+        Returns:
+            校验完成的当前值或解析后的新配置，具体是否复制由实现说明。
+
+        Raises:
+            ValueError: 必须指定 sticker_id 或 tag。
+        """
         if not self.sticker_id.strip() and not self.tag.strip():
             raise ValueError("必须指定 sticker_id 或 tag。")
         return self
@@ -184,7 +223,14 @@ class QZoneRight(Parameters):
 
     @model_validator(mode="after")
     def explicit_partial_range(self) -> Self:
-        """16/128 不允许空名单，不自动推导账号关系。"""
+        """16/128 不允许空名单，不自动推导账号关系。
+
+        Returns:
+            校验完成的当前值或解析后的新配置，具体是否复制由实现说明。
+
+        Raises:
+            ValueError: ugc_right=16/128 必须提供 target_uins。
+        """
         if self.ugc_right in (16, 128) and not self.target_uins:
             raise ValueError("ugc_right=16/128 必须提供 target_uins。")
         return self

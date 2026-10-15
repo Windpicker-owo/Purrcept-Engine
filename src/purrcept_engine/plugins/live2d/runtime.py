@@ -27,6 +27,8 @@ _LOG = logging.getLogger(__name__)
 
 @dataclass(slots=True)
 class _Intent:
+    """保存当前可采用的身体姿态、运行代次与截止。"""
+
     identity: str
     value: BodyIntent
     expires_at: float
@@ -39,6 +41,8 @@ class _Intent:
 
 @dataclass(frozen=True, slots=True)
 class _PCM:
+    """保存当前播放身份的一段 PCM 与采样位置。"""
+
     playback_id: str
     sample: int
     data: bytes
@@ -67,7 +71,19 @@ class Live2DRuntime:
         lip_sync_offset_ms: float = 0.0,
         style: BodyStyle | None = None,
     ) -> None:
-        """冻结视觉工厂和宿主期限，不取得音频或数据库所有权。"""
+        """冻结视觉工厂和宿主期限，不取得音频或数据库所有权。
+
+        Args:
+            instance_id: 本次装配中唯一的插件或宿主实例身份。
+            driver_factory: 为当前插件实例创建独立设备驱动的工厂。
+            duration_seconds: 本次身体姿态允许采用的时长（秒）。 默认 4.0。
+            frame_hz: 视觉帧发送频率（Hz）。 默认 30.0。
+            monotonic: 本实例使用的单调时钟，不与持久化墙钟混用。
+            analyzer_factory: 创建本实例音素分析资源的工厂；None 不启用分析。
+            sample_rate: PCM 的明确采样率（Hz）。 默认 32000。
+            lip_sync_offset_ms: 实际播放与口型对齐采用的毫秒偏移。 默认 0.0。
+            style: 可选身体样式参数，缺省采用当前运行配置。
+        """
         self.instance_id, self._factory = instance_id, driver_factory
         self._duration, self._frame_hz, self._clock = duration_seconds, frame_hz, monotonic
         self._analyzer_factory, self._rate = analyzer_factory, sample_rate
@@ -128,16 +144,26 @@ class Live2DRuntime:
     def resources_released(self) -> bool:
         """证明连接/分析器实际关闭，且连接与后台任务已结束借用。
 
-        只在唯一 close 任务取得全部释放确认后为真。旧帧任务的内部异常
-        仍由 close 报告；关闭操作失败保持假，不能以离线快照推断释放。
+        Note:
+            只在唯一 close 任务取得全部释放确认后为真。旧帧任务的内部异常
+            仍由 close 报告；关闭操作失败保持假，不能以离线快照推断释放。
         """
         return self._resources_released
 
     async def connect(self) -> CallOutcome:
-        """等待唯一恢复轮；取消观察者不取消已登记的连接所有者。
+        """等待唯一恢复轮。
 
-        宿主通过 stop_inputs 撤销所有者。耗尽或协议拒绝后不会自行重开；
-        显式 connect 可以新开一轮，但程序异常必须原样报告。
+        Returns:
+            实际确认、失败或未知结论，以及可 JSON 化的业务值和原生媒体引用。
+
+        Raises:
+            HostStateError: 身体已经停止新连接。
+
+        Note:
+            取消观察者不取消已登记的连接所有者。
+
+            宿主通过 stop_inputs 撤销所有者。耗尽或协议拒绝后不会自行重开；
+            显式 connect 可以新开一轮，但程序异常必须原样报告。
         """
         if self._stopping:
             raise HostStateError("身体已经停止新连接。")
@@ -152,7 +178,11 @@ class Live2DRuntime:
         return await asyncio.shield(self._begin_recovery())
 
     async def start(self) -> None:
-        """登记外围连接后归还插件启动，不让原生授权阻塞宿主退出。"""
+        """登记外围连接后归还插件启动，不让原生授权阻塞宿主退出。
+
+        Raises:
+            HostStateError: 身体已经停止新连接。
+        """
         if self._stopping:
             raise HostStateError("身体已经停止新连接。")
         task = self._recovery
@@ -324,7 +354,19 @@ class Live2DRuntime:
     def playback_started(
         self, playback_id: str, intent: BodyIntent | None, deadline: float
     ) -> JsonObject:
-        """只接受当前在线实际播放；离线不留下未来可复活的表达。"""
+        """只接受当前在线实际播放。
+
+        Args:
+            playback_id: 本次实际播放的稳定身份，用于拒绝迟到口型或停止确认。
+            intent: 有明确期限的身体语义姿态。
+            deadline: 所属事件循环的绝对单调截止时间，不是 Unix 时间戳。
+
+        Returns:
+            业务对象，按实际结果提供 accepted、adopted、status、playback_id 字段。
+
+        Note:
+            离线不留下未来可复活的表达。
+        """
         if not self._connected or self._stopping or deadline <= self._clock():
             return {
                 "accepted": False,
@@ -350,7 +392,16 @@ class Live2DRuntime:
         return {**self._playback_result, "status": "accepted"}
 
     def playback_progress(self, playback_id: str, elapsed_seconds: float, energy: float) -> None:
-        """同身份实际音频采样强度控制口型；旧进度不覆盖新播放。"""
+        """同身份实际音频采样强度控制口型。
+
+        Args:
+            playback_id: 本次实际播放的稳定身份，用于拒绝迟到口型或停止确认。
+            elapsed_seconds: 实际播放器报告的已播放秒数。
+            energy: 实际 PCM 片段的音量能量，用于驱动视觉反馈。
+
+        Note:
+            旧进度不覆盖新播放。
+        """
         if self._connected and self._playback == playback_id:
             self._elapsed, self._energy = elapsed_seconds, energy
 
@@ -359,8 +410,15 @@ class Live2DRuntime:
     ) -> None:
         """只接管最多2秒20ms视觉采样，慢分析丢视觉旧块不回压音频。
 
-        PCM可以先于播放器时钟到达，只准备分析，不采用姿态或口型。
-        当前关联和播放结束门槛另行核验，恢复不会保留旧准备材料。
+        Args:
+            playback_id: 本次实际播放的稳定身份，用于拒绝迟到口型或停止确认。
+            sample_rate: PCM 的明确采样率（Hz）。
+            sample_offset: 当前 PCM 片段在本次播放中的起始采样位置。
+            pcm: 已解码的 PCM 字节或按播放顺序产生的字节流。
+
+        Note:
+            PCM可以先于播放器时钟到达，只准备分析，不采用姿态或口型。
+            当前关联和播放结束门槛另行核验，恢复不会保留旧准备材料。
         """
         if not self._connected or self._stopping or self._analyzer is None:
             return
@@ -419,7 +477,14 @@ class Live2DRuntime:
                 self._visemes.append(frame)
 
     def playback_finished(self, playback_id: str) -> JsonObject:
-        """结束撤当前联动，已有采用事实不随独立apply或离线被抹掉。"""
+        """结束撤当前联动，已有采用事实不随独立apply或离线被抹掉。
+
+        Args:
+            playback_id: 本次实际播放的稳定身份，用于拒绝迟到口型或停止确认。
+
+        Returns:
+            业务对象，按实际结果提供 playback_id、accepted、adopted、status 字段。
+        """
         intent = self._intent
         history = self._playback_result
         if history is not None and history["playback_id"] == playback_id:
@@ -449,7 +514,15 @@ class Live2DRuntime:
         return result
 
     async def apply(self, intent: BodyIntent, context: CallContext) -> CallOutcome:
-        """独立姿态最多配置4秒，只有真实帧确认才返回 adopted=true。"""
+        """独立姿态最多配置4秒，只有真实帧确认才返回 adopted=true。
+
+        Args:
+            intent: 有明确期限的身体语义姿态。
+            context: 宿主或 Core 注入的可信调用上下文，不由模型自行填写。
+
+        Returns:
+            实际确认、失败或未知结论，以及可 JSON 化的业务值和原生媒体引用。
+        """
         now = self._clock()
         expires = min(context.deadline, now + self._duration)
         if not self._connected or self._stopping or expires <= now:
@@ -557,7 +630,11 @@ class Live2DRuntime:
         return dict(self._channels), intent
 
     async def step(self) -> None:
-        """发送一项当下帧；await 后核对代次/身份，迟到确认不复活表达。"""
+        """发送一项当下帧。
+
+        Note:
+            await 后核对代次/身份，迟到确认不复活表达。
+        """
         driver, generation = self._driver, self._generation
         if driver is None or not self._connected:
             return
@@ -626,7 +703,12 @@ class Live2DRuntime:
                 pass
 
     def snapshot(self) -> JsonObject:
-        """只读真实连接、姿态和采用确认，不声明物理模型效果已经验收。"""
+        """只读真实连接、姿态和采用确认，不声明物理模型效果已经验收。
+
+        Returns:
+            业务对象，按实际结果提供 connected、generation、playback_id、intent_id、adopted、
+            expires_at、elapsed_seconds、error、recovering、connection_attempt 等 字段。
+        """
         intent = self._intent
         return {
             "connected": self._connected,
@@ -667,7 +749,14 @@ class Live2DRuntime:
         return result
 
     async def disconnect(self) -> CallOutcome:
-        """先撤连接代次与姿态，再回收视觉连接，声音不受影响。"""
+        """先撤连接代次与姿态，再回收视觉连接，声音不受影响。
+
+        Returns:
+            实际确认、失败或未知结论，以及可 JSON 化的业务值和原生媒体引用。
+
+        Raises:
+            BaseExceptionGroup: 身体恢复撤销失败。
+        """
         self._recovery_enabled = False
         recovery = self._recovery
         if recovery is not None and not recovery.done():
@@ -703,7 +792,11 @@ class Live2DRuntime:
             return CallOutcome("confirmed", self.snapshot())
 
     async def stop_inputs(self) -> None:
-        """关闭禁止新表达/连接；已开始视觉回执仍可收尾。"""
+        """关闭禁止新表达/连接。
+
+        Note:
+            已开始视觉回执仍可收尾。
+        """
         if (
             not self._stopping
             and self._recovery is not None

@@ -13,7 +13,15 @@ class StorageError(EngineError):
     """权威存储拒绝或故障，code 区分容量、冲突、格式及资源状态。"""
 
     def __init__(self, message: str, *, code: str = "storage_failure") -> None:
-        """保留可供接入方判断的原因；不以失败返回空成功记录。"""
+        """保留可供接入方判断的原因。
+
+        Args:
+            message: 对调用方公开的原因或错误说明。
+            code: 供调用方分类处理的稳定错误码。 默认 'storage_failure'。
+
+        Note:
+            不以失败返回空成功记录。
+        """
         super().__init__(message)
         self.code = code
 

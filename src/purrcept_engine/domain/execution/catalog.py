@@ -25,8 +25,17 @@ from purrcept_engine.errors import ConfigError
 class ObjectDeclaration:
     """插件声明的稳定对象，parent_id 表示实际设备/应用包含关系。
 
-    segment 是父对象下的 Python 路径片段，根必须显式命名为 me 或 world。
-    展示说明不参与对象身份；没有通用物品转让或人员可见名单状态。
+    Attributes:
+        object_id: 目录中稳定的对象身份，区别于展示名称和模型路径。
+        segment: 当前消息中的一个原生分段对象。
+        description: 向调用者或模型说明可观察行为的文字。
+        parent_id: 目录内父对象的稳定身份；None 表示根对象。
+
+    Note:
+        实例字段在构造后不可重新赋值；嵌套值的冻结范围由字段所属契约决定。
+
+        segment 是父对象下的 Python 路径片段，根必须显式命名为 me 或 world。
+        展示说明不参与对象身份；没有通用物品转让或人员可见名单状态。
     """
 
     object_id: str
@@ -39,11 +48,26 @@ class ObjectDeclaration:
 class CapabilityDeclaration[Parameters: BaseModel]:
     """插件提供调用契约，由 app 在启动时与一个实现精确绑定。
 
-    参数模型拥有真实调用边界的字段校验。timeout_seconds 是该能力自己的
-    有限期限；行动/活动剩余时间可进一步收紧。target_serial 防止同一目标
-    的普通调用重叠；control 标记由宿主装配决定，模型参数不能自称控制请求。
-    example 中的 {path} 在冻结目录时替换为完整能力路径，使可配置父节点
-    不需要在声明阶段复制目录的路径解析规则；其他字符保持原文。
+    Attributes:
+        capability_id: 声明中与实现绑定的稳定能力身份。
+        object_id: 目录中稳定的对象身份，区别于展示名称和模型路径。
+        name: 对象路径下的公开 Python 能力名，不是稳定 capability_id。
+        description: 向调用者或模型说明可观察行为的文字。
+        parameters: 用于生成 schema 和校验真实调用的 Pydantic 参数模型。
+        timeout_seconds: 本次操作的等待上限（秒），不得扩大所属行动或活动期限。
+        example: 一行合法调用示例，目录冻结时解析 {path} 占位符。
+        usage: 何时使用此能力及其必要限制的说明。
+        concurrency: parallel 允许并行，target_serial 要求同一目标串行。
+        control: 是否使用独立控制名额，避免普通输入阻塞真实回执收尾。
+
+    Note:
+        实例字段在构造后不可重新赋值；嵌套值的冻结范围由字段所属契约决定。
+
+        参数模型拥有真实调用边界的字段校验。timeout_seconds 是该能力自己的
+        有限期限；行动/活动剩余时间可进一步收紧。target_serial 防止同一目标
+        的普通调用重叠；control 标记由宿主装配决定，模型参数不能自称控制请求。
+        example 中的 {path} 在冻结目录时替换为完整能力路径，使可配置父节点
+        不需要在声明阶段复制目录的路径解析规则；其他字符保持原文。
     """
 
     capability_id: str
@@ -60,7 +84,16 @@ class CapabilityDeclaration[Parameters: BaseModel]:
 
 @dataclass(frozen=True, slots=True)
 class Binding:
-    """同一声明的冻结路径及 schema 文本，供目录、Worker 和执行服务共同使用。"""
+    """同一声明的冻结路径及 schema 文本，供目录、Worker 和执行服务共同使用。
+
+    Attributes:
+        path: 冻结目录中的完整能力调用路径，例如 me.console.output。
+        declaration: 待绑定或计量的不可变声明。
+        schema_json: 与参数模型一致的规范 JSON schema 文本。
+
+    Note:
+        实例字段在构造后不可重新赋值；嵌套值的冻结范围由字段所属契约决定。
+    """
 
     path: str
     declaration: CapabilityDeclaration[BaseModel]
@@ -71,9 +104,19 @@ class Binding:
 class Catalog:
     """由 app 一次创建的完整不可变目录；运行期重连不重建或删掉能力。
 
-    objects 和 capabilities 来自全部启用插件的纯声明。构造失败表示装配
-    不成立，不能开始外部输入。版本由完整模型目录内容摘要确定，不混时间、
-    请求身份、实时状态或剩余预算。变更通过重新装配及重启生效。
+    Attributes:
+        objects: 按稳定 object_id 索引的只读对象声明。
+        object_paths: 按对象身份索引的只读完整模型路径。
+        bindings: 按完整调用路径索引的冻结能力绑定。
+        instructions: 稳定 system 指令序列，实时状态不得混入缓存前缀。
+        version: 目标记录的确切版本，区别于可变的当前版本。
+
+    Note:
+        实例字段在构造后不可重新赋值；嵌套值的冻结范围由字段所属契约决定。
+
+        objects 和 capabilities 来自全部启用插件的纯声明。构造失败表示装配
+        不成立，不能开始外部输入。版本由完整模型目录内容摘要确定，不混时间、
+        请求身份、实时状态或剩余预算。变更通过重新装配及重启生效。
     """
 
     objects: Mapping[str, ObjectDeclaration]
@@ -87,7 +130,18 @@ class Catalog:
         objects: tuple[ObjectDeclaration, ...],
         capabilities: tuple[CapabilityDeclaration[BaseModel], ...],
     ) -> None:
-        """校验对象父链，再冻结全部能力路径；目录和派发不存在两套手填路径。"""
+        """校验对象父链，再冻结全部能力路径。
+
+        Args:
+            objects: 用于构建目录的稳定对象声明及父子关系。
+            capabilities: 与对象声明绑定的完整能力契约集合。
+
+        Raises:
+            ConfigError: 配置字段、资源声明或目录绑定不满足本入口的装配要求。
+
+        Note:
+            目录和派发不存在两套手填路径。
+        """
         by_id: dict[str, ObjectDeclaration] = {}
         for item in objects:
             if not item.object_id or item.object_id in by_id:
@@ -146,7 +200,17 @@ class Catalog:
         )
 
     def resolve(self, path: str) -> Binding:
-        """解析精确已装配路径，不按别名猜目标或借设备在线状态隐藏声明。"""
+        """解析精确已装配路径，不按别名猜目标或借设备在线状态隐藏声明。
+
+        Args:
+            path: 冻结目录中的完整能力调用路径，例如 me.console.output。
+
+        Returns:
+            精确路径对应的冻结绑定；不会按别名或在线状态猜测目标。
+
+        Raises:
+            LookupError: 参数、材料或当前状态不满足此入口的约束。
+        """
         try:
             return self.bindings[path]
         except KeyError:

@@ -57,7 +57,14 @@ class ParameterBinding(BaseModel):
 
     @model_validator(mode="after")
     def check_range(self) -> ParameterBinding:
-        """拒绝错误校准，不用未知通道的零值掩盖拼写错误。"""
+        """拒绝错误校准，不用未知通道的零值掩盖拼写错误。
+
+        Returns:
+            明确绑定的 VTS 参数与数值映射。
+
+        Raises:
+            ValueError: 参数值或组合不满足本入口的明确约束，错误正文指出具体字段。
+        """
         allowed = {
             "valence",
             "arousal",
@@ -96,7 +103,11 @@ class ParameterBinding(BaseModel):
         return self
 
     def map(self, channels: dict[str, float]) -> float:
-        """围绕中性值非对称缩放，混合超幅时显式限幅。"""
+        """围绕中性值非对称缩放，混合超幅时显式限幅。
+
+        Args:
+            channels: 原生音频的通道数或显式身体参数通道映射。
+        """
         value = max(
             -1.0, min(1.0, sum(channels[key] * scale for key, scale in self.sources.items()))
         )
@@ -114,7 +125,14 @@ class ModelProfile(BaseModel):
 
     @model_validator(mode="after")
     def unique_inputs(self) -> ModelProfile:
-        """重复映射不能按列表先后静默覆盖。"""
+        """重复映射不能按列表先后静默覆盖。
+
+        Returns:
+            模型校准及人工参数绑定的已校验结果。
+
+        Raises:
+            ValueError: 身体校准输入重复。
+        """
         if len({item.parameter for item in self.bindings}) != len(self.bindings):
             raise ValueError("身体校准输入重复。")
         return self

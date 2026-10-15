@@ -73,7 +73,12 @@ class RemoteCapabilityError(Exception):
     """宿主返回的能力失败，只携带错误名称与文本，不提供宿主异常对象。"""
 
     def __init__(self, error_type: str, message: str) -> None:
-        """保留模型可在脚本中判断的远端类别，真实回执仍由宿主保存。"""
+        """保留模型可在脚本中判断的远端类别，真实回执仍由宿主保存。
+
+        Args:
+            error_type: 回执中稳定的错误类别，无错误时为 None。
+            message: 对调用方公开的原因或错误说明。
+        """
         super().__init__(f"{error_type}: {message}")
         self.error_type = error_type
 
@@ -263,6 +268,11 @@ class _ActionMap(Mapping[str, object]):
     """宿主 JSON 对象的只读映射；点访问仅作为普通数据字段的便利表示。"""
 
     def __init__(self, data: dict[str, object]) -> None:
+        """封装此行动收到的 JSON 映射，字段访问仍受 Worker 限制。
+
+        Args:
+            data: 当前边界接收的原始协议或媒体内容。
+        """
         self._data = data
 
     def __getitem__(self, key: str) -> object:
@@ -298,6 +308,14 @@ class _WorkerClient:
     def __init__(
         self, channel: FrameChannel, action_id: str, bindings: tuple[_Binding, ...], limits: _Limits
     ) -> None:
+        """绑定当前行动的唯一 IPC 通道、冻结能力路径和资源限制。
+
+        Args:
+            channel: 当前 Worker 唯一借用的有界 IPC 帧通道。
+            action_id: 执行器分配的行动身份，用于关联逐次调用和真实回执。
+            bindings: 此行动冻结的能力绑定，只通过 IPC 调用宿主。
+            limits: 本次 Worker 冻结的源码、输出与 IPC 资源限制。
+        """
         self._channel = channel
         self._action_id = action_id
         self._bindings = {binding.path: binding for binding in bindings}
@@ -312,7 +330,11 @@ class _WorkerClient:
 
     @property
     def paths(self) -> frozenset[tuple[str, ...]]:
-        """只暴露本次冻结路径；代理无法登记新对象或改写目标身份。"""
+        """只暴露本次冻结路径。
+
+        Note:
+            代理无法登记新对象或改写目标身份。
+        """
         return frozenset(self._bindings)
 
     def start(self) -> None:
@@ -322,7 +344,21 @@ class _WorkerClient:
     async def call_path(
         self, path: tuple[str, ...], arguments: Mapping[object, object] | Mapping[str, object]
     ) -> object:
-        """先核验参数数据再分配调用身份；只有成功交接的请求等待宿主结果。"""
+        """先核验参数数据再分配调用身份。
+
+        Args:
+            path: 此操作定位的明确路径。
+            arguments: 按已装配参数模型校验的能力关键字参数。
+
+        Raises:
+            AttributeError: 参数、材料或当前状态不满足此入口的约束。
+            WorkerLimitError: 典型拒绝原因：能力参数不是受支持的 JSON 数据；
+                能力参数超过宿主字节额度；行动能力调用次数已耗尽。
+            ActionProtocolError: 行动已经终止，不能派发下一项调用。
+
+        Note:
+            只有成功交接的请求等待宿主结果。
+        """
         if path not in self._bindings:
             raise AttributeError(".".join(path))
         try:
@@ -360,7 +396,16 @@ class _WorkerClient:
     async def call_capability(
         self, capability_id: str, *, target: str | None = None, **arguments: object
     ) -> object:
-        """按冻结 capability/target 选择唯一代理，不在 Worker 重新发现能力。"""
+        """按冻结 capability/target 选择唯一代理，不在 Worker 重新发现能力。
+
+        Args:
+            capability_id: 声明中与实现绑定的稳定能力身份。
+            target: 可选的冻结目标身份；不指定时仍须唯一匹配既有绑定。
+            arguments: 按已装配参数模型校验的能力关键字参数。
+
+        Raises:
+            ValueError: 参数值或组合不满足本入口的明确约束，错误正文指出具体字段。
+        """
         if not isinstance(capability_id, str) or not capability_id:
             raise ValueError("capability_id 必须是非空字符串。")
         if target is not None and (not isinstance(target, str) or not target):
@@ -376,7 +421,17 @@ class _WorkerClient:
         return await self.call_path(matches[0].path, arguments)
 
     def send_terminal(self, payload: JsonObject) -> None:
-        """终止只交付一次；发送后等待宿主关闭写端，实际 EOF 后才能回收线程。"""
+        """终止只交付一次。
+
+        Args:
+            payload: 当前边界采用的业务 JSON 或完整模型请求材料。
+
+        Raises:
+            ActionProtocolError: 行动重复发送终止消息。
+
+        Note:
+            发送后等待宿主关闭写端，实际 EOF 后才能回收线程。
+        """
         with self._state_lock:
             if self._terminal_sent:
                 raise ActionProtocolError("行动重复发送终止消息。")
@@ -446,10 +501,17 @@ class _NamespaceProxy:
     """沿冻结路径解析属性，不按名称导入任何真实模块或插件。"""
 
     def __init__(self, client: _WorkerClient, path: tuple[str, ...]) -> None:
+        """创建当前虚拟世界路径的只读代理，不取得真实插件对象。
+
+        Args:
+            client: 此组件显式借用的客户端，资源寿命由创建者负责。
+            path: 此操作定位的明确路径。
+        """
         self._client = client
         self._path = path
 
     def __getattr__(self, name: str) -> object:
+        """只生成已冻结能力路径或其公开前缀的代理，未知与私有属性明确拒绝。"""
         if name.startswith("_"):
             raise AttributeError(name)
         candidate = (*self._path, name)
@@ -464,10 +526,25 @@ class _BoundCapability:
     """可 await 的纯代理，仅接受关键词或一个映射参数。"""
 
     def __init__(self, client: _WorkerClient, path: tuple[str, ...]) -> None:
+        """为一个冻结能力路径绑定 Worker IPC 调用入口。
+
+        Args:
+            client: 此组件显式借用的客户端，资源寿命由创建者负责。
+            path: 此操作定位的明确路径。
+        """
         self._client = client
         self._path = path
 
     async def __call__(self, *args: object, **kwargs: object) -> object:
+        """通过当前冻结路径的 IPC 代理调用宿主能力。
+
+        Args:
+            args: 可省略，或仅传一个映射；不得与 kwargs 混用。
+            kwargs: 通过冻结能力参数模型校验的关键字实参。
+
+        Raises:
+            TypeError: 能力调用只接受关键词或一个映射参数。
+        """
         if args:
             if len(args) != 1 or kwargs or not _mapping(args[0]):
                 raise TypeError("能力调用只接受关键词或一个映射参数。")
@@ -481,13 +558,22 @@ class _Output(io.TextIOBase):
     """stdout/stderr 合计按 UTF-8 字节保留，超限拒绝整个写入而非成功截断。"""
 
     def __init__(self, max_bytes: int) -> None:
+        """创建当前行动独立的有界标准输出缓冲。
+
+        Args:
+            max_bytes: 此边界允许保留或接管的最大字节数。
+        """
         self._max_bytes = max_bytes
         self._used_bytes = 0
         self._chunks: list[str] = []
         self._failure: WorkerLimitError | None = None
 
     def write(self, text: str) -> int:
-        """标准流只保存能完整交付的片段，超限抛出可定位的额度错误。"""
+        """标准流只保存能完整交付的片段，超限抛出可定位的额度错误。
+
+        Args:
+            text: 本次明确传输、输入或呈现的完整文本。
+        """
         self.raise_if_failed()
         try:
             size = len(text.encode("utf-8"))
@@ -502,7 +588,11 @@ class _Output(io.TextIOBase):
         return len(text)
 
     def getvalue(self) -> str:
-        """取得已成功保存的输出；额度失败时它只表示失败之前的完整输出。"""
+        """取得已成功保存的输出。
+
+        Note:
+            额度失败时它只表示失败之前的完整输出。
+        """
         return "".join(self._chunks)
 
     def raise_if_failed(self) -> None:
@@ -514,7 +604,13 @@ class _Output(io.TextIOBase):
 class _ActionProcedure(Protocol):
     """受校验包装器唯一生成的异步入口，局部 return 只返回普通数据。"""
 
-    def __call__(self) -> Coroutine[object, object, object]: ...
+    def __call__(self) -> Coroutine[object, object, object]:
+        """在当前所有者的契约内完成一次调用，保留原始结果与故障。
+
+        Returns:
+            仅能经当前 Worker IPC 转交到冻结能力绑定的调用协程。
+        """
+        ...
 
 
 def _module(source: ModuleType, names: tuple[str, ...]) -> ModuleType:
@@ -718,6 +814,7 @@ def _safe_builtins(modules: dict[str, ModuleType]) -> dict[str, object]:
         fromlist: tuple[str, ...] = (),
         level: int = 0,
     ) -> ModuleType:
+        """仅返回 Worker 白名单内的虚拟模块，拒绝相对或真实包导入。"""
         del globals, locals, fromlist
         if level or name not in modules:
             raise ImportError("只允许受限表面中的顶层模块。")
@@ -808,8 +905,13 @@ def _install_memory_guard() -> None:
 def main() -> int:
     """接管两个明确继承的句柄，完成一次行动后等待宿主 EOF 并关闭 FD。
 
-    main 只供独立 Worker 调用。协议失败返回专用退出码；普通行动失败仍交付
-    failed 终止帧。任何真实能力结果都由宿主持有，不靠本进程 finally 保存。
+    Raises:
+        ValueError: Worker 需要 read_handle、write_handle 和 max_frame_bytes。
+        WorkerLimitError: 行动最终结果不是受支持的 JSON 数据；行动最终结果超过宿主字节额度。
+
+    Note:
+        main 只供独立 Worker 调用。协议失败返回专用退出码；普通行动失败仍交付
+        failed 终止帧。任何真实能力结果都由宿主持有，不靠本进程 finally 保存。
     """
     if len(sys.argv) != 4:
         raise ValueError("Worker 需要 read_handle、write_handle 和 max_frame_bytes。")

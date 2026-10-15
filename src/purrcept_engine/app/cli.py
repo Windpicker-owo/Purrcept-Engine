@@ -30,7 +30,11 @@ if TYPE_CHECKING:
 
 
 def main() -> int:
-    """解析命令并返回退出码；库入口不安装信号处理器或调用进程退出。"""
+    """解析命令并返回退出码。
+
+    Note:
+        库入口不安装信号处理器或调用进程退出。
+    """
     parser = argparse.ArgumentParser(prog="purrcept-engine")
     parser.add_argument("--config", type=Path, default=Path("purrcept.toml"))
     parser.add_argument("command", choices=("init", "check", "catalog", "run"))

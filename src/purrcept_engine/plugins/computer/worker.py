@@ -29,7 +29,13 @@ class _Native(Protocol):
     argtypes: list[object]
     restype: object
 
-    def __call__(self, *arguments: object) -> int: ...
+    def __call__(self, *arguments: object) -> int:
+        """调用已绑定参数与返回布局的原生 API，保留实际状态码。
+
+        Args:
+            arguments: 与当前已绑定 Win32 C ABI 顺序一致的原生实参。
+        """
+        ...
 
 
 class _Monitor(ctypes.Structure):
@@ -51,7 +57,11 @@ class WindowsDesktop:
     """只在此独立进程绑定桌面API，构造只设置本进程DPI感知。"""
 
     def __init__(self) -> None:
-        """句柄用指针宽度返回，避免64位机器截断。"""
+        """句柄用指针宽度返回，避免64位机器截断。
+
+        Raises:
+            RuntimeError: 实体桌面采集需要Windows。
+        """
         if os.name != "nt":
             raise RuntimeError("实体桌面采集需要Windows。")
         self.user = ctypes.WinDLL("user32", use_last_error=True)
@@ -70,6 +80,7 @@ class WindowsDesktop:
         return function
 
     def _monitor(self, handle: int) -> tuple[tuple[int, int, int, int], str]:
+        """按原生显示器枚举顺序收集当前画面边界，回调不启动设备操作。"""
         info = _Monitor()
         info.size = ctypes.sizeof(info)
         valid = self._function(
@@ -84,7 +95,15 @@ class WindowsDesktop:
         return (rectangle.left, rectangle.top, rectangle.right, rectangle.bottom), info.device
 
     def foreground(self) -> dict[str, object]:
-        """每次检查Default输入桌面，不让锁定/安全桌面的旧画面冒充当前画面。"""
+        """每次检查Default输入桌面，不让锁定/安全桌面的旧画面冒充当前画面。
+
+        Returns:
+            业务对象，按实际结果提供 window_id、title、process_id、executable、bounds、
+            monitor_id、monitor_bounds 字段。
+
+        Raises:
+            RuntimeError: 桌面不可访问或已锁定；没有可用前台窗口。
+        """
         desktop = self._function(
             self.user,
             "OpenInputDesktop",
@@ -166,7 +185,24 @@ class WindowsDesktop:
         }
 
     def capture(self, policy: dict[str, object], native: bool) -> dict[str, object]:
-        """保留原始像素；连续采样等比缩至1920，单次截图不缩放。"""
+        """保留原始像素。
+
+        Args:
+            policy: 已校验的业务策略，具体接受范围由所属端口定义。
+            native: 是否接管完整原生媒体，区别于文字投影。
+
+        Returns:
+            业务对象，按实际结果提供 data、captured_at、foreground、target、original_size、
+            delivered_size、capture_ms、encode_ms 字段。
+
+        Raises:
+            ValueError: 截图目标无效。
+            RuntimeError: 典型拒绝原因：指定显示器已不可用；截图区域为空；
+                截图期间前台窗口已切换；截图超过8MiB单帧额度。
+
+        Note:
+            连续采样等比缩至1920，单次截图不缩放。
+        """
         from PIL import ImageGrab
 
         started = time.perf_counter()
@@ -229,7 +265,14 @@ class WindowsDesktop:
 
 
 def run() -> None:
-    """有限协议循环；未知命令/坏帧结束进程，不猜字段或执行请求中的代码。"""
+    """有限协议循环。
+
+    Raises:
+        ValueError: 采集启动句柄及依赖目录不完整。
+
+    Note:
+        未知命令/坏帧结束进程，不猜字段或执行请求中的代码。
+    """
     if len(sys.argv) != 4:
         raise ValueError("采集启动句柄及依赖目录不完整。")
     sys.path.insert(0, sys.argv[3])

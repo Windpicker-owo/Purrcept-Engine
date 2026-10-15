@@ -42,16 +42,37 @@ _logger = logging.getLogger("purrcept_engine.app.host")
 
 
 class EngineAssembly:
-    """应用创建的EngineAssembly；职责和借用只属于当前 Engine 实例。"""
+    """按依赖构建一个宿主的资源与领域服务。
+
+    Note:
+        EngineHost 创建此协作者。取得资源后立即记入同一 EngineState，部分启动
+        失败的收尾仍归 HostLifecycle；外部接入最后放行，不跨宿主共享资源。
+    """
 
     def __init__(self, state: EngineState, host: EngineHost, lifecycle: HostLifecycle) -> None:
-        """固定应用实例借用；资源创建、观察和归还不跨宿主共享。"""
+        """绑定同一宿主的装配目标、资源台账和生命周期所有者。
+
+        Args:
+            state: 此宿主唯一的内部资源台账，不跨实例或插件共享。
+            host: 当前应用实例的宿主入口。
+            lifecycle: 同一宿主的阶段和资源归还所有者。
+
+        Note:
+            固定应用实例借用；资源创建、观察和归还不跨宿主共享。
+        """
         self.state = state
         self.lifecycle = lifecycle
         self.host = host
 
     async def start(self) -> None:
-        """先锁目录再开库；启动期间若收到关闭，不重新开放业务入口。"""
+        """按依赖取得资源并完成装配，最后开放插件接入。
+
+        Raises:
+            BaseExceptionGroup: 宿主启动及收尾失败。
+
+        Note:
+            先锁目录再开库；启动期间若收到关闭，不重新开放业务入口。
+        """
         try:
             self.state.lock.acquire()
             self.state.owns_lock = True
@@ -91,7 +112,6 @@ class EngineAssembly:
                 for binding in self.state.prepared.catalog.bindings.values()
             }
             foreground_model = self.state.config.models[self.state.config.subject.foreground]
-            # TODO
             # 模型声明只说明端点能力；没有已注册的媒体计量依据就不能接管
             # 原声，否则收音成功后每一段都会在真正派发模型前失败。
             native_audio_enabled = (
@@ -259,7 +279,11 @@ class EngineAssembly:
         _logger.info("宿主核心存储已就绪。", extra={"host_instance": self.state.instance_id})
 
     def bind_audio_body(self) -> None:
-        """全部资源构造后一次关联实际播放事实，配置顺序不决定身体是否可用。"""
+        """全部资源构造后一次关联实际播放事实，配置顺序不决定身体是否可用。
+
+        Raises:
+            ConfigError: 同一主体只能明确装配一个现场输出与一个身体。
+        """
         outputs = tuple(
             runtime.audio_output
             for runtime in self.state.plugins.values()

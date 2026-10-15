@@ -35,7 +35,11 @@ class BodyDriver(Protocol):
         ...
 
     async def send(self, channels: dict[str, float]) -> None:
-        """提交当下最新帧并取得匹配回执。"""
+        """提交当下最新帧并取得匹配回执。
+
+        Args:
+            channels: 原生音频的通道数或显式身体参数通道映射。
+        """
         ...
 
     async def close(self) -> None:
@@ -47,7 +51,13 @@ class VTSDriver:
     """一个 VTS socket 的所有者；纯构造不打开设备或建立连接。"""
 
     def __init__(self, url: str, token_path: Path, profile: ModelProfile) -> None:
-        """冻结显式端点、令牌与人工校准，不猜测模型。"""
+        """冻结显式端点、令牌与人工校准，不猜测模型。
+
+        Args:
+            url: 本次明确访问的资源 URL，实际请求仍须通过对应策略。
+            token_path: 保存 VTS 授权令牌的本地文件路径。
+            profile: 当前操作采用的已校验模型或声线预设。
+        """
         from websockets.asyncio.client import ClientConnection
 
         self._socket: ClientConnection | None = None
@@ -112,9 +122,15 @@ class VTSDriver:
     async def connect(self) -> None:
         """取得令牌后真实认证，核验模型再登记本插件输入。
 
-        首次认证可能显示 VTS 原生对话框，最多等待 120 秒；授权流程的
-        断线或超时终止当前恢复轮次，不能自动重复弹窗。部分失败仍持有
-        已取得的 socket 和令牌线程，由身体所有者调用 close 清理。
+        Raises:
+            RuntimeError: VTS 驱动只允许一次连接，恢复需要新的驱动。
+            BodyError: 身体或分析器未就绪，原生协议材料无效，或资源无法完成此次操作。
+            BodyUnavailable: VTS 连接暂时不可用。
+
+        Note:
+            首次认证可能显示 VTS 原生对话框，最多等待 120 秒；授权流程的
+            断线或超时终止当前恢复轮次，不能自动重复弹窗。部分失败仍持有
+            已取得的 socket 和令牌线程，由身体所有者调用 close 清理。
         """
         from websockets.asyncio.client import connect
         from websockets.exceptions import InvalidHandshake, InvalidProxy, InvalidURI
@@ -222,7 +238,14 @@ class VTSDriver:
         self._token_path.write_text(token, encoding="utf-8")
 
     async def send(self, channels: dict[str, float]) -> None:
-        """真实 VTS 注入响应确认视觉采用，不向另一模型静默输出。"""
+        """真实 VTS 注入响应确认视觉采用，不向另一模型静默输出。
+
+        Args:
+            channels: 原生音频的通道数或显式身体参数通道映射。
+
+        Raises:
+            BodyError: VTS 当前模型已变化。
+        """
         model = await self._request("CurrentModelRequest", {})
         if model.get("modelLoaded") is not True or model.get("modelID") != self._profile.model_id:
             raise BodyError("VTS 当前模型已变化。")
@@ -239,17 +262,24 @@ class VTSDriver:
         )
 
     async def close(self) -> None:
-        """独立收尾任务等待令牌 IO 与 socket；取消观察不撤销真实清理。"""
+        """独立收尾任务等待令牌 IO 与 socket。
+
+        Note:
+            取消观察不撤销真实清理。
+        """
         if self._closing is None:
             self._closing = asyncio.create_task(self._close())
         await asyncio.shield(self._closing)
 
     @property
     def resources_released(self) -> bool:
-        """只证明真实归还；迟到的旧 IO 错误仍由 close 报告。
+        """只证明真实归还。
 
-        清理任务未结束、socket 关闭失败或令牌线程未归还时都为 False。
-        调用方不能只因存在异常就推断资源仍在使用，也不能提前释放引用。
+        Note:
+            迟到的旧 IO 错误仍由 close 报告。
+
+            清理任务未结束、socket 关闭失败或令牌线程未归还时都为 False。
+            调用方不能只因存在异常就推断资源仍在使用，也不能提前释放引用。
         """
         return (
             self._closing is not None

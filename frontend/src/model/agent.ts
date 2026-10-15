@@ -11,14 +11,27 @@ import { actionSubjects } from "./names";
 
 /** 吉祥物视线的落点：行动路径、待处理列表，或没有特定目标。 */
 export type AgentFocus = "path" | "attention" | null;
+/** 首页、顶栏与标题共用的纯主体呈现结果，不保存第二份可写主体状态。 */
 export interface AgentView { state: AgentState; headline: string; detail: string; focus: AgentFocus }
 
-/** 最近一项仍在运行的行动；宿主按时间倒序给出 recent_actions。 */
+/**
+ * 寻找快照中仍在执行的近期行动。
+ *
+ * @param snapshot 已经通过 HTTP 契约校验的宿主快照。
+ * @returns 首个 running 行动；不存在时为 undefined。
+ */
 export function runningAction(snapshot: Snapshot): Action | undefined {
   return snapshot.recent_actions.find((action) => action.state === "running");
 }
 
-/** 优先级自上而下：连接 → 存储 → 宿主阶段 → 行动 → 思考 → 感知 → 反思 → 待你处理 → 空闲。 */
+/**
+ * 为首页、顶栏与标题推导同一份主体状态。
+ *
+ * @param snapshot 最近成功读取的宿主快照；null 表示尚未取得。
+ * @param online 最近一次读取是否成功；失败不清除旧快照。
+ * @param attention 从相同快照和本页控制推导的待处理事项。
+ * @returns 主体标记、主句、详情和视线焦点；无快照、断线与真实运行分别表达。
+ */
 export function agentView(snapshot: Snapshot | null, online: boolean, attention: readonly AttentionItem[]): AgentView {
   if (snapshot === null) {
     return online

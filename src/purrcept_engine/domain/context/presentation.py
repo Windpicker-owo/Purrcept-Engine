@@ -42,17 +42,29 @@ def _lines(value: JsonValue, *, depth: int) -> list[str]:
 
 
 def render_material(title: str, payload: object) -> str:
-    """按既有公开编码契约展开完整对象；固定标题不从外部正文取得。
+    """按既有公开编码契约展开完整对象。
 
-    数据类沿用权威编码的类型标签与字段顺序，不遍历任意实例属性。显示层不
-    改写存储格式，字段值仍是材料而非指令。
+    Args:
+        title: 宿主提供的固定节标题，不从外界正文提取指令。
+        payload: 已按公开材料编码协议冻结的完整对象。
+
+    Note:
+        固定标题不从外部正文取得。
+
+        数据类沿用权威编码的类型标签与字段顺序，不遍历任意实例属性。显示层不
+        改写存储格式，字段值仍是材料而非指令。
     """
     fields = decode_object(encode(payload).encode("utf-8"))
     return "\n".join((f"## {title}", *_lines(fields, depth=0)))
 
 
 def render_input(record: InputRecord, *, media_as_references: bool = False) -> str:
-    """呈现同一输入的完整正文、来源、时间与附件，并标明媒体实际交付方式。"""
+    """呈现同一输入的完整正文、来源、时间与附件，并标明媒体实际交付方式。
+
+    Args:
+        record: 已经正式接管的完整输入事实。
+        media_as_references: 是否仅呈现原生媒体引用，保留未交付像素或音频的区别。 默认 False。
+    """
     # details_json 是 InputContext 已校验的对象，不再次编码成带反斜杠的字符串。
     relations = decode_object(record.context.details_json.encode("utf-8"))
     payload = {
@@ -75,9 +87,16 @@ def render_input(record: InputRecord, *, media_as_references: bool = False) -> s
 def render_host_state(payload: JsonObject) -> str:
     """投影判断与行动状态，内部版本仍留在权威快照供执行和回执核验。
 
-    不遍历删除所有叫 version/id 的字段：证据版本、活动身份和回执版本是
-    行动契约的一部分。完整 calls 在交付 Gate 去重后原样呈现，不再删减结果。
-    插件材料由各自 prepare_request 明确选择；诊断 snapshot 不获默认注入资格。
+    Args:
+        payload: 宿主明确提供的判断、行动、活动与设备动态状态。
+
+    Raises:
+        TypeError: 宿主工作材料必须是对象；宿主预算材料必须是对象。
+
+    Note:
+        不遍历删除所有叫 version/id 的字段：证据版本、活动身份和回执版本是
+        行动契约的一部分。完整 calls 在交付 Gate 去重后原样呈现，不再删减结果。
+        插件材料由各自 prepare_request 明确选择；诊断 snapshot 不获默认注入资格。
     """
     work = payload["work"]
     if not isinstance(work, dict):

@@ -1,4 +1,4 @@
-"""麦克风输出纯工厂与三项稳定能力，不装配旧 Runtime 兼容层。
+"""声明麦克风输出的三项能力，并在 build 阶段连接声音资源所有者。
 
 声明阶段校验配置和模型可见路径。app 注入同库 AudioPort，全部 build
 后显式接线 BodyPort，再启动声音接管。speak 使用 parallel 把现场排队
@@ -45,9 +45,19 @@ def make_factory(
     *,
     decode: bool = True,
 ) -> PluginFactory:
-    """以同一参数/队列/回执契约注入传输与设备替身，不借通用宿主服务。"""
+    """以同一参数/队列/回执契约注入传输与设备替身，不借通用宿主服务。
+
+    Args:
+        source_factory: 创建当前实例语音合成源的工厂。
+        player_factory: 按已校验配置创建实际播放器的工厂。
+        decode: 是否在素材交付前进行明确的 PCM 解码。 默认 True。
+
+    Returns:
+        接收实例身份、原始配置及基准目录的纯配置工厂。
+    """
 
     def declare(instance_id: str, settings: AudioSettings, base_dir: Path) -> PluginBlueprint:
+        """解析已校验配置，生成对象、能力和资源构造声明。"""
         if decode:
             # 启用的完整输出必须在构造设备/网络所有者前核验本地程序。
             # 这里只查PATH/文件，不运行播放器；离线替身显式decode=False。
@@ -105,6 +115,7 @@ def make_factory(
         )
 
         async def build(ports: PluginPorts) -> PluginRuntime:
+            """借用本实例的有限端口，创建能力实现与插件资源所有者。"""
             ledger = ports.audio
             if ledger is None:
                 raise ConfigError("microphone插件需要宿主同库音频事实端口。")
@@ -133,16 +144,20 @@ def make_factory(
             )
 
             async def run_record(parameters: RecordParameters, context: CallContext) -> CallOutcome:
+                """调用语音合成入口，返回实际取得的音频素材回执。"""
                 return await runtime.record(parameters, context)
 
             async def run_speak(parameters: SpeechParameters, context: CallContext) -> CallOutcome:
+                """调用当前声音所有者合成并播放，返回真实阶段回执。"""
                 return await runtime.speak(parameters, context)
 
             async def run_interrupt(parameters: _Empty, context: CallContext) -> CallOutcome:
+                """明确中断现有声音并保留原调用的迟到确认通路。"""
                 del parameters
                 return await runtime.interrupt(context, record_late=True)
 
             def revision() -> str:
+                """返回当前已取得业务状态的版本标记，供面板观察变化。"""
                 return str(runtime.snapshot()["revision"])
 
             return PluginRuntime(

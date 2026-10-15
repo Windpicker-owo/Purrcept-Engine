@@ -1,4 +1,8 @@
-"""定义领域协作契约与不可变设置；调用与所有权由应用显式连接。"""
+"""定义独立后台读取反馈事实所需的端口和调度设置。
+
+BackgroundService 借用会话、请求证据与媒体读取，后台节奏由应用显式注入。
+这里不共享前台历史、不创建模型资源或提供世界执行权限。
+"""
 
 from __future__ import annotations
 
@@ -23,13 +27,33 @@ class BackgroundStore(SessionStore, RequestEvidenceSink, Protocol):
         ...
 
     async def wait_for_change(self, after_revision: int) -> int:
-        """等待新事实或明确关闭；调用前先读取序号，再查询账本。"""
+        """等待新事实或明确关闭。
+
+        Args:
+            after_revision: 查询待办前取得的通知序号，避免查询与等待之间漏唤醒。
+
+        Note:
+            调用前先读取序号，再查询账本。
+        """
         ...
 
 
 @dataclass(frozen=True, slots=True)
 class BackgroundSettings:
-    """后台节奏和单批额度，由装配显式指定，不从前台模型推测能力。"""
+    """后台节奏和单批额度，由装配显式指定，不从前台模型推测能力。
+
+    Attributes:
+        diagnostic_bytes: 单次尝试允许保留的流诊断字节数，不裁剪原参数或完整响应。
+        page_chars: 本实例统一的正文分页字符上限。
+        batch_seconds: 独立反思单批允许使用的总秒数。
+        successful_turns: 已提交成功的前台轮数，用于后台调度判断。
+        max_sources: 单批反思取得的可靠来源数量上限。
+        max_requests: 本轮逻辑模型请求总上限，传输重试不重复占名额。
+        turn_seconds: 本轮连续处理的总秒数预算，包含工具等待和重试退避。
+
+    Note:
+        实例字段在构造后不可重新赋值；嵌套值的冻结范围由字段所属契约决定。
+    """
 
     diagnostic_bytes: int
     page_chars: int = 8000

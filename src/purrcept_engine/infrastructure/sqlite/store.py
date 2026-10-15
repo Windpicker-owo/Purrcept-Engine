@@ -392,7 +392,14 @@ def _protected_inputs(
 
 
 def input_logical_bytes(submission: InputSubmission) -> int:
-    """计量每项原文、关系和真实媒体，供外部输入及同库业务交接共用。"""
+    """计量每项原文、关系和真实媒体，供外部输入及同库业务交接共用。
+
+    Args:
+        submission: 待正式接管的来源、原文、媒体与可信信号。
+
+    Raises:
+        StorageError: 输入正文不能表示为 UTF-8。
+    """
     try:
         text_bytes = len(submission.text.encode("utf-8"))
     except UnicodeEncodeError as error:
@@ -421,8 +428,22 @@ def admit_in_transaction(
 ) -> Admission:
     """由调用事务原子保存完整输入、待办和来源，不开始或提交另一个事务。
 
-    Store 的外部接管及时间服务共享这一交接：闹铃消费与一次输入保存不能
-    分两次提交。调用方拥有额度核验和失败回滚，去重仍按同一原生事实处理。
+    Args:
+        connection: 仅在 Store 专属线程当前短事务中借用的连接，不在回调中等待设备或模型。
+        submission: 待正式接管的来源、原文、媒体与可信信号。
+        max_inputs: 有界提交队列允许接管的条目上限。
+        max_input_bytes: 有界提交队列允许接管的逻辑字节上限。
+        logical_bytes: 本次操作占用的逻辑载荷字节数，用于接管前背压。
+
+    Returns:
+        正式接管凭证，包含 input_id 与重复来源标记；不表示模型已处理或对外回复。
+
+    Raises:
+        StorageError: 原生输入身份与已接管事实冲突；未处置输入的接管额度已满。
+
+    Note:
+        Store 的外部接管及时间服务共享这一交接：闹铃消费与一次输入保存不能
+        分两次提交。调用方拥有额度核验和失败回滚，去重仍按同一原生事实处理。
     """
     source = submission.source
     media_ids = tuple(hashlib.sha256(asset.content).hexdigest() for asset in submission.media)
@@ -531,7 +552,16 @@ class Store:
     """
 
     def __init__(self, path: Path, max_inputs: int, max_input_bytes: int) -> None:
-        """创建同连接账本门面；公开创建仍通过 open 等待连接就绪。"""
+        """创建同连接账本门面。
+
+        Args:
+            path: 此操作定位的明确路径。
+            max_inputs: 有界提交队列允许接管的条目上限。
+            max_input_bytes: 有界提交队列允许接管的逻辑字节上限。
+
+        Note:
+            公开创建仍通过 open 等待连接就绪。
+        """
         self._max_inputs = max_inputs
         self._max_input_bytes = max_input_bytes
         self._queue = SqliteExecutor(path, max_inputs, max_input_bytes)
@@ -573,11 +603,18 @@ class Store:
     ) -> projection_storage.JsonObject:
         """在同连接淘汰一批诊断，明确返回非权威清理故障，不修改业务资格。
 
-        SQL或诊断材料损坏只表示本轮清理未完成；原文、参数、响应及媒体仍
-        保留。提交队列/连接本身失效继续保持权威故障，不能在这里吞掉。
+        Args:
+            before: 本次保留规则采用的 Unix 时间上界。
+            expired_at: 此前已确认的诊断失效时刻，用于保留过期查询标记。
+            limit: 本次读取或更新的最大条目数。 默认 128。
+
+        Note:
+            SQL或诊断材料损坏只表示本轮清理未完成；原文、参数、响应及媒体仍
+            保留。提交队列/连接本身失效继续保持权威故障，不能在这里吞掉。
         """
 
         def cleanup(connection: sqlite3.Connection) -> projection_storage.JsonObject:
+            """在当前同库操作中清理有限诊断正文并返回实际统计。"""
             try:
                 result = retention_storage.expire_diagnostics(
                     connection, before=before, expired_at=expired_at, limit=limit
@@ -614,7 +651,11 @@ class Store:
         return self._queue.change_revision
 
     async def wait_for_change(self, after_revision: int) -> int:
-        """等待事务或关闭通知，所有账本共享同一通知源。"""
+        """等待事务或关闭通知，所有账本共享同一通知源。
+
+        Args:
+            after_revision: 查询待办前取得的通知序号，避免查询与等待之间漏唤醒。
+        """
         return await self._queue.wait_for_change(after_revision)
 
     @classmethod
@@ -623,9 +664,21 @@ class Store:
     ) -> "Store":
         """打开已知 Engine 格式的权威库，不转换未知数据库。
 
-        空路径首次建立格式，已有库须通过格式和完整性核验。额度约束未处置
-        输入；历史记录与同库 BLOB 不因处置而删除。打开失败释放已取得资源；
-        打开等待取消也会请求线程关闭，不留下无所有者连接。
+        Args:
+            path: 此操作定位的明确路径。
+            max_inputs: 有界提交队列允许接管的条目上限。 默认 1024。
+            max_input_bytes: 有界提交队列允许接管的逻辑字节上限。
+
+        Returns:
+            已初始化的唯一连接所有者；后续方法只能在创建循环调用。
+
+        Raises:
+            ValueError: path 必须是 Path。
+
+        Note:
+            空路径首次建立格式，已有库须通过格式和完整性核验。额度约束未处置
+            输入；历史记录与同库 BLOB 不因处置而删除。打开失败释放已取得资源；
+            打开等待取消也会请求线程关闭，不留下无所有者连接。
         """
         if not isinstance(path, Path):
             raise ValueError("path 必须是 Path。")
@@ -638,9 +691,20 @@ class Store:
     async def admit(self, submission: InputSubmission) -> Admission:
         """原子接管输入或返回同一原生事实的第一次确认。
 
-        来源冲突与额度不足均不写入部分原文或媒体。接收时间变化可以重放；
-        来源发生事实、正文、发生时间或媒体变化必须使用新的事件身份。
-        已排队操作不因等待取消回滚，接入方可用原生身份重投查询真实结果。
+        Args:
+            submission: 待正式接管的来源、原文、媒体与可信信号。
+
+        Returns:
+            正式接管凭证，包含 input_id 与重复来源标记；不表示模型已处理或对外回复。
+
+        Raises:
+            ValueError: submission 必须是 InputSubmission。
+            StorageError: 单条输入超过逻辑负载额度。
+
+        Note:
+            来源冲突与额度不足均不写入部分原文或媒体。接收时间变化可以重放；
+            来源发生事实、正文、发生时间或媒体变化必须使用新的事件身份。
+            已排队操作不因等待取消回滚，接入方可用原生身份重投查询真实结果。
         """
         if not isinstance(submission, InputSubmission):
             raise ValueError("submission 必须是 InputSubmission。")
@@ -657,15 +721,34 @@ class Store:
         return admission
 
     async def get_input(self, input_id: str) -> InputRecord | None:
-        """读取接管事实及当前处置状态，查询不会改变待办。"""
+        """读取接管事实及当前处置状态，查询不会改变待办。
+
+        Args:
+            input_id: 正式接管返回的输入身份，用于关联原文与后续处理。
+
+        Returns:
+            首次接管的完整输入原文、来源与媒体引用。 未取得对应记录或素材时返回 None；
+            读取故障仍抛出。
+        """
         self._validate_id(input_id)
         return await self._submit(lambda connection: self._get_input(connection, input_id))
 
     async def get_native_input(self, source: InputSource) -> InputRecord | None:
         """只读原生身份的第一次接管事实，不重算上下文或改变处理阶段。
 
-        没有稳定原生事件身份时无法保证跨接收去重，返回 None。接入方
-        仍须核验原生事实是否相同；本方法不把查询成功当作再次接管确认。
+        Args:
+            source: 含适配器、账号、会话和原生事件身份的可信来源。
+
+        Returns:
+            首次接管的完整输入原文、来源与媒体引用。 未取得对应记录或素材时返回 None；
+            读取故障仍抛出。
+
+        Raises:
+            ValueError: source 必须是 InputSource。
+
+        Note:
+            没有稳定原生事件身份时无法保证跨接收去重，返回 None。接入方
+            仍须核验原生事实是否相同；本方法不把查询成功当作再次接管确认。
         """
         if not isinstance(source, InputSource):
             raise ValueError("source 必须是 InputSource。")
@@ -681,6 +764,7 @@ class Store:
         key = json.dumps(scope, separators=(",", ":"))
 
         def read(connection: sqlite3.Connection) -> InputRecord | None:
+            """在同一数据库读取中恢复完整记录与其已保存关联。"""
             row: tuple[object, ...] | None = connection.execute(
                 "SELECT input_id FROM inputs WHERE dedup_key=?", (key,)
             ).fetchone()
@@ -706,7 +790,14 @@ class Store:
     async def pending(self, *, limit: int = 8) -> tuple[InputRecord, ...]:
         """按接管顺序取得一小批待办，不创建逐条等待任务或确认已处理。
 
-        单批不会超过配置的接管条数上限；默认最多读取八条。
+        Args:
+            limit: 本次读取或更新的最大条目数。 默认 8。
+
+        Returns:
+            条目集合：首次接管的完整输入原文、来源与媒体引用。
+
+        Note:
+            单批不会超过配置的接管条数上限；默认最多读取八条。
         """
         _positive(limit, "limit")
         bounded_limit = min(limit, self._max_inputs)
@@ -715,8 +806,12 @@ class Store:
     async def complete_input(self, input_id: str) -> None:
         """明确提交输入已处置，释放积压额度并保留原文与媒体。
 
-        注意或前台所有者在完成处置后调用；重复提交同一身份没有附加效果。
-        该控制提交不占普通排队位置，也不把释放额度等同于对外回复。
+        Args:
+            input_id: 正式接管返回的输入身份，用于关联原文与后续处理。
+
+        Note:
+            注意或前台所有者在完成处置后调用；重复提交同一身份没有附加效果。
+            该控制提交不占普通排队位置，也不把释放额度等同于对外回复。
         """
         self._validate_id(input_id)
         await self._submit(
@@ -726,17 +821,36 @@ class Store:
         )
 
     async def input_processing(self, input_id: str) -> InputProcessing | None:
-        """读取筛选、延后或前台处理的实际版本，不改变交接状态。"""
+        """读取筛选、延后或前台处理的实际版本，不改变交接状态。
+
+        Args:
+            input_id: 正式接管返回的输入身份，用于关联原文与后续处理。
+
+        Returns:
+            输入实际处理阶段、版本和关联轮次。 未取得对应记录或素材时返回 None；读取故障仍抛出。
+        """
         self._validate_id(input_id)
         return await self._submit(
             lambda connection: subject_storage.processing(connection, input_id)
         )
 
     async def staged_inputs(self, stage: InputStage, *, limit: int = 8) -> tuple[InputRecord, ...]:
-        """按接管顺序加载有限调度批次；状态只由业务事务推进。"""
+        """按接管顺序加载有限调度批次。
+
+        Args:
+            stage: 输入当前或待查询的处理阶段。
+            limit: 本次读取或更新的最大条目数。 默认 8。
+
+        Returns:
+            条目集合：首次接管的完整输入原文、来源与媒体引用。
+
+        Note:
+            状态只由业务事务推进。
+        """
         _positive(limit, "limit")
 
         def read(connection: sqlite3.Connection) -> tuple[InputRecord, ...]:
+            """在同一数据库读取中恢复完整记录与其已保存关联。"""
             records: list[InputRecord] = []
             for input_id in subject_storage.pending_ids(connection, stage, limit):
                 record = self._get_input(connection, input_id)
@@ -748,15 +862,25 @@ class Store:
         return await self._submit(read)
 
     async def take_foreground_inputs(self, turn_id: str | None = None) -> tuple[InputRecord, ...]:
-        """原子拉取当前全部新刺激；上限由接管额度限定，不用分页遗留旧输入。
+        """原子拉取当前全部新刺激。
 
-        空闲启动要求存在已唤起输入；提供 turn_id 时直接关联到活动轮次。
-        存储线程串行完成取批和原文读取，晚到的注意判断只能 CAS 失败。
+        Args:
+            turn_id: 连续会话中本轮处理的身份。 None 表示只取前台缓冲，不关联已有活动轮次。
+
+        Returns:
+            条目集合：首次接管的完整输入原文、来源与媒体引用。
+
+        Note:
+            上限由接管额度限定，不用分页遗留旧输入。
+
+            空闲启动要求存在已唤起输入；提供 turn_id 时直接关联到活动轮次。
+            存储线程串行完成取批和原文读取，晚到的注意判断只能 CAS 失败。
         """
         if turn_id is not None:
             self._validate_id(turn_id)
 
         def take(connection: sqlite3.Connection) -> tuple[InputRecord, ...]:
+            """在当前事务内取得全部新前台输入，并恢复原始接管事实。"""
             ids = subject_storage.take_foreground_inputs(connection, turn_id)
             records: list[InputRecord] = []
             for input_id in ids:
@@ -777,7 +901,18 @@ class Store:
         request_id: str | None = None,
         defer_until: float | None = None,
     ) -> bool:
-        """整批判断与 pending/defer 交接原子提交；版本过期明确不采用。"""
+        """整批判断与 pending/defer 交接原子提交。
+
+        Args:
+            expected: 此次比较或提交必须仍匹配的原始观察值。
+            level: 本批明确的注意处置等级。
+            reason: 供后续核对的明确处置原因。
+            request_id: 逻辑请求的稳定身份，用于查询或关联同一次受理。
+            defer_until: 保留原输入身份的延期到期时间；非延期决策不需要此值。
+
+        Note:
+            版本过期明确不采用。
+        """
         return await self._submit(
             lambda connection: subject_storage.decide_inputs(
                 connection, expected, level, reason, request_id=request_id, defer_until=defer_until
@@ -788,7 +923,14 @@ class Store:
         )
 
     async def deliver_due_inputs(self, now: float) -> tuple[str, ...]:
-        """到期直接交前台一次；不重新启动筛选或刷新延后期限。"""
+        """到期直接交前台一次。
+
+        Args:
+            now: 本次规则计算采用的时刻，便于同一操作保持一致。
+
+        Note:
+            不重新启动筛选或刷新延后期限。
+        """
         return await self._submit(
             lambda connection: subject_storage.deliver_due(connection, now),
             control=True,
@@ -798,7 +940,13 @@ class Store:
     async def register_minimum_wake_assessment(
         self, expected: InputProcessing, *, owner_id: str, observed_generation: int
     ) -> bool:
-        """保存最低唤起的一次旧代次升级资格，不创建第二份前台待办。"""
+        """保存最低唤起的一次旧代次升级资格，不创建第二份前台待办。
+
+        Args:
+            expected: 此次比较或提交必须仍匹配的原始观察值。
+            owner_id: 发起本次工作并持有提交资格的所有者身份。
+            observed_generation: 接管或判断开始时观察到的前台生成代次。
+        """
         return await self._submit(
             lambda connection: subject_storage.register_minimum_wake_assessment(
                 connection, expected, owner_id=owner_id, observed_generation=observed_generation
@@ -810,7 +958,15 @@ class Store:
     async def minimum_wake_assessments(
         self, owner_id: str, *, limit: int = 8
     ) -> tuple[MinimumWakeAssessment, ...]:
-        """有限读取本宿主尚未结束的升级资格，重启不能沿用旧生成观察。"""
+        """有限读取本宿主尚未结束的升级资格，重启不能沿用旧生成观察。
+
+        Args:
+            owner_id: 发起本次工作并持有提交资格的所有者身份。
+            limit: 本次读取或更新的最大条目数。 默认 8。
+
+        Returns:
+            属于当前宿主的有限紧急升级判断待办。
+        """
         _positive(limit, "limit")
         return await self._submit(
             lambda connection: subject_storage.minimum_wake_assessments(
@@ -826,7 +982,14 @@ class Store:
         *,
         request_id: str | None = None,
     ) -> bool:
-        """保存判断原结果并 CAS 原输入版本，保留最低 WAKE 与单一前台交接。"""
+        """保存判断原结果并 CAS 原输入版本，保留最低 WAKE 与单一前台交接。
+
+        Args:
+            assessment: 已取得并需按原版本核验的判断结果。
+            level: 本批明确的注意处置等级。
+            reason: 供后续核对的明确处置原因。
+            request_id: 逻辑请求的稳定身份，用于查询或关联同一次受理。
+        """
         return await self._submit(
             lambda connection: subject_storage.finish_minimum_wake_assessment(
                 connection, assessment, level, reason, request_id=request_id
@@ -841,14 +1004,28 @@ class Store:
         return await self._submit(subject_storage.next_deferred)
 
     async def get_session(self, scope: SessionScope) -> SessionRecord:
-        """还原完整已提交检查点媒体，不返回丢失内容的空历史。"""
+        """还原完整已提交检查点媒体，不返回丢失内容的空历史。
+
+        Args:
+            scope: 目标连续会话，foreground 与 reflection 拥有独立历史。
+
+        Returns:
+            会话已提交版本与完整检查点，不包含尚未提交的临时历史。
+        """
         return await self._submit(lambda connection: subject_storage.session(connection, scope))
 
     async def protected_input_ids(self, input_ids: tuple[str, ...]) -> frozenset[str]:
         """查询真实未决调用、活动、计划、有效监管和未承接失败。
 
-        来源是 Engine 保存的明确身份关系；不从正文或任意工具 JSON 猜测
-        承诺完成，不读取全部历史建立另一份内存状态。
+        Args:
+            input_ids: 本轮接管的输入身份集合，保留真实因果关联。
+
+        Returns:
+            由完整请求材料确认的不可变身份集合，不从正文标记推断资格。
+
+        Note:
+            来源是 Engine 保存的明确身份关系；不从正文或任意工具 JSON 猜测
+            承诺完成，不读取全部历史建立另一份内存状态。
         """
         for identity in input_ids:
             self._validate_id(identity)
@@ -861,12 +1038,14 @@ class Store:
     async def subject_work(self) -> JsonObject:
         """取得完整当前未决材料，由实际请求容量门槛决定能否交付。
 
-        一个存储作业读取当前前台版本、全部未完成计划、仍有效未回应监管、
-        活动及必要调用事实。数据库分块不限制最终选材；这里不裁剪正文、
-        退役未知效果或执行控制。注意背景使用另一份明确有限的投影。
+        Note:
+            一个存储作业读取当前前台版本、全部未完成计划、仍有效未回应监管、
+            活动及必要调用事实。数据库分块不限制最终选材；这里不裁剪正文、
+            退役未知效果或执行控制。注意背景使用另一份明确有限的投影。
         """
 
         def query(connection: sqlite3.Connection) -> JsonObject:
+            """枚举原生捕获库报告的输入设备及默认采样率。"""
             session = subject_storage.session(connection, "foreground")
             turn = (
                 None
@@ -958,7 +1137,15 @@ class Store:
         return await self._submit(query)
 
     async def reserve_summary(self, source: SummarySource) -> Reservation:
-        """在无工具摘要请求前原子保留同覆盖尝试，失败不会自动重新计预算。"""
+        """在无工具摘要请求前原子保留同覆盖尝试，失败不会自动重新计预算。
+
+        Args:
+            source: 已冻结的历史范围及所属会话版本。
+
+        Returns:
+            reserved 表示已登记本覆盖的唯一尝试；already_attempted 表示此前已尝试；stale 或
+            busy 表示当前版本或空闲条件不允许维护。
+        """
         return await self._submit(
             lambda connection: maintenance_storage.reserve_summary(connection, source),
             logical_bytes=len(serialization.encode(source).encode("utf-8")),
@@ -967,7 +1154,14 @@ class Store:
         )
 
     async def install_summary(self, proposal: SummaryProposal) -> int | None:
-        """idle/版本仍匹配才归档旧原文并安装候选，失败保留原会话和媒体。"""
+        """idle/版本仍匹配才归档旧原文并安装候选，失败保留原会话和媒体。
+
+        Args:
+            proposal: 已冻结来源和内容的候选提案，提交前仍须验证。
+
+        Returns:
+            实际提交的新会话版本；None 表示来源过期或目标不再空闲，旧检查点保留。
+        """
         return await self._submit(
             lambda connection: maintenance_storage.install_summary(connection, proposal),
             logical_bytes=len(serialization.encode(proposal).encode("utf-8")),
@@ -983,7 +1177,18 @@ class Store:
         generation: int,
         input_ids: tuple[str, ...],
     ) -> TurnRecord:
-        """先接管主动处理身份和初始输入，固定会话版本后才借用 Core。"""
+        """先接管主动处理身份和初始输入，固定会话版本后才借用 Core。
+
+        Args:
+            turn_id: 连续会话中本轮处理的身份。
+            scope: 目标连续会话，foreground 与 reflection 拥有独立历史。
+            expected_version: 提交前观察到的版本，用于拒绝并发覆盖。
+            generation: 当前会话或设备的代次，用于拒绝迟到结果更新新状态。
+            input_ids: 本轮接管的输入身份集合，保留真实因果关联。
+
+        Returns:
+            本轮接管身份、来源输入、生成代次与当前结论。
+        """
         return await self._submit(
             lambda connection: subject_storage.begin_turn(
                 connection, turn_id, scope, expected_version, generation, input_ids
@@ -1002,7 +1207,21 @@ class Store:
         error_json: str | None = None,
         accepted_failures: tuple[str, ...] = (),
     ) -> SessionRecord:
-        """原子安装成功历史或保留失败经历；取消等待不撤销已经接管提交。"""
+        """原子安装成功历史或保留失败经历。
+
+        Args:
+            turn: 已接管的本轮记录，携带提交前版本与生成代次。
+            outcome: 此次操作的真实结论，不由期望效果推断成功。
+            checkpoint_json: 完整 Core 检查点的编码；失败轮次可不安装新历史。
+            error_json: 编码后的失败证据，供后续交互追溯原轮次。
+            accepted_failures: 当前成功交互明确承接的先前失败轮次身份。 默认不附加此类条目。
+
+        Returns:
+            会话已提交版本与完整检查点，不包含尚未提交的临时历史。
+
+        Note:
+            取消等待不撤销已经接管提交。
+        """
         return await self._submit(
             lambda connection: subject_storage.finish_turn(
                 connection,
@@ -1019,23 +1238,56 @@ class Store:
         )
 
     async def failed_turns(self, scope: SessionScope) -> tuple[TurnRecord, ...]:
-        """读取待承接的失败经历，实际效果另按行动与调用身份读取。"""
+        """读取待承接的失败经历，实际效果另按行动与调用身份读取。
+
+        Args:
+            scope: 目标连续会话，foreground 与 reflection 拥有独立历史。
+
+        Returns:
+            条目集合：本轮接管身份、来源输入、生成代次与当前结论。
+        """
         return await self._submit(lambda connection: subject_storage.failures(connection, scope))
 
     async def get_turn(self, turn_id: str) -> TurnRecord | None:
-        """核对接管后的真实批次，不以调用方等待取消推断事务未发生。"""
+        """核对接管后的真实批次，不以调用方等待取消推断事务未发生。
+
+        Args:
+            turn_id: 连续会话中本轮处理的身份。
+
+        Returns:
+            本轮接管身份、来源输入、生成代次与当前结论。 未取得对应记录或素材时返回 None；
+            读取故障仍抛出。
+        """
         self._validate_id(turn_id)
         return await self._submit(lambda connection: subject_storage.get_turn(connection, turn_id))
 
     async def get_media(self, media_id: str) -> bytes | None:
-        """读取正式媒体并核对内容摘要，不以损坏字节替代已接管证据。"""
+        """读取正式媒体并核对内容摘要，不以损坏字节替代已接管证据。
+
+        Args:
+            media_id: 权威库内由内容摘要标识的完整媒体身份。
+        """
         self._validate_id(media_id)
         return await self._submit(lambda connection: self._get_media(connection, media_id))
 
     async def begin_action(
         self, action_id: str, *, catalog_version: str, source: str, input_id: str | None = None
     ) -> None:
-        """执行所有者先保存代码与目录版本；确认返回前不得启动该行动。"""
+        """执行所有者先保存代码与目录版本。
+
+        Args:
+            action_id: 执行器分配的行动身份，用于关联逐次调用和真实回执。
+            catalog_version: 本次行动冻结的目录内容摘要，执行期间保持不变。
+            source: 行动原始材料，保存受限源码或冻结的 structured_call JSON。
+            input_id: 正式接管返回的输入身份，用于关联原文与后续处理。 None
+                表示无单一输入因果关联。
+
+        Raises:
+            ValueError: 行动源码必须是字符串。
+
+        Note:
+            确认返回前不得启动该行动。
+        """
         self._validate_id(action_id)
         self._validate_id(catalog_version)
         if not isinstance(source, str):
@@ -1056,11 +1308,19 @@ class Store:
 
     @property
     def authority_available(self) -> bool:
-        """同步读取提交器的写入资格；调用方在等待后仍须复核。"""
+        """同步读取提交器的写入资格。
+
+        Note:
+            调用方在等待后仍须复核。
+        """
         return self._queue.authority_available
 
     async def begin_request(self, request: RequestEvidence) -> None:
-        """原子保存编译材料与同库 BLOB 引用，确认前不允许模型派发。"""
+        """原子保存编译材料与同库 BLOB 引用，确认前不允许模型派发。
+
+        Args:
+            request: 本次逻辑请求冻结的完整公开材料与因果身份。
+        """
         await self._submit(
             lambda connection: model_storage.begin_request(connection, request),
             logical_bytes=len(serialization.encode(request).encode("utf-8")),
@@ -1077,7 +1337,11 @@ class Store:
         )
 
     async def begin_attempt(self, start: AttemptStart) -> None:
-        """保存本次真实尝试身份，模型所有者在等待后重验资格和截止。"""
+        """保存本次真实尝试身份，模型所有者在等待后重验资格和截止。
+
+        Args:
+            start: 真实尝试开始前须持久化的编号、身份和截止事实。
+        """
         await self._submit(
             lambda connection: model_storage.begin_attempt(connection, start),
             logical_bytes=len(serialization.encode(start).encode("utf-8")),
@@ -1086,7 +1350,11 @@ class Store:
         )
 
     async def finish_attempt(self, result: AttemptEvidence) -> None:
-        """提交权威响应/原参数，再独立保存有限诊断，不覆盖另一次尝试。"""
+        """提交权威响应/原参数，再独立保存有限诊断，不覆盖另一次尝试。
+
+        Args:
+            result: 本次尝试的实际响应、失败分类与有限诊断。
+        """
         await self._submit(
             lambda connection: model_storage.finish_attempt(connection, result),
             logical_bytes=len(serialization.encode(result).encode("utf-8")),
@@ -1104,7 +1372,12 @@ class Store:
         )
 
     async def finish_request(self, request_id: str, state: RequestOutcome) -> None:
-        """提交逻辑请求结论，已经成功的远端结果不等同于会话已采用。"""
+        """提交逻辑请求结论，已经成功的远端结果不等同于会话已采用。
+
+        Args:
+            request_id: 逻辑请求的稳定身份，用于查询或关联同一次受理。
+            state: 逻辑请求最终状态，独立于各次传输尝试。
+        """
         self._validate_id(request_id)
         await self._submit(
             lambda connection: model_storage.finish_request(connection, request_id, state),
@@ -1114,16 +1387,36 @@ class Store:
         )
 
     async def get_request(self, request_id: str) -> RequestRecord | None:
-        """从权威快照还原公开请求与独立尝试；缺失媒体明确失败。"""
+        """从权威快照还原公开请求与独立尝试。
+
+        Args:
+            request_id: 逻辑请求的稳定身份，用于查询或关联同一次受理。
+
+        Returns:
+            一个逻辑模型请求的冻结材料及按实际顺序保存的尝试。 未取得对应记录或素材时返回 None；
+            读取故障仍抛出。
+
+        Note:
+            缺失媒体明确失败。
+        """
         self._validate_id(request_id)
         return await self._submit(
             lambda connection: model_storage.get_request(connection, request_id)
         )
 
     async def requests_for_turn(self, owner_id: str, turn_id: str) -> tuple[RequestRecord, ...]:
-        """按因果身份还原本批各逻辑请求，包括容量依据及独立传输尝试。"""
+        """按因果身份还原本批各逻辑请求，包括容量依据及独立传输尝试。
+
+        Args:
+            owner_id: 发起本次工作并持有提交资格的所有者身份。
+            turn_id: 连续会话中本轮处理的身份。
+
+        Returns:
+            条目集合：一个逻辑模型请求的冻结材料及按实际顺序保存的尝试。
+        """
 
         def read(connection: sqlite3.Connection) -> tuple[RequestRecord, ...]:
+            """在同一数据库读取中恢复完整记录与其已保存关联。"""
             rows: list[tuple[object, ...]] = connection.execute(
                 "SELECT request_id FROM model_requests "
                 "WHERE json_extract(evidence_json,'$.scope.owner_id')=? "
@@ -1142,25 +1435,53 @@ class Store:
         return await self._submit(read)
 
     async def activity_records(self) -> tuple[ActivityRecord, ...]:
-        """取得未结束活动的当前快照，查询不创建或恢复驱动。"""
+        """取得未结束活动的当前快照，查询不创建或恢复驱动。
+
+        Returns:
+            条目集合：活动的控制、预算、运行代次与工作快照。
+        """
         return await self._submit(activity_storage.activity_records)
 
     async def get_activity(self, activity_id: str) -> ActivityRecord | None:
-        """读取控制、预算和工作当前事实，不自动重放。"""
+        """读取控制、预算和工作当前事实，不自动重放。
+
+        Args:
+            activity_id: 已创建活动的稳定身份。
+
+        Returns:
+            活动的控制、预算、运行代次与工作快照。 未取得对应记录或素材时返回 None；
+            读取故障仍抛出。
+        """
         self._validate_id(activity_id)
         return await self._submit(
             lambda connection: activity_storage.get_activity(connection, activity_id)
         )
 
     async def get_activity_command(self, command_id: str) -> ActivityCommand | None:
-        """区分命令接管、驱动受理及实际确认。"""
+        """区分命令接管、驱动受理及实际确认。
+
+        Args:
+            command_id: 控制命令的稳定身份；重复提交须沿用原身份和内容。
+
+        Returns:
+            命令接管与实际确认记录；受理成功不等于驱动已完成。 未取得对应记录或素材时返回 None；
+            读取故障仍抛出。
+        """
         self._validate_id(command_id)
         return await self._submit(
             lambda connection: activity_storage.get_activity_command(connection, command_id)
         )
 
     async def get_activity_feedback(self, feedback_id: str) -> ActivityFeedback | None:
-        """读取首次反馈的稳定材料，以事实身份处理重投。"""
+        """读取首次反馈的稳定材料，以事实身份处理重投。
+
+        Args:
+            feedback_id: 驱动反馈的稳定身份，用于去重和查询实际确认。
+
+        Returns:
+            已经按身份去重并保存的真实驱动反馈。 未取得对应记录或素材时返回 None；
+            读取故障仍抛出。
+        """
         self._validate_id(feedback_id)
         return await self._submit(
             lambda connection: activity_storage.get_activity_feedback(connection, feedback_id)
@@ -1174,7 +1495,15 @@ class Store:
         command: ActivityCommand | None = None,
         feedback: ActivityFeedback | None = None,
     ) -> None:
-        """CAS 提交当前状态、控制或反馈及可靠交接，事务不等待专业驱动。"""
+        """CAS 提交当前状态、控制或反馈及可靠交接，事务不等待专业驱动。
+
+        Args:
+            record: 待查询、核对或提交的当前活动快照。
+            expected_version: 提交前观察到的版本，用于拒绝并发覆盖。
+            command: 与状态变化同事务保存的控制命令；None 表示本次没有命令。 None
+                表示本次没有伴随命令。
+            feedback: 与活动状态同事务保存的驱动反馈；None 表示没有新反馈。
+        """
         size = len(serialization.encode((record, command, feedback)).encode("utf-8"))
         await self._submit(
             lambda connection: activity_storage.commit_activity(
@@ -1199,7 +1528,14 @@ class Store:
             )
 
     async def recover_activities(self) -> tuple[ActivityRecord, ...]:
-        """登记上次运行中断；保留累计，离线时间不扣，不构造驱动。"""
+        """登记上次运行中断。
+
+        Returns:
+            条目集合：活动的控制、预算、运行代次与工作快照。
+
+        Note:
+            保留累计，离线时间不扣，不构造驱动。
+        """
         return await self._submit(
             lambda connection: activity_storage.recover_activities(
                 connection, now=datetime.now(UTC).timestamp()
@@ -1212,7 +1548,14 @@ class Store:
         self,
         consumer: Literal["foreground", "reflection"],
     ) -> tuple[ActivityFeedback, ...]:
-        """读取该独立消费者尚未接管的反馈，查询不确认完成。"""
+        """读取该独立消费者尚未接管的反馈，查询不确认完成。
+
+        Args:
+            consumer: 本次可靠反馈交接的消费者，前台与反思分别维护游标。
+
+        Returns:
+            条目集合：已经按身份去重并保存的真实驱动反馈。
+        """
         return await self._submit(
             lambda connection: activity_storage.pending_activity_feedback(connection, consumer)
         )
@@ -1222,7 +1565,12 @@ class Store:
         feedback_id: str,
         consumer: Literal["foreground", "reflection"],
     ) -> None:
-        """只确认一份交接责任，前台与反思互不清除对方待办。"""
+        """只确认一份交接责任，前台与反思互不清除对方待办。
+
+        Args:
+            feedback_id: 驱动反馈的稳定身份，用于去重和查询实际确认。
+            consumer: 本次可靠反馈交接的消费者，前台与反思分别维护游标。
+        """
         self._validate_id(feedback_id)
         await self._submit(
             lambda connection: activity_storage.acknowledge_activity_feedback(
@@ -1242,7 +1590,22 @@ class Store:
         target_id: str,
         arguments_json: str,
     ) -> None:
-        """派发前接管完整调用意图；prepared 不证明已进入 Provider。"""
+        """派发前接管完整调用意图。
+
+        Args:
+            call_id: 实际能力调用的唯一身份，用于保存启动门槛及结果版本。
+            action_id: 执行器分配的行动身份，用于关联逐次调用和真实回执。
+            sequence: 行动内从 1 开始的调用顺序号。
+            path: 此操作定位的明确路径。
+            target_id: 能力绑定的目标对象身份。
+            arguments_json: 已编码为严格 JSON 对象的原始能力参数。
+
+        Raises:
+            ValueError: 调用顺序必须是非负整数。
+
+        Note:
+            prepared 不证明已进入 Provider。
+        """
         for identity in (call_id, action_id, path, target_id):
             self._validate_id(identity)
         if isinstance(sequence, bool) or not isinstance(sequence, int) or sequence < 0:
@@ -1259,9 +1622,15 @@ class Store:
         )
 
     async def mark_call_started(self, call_id: str) -> None:
-        """提交进入 Provider 前的门槛；执行方返回后仍须在锁内核验资格。
+        """提交进入 Provider 前的门槛。
 
-        等待取消不撤销已提交门槛；不得把再次调用此方法当作执行许可或重发。
+        Args:
+            call_id: 实际能力调用的唯一身份，用于保存启动门槛及结果版本。
+
+        Note:
+            执行方返回后仍须在锁内核验资格。
+
+            等待取消不撤销已提交门槛；不得把再次调用此方法当作执行许可或重发。
         """
         self._validate_id(call_id)
         size = record_validation.payload_bytes(call_id)
@@ -1284,8 +1653,23 @@ class Store:
     ) -> CallRecord:
         """独立提交真实结果、回执历史和可靠待办，不依赖会话提交。
 
-        重复相同结果返回同版本；未知可由迟到真实确认或失败澄清，其旧版本仍
-        保留并分别待交接。调用者取消等待不取消结果事务，查询可取回事实。
+        Args:
+            call_id: 实际能力调用的唯一身份，用于保存启动门槛及结果版本。
+            state: 本次实际调用的确认、失败或未知结论。
+            result_json: 已编码的实际结果；无可用结果时为 None。
+            error_type: 回执中稳定的错误类别，无错误时为 None。
+            error: 当前流程已经取得的真实故障或失败说明。
+            media: 已接管媒体的引用集合，展开时必须取得原始 BLOB。 默认不附加此类条目。
+
+        Returns:
+            原调用当前的权威结果及不可变版本历史。
+
+        Raises:
+            ValueError: 调用结果状态无效。
+
+        Note:
+            重复相同结果返回同版本；未知可由迟到真实确认或失败澄清，其旧版本仍
+            保留并分别待交接。调用者取消等待不取消结果事务，查询可取回事实。
         """
         self._validate_id(call_id)
         if state not in ("confirmed", "failed", "unknown", "not_started"):
@@ -1323,7 +1707,18 @@ class Store:
         output: str,
         error: str | None,
     ) -> None:
-        """保存行动结束事实，失败与取消都不回滚或覆盖逐次真实回执。"""
+        """保存行动结束事实，失败与取消都不回滚或覆盖逐次真实回执。
+
+        Args:
+            action_id: 执行器分配的行动身份，用于关联逐次调用和真实回执。
+            state: 行动结束状态，不能抹除已经发生的逐次效果。
+            result_json: 已编码的实际结果；无可用结果时为 None。
+            output: 此次 Worker 实际产生的有界标准输出。
+            error: 当前流程已经取得的真实故障或失败说明。
+
+        Raises:
+            ValueError: 行动结果状态无效；行动输出必须是字符串。
+        """
         self._validate_id(action_id)
         if state not in ("completed", "failed", "timed_out", "cancelled"):
             raise ValueError("行动结果状态无效。")
@@ -1345,18 +1740,37 @@ class Store:
         )
 
     async def get_action(self, action_id: str) -> ActionRecord | None:
-        """查询行动、当前调用及完整回执版本；读取不启动或确认任何工作。"""
+        """查询行动、当前调用及完整回执版本。
+
+        Args:
+            action_id: 执行器分配的行动身份，用于关联逐次调用和真实回执。
+
+        Returns:
+            已保存的行动记录，包含逐次真实调用及结果历史；unknown 不证明效果未发生。
+            未取得对应记录或素材时返回 None；读取故障仍抛出。
+
+        Note:
+            读取不启动或确认任何工作。
+        """
         self._validate_id(action_id)
         return await self._submit(
             lambda connection: execution_storage.get_action(connection, action_id)
         )
 
     async def actions_for_inputs(self, input_ids: tuple[str, ...]) -> tuple[ActionRecord, ...]:
-        """按实际持久来源关联查询行动，不从模型结果文本猜测发生关系。"""
+        """按实际持久来源关联查询行动，不从模型结果文本猜测发生关系。
+
+        Args:
+            input_ids: 本轮接管的输入身份集合，保留真实因果关联。
+
+        Returns:
+            条目集合：已保存的行动记录，包含逐次真实调用及结果历史；unknown 不证明效果未发生。
+        """
         for input_id in input_ids:
             self._validate_id(input_id)
 
         def read(connection: sqlite3.Connection) -> tuple[ActionRecord, ...]:
+            """在同一数据库读取中恢复完整记录与其已保存关联。"""
             rows: list[tuple[object, ...]] = connection.execute(
                 "SELECT action_id FROM actions WHERE input_id IN (SELECT value FROM json_each(?)) "
                 "ORDER BY created_at,action_id",
@@ -1375,7 +1789,17 @@ class Store:
         )
 
     async def pending_call_receipts(self, *, limit: int = 16) -> tuple[CallRecord, ...]:
-        """读取有限可靠交接版本；消费确认须由实际主体接管事务另行提交。"""
+        """读取有限可靠交接版本。
+
+        Args:
+            limit: 本次读取或更新的最大条目数。 默认 16。
+
+        Returns:
+            条目集合：原调用当前的权威结果及不可变版本历史。
+
+        Note:
+            消费确认须由实际主体接管事务另行提交。
+        """
         _positive(limit, "limit")
         bounded_limit = min(limit, self._max_inputs)
         return await self._submit(

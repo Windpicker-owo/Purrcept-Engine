@@ -29,7 +29,11 @@ class LineReader(Protocol):
     """CLI 借用的可取消单行入口；None 表示 EOF，不代表宿主结束。"""
 
     async def read_line(self) -> str | None:
-        """返回完整一行或 EOF；取消必须结束等待而不留下线程借用。"""
+        """返回完整一行或 EOF。
+
+        Note:
+            取消必须结束等待而不留下线程借用。
+        """
         ...
 
 
@@ -39,7 +43,13 @@ class _FileType(Protocol):
     argtypes: tuple[object, ...]
     restype: object
 
-    def __call__(self, handle: int) -> int: ...
+    def __call__(self, handle: int) -> int:
+        """在当前所有者的契约内完成一次调用，保留原始结果与故障。
+
+        Args:
+            handle: 当前所有者持有的原生句柄。
+        """
+        ...
 
 
 class _Peek(Protocol):
@@ -50,7 +60,18 @@ class _Peek(Protocol):
 
     def __call__(
         self, handle: int, buffer: None, size: int, read: None, available: object, remaining: None
-    ) -> int: ...
+    ) -> int:
+        """在当前所有者的契约内完成一次调用，保留原始结果与故障。
+
+        Args:
+            handle: 当前所有者持有的原生句柄。
+            buffer: 本次操作使用的有界缓冲或原生缓冲地址。
+            size: 当前缓冲区的字节容量。
+            read: 原生 API 要求的读取结果输出位置。
+            available: 原生 API 返回可读字节数的输出位置。
+            remaining: 原生 API 要求的剩余长度输出位置。
+        """
+        ...
 
 
 class _InputApi(ctypes.WinDLL):
@@ -60,7 +81,11 @@ class _InputApi(ctypes.WinDLL):
     PeekNamedPipe: _Peek
 
     def __init__(self) -> None:
-        """固定真实调用 ABI；没有等待或另一个标准输入句柄所有者。"""
+        """固定真实调用 ABI。
+
+        Note:
+            没有等待或另一个标准输入句柄所有者。
+        """
         super().__init__("kernel32", use_last_error=True)
         self.GetFileType.argtypes = (ctypes.c_void_p,)
         self.GetFileType.restype = ctypes.c_uint32
@@ -84,7 +109,17 @@ class WindowsLineReader:
     """
 
     def __init__(self, stream: TextIO, *, max_bytes: int) -> None:
-        """借用流，在构造边界确认文件/管道/终端类型，不等待用户输入。"""
+        """借用流，在构造边界确认文件/管道/终端类型，不等待用户输入。
+
+        Args:
+            stream: 当前实例借用的文本输入或输出流。
+            max_bytes: 此边界允许保留或接管的最大字节数。
+
+        Raises:
+            ValueError: 控制台行额度必须为正整数。
+            ConfigError: 标准输入必须是 Windows 文件、管道或终端；
+                标准字符设备不是可读取的交互终端。
+        """
         if isinstance(max_bytes, bool) or max_bytes <= 0:
             raise ValueError("控制台行额度必须为正整数。")
         self._fd = stream.fileno()
@@ -101,7 +136,14 @@ class WindowsLineReader:
         self._eof = False
 
     async def read_line(self) -> str | None:
-        """在真实可读边界短读，组装完整行；等待和取消不创建阻塞线程。"""
+        """在真实可读边界短读，组装完整行。
+
+        Raises:
+            ctypes.WinError: 参数、材料或当前状态不满足此入口的约束。
+
+        Note:
+            等待和取消不创建阻塞线程。
+        """
         if self._kind == 2:
             return await self._terminal_line()
         pieces: list[str] = []
@@ -209,7 +251,12 @@ class ConsoleIngress:
     """
 
     def __init__(self, inputs: InputPort, reader: LineReader) -> None:
-        """借用已运行宿主和可取消读取器，构造不开始读取。"""
+        """借用已运行宿主和可取消读取器，构造不开始读取。
+
+        Args:
+            inputs: 正式接管与查询输入的有限端口，不持有主脑或通用存储。
+            reader: CLI 创建并持有的逐行输入资源。
+        """
         self.inputs, self.reader = inputs, reader
         self._task: asyncio.Task[None] | None = None
         self._failed = asyncio.Event()
@@ -262,7 +309,11 @@ class ConsoleIngress:
             self._failed.set()
 
     async def wait_failed(self) -> None:
-        """EOF 后继续等待宿主；只有真实输入故障结束此等待并传播原异常。"""
+        """EOF 后继续等待宿主。
+
+        Note:
+            只有真实输入故障结束此等待并传播原异常。
+        """
         await self._failed.wait()
         assert self._failure is not None
         raise self._failure

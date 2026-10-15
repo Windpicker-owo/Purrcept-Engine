@@ -31,11 +31,27 @@ if TYPE_CHECKING:
 class _DocumentSession(Protocol):
     """SDK的CDP标注不完整，只声明实际使用的JSON/ACK接缝，不另造传输层。"""
 
-    def on(self, event: str, callback: Callable[[dict[str, object]], None]) -> None: ...
+    def on(self, event: str, callback: Callable[[dict[str, object]], None]) -> None:
+        """登记当前文档会话的原生事件回调。
 
-    async def send(self, method: str, params: JsonObject | None = None) -> object: ...
+        Args:
+            event: 当前协议实际交付的事件，不从状态猜测事件发生。
+            callback: 底层库调用的同步回调，跨线程状态交回所属事件循环。
+        """
+        ...
 
-    async def detach(self) -> None: ...
+    async def send(self, method: str, params: JsonObject | None = None) -> object:
+        """向当前文档会话发送一次明确协议方法。
+
+        Args:
+            method: 底层文档协议的方法名。
+            params: 当前原生协议方法使用的显式参数。
+        """
+        ...
+
+    async def detach(self) -> None:
+        """释放当前文档协议会话与页面的借用关系。"""
+        ...
 
 
 _LOG = logging.getLogger(__name__)
@@ -58,7 +74,11 @@ class PatchrightDriver:
     """由BrowserSession创建的单页驱动，配置/句柄都不进入行动Worker。"""
 
     def __init__(self, settings: BrowserSettings) -> None:
-        """构造不加载SDK、不找程序或建立网络连接。"""
+        """构造不加载SDK、不找程序或建立网络连接。
+
+        Args:
+            settings: 当前组件已校验的配置或纯声明。
+        """
         self.settings = settings
         self._playwright: Playwright | None = None
         self._browser: Browser | None = None
@@ -78,7 +98,11 @@ class PatchrightDriver:
         return self._page is not None and not self._page.is_closed()
 
     async def start(self) -> None:
-        """原有CDP或持久上下文选择，失败不自动重发另一会话。"""
+        """原有CDP或持久上下文选择，失败不自动重发另一会话。
+
+        Raises:
+            BrowserError: 浏览器资源已开始关闭；CDP浏览器没有可借用的上下文。
+        """
         from patchright.async_api import async_playwright
 
         from purrcept_engine.plugins.browser.locate import resolve_launch
@@ -117,7 +141,17 @@ class PatchrightDriver:
         self._handles.clear()
 
     async def set_navigation_policy(self, policy: NavigationPolicy) -> None:
-        """CDP Fetch逐跳暂停Document；上下文路由拒绝衍生或归属未知的新页面。"""
+        """CDP Fetch逐跳暂停Document。
+
+        Args:
+            policy: 覆盖文档请求、逐跳重定向及弹窗的站点访问规则。
+
+        Raises:
+            BrowserError: 浏览器尚未取得上下文。
+
+        Note:
+            上下文路由拒绝衍生或归属未知的新页面。
+        """
         context = self._context
         if context is None:
             raise BrowserError("浏览器尚未取得上下文。")
@@ -208,7 +242,18 @@ class PatchrightDriver:
         return result
 
     async def open(self, url: str, *, timeout_seconds: float) -> PageView:
-        """导航前的session预检之外，每一次请求仍由已安装策略核验。"""
+        """导航前的session预检之外，每一次请求仍由已安装策略核验。
+
+        Args:
+            url: 本次明确访问的资源 URL，实际请求仍须通过对应策略。
+            timeout_seconds: 本次操作的等待上限（秒），不得扩大所属行动或活动期限。
+
+        Returns:
+            此次操作实际取得的页面 URL、标题与可用的状态信息。
+
+        Raises:
+            BrowserActionError: 导航已完成，但页面状态取得失败。
+        """
         from patchright.async_api import Error
 
         self._handles.clear()
@@ -230,11 +275,22 @@ class PatchrightDriver:
         return PageView(page.url, title, status, "popup" if self._popup_blocked else None)
 
     async def view(self) -> PageView:
-        """当前身份，不把上次HTTP状态猜成此次读取的状态。"""
+        """当前身份，不把上次HTTP状态猜成此次读取的状态。
+
+        Returns:
+            此次操作实际取得的页面 URL、标题与可用的状态信息。
+        """
         return await self._view()
 
     async def html(self) -> str:
-        """完整渲染HTML；明确SDK读取故障供Session保留已完成交互。"""
+        """完整渲染HTML。
+
+        Raises:
+            BrowserError: 实际页面HTML读取失败。
+
+        Note:
+            明确SDK读取故障供Session保留已完成交互。
+        """
         from patchright.async_api import Error
 
         try:
@@ -247,7 +303,14 @@ class PatchrightDriver:
         return await self._require_page().inner_text("body")
 
     async def snapshot(self, *, interactive: bool) -> SnapshotResult:
-        """保留原角色/每种最多40个节点，不吞掉实际SDK读取失败。"""
+        """保留原角色/每种最多40个节点，不吞掉实际SDK读取失败。
+
+        Args:
+            interactive: 是否仅投影可交互节点。
+
+        Returns:
+            当次节点树及有效 ref 映射，页面变化后旧 ref 不能继续使用。
+        """
         page = self._require_page()
         self._handles.clear()
         lines = [f'- document "{await page.title()}"']
@@ -282,7 +345,14 @@ class PatchrightDriver:
             raise BrowserActionError("实际交互已完成，但后续页面状态取得失败。", facts) from error
 
     async def click(self, handle: str) -> PageView:
-        """只修改_blank目标，不用goto代替真实click handler。"""
+        """只修改_blank目标，不用goto代替真实click handler。
+
+        Args:
+            handle: 当前所有者持有的原生句柄。
+
+        Returns:
+            此次操作实际取得的页面 URL、标题与可用的状态信息。
+        """
         locator = self._handle(handle)
         self._handles.clear()
         self._popup_blocked = False
@@ -297,7 +367,23 @@ class PatchrightDriver:
         return await self._after_action("click")
 
     async def type_text(self, handle: str, text: str, *, delay_ms: float, submit: bool) -> PageView:
-        """实际清空/输入/Enter分阶段；不因后续状态失败重做输入。"""
+        """实际清空/输入/Enter分阶段。
+
+        Args:
+            handle: 当前所有者持有的原生句柄。
+            text: 本次明确传输、输入或呈现的完整文本。
+            delay_ms: 逐字输入的延迟毫秒数。
+            submit: 是否在完成文字输入后明确发送 Enter。
+
+        Returns:
+            此次操作实际取得的页面 URL、标题与可用的状态信息。
+
+        Raises:
+            BrowserActionError: 浏览器输入部分步骤失败，实际效果见回执。
+
+        Note:
+            不因后续状态失败重做输入。
+        """
         from patchright.async_api import Error
 
         locator = self._handle(handle)
@@ -331,7 +417,19 @@ class PatchrightDriver:
         return await self._after_action("type")
 
     async def scroll(self, *, direction: str, handle: str | None, amount: int) -> PageView:
-        """保留元素滚入/视口滚动，不做未知方向回退。"""
+        """保留元素滚入/视口滚动，不做未知方向回退。
+
+        Args:
+            direction: 明确的滚动方向，由浏览器边界校验。
+            handle: 当前所有者持有的原生句柄。
+            amount: 本次滚动的像素数量。
+
+        Returns:
+            此次操作实际取得的页面 URL、标题与可用的状态信息。
+
+        Raises:
+            BrowserInputError: 未知滚动方向。
+        """
         page = self._require_page()
         if handle is not None:
             await self._handle(handle).scroll_into_view_if_needed(
@@ -348,14 +446,28 @@ class PatchrightDriver:
         return await self._after_action("scroll")
 
     async def screenshot(self, *, full_page: bool) -> ImageCapture:
-        """完整JPEG，不先按缓存图片边长裁剪。"""
+        """完整JPEG，不先按缓存图片边长裁剪。
+
+        Args:
+            full_page: 是否截取完整页面，而非仅当前视口。
+
+        Returns:
+            实际取得的完整图像、编码与获取方式。
+        """
         data = await self._require_page().screenshot(
             type="jpeg", quality=self.settings.screenshot_quality, full_page=full_page
         )
         return ImageCapture(data, "image/jpeg", "page-screenshot")
 
     async def save(self, handle: str) -> ImageCapture:
-        """原图不可取得时沿用元素截图，但明确保留原图失败原因。"""
+        """原图不可取得时沿用元素截图，但明确保留原图失败原因。
+
+        Args:
+            handle: 当前所有者持有的原生句柄。
+
+        Returns:
+            实际取得的完整图像、编码与获取方式。
+        """
         from patchright.async_api import Error
 
         locator, page = self._handle(handle), self._require_page()

@@ -18,7 +18,12 @@ class ActionProtocolError(ValueError):
     """帧、JSON 或管道所有权边界失败；code 可区分截断、容量及 I/O。"""
 
     def __init__(self, message: str, *, code: str = "invalid_payload") -> None:
-        """保留可判断的错误类别，原生错误通过异常链保留。"""
+        """保留可判断的错误类别，原生错误通过异常链保留。
+
+        Args:
+            message: 对调用方公开的原因或错误说明。
+            code: 供调用方分类处理的稳定错误码。 默认 'invalid_payload'。
+        """
         super().__init__(message)
         self.code = code
 
@@ -84,9 +89,20 @@ def _to_pod(value: object, active: set[int], depth: int) -> JsonValue:
 def encode_json(value: object) -> bytes:
     """编码紧凑 UTF-8 JSON，不转换未知对象或用 repr 猜测内容。
 
-    Mapping/Sequence 的合法内容可交接为普通 dict/list；字符串键、有限数值、
-    非循环结构及最多 64 层容器在编码前核验。保留声明的成员顺序；调用者在
-    编码期间不得并发修改源容器，返回字节不再借用源对象。
+    Args:
+        value: 支持的 JSON 标量或字符串键容器；拒绝非有限数值、循环和超过 64 层的嵌套。
+
+    Returns:
+        紧凑、保留成员顺序的完整 UTF-8 JSON 字节，不再借用源容器。
+
+    Raises:
+        ActionProtocolError: 包含不支持对象、非法键、非有限数值、循环、过深嵌套或无法编码的
+            Unicode。
+
+    Note:
+        Mapping/Sequence 的合法内容可交接为普通 dict/list；字符串键、有限数值、
+        非循环结构及最多 64 层容器在编码前核验。保留声明的成员顺序；调用者在
+        编码期间不得并发修改源容器，返回字节不再借用源对象。
     """
     pod = _to_pod(value, set(), 0)
     try:
@@ -137,8 +153,19 @@ def _reject_constant(value: str) -> None:
 def decode_object(data: bytes) -> JsonObject:
     """解析完整 UTF-8 JSON 对象，拒绝重复字段和不安全的值表示。
 
-    不接受数组等顶层值、非法 UTF-8、孤立代理项、非有限数值或过深结构。
-    返回短生命周期 POD；身份及业务字段语义仍由调用者验证。
+    Args:
+        data: 包含一份完整 JSON 对象的不可变 UTF-8 字节，不接受顶层数组或重复键。
+
+    Returns:
+        由普通 dict/list 与 JSON 标量组成的短生命周期对象；业务字段身份另行核验。
+
+    Raises:
+        ActionProtocolError: 输入不是完整 UTF-8 JSON 对象，或包含重复字段、
+            非有限数值与不安全结构。
+
+    Note:
+        不接受数组等顶层值、非法 UTF-8、孤立代理项、非有限数值或过深结构。
+        返回短生命周期 POD；身份及业务字段语义仍由调用者验证。
     """
     if not isinstance(data, bytes):
         raise ActionProtocolError("JSON 正文必须是不可变 bytes。")

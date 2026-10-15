@@ -77,7 +77,12 @@ class NotebookError(EngineError):
     """文件、路径或版本的明确业务拒绝；权威存储错误不转成此类型。"""
 
     def __init__(self, message: str, *, code: str) -> None:
-        """保留冲突及扫描问题类别，调用者可重新读取当前实际版本。"""
+        """保留冲突及扫描问题类别，调用者可重新读取当前实际版本。
+
+        Args:
+            message: 对调用方公开的原因或错误说明。
+            code: 供调用方分类处理的稳定错误码。
+        """
         super().__init__(message)
         self.code = code
 
@@ -86,18 +91,38 @@ class NotebookPublicationError(EngineError):
     """原生发布已开始后的不确定结果，携带实际恢复路径而不承诺未发生效果。"""
 
     def __init__(self, native_error: OSError, recovery: JsonObject) -> None:
-        """保留原 WinError 与本次观测；调用者先核对文件再决定手工恢复。"""
+        """保留原 WinError 与本次观测。
+
+        Args:
+            native_error: 当前文件操作实际取得的原生系统错误。
+            recovery: 明确记录的资源恢复事实，未知状态不得猜为成功。
+
+        Note:
+            调用者先核对文件再决定手工恢复。
+        """
         super().__init__(str(native_error) + "；发布结果须核对实际文件，恢复位置见回执。")
         self.native_error = native_error
         self.recovery = recovery
 
 
 class _Function(Protocol):
+    """限定原生库在此适配层使用的调用形状。
+
+    Note:
+        具体资源由外层驱动创建和关闭；该协议不负责加载库或扩大原生 API 范围。
+    """
+
     argtypes: tuple[object, ...]
     restype: object
 
 
 class _CreateFile(_Function, Protocol):
+    """限定原生库在此适配层使用的调用形状。
+
+    Note:
+        具体资源由外层驱动创建和关闭；该协议不负责加载库或扩大原生 API 范围。
+    """
+
     def __call__(
         self,
         path: str,
@@ -107,21 +132,77 @@ class _CreateFile(_Function, Protocol):
         disposition: int,
         flags: int,
         template: None,
-    ) -> int: ...
+    ) -> int:
+        """按明确访问与共享标志打开原生文件句柄。
+
+        Args:
+            path: 根目录内的相对笔记路径，实际访问拒绝越界和链接逃逸。
+            access: 打开文件时申请的原生访问权限位。
+            sharing: 打开文件时允许的共享访问位。
+            security: 原生安全属性；None 使用默认属性。
+            disposition: 原生文件打开或创建方式。
+            flags: 原生 API 的显式标志位组合。
+            template: 文件创建模板句柄；此适配层传 None。
+        """
+        ...
 
 
 class _FinalPath(_Function, Protocol):
-    def __call__(self, handle: int, buffer: object, size: int, flags: int) -> int: ...
+    """限定原生库在此适配层使用的调用形状。
+
+    Note:
+        具体资源由外层驱动创建和关闭；该协议不负责加载库或扩大原生 API 范围。
+    """
+
+    def __call__(self, handle: int, buffer: object, size: int, flags: int) -> int:
+        """按实际句柄取得最终路径，供根目录边界再次核验。
+
+        Args:
+            handle: 当前所有者持有的原生句柄。
+            buffer: 本次操作使用的有界缓冲或原生缓冲地址。
+            size: 当前缓冲区的字节容量。
+            flags: 原生 API 的显式标志位组合。
+        """
+        ...
 
 
 class _CloseHandle(_Function, Protocol):
-    def __call__(self, handle: int) -> int: ...
+    """限定原生库在此适配层使用的调用形状。
+
+    Note:
+        具体资源由外层驱动创建和关闭；该协议不负责加载库或扩大原生 API 范围。
+    """
+
+    def __call__(self, handle: int) -> int:
+        """释放当前所有者已经取得的原生句柄。
+
+        Args:
+            handle: 当前所有者持有的原生句柄。
+        """
+        ...
 
 
 class _ReplaceFile(_Function, Protocol):
+    """限定原生库在此适配层使用的调用形状。
+
+    Note:
+        具体资源由外层驱动创建和关闭；该协议不负责加载库或扩大原生 API 范围。
+    """
+
     def __call__(
         self, target: str, staged: str, backup: str, flags: int, exclude: None, reserved: None
-    ) -> int: ...
+    ) -> int:
+        """用已完整写入的暂存文件原子替换明确目标。
+
+        Args:
+            target: 本次操作明确指定的业务目标身份。
+            staged: 已完成写入、准备原子替换的暂存文件路径。
+            backup: 原子替换时使用的备份路径。
+            flags: 原生 API 的显式标志位组合。
+            exclude: 原生 API 的保留参数，此适配层传 None。
+            reserved: 是否占用独立控制名额，具体计数由所属所有者维护。
+        """
+        ...
 
 
 class _Kernel32(ctypes.WinDLL):
@@ -194,6 +275,8 @@ def _version(data: bytes) -> str:
 
 @dataclass(frozen=True, slots=True)
 class _Scan:
+    """汇总一次有界目录扫描的条目、总量和不可用原因。"""
+
     kind: Literal["dir", "file"]
     entries: tuple[JsonValue, ...]
     skills: tuple[JsonObject, ...]
@@ -204,11 +287,26 @@ class _Files:
     """同步磁盘边界，仅由 Notebook 所有的工作线程调用，不持有持久句柄。"""
 
     def __init__(self, root: Path, *, max_bytes: int, max_entries: int, max_depth: int) -> None:
+        """固定文件根目录与扫描预算，不在构造时访问或修改笔记。
+
+        Args:
+            root: 文件操作允许访问的根目录。
+            max_bytes: 此边界允许保留或接管的最大字节数。
+            max_entries: 一次目录扫描允许包含的最大条目数。
+            max_depth: 相对根目录允许遍历的最大深度。
+        """
         self.root = root
         self.max_bytes, self.max_entries, self.max_depth = max_bytes, max_entries, max_depth
 
     def start(self, seed_examples: bool) -> None:
-        """固定实际根目录，示例仅在目标不存在时发布，不覆盖外部笔记。"""
+        """固定实际根目录，示例仅在目标不存在时发布，不覆盖外部笔记。
+
+        Args:
+            seed_examples: 是否在初始化空笔记区域时创建内置示例。
+
+        Raises:
+            RuntimeError: Notebook 文件发布路径要求 Windows。
+        """
         if os.name != "nt":
             raise RuntimeError("Notebook 文件发布路径要求 Windows。")
         self.root.mkdir(parents=True, exist_ok=True)
@@ -219,7 +317,22 @@ class _Files:
                     self.write(path, content, None)
 
     def target(self, raw: str, *, note: bool = False) -> Path:
-        """解析后的真实目标必须留在固定根内；缺失叶节点同样检查其真实父链。"""
+        """解析后的真实目标必须留在固定根内。
+
+        Args:
+            raw: 笔记根目录内的相对路径；是否允许文件别名由对应读操作决定。
+            note: 是否对目标施加 Markdown 笔记路径约束。 默认 False。
+
+        Returns:
+            沿显式基准目录解析的实际路径。
+
+        Raises:
+            NotebookError: 路径越界、实际文件已变化，或文件类型、
+                版本与扫描/字节额度不满足操作要求。
+
+        Note:
+            缺失叶节点同样检查其真实父链。
+        """
         parts = _parts(raw)
         if note and (not parts or Path(parts[-1]).suffix.lower() not in _SUFFIXES):
             raise NotebookError("正文路径必须是 Markdown 文件。", code="invalid_path")
@@ -231,6 +344,11 @@ class _Files:
         return target
 
     def relative(self, target: Path) -> str:
+        """将根目录内的实际目标转换为规范相对展示路径。
+
+        Args:
+            target: 已通过根目录和原生句柄边界核验的实际文件路径。
+        """
         text = target.relative_to(self.root).as_posix()
         return "" if text == "." else text
 
@@ -260,10 +378,22 @@ class _Files:
 
     @contextmanager
     def opened(self, target: Path) -> Generator[BinaryIO]:
-        """共享读写/删除，保留同一源句柄核验；不独占所有外部编辑器。
+        """共享读写/删除，保留同一源句柄核验。
 
-        FILE_SHARE_DELETE 允许 ReplaceFileW 替换时持有源句柄；它也允许外部替换，
-        因而最终版本比较和 replace 之间仍不是跨编辑器原子 CAS。
+        Args:
+            target: 已通过根目录和原生句柄边界核验的实际文件路径。
+
+        Yields:
+            本次受根目录与原生句柄约束的二进制文件流，退出时关闭。
+
+        Raises:
+            ctypes.WinError: 参数、材料或当前状态不满足此入口的约束。
+
+        Note:
+            不独占所有外部编辑器。
+
+            FILE_SHARE_DELETE 允许 ReplaceFileW 替换时持有源句柄；它也允许外部替换，
+            因而最终版本比较和 replace 之间仍不是跨编辑器原子 CAS。
         """
         api = _file_api()
         handle = api.CreateFileW(str(target), 0x80000000, 7, None, 3, 0x80, None)
@@ -280,7 +410,15 @@ class _Files:
             yield source
 
     def stable(self, target: Path, source: BinaryIO) -> bytes:
-        """两次有限读取须一致，stat 与当前路径仍指向同一源对象才采用正文。"""
+        """两次有限读取须一致，stat 与当前路径仍指向同一源对象才采用正文。
+
+        Args:
+            target: 已通过根目录和原生句柄边界核验的实际文件路径。
+            source: 当前文件操作持有的二进制文件流。
+
+        Raises:
+            NotebookError: 笔记正文超过配置字节上限；笔记在稳定读取期间发生变化，请重新读取。
+        """
         before = os.fstat(source.fileno())
         source.seek(0)
         first = source.read(self.max_bytes + 1)
@@ -299,7 +437,17 @@ class _Files:
         return first
 
     def read_target(self, target: Path) -> ParsedNote:
-        """取得同一源句柄的稳定内容与真实哈希，不把坏文件当作不存在。"""
+        """取得同一源句柄的稳定内容与真实哈希，不把坏文件当作不存在。
+
+        Args:
+            target: 已通过根目录和原生句柄边界核验的实际文件路径。
+
+        Returns:
+            笔记路径、版本和完整正文的解析结果。
+
+        Raises:
+            NotebookError: 笔记不是有效 UTF-8；参数、材料或当前状态不满足此入口的约束。
+        """
         try:
             with self.opened(target) as source:
                 data = self.stable(target, source)
@@ -319,7 +467,18 @@ class _Files:
         )
 
     def read(self, raw: str) -> ParsedNote:
-        """原路径优先，单段 name/stem 别名只在完整扫描且唯一时解析。"""
+        """原路径优先，单段 name/stem 别名只在完整扫描且唯一时解析。
+
+        Args:
+            raw: 笔记根目录内的相对路径；是否允许文件别名由对应读操作决定。
+
+        Returns:
+            笔记路径、版本和完整正文的解析结果。
+
+        Raises:
+            NotebookError: 目录不完整，不能确认别名的唯一目标；指定笔记不存在或不是 Markdown
+                文件。
+        """
         target = self.target(raw)
         if len(_parts(raw)) == 1 and (
             not target.is_file() or target.suffix.lower() not in _SUFFIXES
@@ -352,13 +511,24 @@ class _Files:
                     yield from self._flat(children)
 
     def scan(self, raw: str) -> _Scan:
-        """全扫描有总条数/深度/单文件预算，任何缺口明确写入 issues。"""
+        """全扫描有总条数/深度/单文件预算，任何缺口明确写入 issues。
+
+        Args:
+            raw: 笔记根目录内的相对路径；是否允许文件别名由对应读操作决定。
+
+        Returns:
+            本次有界目录扫描结果及不可用原因。
+
+        Raises:
+            NotebookError: 目录目标不存在。
+        """
         target = self.target(raw)
         issues: list[JsonObject] = []
         skills: list[JsonObject] = []
         count = 0
 
         def file_entry(path: Path) -> JsonObject:
+            """读取根目录内文件的大小与版本，保留不可读原因。"""
             rel = self.relative(path)
             try:
                 note = self.read_target(self.target(rel, note=True))
@@ -378,6 +548,7 @@ class _Files:
             }
 
         def walk(directory: Path, depth: int) -> list[JsonValue]:
+            """在同一根目录和条目预算内递归收集目录事实。"""
             nonlocal count
             rel = self.relative(directory)
             if depth >= self.max_depth:
@@ -469,7 +640,26 @@ class _Files:
         return {**observed, "state": "stable", "version": note.version, "bytes": note.byte_count}
 
     def write(self, raw: str, content: str, expected: str | None) -> JsonObject:
-        """完整临时文件落盘后发布；新建不覆盖，更新在源句柄仍打开时最终核验。"""
+        """完整临时文件落盘后发布。
+
+        Args:
+            raw: 笔记根目录内的相对路径；是否允许文件别名由对应读操作决定。
+            content: 本次明确写入的完整正文。
+            expected: 此次比较或提交必须仍匹配的原始观察值。
+
+        Returns:
+            业务对象，按实际结果提供 path、name、skill、description、version、bytes、created、
+            changed 字段。
+
+        Raises:
+            NotebookError: 路径越界、实际文件已变化，或文件类型、
+                版本与扫描/字节额度不满足操作要求。
+            ctypes.WinError: 参数、材料或当前状态不满足此入口的约束。
+            NotebookPublicationError: 参数、材料或当前状态不满足此入口的约束。
+
+        Note:
+            新建不覆盖，更新在源句柄仍打开时最终核验。
+        """
         target = self.target(raw, note=True)
         if target.is_dir():
             raise NotebookError("笔记路径已被目录占用。", code="file_type")
@@ -548,7 +738,17 @@ class _Files:
         }
 
     def mkdir(self, raw: str) -> JsonObject:
-        """递归建立分类目录，已有目录没有副作用，不能把根目录当作新建目标。"""
+        """递归建立分类目录，已有目录没有副作用，不能把根目录当作新建目标。
+
+        Args:
+            raw: 笔记根目录内的相对路径；是否允许文件别名由对应读操作决定。
+
+        Returns:
+            业务对象，按实际结果提供 path、created、changed 字段。
+
+        Raises:
+            NotebookError: 不能创建笔记根目录。
+        """
         target = self.target(raw)
         if target == self.root:
             raise NotebookError("不能创建笔记根目录。", code="root_operation")
@@ -558,7 +758,23 @@ class _Files:
         return {"path": self.relative(target), "created": created, "changed": created}
 
     def move(self, src: str, dest: str, expected: str | None) -> JsonObject:
-        """Windows 重命名不覆盖目标；目录不虚构正文版本，文件先核同一源对象。"""
+        """Windows 重命名不覆盖目标。
+
+        Args:
+            src: 要移动的相对源路径。
+            dest: 目标相对路径；现有目标的覆盖仍受版本约束。
+            expected: 此次比较或提交必须仍匹配的原始观察值。
+
+        Returns:
+            业务对象，按实际结果提供 src、dest、type、version、changed 字段。
+
+        Raises:
+            NotebookError: 路径越界、实际文件已变化，或文件类型、
+                版本与扫描/字节额度不满足操作要求。
+
+        Note:
+            目录不虚构正文版本，文件先核同一源对象。
+        """
         source, target = self.target(src), self.target(dest)
         if source == self.root or target == self.root:
             raise NotebookError("不能移动或覆盖笔记根目录。", code="root_operation")
@@ -587,7 +803,19 @@ class _Files:
         }
 
     def delete(self, raw: str, expected: str | None) -> JsonObject:
-        """只删除版本匹配的笔记或空目录，不递归删除根目录或非空内容。"""
+        """只删除版本匹配的笔记或空目录，不递归删除根目录或非空内容。
+
+        Args:
+            raw: 笔记根目录内的相对路径；是否允许文件别名由对应读操作决定。
+            expected: 此次比较或提交必须仍匹配的原始观察值。
+
+        Returns:
+            业务对象，按实际结果提供 path、type、version、changed 字段。
+
+        Raises:
+            NotebookError: 路径越界、实际文件已变化，或文件类型、
+                版本与扫描/字节额度不满足操作要求。
+        """
         target = self.target(raw)
         if target == self.root:
             raise NotebookError("不能删除笔记根目录。", code="root_operation")
@@ -628,7 +856,18 @@ class Notebook:
         skills_dir: str = "",
         seed_examples: bool = True,
     ) -> None:
-        """绑定明确目录与宿主证据端口，构造不建立目录或扫描文件。"""
+        """绑定明确目录与宿主证据端口，构造不建立目录或扫描文件。
+
+        Args:
+            root: 文件操作允许访问的根目录。
+            evidence: 完整原文、媒体及不可变分页服务。
+            instance_id: 本次装配中唯一的插件或宿主实例身份。
+            max_bytes: 此边界允许保留或接管的最大字节数。
+            max_entries: 一次目录扫描允许包含的最大条目数。 默认 500。
+            max_depth: 相对根目录允许遍历的最大深度。 默认 8。
+            skills_dir: 需要投影技能目录的相对目录名。 默认 ''。
+            seed_examples: 是否在初始化空笔记区域时创建内置示例。 默认 True。
+        """
         self._files = _Files(
             root, max_bytes=max_bytes, max_entries=max_entries, max_depth=max_depth
         )
@@ -671,7 +910,14 @@ class Notebook:
             pass
 
     async def prepare_request(self) -> JsonObject:
-        """每次逻辑请求前重新取得技能目录；正文和普通笔记不进入动态目录。"""
+        """每次逻辑请求前重新取得技能目录。
+
+        Returns:
+            业务对象，按实际结果提供 skills、skills_directory、incomplete、issues 字段。
+
+        Note:
+            正文和普通笔记不进入动态目录。
+        """
         try:
             scan = await self._io(lambda: self._files.scan(self._skills_dir))
         except NotebookError as error:
@@ -691,7 +937,17 @@ class Notebook:
         return payload
 
     async def tree(self, path: str = "") -> JsonObject:
-        """保留目录层级，不显示正文；缺口明确表示 truncated 与 issues。"""
+        """保留目录层级，不显示正文。
+
+        Args:
+            path: 根目录内的相对笔记路径，实际访问拒绝越界和链接逃逸。 默认 ''。
+
+        Returns:
+            业务对象，按实际结果提供 path、type、entries、truncated、issues 字段。
+
+        Note:
+            缺口明确表示 truncated 与 issues。
+        """
         scan = await self._io(lambda: self._files.scan(path))
         return {
             "path": "/".join(_parts(path)),
@@ -704,7 +960,17 @@ class Notebook:
     async def read(
         self, path: str, *, cursor: str | None = None, max_chars: int | None = None
     ) -> JsonObject:
-        """首次取得稳定全文并保存证据；续读不再访问文件或重新解析别名。"""
+        """首次取得稳定全文并保存证据。
+
+        Args:
+            path: 根目录内的相对笔记路径，实际访问拒绝越界和链接逃逸。
+            cursor: 宿主签发并保存的不透明续读游标，续读同一快照版本。 None 表示首次读取。
+            max_chars: 本页正文的字符上限；分页游标继续绑定原快照。 None
+                使用本实例配置的统一页长。
+
+        Note:
+            续读不再访问文件或重新解析别名。
+        """
         requested = "/".join(_parts(path))
         page_chars = self._evidence.page_chars if max_chars is None else max_chars
         if cursor is None:
@@ -774,19 +1040,46 @@ class Notebook:
     async def write(
         self, path: str, content: str, *, expected_version: str | None = None
     ) -> JsonObject:
-        """新建要求目标不存在，已有文件核正文哈希，结果直接报告新版本。"""
+        """新建要求目标不存在，已有文件核正文哈希，结果直接报告新版本。
+
+        Args:
+            path: 根目录内的相对笔记路径，实际访问拒绝越界和链接逃逸。
+            content: 本次明确写入的完整正文。
+            expected_version: 提交前观察到的版本，用于拒绝并发覆盖。 None 表示未提供先前版本，
+                创建与覆盖规则由具体提交入口核验。
+        """
         return await self._io(lambda: self._files.write(path, content, expected_version))
 
     async def mkdir(self, path: str) -> JsonObject:
-        """创建笔记分类目录，不能改变根目录或覆盖已有文件。"""
+        """创建笔记分类目录，不能改变根目录或覆盖已有文件。
+
+        Args:
+            path: 根目录内的相对笔记路径，实际访问拒绝越界和链接逃逸。
+        """
         return await self._io(lambda: self._files.mkdir(path))
 
     async def move(self, src: str, dest: str, *, expected_version: str | None = None) -> JsonObject:
-        """文件须核版本，目录不填正文版本；目标不存在才可移动。"""
+        """文件须核版本，目录不填正文版本。
+
+        Args:
+            src: 要移动的相对源路径。
+            dest: 目标相对路径；现有目标的覆盖仍受版本约束。
+            expected_version: 提交前观察到的版本，用于拒绝并发覆盖。 None 表示未提供先前版本，
+                创建与覆盖规则由具体提交入口核验。
+
+        Note:
+            目标不存在才可移动。
+        """
         return await self._io(lambda: self._files.move(src, dest, expected_version))
 
     async def delete(self, path: str, *, expected_version: str | None = None) -> JsonObject:
-        """只删除已核版本的文件或空目录，不能递归删除根和非空目录。"""
+        """只删除已核版本的文件或空目录，不能递归删除根和非空目录。
+
+        Args:
+            path: 根目录内的相对笔记路径，实际访问拒绝越界和链接逃逸。
+            expected_version: 提交前观察到的版本，用于拒绝并发覆盖。 None 表示未提供先前版本，
+                创建与覆盖规则由具体提交入口核验。
+        """
         return await self._io(lambda: self._files.delete(path, expected_version))
 
 
@@ -852,6 +1145,7 @@ def _declare(instance_id: str, settings: NotebookSettings, base_dir: Path) -> Pl
     def declaration[Parameters: BaseModel](
         name: str, parameters: type[Parameters], description: str, example: str, usage: str = ""
     ) -> CapabilityDeclaration[Parameters]:
+        """为当前插件创建包含参数模型与使用语义的能力声明。"""
         return CapabilityDeclaration(
             instance_id + ":notebook." + name,
             object_id,
@@ -902,6 +1196,7 @@ def _declare(instance_id: str, settings: NotebookSettings, base_dir: Path) -> Pl
     )
 
     async def build(ports: PluginPorts) -> PluginRuntime:
+        """借用本实例的有限端口，创建能力实现与插件资源所有者。"""
         evidence = ports.evidence
         if evidence is None:
             raise RuntimeError("Notebook 必须装配宿主原文端口。")
@@ -929,10 +1224,12 @@ def _declare(instance_id: str, settings: NotebookSettings, base_dir: Path) -> Pl
                 return CallOutcome("failed", {"code": error.code}, type(error).__name__, str(error))
 
         async def run_tree(parameters: _Tree, context: CallContext) -> CallOutcome:
+            """读取受限根目录内的笔记目录树。"""
             del context
             return await outcome(notebook.tree(parameters.path))
 
         async def run_read(parameters: _Read, context: CallContext) -> CallOutcome:
+            """读取笔记原文，并沿已保存快照分页。"""
             del context
             return await outcome(
                 notebook.read(
@@ -941,6 +1238,7 @@ def _declare(instance_id: str, settings: NotebookSettings, base_dir: Path) -> Pl
             )
 
         async def run_write(parameters: _Write, context: CallContext) -> CallOutcome:
+            """按调用方持有的版本写入笔记完整正文。"""
             del context
             return await outcome(
                 notebook.write(
@@ -951,10 +1249,12 @@ def _declare(instance_id: str, settings: NotebookSettings, base_dir: Path) -> Pl
             )
 
         async def run_mkdir(parameters: _Mkdir, context: CallContext) -> CallOutcome:
+            """在受限根目录内创建明确指定的笔记目录。"""
             del context
             return await outcome(notebook.mkdir(parameters.path))
 
         async def run_move(parameters: _Move, context: CallContext) -> CallOutcome:
+            """核对源文件版本后移动到明确的目标路径。"""
             del context
             return await outcome(
                 notebook.move(
@@ -963,6 +1263,7 @@ def _declare(instance_id: str, settings: NotebookSettings, base_dir: Path) -> Pl
             )
 
         async def run_delete(parameters: _Delete, context: CallContext) -> CallOutcome:
+            """核对版本后删除明确指定的笔记对象。"""
             del context
             return await outcome(
                 notebook.delete(parameters.path, expected_version=parameters.expected_version)

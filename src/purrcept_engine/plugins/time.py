@@ -52,7 +52,14 @@ class ClockSettings(BaseModel):
     @field_validator("timezone")
     @classmethod
     def timezone_known(cls, value: str) -> str:
-        """纯配置边界核验已安装IANA数据，不静默采用机器默认时区。"""
+        """纯配置边界核验已安装IANA数据，不静默采用机器默认时区。
+
+        Args:
+            value: 此校验边界接收的原始值，校验失败时保留明确错误。
+
+        Raises:
+            ValueError: 参数、材料或当前状态不满足此入口的约束。
+        """
         try:
             resolve_timezone(value)
         except TimeError as error:
@@ -82,7 +89,11 @@ class _SetAlarm(_Parameters):
     @field_validator("message", mode="before")
     @classmethod
     def trimmed_message(cls, value: object) -> object:
-        """沿用先trim后限制500字符的真实边界，不把多余外侧空白计为正文。"""
+        """沿用先trim后限制500字符的真实边界，不把多余外侧空白计为正文。
+
+        Args:
+            value: 此校验边界接收的原始值，校验失败时保留明确错误。
+        """
         return value.strip() if isinstance(value, str) else value
 
 
@@ -110,7 +121,14 @@ class ClockRuntime:
         *,
         now: Callable[[], datetime] | None = None,
     ) -> None:
-        """借用权威端口，不在构造时创建任务或接管输入。"""
+        """借用权威端口，不在构造时创建任务或接管输入。
+
+        Args:
+            clock_id: 已装配时钟对象的身份。
+            settings: 当前组件已校验的配置或纯声明。
+            port: 同库的时钟与休息业务端口。
+            now: 提供带时区墙钟时刻的显式时钟函数。 None 使用当前带时区的墙钟时刻。
+        """
         self.clock_id, self.settings, self.port = clock_id, settings, port
         self.now = now or (lambda: datetime.now(UTC))
         self._wakeup = asyncio.Event()
@@ -143,7 +161,11 @@ class ClockRuntime:
             raise HostStateError("时钟资源已关闭。")
 
     async def start(self) -> None:
-        """完整宿主装配后恢复定义并启动唯一timer，重复start不再次恢复每日。"""
+        """完整宿主装配后恢复定义并启动唯一timer，重复start不再次恢复每日。
+
+        Raises:
+            HostStateError: 时钟已停止接入。
+        """
         self._check()
         if self._stopping:
             raise HostStateError("时钟已停止接入。")
@@ -163,7 +185,11 @@ class ClockRuntime:
         return self._cached
 
     async def read(self) -> JsonObject:
-        """返回当前配置时区完整ISO时刻及实际待响安排。"""
+        """返回当前配置时区完整ISO时刻及实际待响安排。
+
+        Returns:
+            业务对象，按实际结果提供 iso、timezone、alarms 字段。
+        """
         self._check()
         pending = await self._refresh()
         return {
@@ -175,7 +201,17 @@ class ClockRuntime:
     async def set_alarm(
         self, at: str, message: str, repeat: Literal["once", "daily"], call_id: str
     ) -> JsonObject:
-        """保存未来安排后才叫醒timer；业务拒绝不吞掉权威错误。"""
+        """保存未来安排后才叫醒timer。
+
+        Args:
+            at: 明确的 ISO 时刻或支持的墙钟时间文本。
+            message: 对调用方公开的原因或错误说明。
+            repeat: 闹铃触发方式，once 为单次，daily 为每日同一墙钟时刻。
+            call_id: 实际能力调用的唯一身份，用于保存启动门槛及结果版本。
+
+        Note:
+            业务拒绝不吞掉权威错误。
+        """
         self._check()
         now = self.now()
         when = parse_alarm_at(at, timezone=self.settings.timezone, now=now)
@@ -194,7 +230,14 @@ class ClockRuntime:
         return committed.to_json()
 
     async def cancel_alarm(self, alarm_id: str) -> JsonObject:
-        """明确取消当前安排，唤醒timer重新读权威表。"""
+        """明确取消当前安排，唤醒timer重新读权威表。
+
+        Args:
+            alarm_id: 时钟下闹铃定义的身份。
+
+        Returns:
+            业务对象，按实际结果提供 cancelled 字段。
+        """
         self._check()
         committed = await self._commit(self.port.cancel_alarm(self.clock_id, alarm_id.strip()))
         self._wakeup.set()
@@ -245,7 +288,11 @@ class ClockRuntime:
                 await self._wait(_MAX_SLEEP_SECONDS)
 
     def snapshot(self) -> JsonObject:
-        """返回带观察时刻的展示快照，不声称缓存是此刻全部正式状态。"""
+        """返回带观察时刻的展示快照，不声称缓存是此刻全部正式状态。
+
+        Returns:
+            业务对象，按实际结果提供 timezone、state、observed_at、alarms、failure 字段。
+        """
         return {
             "timezone": self.settings.timezone,
             "state": "stopped" if self._stopping else "running",
@@ -255,7 +302,11 @@ class ClockRuntime:
         }
 
     async def prepare_request(self) -> JsonObject:
-        """每次真实请求异步刷新，当前时间/闹铃放动态材料而非固定目录。"""
+        """每次真实请求异步刷新，当前时间/闹铃放动态材料而非固定目录。
+
+        Returns:
+            业务对象，按实际结果提供 state、failure 字段。
+        """
         clock = await self.read()
         # read 已包含同一次刷新的完整闹铃，不再复制 snapshot 中的第二份安排。
         return {**clock, "state": self.snapshot()["state"], "failure": self._failure}
@@ -273,7 +324,11 @@ class ClockRuntime:
             await self._timer
 
     async def close(self) -> None:
-        """execution结束借用后收回资源；不关闭共享Store或抹掉未响安排。"""
+        """execution结束借用后收回资源。
+
+        Note:
+            不关闭共享Store或抹掉未响安排。
+        """
         self._closed = True
         if self._close_task is None:
             self._close_task = asyncio.create_task(
@@ -337,16 +392,19 @@ def _declare(instance_id: str, settings: ClockSettings, base_dir: Path) -> Plugi
     )
 
     async def build(ports: PluginPorts) -> PluginRuntime:
+        """借用本实例的有限端口，创建能力实现与插件资源所有者。"""
         port = ports.time
         if port is None:
             raise ConfigError("clock插件需要宿主时间业务端口。")
         clock = ClockRuntime(instance_id, settings, port)
 
         async def run_read(parameters: _Empty, context: CallContext) -> CallOutcome:
+            """读取笔记原文，并沿已保存快照分页。"""
             del parameters, context
             return CallOutcome("confirmed", await clock.read())
 
         async def run_set(parameters: _SetAlarm, context: CallContext) -> CallOutcome:
+            """校验目标时刻并保存带时区的闹铃定义。"""
             try:
                 result = await clock.set_alarm(
                     parameters.at, parameters.message, parameters.repeat, context.call_id
@@ -356,6 +414,7 @@ def _declare(instance_id: str, settings: ClockSettings, base_dir: Path) -> Plugi
             return CallOutcome("confirmed", result)
 
         async def run_cancel(parameters: _CancelAlarm, context: CallContext) -> CallOutcome:
+            """取消当前尚未触发的明确闹铃定义。"""
             del context
             try:
                 result = await clock.cancel_alarm(parameters.alarm_id)

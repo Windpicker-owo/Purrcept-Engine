@@ -178,6 +178,7 @@ def _activity(row: Sequence[object]) -> ActivityRecord:
 
 
 def _command(row: Sequence[object]) -> ActivityCommand:
+    """从同一权威行恢复命令字段，损坏记录必须明确失败。"""
     kind: CommandKind | None = next((kind for kind in _COMMANDS if row[2] == kind), None)
     cause: CommandCause | None = next((cause for cause in _CAUSES if row[7] == cause), None)
     status: CommandStatus | None = next((status for status in _STATUSES if row[11] == status), None)
@@ -224,7 +225,15 @@ def _feedback(row: Sequence[object]) -> ActivityFeedback:
 
 
 def get_activity(connection: sqlite3.Connection, activity_id: str) -> ActivityRecord | None:
-    """查询当前生命周期与累计快照，不创建或恢复驱动。"""
+    """查询当前生命周期与累计快照，不创建或恢复驱动。
+
+    Args:
+        connection: 仅在 Store 专属线程当前短事务中借用的连接，不在回调中等待设备或模型。
+        activity_id: 已创建活动的稳定身份。
+
+    Returns:
+        活动的控制、预算、运行代次与工作快照。 未取得对应记录或素材时返回 None；读取故障仍抛出。
+    """
     row: tuple[object, ...] | None = connection.execute(
         f"SELECT {_ACTIVITY_COLUMNS} FROM activities WHERE activity_id = ?",
         (activity_id,),
@@ -233,7 +242,17 @@ def get_activity(connection: sqlite3.Connection, activity_id: str) -> ActivityRe
 
 
 def activity_records(connection: sqlite3.Connection) -> tuple[ActivityRecord, ...]:
-    """只读取尚未结束的委托；活跃上限同时约束服务启动时的内存集合。"""
+    """只读取尚未结束的委托。
+
+    Args:
+        connection: 仅在 Store 专属线程当前短事务中借用的连接，不在回调中等待设备或模型。
+
+    Returns:
+        条目集合：活动的控制、预算、运行代次与工作快照。
+
+    Note:
+        活跃上限同时约束服务启动时的内存集合。
+    """
     rows: list[tuple[object, ...]] = connection.execute(
         f"SELECT {_ACTIVITY_COLUMNS} FROM activities WHERE state NOT IN ('ended','completed') "
         "ORDER BY created_at, activity_id",
@@ -245,7 +264,16 @@ def get_activity_command(
     connection: sqlite3.Connection,
     command_id: str,
 ) -> ActivityCommand | None:
-    """读取同一命令的接管、受理与真实确认，不把查询转换为重投。"""
+    """读取同一命令的接管、受理与真实确认，不把查询转换为重投。
+
+    Args:
+        connection: 仅在 Store 专属线程当前短事务中借用的连接，不在回调中等待设备或模型。
+        command_id: 控制命令的稳定身份；重复提交须沿用原身份和内容。
+
+    Returns:
+        命令接管与实际确认记录；受理成功不等于驱动已完成。 未取得对应记录或素材时返回 None；
+        读取故障仍抛出。
+    """
     row: tuple[object, ...] | None = connection.execute(
         f"SELECT {_COMMAND_COLUMNS} FROM activity_commands WHERE command_id = ?",
         (command_id,),
@@ -256,7 +284,15 @@ def get_activity_command(
 def get_activity_feedback(
     connection: sqlite3.Connection, feedback_id: str
 ) -> ActivityFeedback | None:
-    """查询已保存反馈的原身份，重投不会生成新时间或新应用结论。"""
+    """查询已保存反馈的原身份，重投不会生成新时间或新应用结论。
+
+    Args:
+        connection: 仅在 Store 专属线程当前短事务中借用的连接，不在回调中等待设备或模型。
+        feedback_id: 驱动反馈的稳定身份，用于去重和查询实际确认。
+
+    Returns:
+        已经按身份去重并保存的真实驱动反馈。 未取得对应记录或素材时返回 None；读取故障仍抛出。
+    """
     row: tuple[object, ...] | None = connection.execute(
         f"SELECT {_FEEDBACK_COLUMNS} FROM activity_feedback WHERE feedback_id = ?",
         (feedback_id,),
@@ -291,9 +327,22 @@ def commit_activity(
 ) -> None:
     """原子比较并提交活动、控制结论与原始反馈，不在事务中等待驱动。
 
-    首次创建 expected_version 为 None，后续提交必须精确递增一个版本。累计
-    只增不减；命令的接管身份不可改写。关键反馈的前台/反思待办与原文同事务。
-    Store 应将此函数放入控制提交队列，使暂停不受普通 Provider 等待者阻塞。
+    Args:
+        connection: 仅在 Store 专属线程当前短事务中借用的连接，不在回调中等待设备或模型。
+        record: 待查询、核对或提交的当前活动快照。
+        expected_version: 提交前观察到的版本，用于拒绝并发覆盖。
+        command: 与状态变化同事务保存的控制命令；None 表示本次没有命令。 None
+            表示本次没有伴随命令。
+        feedback: 与活动状态同事务保存的驱动反馈；None 表示没有新反馈。
+
+    Raises:
+        StorageError: 权威记录缺失、版本不一致、载荷无效或提交条件不成立。
+        ValueError: 活动命令与提交活动身份不符；活动反馈与提交活动身份不符。
+
+    Note:
+        首次创建 expected_version 为 None，后续提交必须精确递增一个版本。累计
+        只增不减；命令的接管身份不可改写。关键反馈的前台/反思待办与原文同事务。
+        Store 应将此函数放入控制提交队列，使暂停不受普通 Provider 等待者阻塞。
     """
     validate_json(record.work_json)
     validate_json(record.progress_json)
@@ -416,8 +465,16 @@ def commit_activity(
 def recover_activities(connection: sqlite3.Connection, *, now: float) -> tuple[ActivityRecord, ...]:
     """保留最后累计与未确认命令，将离线活动标为待核对，不扣离线时长。
 
-    运行或控制中断变为 interrupted；已暂停/耗尽状态保留但同样要求核对。
-    未落盘末段仅标缺口，不按离线时间或检查点间隔推算。这里从不重发命令。
+    Args:
+        connection: 仅在 Store 专属线程当前短事务中借用的连接，不在回调中等待设备或模型。
+        now: 本次规则计算采用的时刻，便于同一操作保持一致。
+
+    Returns:
+        条目集合：活动的控制、预算、运行代次与工作快照。
+
+    Note:
+        运行或控制中断变为 interrupted；已暂停/耗尽状态保留但同样要求核对。
+        未落盘末段仅标缺口，不按离线时间或检查点间隔推算。这里从不重发命令。
     """
     with connection:
         for current in activity_records(connection):
@@ -460,7 +517,19 @@ def pending_activity_feedback(
     *,
     limit: int = 8,
 ) -> tuple[ActivityFeedback, ...]:
-    """分别读取消费者的可靠待办，查询不确认已处理。"""
+    """分别读取消费者的可靠待办，查询不确认已处理。
+
+    Args:
+        connection: 仅在 Store 专属线程当前短事务中借用的连接，不在回调中等待设备或模型。
+        consumer: 本次可靠反馈交接的消费者，前台与反思分别维护游标。
+        limit: 本次读取或更新的最大条目数。 默认 8。
+
+    Returns:
+        条目集合：已经按身份去重并保存的真实驱动反馈。
+
+    Raises:
+        ValueError: 活动反馈消费者或读取额度无效。
+    """
     if (
         consumer not in ("foreground", "reflection")
         or isinstance(limit, bool)
@@ -482,7 +551,19 @@ def acknowledge_activity_feedback(
     feedback_id: str,
     consumer: Literal["foreground", "reflection"],
 ) -> None:
-    """仅确认指定消费者交接；另一消费者和原始反馈保留。"""
+    """仅确认指定消费者交接。
+
+    Args:
+        connection: 仅在 Store 专属线程当前短事务中借用的连接，不在回调中等待设备或模型。
+        feedback_id: 驱动反馈的稳定身份，用于去重和查询实际确认。
+        consumer: 本次可靠反馈交接的消费者，前台与反思分别维护游标。
+
+    Raises:
+        ValueError: 活动反馈消费者无效。
+
+    Note:
+        另一消费者和原始反馈保留。
+    """
     if consumer not in ("foreground", "reflection"):
         raise ValueError("活动反馈消费者无效。")
     with connection:

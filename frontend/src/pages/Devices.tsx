@@ -103,6 +103,13 @@ function CachedPreview({ device, online, refreshAt }: { device: Device; online: 
   </section>;
 }
 
+/**
+ * 展示已装配设备、预览与明确允许的快捷控制。
+ *
+ * client/state 共用页面观察；selected 与 go 定位设备。按钮点击才发起业务。
+ *
+ * @returns 仅呈现当前输入事实的 React 元素。
+ */
 export function Devices({ client, state, selected, go }: { client: PanelClient; state: PanelState; selected: string | null; go: (route: Route) => void }): ReactElement {
   const devices = state.snapshot?.devices ?? [];
   const liveId = state.online ? devices.find((device) => isLive(deviceMark(device).state))?.instance_id : undefined;

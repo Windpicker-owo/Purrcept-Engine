@@ -25,7 +25,14 @@ class _Function(Protocol):
     restype: object
 
     def __call__(self, *arguments: object) -> object:
-        """传入C ABI对象并交回待核验原生值。"""
+        """按已绑定的 C ABI 执行一次原生文件操作。
+
+        Args:
+            arguments: 按已装配参数模型校验的能力关键字参数。
+
+        Note:
+            传入C ABI对象并交回待核验原生值。
+        """
         ...
 
 
@@ -45,7 +52,12 @@ class OVRLipSync:
     """仅本进程创建一次的OVR上下文，Original provider沿旧C ABI。"""
 
     def __init__(self, library_path: Path, sample_rate: int) -> None:
-        """初始化失败不泄漏进程级SDK状态，DLL必须是明确存在的路径。"""
+        """初始化失败不泄漏进程级SDK状态，DLL必须是明确存在的路径。
+
+        Args:
+            library_path: 分析子进程中允许加载的明确动态库路径。
+            sample_rate: PCM 的明确采样率（Hz）。
+        """
         library = ct.CDLL(str(library_path.resolve(strict=True)))
         self._library = library
         self._rate, self._context = sample_rate, ct.c_uint()
@@ -90,7 +102,18 @@ class OVRLipSync:
         _check(self._reset(self._context))
 
     def analyze(self, pcm: bytes, sample: int) -> JsonObject:
-        """按SDK frameDelay毫秒修正样本位置，权重限幅沿固定十五项。"""
+        """按SDK frameDelay毫秒修正样本位置，权重限幅沿固定十五项。
+
+        Args:
+            pcm: 已解码的 PCM 字节或按播放顺序产生的字节流。
+            sample: 当前输入的原始采样值。
+
+        Returns:
+            业务对象，按实际结果提供 sample、weights 字段。
+
+        Raises:
+            ValueError: OVR采样块无效。
+        """
         if len(pcm) != self._rate // 50 * 2 or sample < 0:
             raise ValueError("OVR采样块无效。")
         audio = ct.create_string_buffer(pcm)
@@ -127,7 +150,14 @@ class OVRLipSync:
 
 
 def main() -> None:
-    """只消费stdin有限帧；原生崩溃由宿主进程EOF识别为视觉故障。"""
+    """只消费stdin有限帧。
+
+    Raises:
+        ValueError: 参数值或组合不满足本入口的明确约束，错误正文指出具体字段。
+
+    Note:
+        原生崩溃由宿主进程EOF识别为视觉故障。
+    """
     parser = argparse.ArgumentParser()
     parser.add_argument("--library", required=True)
     parser.add_argument("--rate", type=int, required=True)

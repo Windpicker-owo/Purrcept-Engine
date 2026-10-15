@@ -34,8 +34,17 @@ SCHEMA = (
 class DiagnosticCleanup:
     """一次成功清理的实际范围；has_more 表示仍有超过时间边界的诊断。
 
-    expired_attempts 包含原本为空的诊断，removed_events/removed_bytes 只计被
-    删除的正文。宿主可在下次维护继续；返回值不授予无限循环或额外连接。
+    Attributes:
+        expired_attempts: 本次实际确认诊断过期的尝试数量。
+        removed_events: 本次实际删除的流诊断事件数量。
+        removed_bytes: 本次实际删除的诊断字节数。
+        has_more: 是否仍有满足清理条件的内容，需要后续有界清理。
+
+    Note:
+        实例字段在构造后不可重新赋值；嵌套值的冻结范围由字段所属契约决定。
+
+        expired_attempts 包含原本为空的诊断，removed_events/removed_bytes 只计被
+        删除的正文。宿主可在下次维护继续；返回值不授予无限循环或额外连接。
     """
 
     expired_attempts: int
@@ -47,8 +56,15 @@ class DiagnosticCleanup:
 def diagnostic_events_digest(events_json: str) -> str:
     """核验诊断数组并摘要原 UTF-8 文本，供过期后的重复提交核对。
 
-    不重新排列或重编码 JSON。摘要身份对应 finish_attempt 实际交接的文本，
-    即使两份材料解析为相同值，不同原文本仍不能冒充原提交。
+    Args:
+        events_json: 本次模型流诊断的 JSON 编码，独立于完整请求和响应。
+
+    Raises:
+        StorageError: 模型流诊断 JSON 损坏；模型流诊断必须是 JSON 数组。
+
+    Note:
+        不重新排列或重编码 JSON。摘要身份对应 finish_attempt 实际交接的文本，
+        即使两份材料解析为相同值，不同原文本仍不能冒充原提交。
     """
     try:
         encoded = events_json.encode("utf-8")
@@ -69,10 +85,24 @@ def expire_diagnostics(
 ) -> DiagnosticCleanup:
     """在同一事务清除至多 limit 份早于 before 的诊断，保留独立过期标记。
 
-    调用方必须串行借用 Store 所有的空闲连接；本函数拥有本次事务，不可嵌入
-    另一未结束事务。before/expired_at 是 Unix 时间，等于边界的诊断仍保留。
-    原覆盖计数、摘要、尝试结果与媒体引用不修改。失败回滚并原样传播，不能
-    将清理失败当作已经清理；宿主可记录维护故障而不改变业务结果。
+    Args:
+        connection: 仅在 Store 专属线程当前短事务中借用的连接，不在回调中等待设备或模型。
+        before: 本次保留规则采用的 Unix 时间上界。
+        expired_at: 此前已确认的诊断失效时刻，用于保留过期查询标记。
+        limit: 本次读取或更新的最大条目数。 默认 128。
+
+    Returns:
+        本次实际删除的诊断范围与是否仍有待清理内容。
+
+    Raises:
+        ValueError: 诊断清理需要有限且有序的时间边界；诊断清理批量必须是正整数。
+        StorageError: 模型流诊断记录损坏。
+
+    Note:
+        调用方必须串行借用 Store 所有的空闲连接；本函数拥有本次事务，不可嵌入
+        另一未结束事务。before/expired_at 是 Unix 时间，等于边界的诊断仍保留。
+        原覆盖计数、摘要、尝试结果与媒体引用不修改。失败回滚并原样传播，不能
+        将清理失败当作已经清理；宿主可记录维护故障而不改变业务结果。
     """
     if (
         isinstance(before, bool)

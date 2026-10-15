@@ -36,35 +36,70 @@ class PanelHost(Protocol):
     """服务借用的有限宿主端口；不授予任意行动、数据库或模型调用。"""
 
     async def query_panel(self) -> JsonObject:
-        """读取真实运行状态；请求不打开设备。"""
+        """读取真实运行状态。
+
+        Note:
+            请求不打开设备。
+        """
         ...
 
     async def submit_control(self, request: ControlRequest) -> ControlRecord:
-        """持久接管明确快捷操作，观察取消不撤销已受理工作。"""
+        """持久接管明确快捷操作，观察取消不撤销已受理工作。
+
+        Args:
+            request: 包含稳定请求身份、目标和操作参数的显式控制。
+
+        Returns:
+            稳定请求身份的受理记录与当前实际业务关联。
+        """
         ...
 
     async def query_control(self, request_id: str) -> JsonObject | None:
-        """读取接管及当前真实回执，查询不会重发控制。"""
+        """读取接管及当前真实回执，查询不会重发控制。
+
+        Args:
+            request_id: 逻辑请求的稳定身份，用于查询或关联同一次受理。
+        """
         ...
 
     def query_preview(self, target: str) -> PreviewFrame | None:
-        """只读当前缓存像素，缺失不额外采集。"""
+        """只读当前缓存像素，缺失不额外采集。
+
+        Args:
+            target: 本次操作明确指定的业务目标身份。
+
+        Returns:
+            当前已经取得的完整预览画面，不触发额外采集。 未取得对应记录或素材时返回 None；
+            读取故障仍抛出。
+        """
         ...
 
 
 def create_app(host: PanelHost, *, port: int, token: str) -> ASGIApp:
-    """构造有限路由与固定来源边界，不监听或启动宿主。"""
+    """构造有限路由与固定来源边界，不监听或启动宿主。
+
+    Args:
+        host: 当前应用实例的宿主入口。
+        port: 已绑定的本机 HTTP 端口。
+        token: 当前本机控制实例的随机 ASCII 凭据。
+
+    Returns:
+        使用同一已装配宿主和本机请求边界的 ASGI 应用。
+    """
 
     async def session(request: Request) -> Response:
+        """返回本机面板当前实例与控制凭据。"""
         del request
         state = await host.query_panel()
         return _json({"token": token, "instance_id": state["instance_id"]})
 
     async def snapshot(request: Request) -> Response:
+        """查询当前已提交的面板状态，不启动模型或设备。"""
         del request
         return _json(await host.query_panel())
 
     async def submit(request: Request) -> Response:
+        """校验有界 HTTP 控制请求，交给同一宿主接管。"""
         payload = bytearray()
         async for chunk in request.stream():
             if len(payload) + len(chunk) > 16 * 1024:
@@ -80,10 +115,12 @@ def create_app(host: PanelHost, *, port: int, token: str) -> ASGIApp:
         return _json(record.projection(), 202)
 
     async def result(request: Request) -> Response:
+        """按原请求身份查询当前真实控制结果。"""
         record = await host.query_control(request.path_params["request_id"])
         return _json({"error": "control_missing"}, 404) if record is None else _json(record)
 
     async def preview(request: Request) -> Response:
+        """读取已有设备画面，缺失时返回明确的不可用响应。"""
         frame = host.query_preview(request.path_params["target"])
         if frame is None:
             return Response(status_code=204, headers={"Cache-Control": "no-store"})
@@ -98,6 +135,7 @@ def create_app(host: PanelHost, *, port: int, token: str) -> ASGIApp:
         return Response(frame.data, media_type=frame.media_type, headers=headers)
 
     async def static(request: Request) -> Response:
+        """从固定白名单返回随包分发的面板静态资源。"""
         name = request.path_params.get("name", "index.html")
         # 白名单既约束打包入口，也拒绝路径穿越；不把磁盘配置/用户数据映射HTTP。
         types = {
@@ -123,6 +161,7 @@ def create_app(host: PanelHost, *, port: int, token: str) -> ASGIApp:
         )
 
     async def business_error(request: Request, error: Exception) -> Response:
+        """将已分类业务拒绝投影为明确的本机 HTTP 响应。"""
         del request
         if isinstance(error, ControlError):
             return _json({"error": error.code, "message": str(error)}, 409)
@@ -159,19 +198,32 @@ class _LocalServer(uvicorn.Server):
     """只借用HTTP生命周期；CLI保留信号与二次Ctrl+C的进程所有权。"""
 
     def __init__(self, config: uvicorn.Config) -> None:
-        """在当前循环保存监听就绪信号，不用定时轮询推断启动完成。"""
+        """在当前循环保存监听就绪信号，不用定时轮询推断启动完成。
+
+        Args:
+            config: 已校验的宿主配置声明，不在构造时连接外部服务。
+        """
         super().__init__(config)
         self.ready = asyncio.Event()
 
     async def startup(self, sockets: list[socket.socket] | None = None) -> None:
-        """在原监听器真实启动之后发布就绪，启动失败仍由serve任务传出。"""
+        """在原监听器真实启动之后发布就绪，启动失败仍由serve任务传出。
+
+        Args:
+            sockets: 由应用入口绑定并移交给服务器的套接字。 None
+                由服务器按显式配置绑定监听端口。
+        """
         await super().startup(sockets=sockets)
         if self.started:
             self.ready.set()
 
     @contextmanager
     def capture_signals(self) -> Generator[None, None, None]:
-        """冻结Uvicorn0.39的公开信号钩子不安装或回放调用者信号处理器。"""
+        """冻结Uvicorn0.39的公开信号钩子不安装或回放调用者信号处理器。
+
+        Yields:
+            原生调用期间持有的所有权范围，退出后释放本次借用。
+        """
         yield
 
 
@@ -184,7 +236,12 @@ class WebServer:
     """
 
     def __init__(self, host: PanelHost, *, port: int) -> None:
-        """保存有限宿主端口，不绑定网络或修改信号处理器。"""
+        """保存有限宿主端口，不绑定网络或修改信号处理器。
+
+        Args:
+            host: 当前应用实例的宿主入口。
+            port: 已绑定的本机 HTTP 端口。
+        """
         self.host, self.port = host, port
         self._socket: socket.socket | None = None
         self._server: _LocalServer | None = None
@@ -193,13 +250,24 @@ class WebServer:
 
     @property
     def url(self) -> str:
-        """返回实际已启动回环地址；未启动不能宣称URL可用。"""
+        """返回实际已启动回环地址。
+
+        Raises:
+            HostStateError: Web服务尚未启动。
+
+        Note:
+            未启动不能宣称URL可用。
+        """
         if self._socket is None or self._server is None or not self._server.started:
             raise HostStateError("Web服务尚未启动。")
         return f"http://127.0.0.1:{self.port}"
 
     async def start(self) -> None:
-        """只启动一次本机服务，不启动新的Host或设备。"""
+        """只启动一次本机服务，不启动新的Host或设备。
+
+        Raises:
+            HostStateError: Web服务不能重复启动；Web服务未进入监听状态。
+        """
         if self._task is not None or self._close_task is not None:
             raise HostStateError("Web服务不能重复启动。")
         listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)

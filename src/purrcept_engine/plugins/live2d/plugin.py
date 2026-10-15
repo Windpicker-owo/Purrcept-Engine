@@ -50,7 +50,14 @@ class Live2DSettings(BaseModel):
 
     @model_validator(mode="after")
     def local_endpoint(self) -> Live2DSettings:
-        """VTS只使用本机显式连接，不把配置凭据或远程地址混入输出。"""
+        """VTS只使用本机显式连接，不把配置凭据或远程地址混入输出。
+
+        Returns:
+            已校验并固定资源路径的身体配置。
+
+        Raises:
+            ValueError: VTS必须使用不带凭据/查询串的本机ws端点。
+        """
         url = urlsplit(self.vts_url)
         if (
             url.scheme != "ws"
@@ -74,9 +81,18 @@ def make_factory(
     *,
     required_modules: tuple[str, ...] = (),
 ) -> PluginFactory:
-    """将生产或离线驱动接入同一纯声明与 BodyPort 生命周期。"""
+    """将生产或离线驱动接入同一纯声明与 BodyPort 生命周期。
+
+    Args:
+        driver_factory: 为当前插件实例创建独立设备驱动的工厂。
+        required_modules: 显式启用插件时必须安装的可选模块名，不自动安装。 默认不附加此类条目。
+
+    Returns:
+        接收实例身份、原始配置及基准目录的纯配置工厂。
+    """
 
     def declare(instance_id: str, settings: Live2DSettings, base_dir: Path) -> PluginBlueprint:
+        """解析已校验配置，生成对象、能力和资源构造声明。"""
         object_id = instance_id + ":live2d"
         apply = CapabilityDeclaration(
             instance_id + ":live2d.apply",
@@ -95,6 +111,7 @@ def make_factory(
         )
 
         async def build(ports: PluginPorts) -> PluginRuntime:
+            """借用本实例的有限端口，创建能力实现与插件资源所有者。"""
             del ports
             import asyncio
 
@@ -114,6 +131,7 @@ def make_factory(
                 raise ValueError("配置的OVRLipSync库路径不存在。")
 
             def analyzer() -> AnalyzerProcess:
+                """按明确本地库创建独立音素分析进程。"""
                 if library is None:
                     raise RuntimeError("未配置OVR时不能创建分析器。")
                 return AnalyzerProcess(library, settings.sample_rate)
@@ -130,9 +148,11 @@ def make_factory(
             )
 
             async def run_apply(parameters: _Apply, context: CallContext) -> CallOutcome:
+                """将有期限的语义姿态交给当前身体所有者采用。"""
                 return await runtime.apply(parameters.intent, context)
 
             def revision() -> str:
+                """返回当前已取得业务状态的版本标记，供面板观察变化。"""
                 return str(runtime.snapshot()["generation"])
 
             return PluginRuntime(

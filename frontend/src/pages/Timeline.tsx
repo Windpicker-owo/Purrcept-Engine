@@ -12,7 +12,13 @@ import { FILTERS, timelineItems } from "../model/timeline";
 import type { TimelineFilter } from "../model/timeline";
 import { EmptyNote, PageHeading, relative, StateMark, time } from "../ui/common";
 
-/** 在当前快照与本页控制中筛选记录；搜索不会查询外部历史或改变选中回执。 */
+/**
+ * 按筛选条件展示当前行动与本页控制时间线。
+ *
+ * state 提供原事实，selected 定位详情，go 更新深链；筛选不重新执行操作。
+ *
+ * @returns 仅呈现当前输入事实的 React 元素。
+ */
 export function Timeline({ state, selected, go }: { state: PanelState; selected: string | null; go: (route: Route) => void }): ReactElement {
   const [filter, setFilter] = useState<TimelineFilter>("all");
   const [query, setQuery] = useState("");

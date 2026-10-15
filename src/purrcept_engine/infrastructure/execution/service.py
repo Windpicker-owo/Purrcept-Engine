@@ -62,7 +62,22 @@ class ExecutionService:
         *,
         scratch_root: Path,
     ) -> None:
-        """冻结实现对应关系；临时目录必须位于显式给出的绝对根路径下。"""
+        """冻结实现对应关系。
+
+        Args:
+            catalog: 全部已启用插件共同生成的冻结目录。
+            implementations: 与冻结目录逐项对应的宿主能力实现。
+            store: 应用借出的领域存储端口，实际连接和关闭归资源所有者。
+            settings: 当前组件已校验的配置或纯声明。
+            scratch_root: 每次隔离行动建立临时目录时使用的根路径。
+
+        Raises:
+            ValueError: 行动临时根目录必须是绝对路径。
+            ConfigError: 目录能力与实际实现缺失或多余；能力实现与冻结声明不一致。
+
+        Note:
+            临时目录必须位于显式给出的绝对根路径下。
+        """
         if not scratch_root.is_absolute():
             raise ValueError("行动临时根目录必须是绝对路径。")
         self.implementations = bind_implementations(implementations)
@@ -118,9 +133,28 @@ class ExecutionService:
     ) -> ActionRecord:
         """接管完整源码后等待整体结果，等待取消不撤销该行动的所有权。
 
-        can_start 只在实际 execute 帧之前核验生成资格。派发之后资格变化
-        不终止已开始的独立行动；服务关闭与自身资源额度仍可以停止 Worker。
-        presented_call_ids 冻结接管时的真实回执交付资格，脚本不能扩大此集合。
+        Args:
+            source: 待执行的受限 Python 源码。
+            input_id: 正式接管返回的输入身份，用于关联原文与后续处理。 None
+                表示无单一输入因果关联。
+            can_start: 实际派发前重新检查的资格回调，等待后仍须复核。 None
+                表示不附加调用方资格条件，宿主固定门槛仍生效。
+            presented_call_ids: 主体交付门槛确认已完整呈现的调用身份；空集合不授予恢复资格。
+
+        Returns:
+            已保存的行动记录，包含逐次真实调用及结果历史；unknown 不证明效果未发生。
+
+        Raises:
+            ExecutionClosed: 执行服务已关闭接管入口。
+            ExecutionBusy: 行动 Worker 名额已满。
+            TypeError: 行动源码必须是字符串。
+            ExecutionLimitError: 行动源码不是有效 UTF-8；行动源码超过字节额度。
+            ValueError: 输入关联必须是非空身份；模型回执交付资格必须是不可变的非空调用身份集合。
+
+        Note:
+            can_start 只在实际 execute 帧之前核验生成资格。派发之后资格变化
+            不终止已开始的独立行动；服务关闭与自身资源额度仍可以停止 Worker。
+            presented_call_ids 冻结接管时的真实回执交付资格，脚本不能扩大此集合。
         """
         if self.closed:
             raise ExecutionClosed("执行服务已关闭接管入口。")
@@ -173,11 +207,37 @@ class ExecutionService:
     ) -> ActionRecord:
         """直接接管单能力意图，共用派发和账本，不启动 Worker 或宿主代码。
 
-        参数在接管前冻结为标准 JSON，业务 schema 仍仅在 Provider 边界解析。
-        所有等待都计入固定期限；超时首版未知结束观察，迟到确认继续原回执链。
-        调用方取消等待不改变本服务对已接管意图及实际 Provider 的所有权。
-        before_start 使用当前权威资格收紧期限；on_admitted 在首次等待前交出
-        实际身份，使观察失败的所有者仍能等待真正归还，而不包装原型故障。
+        Args:
+            path: 冻结目录中的完整能力调用路径，例如 me.console.output。
+            arguments: 按已装配参数模型校验的能力关键字参数。
+            input_id: 正式接管返回的输入身份，用于关联原文与后续处理。 None
+                表示无单一输入因果关联。
+            can_start: 实际派发前重新检查的资格回调，等待后仍须复核。 None
+                表示不附加调用方资格条件，宿主固定门槛仍生效。
+            timeout_seconds: 本次操作的等待上限（秒），不得扩大所属行动或活动期限。 None
+                使用所属能力或行动的既定期限。
+            before_start: Provider 启动前的异步核验；返回 None 拒绝，正有限秒数只收紧期限。
+                None 表示没有额外的异步资格核验。
+            on_admitted: 首次等待前接收执行器分配身份的同步回调，不授予重投资格。 None
+                表示不向调用方另行通知接管身份。
+
+        Returns:
+            已保存的行动记录，包含逐次真实调用及结果历史；unknown 不证明效果未发生。
+
+        Raises:
+            ExecutionClosed: 执行服务已关闭接管入口。
+            TypeError: 能力路径必须是字符串；能力参数必须是 JSON 对象。
+            ExecutionLimitError: 能力参数超过字节额度。
+            ValueError: 输入关联必须是非空身份；调用等待期限必须是有限正数。
+            ExecutionBusy: 能力调用等待名额已满。
+            BaseExceptionGroup: 调用身份交接与已接管所有者收尾均失败。
+
+        Note:
+            参数在接管前冻结为标准 JSON，业务 schema 仍仅在 Provider 边界解析。
+            所有等待都计入固定期限；超时首版未知结束观察，迟到确认继续原回执链。
+            调用方取消等待不改变本服务对已接管意图及实际 Provider 的所有权。
+            before_start 使用当前权威资格收紧期限；on_admitted 在首次等待前交出
+            实际身份，使观察失败的所有者仍能等待真正归还，而不包装原型故障。
         """
         if self.closed:
             raise ExecutionClosed("执行服务已关闭接管入口。")
@@ -253,9 +313,16 @@ class ExecutionService:
     async def wait_invocation_released(self, action_id: str) -> None:
         """只等待真实结构化资源，不依赖可能失败的权威查询证明归还。
 
-        身份必须来自本实例的 invoke/on_admitted；插件不能直接访问此端口。
-        Future 仅在资源实际占用时登记，归还即移除。没有登记不推断效果或
-        入账成功，特别是意图提交失败时可能尚无 SQL 行，也须能收回活动步骤。
+        Args:
+            action_id: 执行器分配的行动身份，用于关联逐次调用和真实回执。
+
+        Raises:
+            ValueError: 调用归还查询必须使用非空行动身份。
+
+        Note:
+            身份必须来自本实例的 invoke/on_admitted；插件不能直接访问此端口。
+            Future 仅在资源实际占用时登记，归还即移除。没有登记不推断效果或
+            入账成功，特别是意图提交失败时可能尚无 SQL 行，也须能收回活动步骤。
         """
         if not isinstance(action_id, str) or not action_id:
             raise ValueError("调用归还查询必须使用非空行动身份。")
@@ -264,7 +331,22 @@ class ExecutionService:
             await asyncio.shield(released)
 
     async def run_structured(self, call: CapabilityCall, arguments_json: str) -> ActionRecord:
-        """先入账意图再排队；首版真实回执结束行动，Provider 所有权独立保留。"""
+        """先入账意图再排队。
+
+        Args:
+            call: 当前真实能力或 Core 工具调用的冻结材料。
+            arguments_json: 已编码为严格 JSON 对象的原始能力参数。
+
+        Returns:
+            已保存的行动记录，包含逐次真实调用及结果历史；unknown 不证明效果未发生。
+
+        Raises:
+            RuntimeError: 结构化行动所有者类型错误；已接管结构化行动缺少权威记录。
+            BaseExceptionGroup: 结构化行动原始故障与权威结束提交均失败。
+
+        Note:
+            首版真实回执结束行动，Provider 所有权独立保留。
+        """
         action = call.action
         if not isinstance(action, StructuredAction):
             raise RuntimeError("结构化行动所有者类型错误。")
@@ -344,23 +426,33 @@ class ExecutionService:
         return record
 
     async def query(self, action_id: str) -> ActionRecord | None:
-        """查询权威行动与调用回执，不从 Worker 的自报状态补造效果。"""
+        """查询权威行动与调用回执，不从 Worker 的自报状态补造效果。
+
+        Args:
+            action_id: 执行器分配的行动身份，用于关联逐次调用和真实回执。
+
+        Returns:
+            已保存的行动记录，包含逐次真实调用及结果历史；unknown 不证明效果未发生。
+            未取得对应记录或素材时返回 None；读取故障仍抛出。
+        """
         return await self.store.get_action(action_id)
 
     def stop_dispatch(self) -> None:
         """立即撤新派发资格，已开始 Provider 的真实效果仍独立收尾。
 
-        只改变当前循环上的资格，不等待数据库、不操作进程；Host 可在
-        发布 closing 的同一同步段完成撤销。队列、Worker 和 Provider
-        的资源归还仍由唯一 close 所有者执行。
+        Note:
+            只改变当前循环上的资格，不等待数据库、不操作进程；Host 可在
+            发布 closing 的同一同步段完成撤销。队列、Worker 和 Provider
+            的资源归还仍由唯一 close 所有者执行。
         """
         self.closed = True
 
     async def close(self) -> None:
         """停止新入口与新调用，等待本服务持有的实际进程和 Provider 收尾。
 
-        宿主拥有总体关闭期限。本方法不另开 30 秒预算，不关闭仍被调用使用
-        的插件或 Store；等待取消后同一后台收尾继续，后续 close 可再次观察。
+        Note:
+            宿主拥有总体关闭期限。本方法不另开 30 秒预算，不关闭仍被调用使用
+            的插件或 Store；等待取消后同一后台收尾继续，后续 close 可再次观察。
         """
         if self.close_task is None:
             self.stop_dispatch()
@@ -371,7 +463,14 @@ class ExecutionService:
         await asyncio.shield(self.close_task)
 
     async def finish_close(self) -> None:
-        """先收回 Worker，再等真实调用；任何原始失败在全部资源收尾后报告。"""
+        """先收回 Worker，再等真实调用。
+
+        Raises:
+            BaseExceptionGroup: 执行资源收尾期间的原始故障。
+
+        Note:
+            任何原始失败在全部资源收尾后报告。
+        """
         while self.owned_actions or self.owned_calls:
             if self.owned_actions:
                 await asyncio.gather(*self.owned_actions, return_exceptions=True)
@@ -384,13 +483,29 @@ class ExecutionService:
             raise BaseExceptionGroup("执行资源收尾期间的原始故障。", self.failures)
 
     def action_done(self, task: asyncio.Task[ActionRecord]) -> None:
-        """独立任务即使观察者已取消仍取回异常，关闭时保留同一真实失败。"""
+        """独立任务即使观察者已取消仍取回异常，关闭时保留同一真实失败。
+
+        Args:
+            task: 当前所有者创建并负责回收结果的任务。
+        """
         self.owned_actions.discard(task)
         if not task.cancelled() and (error := task.exception()) is not None:
             self.failures.append(error)
 
     async def run_action(self, action: ScriptAction) -> ActionRecord:
-        """保存意图、启动/核验、处理帧、保存整体结果并按真实资源顺序释放。"""
+        """保存意图、启动/核验、处理帧、保存整体结果并按真实资源顺序释放。
+
+        Args:
+            action: 本次执行服务接管的冻结脚本或结构化调用。
+
+        Returns:
+            已保存的行动记录，包含逐次真实调用及结果历史；unknown 不证明效果未发生。
+
+        Raises:
+            ActionProtocolError: Worker ready 身份或目录版本不一致。
+            BaseExceptionGroup: 行动原始故障与权威结束提交均失败。
+            RuntimeError: 已接管行动缺少权威记录。
+        """
         monitor: asyncio.Task[None] | None = None
         admitted = False
         try:
@@ -500,7 +615,15 @@ class ExecutionService:
         return record
 
     def stop(self, action: ScriptAction | StructuredAction, reason: str) -> None:
-        """同步撤销尚未开始的调用资格；已进入 Provider 的效果继续独立收尾。"""
+        """同步撤销尚未开始的调用资格。
+
+        Args:
+            action: 本次执行服务接管的冻结脚本或结构化调用。
+            reason: 供后续核对的明确处置原因。
+
+        Note:
+            已进入 Provider 的效果继续独立收尾。
+        """
         action.eligible = False
         action.stop_error = action.stop_error or reason
         if (

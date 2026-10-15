@@ -7,6 +7,7 @@
 import type { AgentState } from "@purrcept/cel";
 import type { Activity, ControlResult, Device, Json } from "./contracts";
 
+/** 从原始业务事实推导的 Cel 形状与可读状态词，不反向修改业务状态。 */
 export interface Mark { state: AgentState; label: string }
 const STATES: Readonly<Record<string, Mark>> = {
   new: { state: "warning", label: "尚未启动" }, starting: { state: "waiting-external", label: "正在启动" },
@@ -26,13 +27,28 @@ const STATES: Readonly<Record<string, Mark>> = {
   admitted: { state: "waiting-external", label: "已收到，正在执行" }, accepted: { state: "waiting-external", label: "已收到，等待设备确认" }, rejected: { state: "failed", label: "未被接受" },
 };
 
-/** 已认识的状态使用同一形状/颜色；未知值保持可见。 */
+/**
+ * 将宿主原始状态映射为统一标记与用户文案。
+ *
+ * @param value 实际状态字符串；undefined 表示宿主未提供。
+ * @returns 已知状态的 Cel 表示，或明确显示未知原值的 warning 标记。
+ */
 export function mark(value: string | undefined): Mark {
   return value === undefined ? { state: "warning", label: "状态未提供" } : STATES[value] ?? { state: "warning", label: `未知状态：${value}` };
 }
-/** 模式、错误与可选状态字段只从已校验 JSON 读取。 */
+/**
+ * 读取已校验 JSON 中的可选文本字段。
+ *
+ * @param value 插件真实状态字段，可能缺失或属于其他 JSON 种类。
+ * @returns 原字符串；其他值返回 undefined，不转换对象或数字。
+ */
 export function stringField(value: Json | undefined): string | undefined { return typeof value === "string" ? value : undefined; }
-/** 没有实际连接字段时不能显示离线或在线。 */
+/**
+ * 从设备实际提供的字段推导当前状态标记。
+ *
+ * @param device 宿主快照中的已装配设备及其原生状态。
+ * @returns 依次采用 state、connected、ready；都未提供时明确显示状态未知。
+ */
 export function deviceMark(device: Device): Mark {
   const state = device.state;
   if (typeof state.state === "string") return mark(state.state);
@@ -40,7 +56,13 @@ export function deviceMark(device: Device): Mark {
   if (typeof state.ready === "boolean") return state.ready ? { state: "completed", label: "已就绪" } : { state: "warning", label: "尚未就绪" };
   return mark(undefined);
 }
-/** 正常暂停且余额可用才允许普通恢复；不会隐式追加或绕过核对。 */
+/**
+ * 检查当前页面能否发起明确活动控制。
+ *
+ * @param activity 宿主实际活动状态、剩余预算与恢复核对要求。
+ * @param operation pause、resume 或 end；恢复不增加额度。
+ * @returns 不可操作的具体原因；undefined 表示页面条件允许，宿主仍会再次核验。
+ */
 export function activityReason(activity: Activity, operation: "pause" | "resume" | "end"): string | undefined {
   if (["ended", "completed"].includes(activity.state)) return "活动已经结束，不能重新启用。";
   if (operation === "end") return activity.state === "end_requested" ? "正在结束，等待收尾完成。" : undefined;
@@ -50,7 +72,12 @@ export function activityReason(activity: Activity, operation: "pause" | "resume"
   if (activity.state !== "paused") return "只有已经停稳的暂停活动可以恢复。";
   return undefined;
 }
-/** HTTP 202/finished 只描述接管层，真实效果在关联业务回执中。 */
+/**
+ * 展示控制接管层的结果，不替代真实业务回执。
+ *
+ * @param result 宿主实际返回的控制记录。
+ * @returns 拒绝、处理完成或仍在等待的控制标记；关联行动与命令须另行展示。
+ */
 export function controlMark(result: ControlResult): Mark {
   if (result.error !== null || result.state === "rejected") return { state: "failed", label: "操作未被接受" };
   if (result.state === "finished") return { state: "completed", label: "已处理；实际结果见下方" };

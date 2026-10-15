@@ -19,11 +19,22 @@ const STAGES: Readonly<Record<string, string>> = {
   processed: "已处理", failed: "处理失败",
 };
 
-/** 插件的显示名；未知类别显示实例 ID，便于在配置中对应。 */
+/**
+ * 将已装配设备映射为用户可识别名称。
+ *
+ * @param device 含实例身份与插件类别的设备声明。
+ * @returns 已知类别的人话名称；未知类别保留实例身份。
+ */
 export function deviceName(device: Device): string {
   return DEVICE_NAMES[device.kind ?? ""] ?? device.instance_id;
 }
-/** 能力路径（例如 me.qq.send_message）的所属对象名称。 */
+/**
+ * 从完整能力路径确定操作所属对象的名称。
+ *
+ * @param path 实际调用记录中的完整能力路径。
+ * @param snapshot 用于识别可配置插件实例的当前快照；null 仍可解析已知命名空间。
+ * @returns 当前实例名称、已知命名空间名称或未识别的原始命名空间。
+ */
 export function capabilityName(path: string, snapshot: Snapshot | null): string {
   const parts = path.split(".");
   const namespace = parts[0] === "me" ? parts[1] : parts[0];
@@ -32,7 +43,13 @@ export function capabilityName(path: string, snapshot: Snapshot | null): string 
   if (device !== undefined) return deviceName(device);
   return NAMESPACES[namespace] ?? namespace;
 }
-/** 一项行动涉及的对象名称，按首次出现顺序去重。 */
+/**
+ * 按调用顺序汇总一次行动涉及的对象。
+ *
+ * @param paths 行动实际调用路径，顺序与真实回执一致。
+ * @param snapshot 解析可配置实例名称所需的当前快照。
+ * @returns 按首次出现顺序去重的对象名称列表。
+ */
 export function actionSubjects(paths: readonly string[], snapshot: Snapshot | null): string[] {
   const names: string[] = [];
   for (const path of paths) {
@@ -41,5 +58,10 @@ export function actionSubjects(paths: readonly string[], snapshot: Snapshot | nu
   }
   return names;
 }
-/** 输入处理阶段的用户名称。 */
+/**
+ * 将输入处置阶段转换为用户文案。
+ *
+ * @param stage 宿主实际提供的输入处理阶段。
+ * @returns 已知阶段名称；未知阶段保留原值。
+ */
 export function stageName(stage: string): string { return STAGES[stage] ?? stage; }

@@ -57,8 +57,20 @@ type NativeMedia = Callable[[tuple[MediaReference, ...]], Awaitable[tuple[Conten
 class AttentionModel:
     """app 按配置 discriminator 装配的单一资源，不猜路径或寻找替代模型。
 
-    kind 与 backend 的精确对应由 app 的已校验装配保证。生成注意仍是无工具、
-    无连续历史的一次判断，输出上限显式提供；专用判断不接受生成输出参数。
+    Attributes:
+        backend: 显式注入的模型后端，资源取得和关闭归装配层。
+        model: 本次调用使用的显式模型名，不在领域层推断替代模型。
+        capacity: 对完整实际请求执行容量核验的函数。
+        retry: 唯一传输重试策略，不额外叠加 SDK 隐式重试。
+        compiler: 按实际 SDK 布局冻结完整请求材料的纯编译器。
+        kind: 此业务值所属的稳定种类。
+        output_tokens: 为本次生成预留的最大输出 token 数。
+
+    Note:
+        实例字段在构造后不可重新赋值；嵌套值的冻结范围由字段所属契约决定。
+
+        kind 与 backend 的精确对应由 app 的已校验装配保证。生成注意仍是无工具、
+        无连续历史的一次判断，输出上限显式提供；专用判断不接受生成输出参数。
     """
 
     backend: DecisionBackend | ModelBackend
@@ -86,7 +98,14 @@ class AttentionModel:
 
 
 def attention_question(defer_seconds: float) -> ChoiceQuestion:
-    """只按已批准配置渲染延期数值，默认 30 秒保留冻结题目全文及候选顺序。"""
+    """只按已批准配置渲染延期数值，默认 30 秒保留冻结题目全文及候选顺序。
+
+    Args:
+        defer_seconds: 明确延后普通输入的默认秒数，不创建新的输入身份。
+
+    Returns:
+        保持明确选项和拒答语义的注意判断题。
+    """
     if defer_seconds == 30:
         return ATTENTION_QUESTION
     seconds = str(int(defer_seconds)) if defer_seconds == int(defer_seconds) else str(defer_seconds)
@@ -112,10 +131,28 @@ async def attention_request(
     model: AttentionModel,
     defer_seconds: float = 30.0,
 ) -> DecisionRequest | ModelRequest:
-    """完整组装并预检一份实际请求；不支持的原生材料不得投成残缺筛选。
+    """完整组装并预检一份实际请求。
 
-    background 是宿主已经冻结的有限工作材料，其范围独立于当前输入覆盖。
-    媒体端口只可展开已经接管的原生内容，缺失权威记录仍是存储故障。
+    Args:
+        records: 按接管顺序取得的完整输入记录。
+        background: 同一主体的独立反馈和反思所有者。
+        media: 已接管媒体的引用集合，展开时必须取得原始 BLOB。
+        model: 本次调用使用的显式模型名，不在领域层推断替代模型。
+        defer_seconds: 明确延后普通输入的默认秒数，不创建新的输入身份。 默认 30.0。
+
+    Returns:
+        已组装完整材料的专用判断或生成请求。
+
+    Raises:
+        ValueError: 注意批次不能为空。
+        UnsupportedMaterial: 典型拒绝原因：参数、材料或当前状态不满足此入口的约束；
+            attention.unsupported_native_audio；attention.unsupported_native_content。
+
+    Note:
+        不支持的原生材料不得投成残缺筛选。
+
+        background 是宿主已经冻结的有限工作材料，其范围独立于当前输入覆盖。
+        媒体端口只可展开已经接管的原生内容，缺失权威记录仍是存储故障。
     """
     if not records:
         raise ValueError("注意批次不能为空。")
@@ -151,8 +188,8 @@ async def attention_request(
             decision_blocks.append(block)
         request = DecisionRequest(tuple(decision_blocks), (attention_question(defer_seconds),))
     else:
-        # Compatibility: 保留旧生成判断的固定规则和 JSON 返回要求；当前材料
-        # 已按批准契约改为完整正文/原生媒体，仍不带世界目录或工具。
+        # 生成式注意判断必须返回固定 JSON 选择，才能进入同一版本核验流程；
+        # 完整正文与原生媒体只是判断依据，此请求不提供世界目录或执行工具。
         request = ModelRequest(
             (Message(MessageRole.USER, tuple(blocks)),),
             instructions=(

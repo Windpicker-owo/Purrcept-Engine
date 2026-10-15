@@ -45,8 +45,16 @@ _SUMMARY_FIELDS = (
 class LogCleanup:
     """一次日志清理的实际数量；has_more 表示仍有待删文件。
 
-    expired_files 表示超过时间边界，capacity_files 表示仍在保留期但超过文件
-    数量额度。当前写入文件始终保留，单次只删除至多 limit 个文件。
+    Attributes:
+        expired_files: 此次实际删除的过期日志文件数量。
+        capacity_files: 此次因容量规则实际删除的日志文件数量。
+        has_more: 是否仍有满足清理条件的内容，需要后续有界清理。
+
+    Note:
+        实例字段在构造后不可重新赋值；嵌套值的冻结范围由字段所属契约决定。
+
+        expired_files 表示超过时间边界，capacity_files 表示仍在保留期但超过文件
+        数量额度。当前写入文件始终保留，单次只删除至多 limit 个文件。
     """
 
     expired_files: int
@@ -56,6 +64,8 @@ class LogCleanup:
 
 @dataclass(frozen=True, slots=True)
 class _LogFile:
+    """记录当前日志文件的实际路径和已占用字节，归日志处理器独占。"""
+
     path: Path
     modified_at: float
 
@@ -79,15 +89,27 @@ class _UtcFormatter(logging.Formatter):
     """终端和文件共用 UTC 时间，避免跨时区时无法辨认保留边界。"""
 
     def formatTime(self, record: logging.LogRecord, datefmt: str | None = None) -> str:
-        """保留事件产生时间；格式参数不改变统一的时区表示。"""
+        """保留事件产生时间。
+
+        Args:
+            record: 标准日志系统交付的单条记录。
+            datefmt: 显式日志时间格式；None 使用当前格式器默认值。
+
+        Note:
+            格式参数不改变统一的时区表示。
+        """
         del datefmt
         return datetime.fromtimestamp(record.created, UTC).isoformat(timespec="milliseconds")
 
     def format(self, record: logging.LogRecord) -> str:
         """仅展示关联身份及分类，默认摘要不回显第三方异常正文或所有extra。
 
-        复制LogRecord避免修改调用者其它handler；原异常继续由API传播，完整
-        请求/回执仍从权威查询取得，普通日志不承担其完整性。
+        Args:
+            record: 标准日志系统交付的单条记录。
+
+        Note:
+            复制LogRecord避免修改调用者其它handler；原异常继续由API传播，完整
+            请求/回执仍从权威查询取得，普通日志不承担其完整性。
         """
         public = copy(record)
         public.exc_info = None
@@ -116,6 +138,14 @@ class _TextLogHandler(logging.Handler):
     def __init__(
         self, directory: Path, retention_days: int, max_bytes: int, max_files: int
     ) -> None:
+        """初始化本次 CLI 的有界文件日志策略，不在构造时写入日志。
+
+        Args:
+            directory: 本次操作使用的明确目录。
+            retention_days: 普通日志或诊断正文的保留天数。
+            max_bytes: 此边界允许保留或接管的最大字节数。
+            max_files: 当前日志所有者允许保留的文件数量上限。
+        """
         super().__init__(level=logging.INFO)
         self.directory = directory
         self.retention_days = retention_days
@@ -156,7 +186,14 @@ class _TextLogHandler(logging.Handler):
         self.cleanup(now=datetime.now(UTC), limit=max(self.max_files, 128))
 
     def emit(self, record: logging.LogRecord) -> None:
-        """只抑制可识别的诊断 I/O/编码故障，格式或程序错误仍原样传播。"""
+        """只抑制可识别的诊断 I/O/编码故障，格式或程序错误仍原样传播。
+
+        Args:
+            record: 标准日志系统交付的单条记录。
+
+        Raises:
+            RuntimeError: 日志文件已取得但没有写入流。
+        """
         # logging 可能已取出 handler 引用才遇到 close；关闭后旧引用不可重开文件。
         if not self._accepting:
             return
@@ -188,7 +225,18 @@ class _TextLogHandler(logging.Handler):
             self.failure = error
 
     def cleanup(self, *, now: datetime, limit: int) -> LogCleanup:
-        """在 handler 锁内清时间/容量超额文件，当前写入文件不参与删除。"""
+        """在 handler 锁内清时间/容量超额文件，当前写入文件不参与删除。
+
+        Args:
+            now: 带明确时区的本次墙钟时刻。
+            limit: 本次读取或更新的最大条目数。
+
+        Returns:
+            此次实际日志清理统计及仍需保留的失败。
+
+        Raises:
+            ValueError: 日志清理时间必须携带时区；日志清理批量必须是正整数。
+        """
         if now.utcoffset() is None:
             raise ValueError("日志清理时间必须携带时区。")
         if isinstance(limit, bool) or not isinstance(limit, int) or limit <= 0:
@@ -238,7 +286,11 @@ class _TextLogHandler(logging.Handler):
                     self._stream = None
 
     def close(self) -> None:
-        """重复关闭不重复释放文件；已知 I/O 失败仍保留在 failure 中。"""
+        """重复关闭不重复释放文件。
+
+        Note:
+            已知 I/O 失败仍保留在 failure 中。
+        """
         self.acquire()
         try:
             self._accepting = False
@@ -269,7 +321,12 @@ class CliLogging:
     """
 
     def __init__(self, file_handler: _TextLogHandler, console_handler: logging.Handler) -> None:
-        """保留已经取得的文件与本次 logger 配置，生命周期由 open/close 拥有。"""
+        """保留已经取得的文件与本次 logger 配置，生命周期由 open/close 拥有。
+
+        Args:
+            file_handler: CLI 本次取得的滚动文件日志处理器。
+            console_handler: CLI 本次取得的控制台日志处理器。
+        """
         self._logger = logging.getLogger("purrcept_engine")
         self._old_level = self._logger.level
         self._old_propagate = self._logger.propagate
@@ -291,11 +348,28 @@ class CliLogging:
         max_files: int = 7,
         console: TextIO | None = None,
     ) -> CliLogging:
-        """取得日志资源后安装 handler；配置无效或文件取得失败原样报告。
+        """取得日志资源后安装 handler。
 
-        data_dir 必须已由本 CLI 持有实例锁。单文件至少 64 字节，以保证时间/
-        级别摘要与截断标记可辨认；max_files 包含当前写入文件。console 默认
-        stderr；传入流由调用者拥有，本对象关闭时不关闭它。
+        Args:
+            data_dir: 此宿主独占的数据目录，先取得目录锁再访问权威库。
+            retention_days: 普通日志或诊断正文的保留天数。 默认 7。
+            max_bytes: 此边界允许保留或接管的最大字节数。 默认 10485760。
+            max_files: 当前日志所有者允许保留的文件数量上限。 默认 7。
+            console: 可选的 CLI 文本输出流。 None 不额外安装控制台日志输出。
+
+        Returns:
+            本次 CLI 取得的日志处理器所有者。
+
+        Raises:
+            ValueError: 参数、材料或当前状态不满足此入口的约束；单文件日志额度必须至少 64 字节。
+            RuntimeError: CLI 日志已经有活动所有者。
+
+        Note:
+            配置无效或文件取得失败原样报告。
+
+            data_dir 必须已由本 CLI 持有实例锁。单文件至少 64 字节，以保证时间/
+            级别摘要与截断标记可辨认；max_files 包含当前写入文件。console 默认
+            stderr；传入流由调用者拥有，本对象关闭时不关闭它。
         """
         for name, value in (("retention_days", retention_days), ("max_files", max_files)):
             if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
@@ -340,7 +414,21 @@ class CliLogging:
         return self._file.cleanup_totals
 
     def cleanup(self, *, now: datetime | None = None, limit: int = 128) -> LogCleanup:
-        """同步清一批自有日志；维护频率由 CLI 拥有，失败原样传播。"""
+        """同步清一批自有日志。
+
+        Args:
+            now: 本次规则计算采用的时刻，便于同一操作保持一致。 None 使用当前带时区的墙钟时刻。
+            limit: 本次读取或更新的最大条目数。 默认 128。
+
+        Returns:
+            此次实际日志清理统计及仍需保留的失败。
+
+        Raises:
+            RuntimeError: CLI 日志已经关闭。
+
+        Note:
+            维护频率由 CLI 拥有，失败原样传播。
+        """
         if self._closed:
             raise RuntimeError("CLI 日志已经关闭。")
         return self._file.cleanup(now=datetime.now(UTC) if now is None else now, limit=limit)

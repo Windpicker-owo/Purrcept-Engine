@@ -22,8 +22,18 @@ from purrcept_engine.serialization import encode
 class GenerationCapacity:
     """配置声明的共享窗口与实际输出上限，不由模型名推断。
 
-    input_limit 可表达独立输入上限；存在时与扣输出并预留后的共享窗口取较小值。
-    media_rule 是适用媒体依据的标识，不代表文本参考规则就具备该媒体能力。
+    Attributes:
+        context_window: 模型显式声明的共享上下文窗口容量。
+        max_output_tokens: 模型明确允许的最大输出 token 数。
+        capacity_rule: 启动时登记的纯计量规则名，不按模型名猜测。
+        media_rule: 显式媒体计量依据，unsupported 表示不能按此路径接管媒体。
+        input_limit: 专用判断协议明确允许的输入容量。
+
+    Note:
+        实例字段在构造后不可重新赋值；嵌套值的冻结范围由字段所属契约决定。
+
+        input_limit 可表达独立输入上限；存在时与扣输出并预留后的共享窗口取较小值。
+        media_rule 是适用媒体依据的标识，不代表文本参考规则就具备该媒体能力。
     """
 
     context_window: int
@@ -35,7 +45,16 @@ class GenerationCapacity:
 
 @dataclass(frozen=True, slots=True)
 class DecisionCapacity:
-    """专用判断协议的明确输入上限，没有生成采样或输出预算。"""
+    """专用判断协议的明确输入上限，没有生成采样或输出预算。
+
+    Attributes:
+        input_limit: 专用判断协议明确允许的输入容量。
+        capacity_rule: 启动时登记的纯计量规则名，不按模型名猜测。
+        media_rule: 显式媒体计量依据，unsupported 表示不能按此路径接管媒体。
+
+    Note:
+        实例字段在构造后不可重新赋值；嵌套值的冻结范围由字段所属契约决定。
+    """
 
     input_limit: int
     capacity_rule: str
@@ -49,9 +68,18 @@ CapacityDeclaration = GenerationCapacity | DecisionCapacity
 class CapacityEstimate:
     """纯规则的估计值、方法版本与适用范围，不能冒充服务端 token usage。
 
-    input_units 是与声明输入额度比较的参考量。unit 明确规则口径；内置
-    utf8_byte_reference 表示一字节一参考单位，包含完整 JSON 开销，不是
-    Provider 的精确 tokenizer，也不承诺 10% 余量是理论误差上界。
+    Attributes:
+        input_units: 当前规则估计的输入占用，不能冒充服务端 usage。
+        method: 底层文档协议的方法名。
+        scope: 此估算实际覆盖的材料范围，不代表服务端 usage。
+        unit: 当前计量规则使用的计数单位。
+
+    Note:
+        实例字段在构造后不可重新赋值；嵌套值的冻结范围由字段所属契约决定。
+
+        input_units 是与声明输入额度比较的参考量。unit 明确规则口径；内置
+        utf8_byte_reference 表示一字节一参考单位，包含完整 JSON 开销，不是
+        Provider 的精确 tokenizer，也不承诺 10% 余量是理论误差上界。
     """
 
     input_units: int
@@ -62,7 +90,18 @@ class CapacityEstimate:
 
 @dataclass(frozen=True, slots=True)
 class CapacityAssessment:
-    """完整请求的不可变计量结论，触发阈值与目标均使用 input_budget 分母。"""
+    """完整请求的不可变计量结论，触发阈值与目标均使用 input_budget 分母。
+
+    Attributes:
+        estimate: 当前完整请求的计量结果与适用范围。
+        input_budget: 扣除输出与预留空间后的实际输入预算。
+        maintenance_due: 当前占用是否达到历史维护触发比例。
+        target_met: 当前占用是否已满足摘要维护目标比例。
+        payload_sha256: 完整实际 payload 的内容摘要，用于关联计量材料。
+
+    Note:
+        实例字段在构造后不可重新赋值；嵌套值的冻结范围由字段所属契约决定。
+    """
 
     estimate: CapacityEstimate
     input_budget: int
@@ -92,7 +131,14 @@ class CapacityError(EngineError):
         missing: tuple[str, ...] = (),
         assessment: CapacityAssessment | None = None,
     ) -> None:
-        """保留可查询的计量缺口与已有结论，不包含凭据或完整模型正文。"""
+        """保留可查询的计量缺口与已有结论，不包含凭据或完整模型正文。
+
+        Args:
+            message: 对调用方公开的原因或错误说明。
+            code: 供调用方分类处理的稳定错误码。
+            missing: 当前材料无法计量或交付的具体原因。 默认不附加此类条目。
+            assessment: 已取得并需按原版本核验的判断结果。
+        """
         super().__init__(message)
         self.code = code
         self.missing = missing
@@ -115,7 +161,15 @@ class CapacityRule(Protocol):
         payload: Mapping[str, object],
         declaration: CapacityDeclaration,
     ) -> CapacityEstimate:
-        """估计完整 SDK 公开请求，保留消息与 schema 的所有表示开销。"""
+        """估计完整 SDK 公开请求，保留消息与 schema 的所有表示开销。
+
+        Args:
+            payload: 按真实 SDK 布局编译的完整公开请求，包含消息、工具 schema 和媒体表示。
+            declaration: 待绑定或计量的不可变声明。
+
+        Returns:
+            包含计量方法与适用范围的估算，不是服务端实际 usage。
+        """
         ...
 
 
@@ -128,10 +182,28 @@ def assess_capacity(
     target: float = 0.5,
     rules: Mapping[str, CapacityRule] | None = None,
 ) -> CapacityAssessment:
-    """计量完整候选，允许返回超额结论供维护使用；未知依据立即失败。
+    """计量完整候选，允许返回超额结论供维护使用。
 
-    输入分母在扣除输出后预留，再与独立输入上限取更严格值。预警阈值不是
-    停止线，0.5 目标也不是摘要安装硬门槛；实际派发使用 check_capacity。
+    Args:
+        payload: 按真实 SDK 布局编译的完整公开请求，包含消息、工具 schema 和媒体表示。
+        declaration: 待绑定或计量的不可变声明。
+        reserve_fraction: 从输入容量中扣除的预留比例。 默认 0.1。
+        trigger: 触发摘要维护的输入预算占用比例。 默认 0.8。
+        target: 摘要维护后期望达到的输入预算占用比例。 默认 0.5。
+        rules: 已装配容量规则表，未知名称不能静默使用其他规则。
+
+    Returns:
+        对完整请求的估计占用、输入预算、阈值和材料缺口。
+
+    Raises:
+        ValueError: 参数值或组合不满足本入口的明确约束，错误正文指出具体字段。
+        CapacityError: 完整请求缺少适用计量依据、包含不支持材料或超出当前输入预算。
+
+    Note:
+        未知依据立即失败。
+
+        输入分母在扣除输出后预留，再与独立输入上限取更严格值。预警阈值不是
+        停止线，0.5 目标也不是摘要安装硬门槛；实际派发使用 check_capacity。
     """
     if not 0 <= reserve_fraction < 1 or not 0 < target < trigger < 1:
         raise ValueError("容量余量及摘要阈值关系无效。")
@@ -214,7 +286,25 @@ def check_capacity(
     target: float = 0.5,
     rules: Mapping[str, CapacityRule] | None = None,
 ) -> CapacityAssessment:
-    """真正派发前核验完整材料；超额明确拒绝，不删历史或工具后重发。"""
+    """真正派发前核验完整材料。
+
+    Args:
+        payload: 按真实 SDK 布局编译的完整公开请求，包含消息、工具 schema 和媒体表示。
+        declaration: 待绑定或计量的不可变声明。
+        reserve_fraction: 从输入容量中扣除的预留比例。 默认 0.1。
+        trigger: 触发摘要维护的输入预算占用比例。 默认 0.8。
+        target: 摘要维护后期望达到的输入预算占用比例。 默认 0.5。
+        rules: 已装配容量规则表，未知名称不能静默使用其他规则。
+
+    Returns:
+        对完整请求的估计占用、输入预算、阈值和材料缺口。
+
+    Raises:
+        CapacityError: 完整请求超过可用输入额度。
+
+    Note:
+        超额明确拒绝，不删历史或工具后重发。
+    """
     result = assess_capacity(
         payload,
         declaration,

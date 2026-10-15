@@ -55,10 +55,19 @@ _CALL_CONTEXT_FIELDS = (
 class ToolDelivery:
     """工具创建的完整候选及有限回执，不包含推测的后续工具结果。
 
-    fallback 只保存明确的来源引用、真实关键效果和重试指引；不可放入正文、
-    媒体描述或任意调试输出。failure_is_error 区分阅读未交付与已发生行动。
-    presented_calls 由工具的权威完整确认正文提供，Gate只在成功的实际模型
-    请求保留该正文后授予；它不进入模型参数，也不授权容量引用或未知结果。
+    Attributes:
+        result: Core 工具的完整内容与错误标记。
+        fallback: 完整工具结果无法交付时可采用的有限引用回执。
+        failure_is_error: 无法交付完整候选时，有限回执是否应标记为工具错误。
+        presented_calls: 本次完整工具材料可证明已呈现的调用身份。
+
+    Note:
+        实例字段在构造后不可重新赋值；嵌套值的冻结范围由字段所属契约决定。
+
+        fallback 只保存明确的来源引用、真实关键效果和重试指引；不可放入正文、
+        媒体描述或任意调试输出。failure_is_error 区分阅读未交付与已发生行动。
+        presented_calls 由工具的权威完整确认正文提供，Gate只在成功的实际模型
+        请求保留该正文后授予；它不进入模型参数，也不授权容量引用或未知结果。
     """
 
     result: ToolResult
@@ -69,6 +78,8 @@ class ToolDelivery:
 
 @dataclass(frozen=True, slots=True)
 class _PendingDelivery:
+    """保存当前会话的完整交付候选与精确范围，供真实请求逐项匹配。"""
+
     call: ToolCallBlock
     original: Message
     proposal: ToolDelivery
@@ -76,6 +87,8 @@ class _PendingDelivery:
 
 @dataclass(frozen=True, slots=True)
 class _FrozenDelivery:
+    """保存当前会话的完整交付候选与精确范围，供真实请求逐项匹配。"""
+
     position: int
     original: Message
     delivered: Message
@@ -84,8 +97,19 @@ class _FrozenDelivery:
 def presented_evidence_calls(page: EvidencePage) -> frozenset[str]:
     """只给完整真实回执正文登记调用身份，派生认识与摘要不能授予此资格。
 
-    原文由权威账本生成，来源与正文身份必须一致。分页片段不证明完整核对
-    材料已呈现；容量引用也没有此登记。这里不从模型文字或ID前缀猜来源。
+    Args:
+        page: 与原版本绑定的完整原文页及媒体引用。
+
+    Returns:
+        当前完整工具结果中实际交付的确认调用身份集合。
+
+    Raises:
+        RuntimeError: 典型拒绝原因：行动结果缺少真实内部来源；行动结果正文与来源身份不一致；
+            行动结果没有完整调用记录；调用原文缺少真实内部来源。
+
+    Note:
+        原文由权威账本生成，来源与正文身份必须一致。分页片段不证明完整核对
+        材料已呈现；容量引用也没有此登记。这里不从模型文字或ID前缀猜来源。
     """
     snapshot = page.snapshot
     if snapshot is None or page.level != "evidence" or page.text != snapshot.text:
@@ -124,7 +148,21 @@ def presented_evidence_calls(page: EvidencePage) -> frozenset[str]:
 
 
 def evidence_fallback(page: EvidencePage, *, cursor: str | None) -> dict[str, object]:
-    """返回已保存材料的确切引用；重试定位原页起点，不跳过未交付内容。"""
+    """返回已保存材料的确切引用。
+
+    Args:
+        page: 与原版本绑定的完整原文页及媒体引用。
+        cursor: 宿主签发并保存的不透明续读游标，续读同一快照版本。
+
+    Returns:
+        业务对象，按实际结果提供 delivery、stored_ref、derived、level、retry 字段。
+
+    Raises:
+        RuntimeError: 原文页面缺少权威快照或认识版本。
+
+    Note:
+        重试定位原页起点，不跳过未交付内容。
+    """
     snapshot, memory = page.snapshot, page.memory
     if snapshot is not None:
         reference = {"id": snapshot.evidence_id, "version": snapshot.version}
@@ -312,7 +350,14 @@ class ToolDeliveryGate:
     """
 
     def __init__(self, *, compiler: MaterialCompiler) -> None:
-        """创建尚未派发的登记；会话结束时由本轮调用方释放。"""
+        """创建尚未派发的登记。
+
+        Args:
+            compiler: 按实际 SDK 布局冻结完整请求材料的纯编译器。
+
+        Note:
+            会话结束时由本轮调用方释放。
+        """
         self.compiler = compiler
         self._pending: list[_PendingDelivery] = []
         self._frozen: list[_FrozenDelivery] = []
@@ -326,7 +371,18 @@ class ToolDeliveryGate:
         return frozenset(self._presented_call_ids)
 
     def stage(self, call: ToolCallBlock, proposal: ToolDelivery) -> ToolResult:
-        """登记工具真正生成的完整候选，登记本身不赋予原文呈现资格。"""
+        """登记工具真正生成的完整候选，登记本身不赋予原文呈现资格。
+
+        Args:
+            call: 当前真实能力或 Core 工具调用的冻结材料。
+            proposal: 已冻结来源和内容的候选提案，提交前仍须验证。
+
+        Returns:
+            完整工具内容和错误标记；引用回执可能要求继续展开原文。
+
+        Raises:
+            ValueError: 输入错误不能登记为原文交付候选。
+        """
         if proposal.result.is_error:
             raise ValueError("输入错误不能登记为原文交付候选。")
         original = Message(MessageRole.TOOL, (proposal.result.to_block(call.id),), name=call.name)
@@ -334,7 +390,17 @@ class ToolDeliveryGate:
         return proposal.result
 
     def project(self, messages: tuple[Message, ...]) -> tuple[Message, ...]:
-        """还原已冻结的真实交付，用于后续请求及最终提交的检查点。"""
+        """还原已冻结的真实交付，用于后续请求及最终提交的检查点。
+
+        Args:
+            messages: 按实际先后排列的完整 Core 消息，不从正文猜测交付身份。
+
+        Returns:
+            条目集合：供后续 Core 请求使用的完整消息。
+
+        Raises:
+            RuntimeError: Core 工具历史与已冻结交付位置不一致。
+        """
         projected = list(messages)
         for decision in self._frozen:
             position = decision.position
@@ -349,7 +415,14 @@ class ToolDeliveryGate:
         return tuple(projected)
 
     def sent(self, request: ModelRequest) -> None:
-        """成功派发之后冻结已存在前缀，不从未来响应猜测新的结果位置。"""
+        """成功派发之后冻结已存在前缀，不从未来响应猜测新的结果位置。
+
+        Args:
+            request: 已经按 Core 协议组装的完整生成请求。
+
+        Raises:
+            RuntimeError: 真实回执呈现证明不在实际模型请求中。
+        """
         self._sent_prefix = len(request.messages)
         # Ordering: 后端成功且请求证据提交后才授予下一工具行动读取资格。
         # 同一响应的全部工具在 prepare/sent 前执行，不能消费尚未呈现的核对。
@@ -368,7 +441,21 @@ class ToolDeliveryGate:
         host_state: JsonObject | None = None,
         reminder_key: str | None = None,
     ) -> ModelRequest:
-        """计量完整实际请求，仅选择本轮尚未发出的 Engine 原文结果。"""
+        """计量完整实际请求，仅选择本轮尚未发出的 Engine 原文结果。
+
+        Args:
+            request: 已经按 Core 协议组装的完整生成请求。
+            model: 本次调用使用的显式模型名，不在领域层推断替代模型。
+            capacity: 对完整实际请求执行容量核验的函数。
+            host_state: 本次逻辑请求冻结的宿主动态投影。
+            reminder_key: 当前动态尾部的提醒键，用于替换而非累加状态材料。
+
+        Returns:
+            按实际消息顺序构造的完整 Core 请求。
+
+        Raises:
+            RuntimeError: 待交付工具结果不在 Core 的真实下一请求中。
+        """
         current = replace(request, messages=self.project(request.messages))
         if not self._pending:
             return self._project_tail(current, host_state, reminder_key)

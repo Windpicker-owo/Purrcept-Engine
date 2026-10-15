@@ -1,8 +1,7 @@
-"""定义输入接管的不可变事实与存储查询值。
+"""定义外部输入的来源、原文、媒体与正式接管凭证。
 
-接入适配器创建 ``InputSubmission``，存储服务确认原文和待办已提交后返回
-``Admission``。查询返回媒体引用而非复制 BLOB；来源字段用于路由、去重和追溯，
-不建立跨通道身份关联，也不代表能力权限。
+输入插件构造提交值，宿主同事务保存原文与待处理关系后返回 Admission。
+本模块只约束不可变数据，不调度注意、不回复或控制播放。
 """
 
 from dataclasses import dataclass
@@ -31,9 +30,21 @@ def _aware(value: datetime, field: str) -> None:
 class InputSource:
     """由接入方提供来源范围，不把不同通道的发送者合并。
 
-    原生事件身份的去重范围由适配器实例、账号、会话和事件类别共同确定。
-    没有可靠原生 ID 时应传 ``None``；存储为每次接收创建独立身份，无法承诺
-    跨连接重放去重。显示名与发送者 ID 保存发生事实，不参与权限判断。
+    Attributes:
+        adapter_id: 外部输入适配器的稳定身份。
+        account_id: 当前接入账号的原生身份。
+        conversation_id: 原生会话身份，跨通道不据此猜测同一用户。
+        event_kind: 原生来源事件的类别，参与可靠去重。
+        native_event_id: 平台给出的原生事件身份；None 表示缺少可靠去重依据。
+        sender_id: 已知时保存的原生发送方身份。
+        display_name: 来源的展示名称，不用于权限或稳定身份判断。
+
+    Note:
+        实例字段在构造后不可重新赋值；嵌套值的冻结范围由字段所属契约决定。
+
+        原生事件身份的去重范围由适配器实例、账号、会话和事件类别共同确定。
+        没有可靠原生 ID 时应传 ``None``；存储为每次接收创建独立身份，无法承诺
+        跨连接重放去重。显示名与发送者 ID 保存发生事实，不参与权限判断。
     """
 
     adapter_id: str
@@ -59,8 +70,16 @@ class InputSource:
 class MediaAsset:
     """提交方交接的完整媒体字节，不接受仍可修改的缓冲区。
 
-    内容摘要用于同库 BLOB 去重；媒体类型和名称属于这次引用，而不是摘要的
-    全局属性。相同字节出现在不同输入中仍分别计入逻辑积压额度。
+    Attributes:
+        content: 本次明确写入的完整正文。
+        media_type: 完整媒体字节实际使用的 MIME 类型。
+        name: 此次素材携带的可选文件名称，不参与内容摘要身份。
+
+    Note:
+        实例字段在构造后不可重新赋值；嵌套值的冻结范围由字段所属契约决定。
+
+        内容摘要用于同库 BLOB 去重；媒体类型和名称属于这次引用，而不是摘要的
+        全局属性。相同字节出现在不同输入中仍分别计入逻辑积压额度。
     """
 
     content: bytes
@@ -79,10 +98,20 @@ class MediaAsset:
 class InputContext:
     """接入方确认的关系与程序信号，正文不能自行授予这些标记。
 
-    details_json 保存平台原生的 @、回复与会话关系，不建立人员权限。最低
-    唤起只要求前台处理；interrupt_generation 请求核对当前代次后抢占，
-    speech_started 表示已达到配置阈值的 VAD 信号，并另外要求音频停播。
-    语音转写接续沿用来源关联，不能再次伪造 speech_started。
+    Attributes:
+        details_json: 原生来源附加字段的严格 JSON 编码。
+        minimum_wake: 直接唤起所建立的最低 WAKE 事实或对应升级判断资格。
+        interrupt_generation: 此可信接入信号是否要求撤销观察到的旧生成代次。
+        speech_started: 是否为真实捕获产生的发言开始信号，正文不能自称触发停音。
+        missing_materials: 本次原文或媒体尚缺的具体材料说明。
+
+    Note:
+        实例字段在构造后不可重新赋值；嵌套值的冻结范围由字段所属契约决定。
+
+        details_json 保存平台原生的 @、回复与会话关系，不建立人员权限。最低
+        唤起只要求前台处理；interrupt_generation 请求核对当前代次后抢占，
+        speech_started 表示已达到配置阈值的 VAD 信号，并另外要求音频停播。
+        语音转写接续沿用来源关联，不能再次伪造 speech_started。
     """
 
     details_json: str = "{}"
@@ -112,8 +141,19 @@ class InputContext:
 class InputSubmission:
     """一次接管的发生事实；接收时间不改变原生重放的内容身份。
 
-    两个时间均须带时区，存储规范化为 UTC。正文允许为空以表示纯媒体输入；
-    媒体元组保留接入方提供的顺序。对象创建完成后可安全交给数据库线程。
+    Attributes:
+        source: 含适配器、账号、会话和原生事件身份的可信来源。
+        text: 本次明确传输、输入或呈现的完整文本。
+        occurred_at: 原始事实实际发生的 Unix 时间戳（秒）。
+        received_at: 此事实实际接收的时刻。
+        media: 已接管媒体的引用集合，展开时必须取得原始 BLOB。
+        context: 宿主或 Core 注入的可信调用上下文，不由模型自行填写。
+
+    Note:
+        实例字段在构造后不可重新赋值；嵌套值的冻结范围由字段所属契约决定。
+
+        两个时间均须带时区，存储规范化为 UTC。正文允许为空以表示纯媒体输入；
+        媒体元组保留接入方提供的顺序。对象创建完成后可安全交给数据库线程。
     """
 
     source: InputSource
@@ -139,6 +179,12 @@ class InputSubmission:
             raise ValueError("media 必须是 MediaAsset 元组。")
 
 
+# 维护者属性契约（此 dataclass 也被嵌入 Pydantic schema，保留类说明）。
+# Attributes:
+#     media_id: 完整媒体字节的内容摘要，供同库读取和完整性核验。
+#     media_type: 这些完整字节实际使用的 MIME 类型。
+#     byte_length: 原始内容的完整字节数。
+#     name: 本次引用携带的可选文件名称，不参与内容身份。
 @dataclass(frozen=True, slots=True)
 class MediaReference:
     """权威媒体的内容摘要与本次输入中的引用信息。"""
@@ -151,7 +197,15 @@ class MediaReference:
 
 @dataclass(frozen=True, slots=True)
 class Admission:
-    """原文和待办已提交的确认；重复原生输入沿用第一次接管身份。"""
+    """原文和待办已提交的确认；重复原生输入沿用第一次接管身份。
+
+    Attributes:
+        input_id: 正式接管返回的输入身份，用于关联原文与后续处理。
+        duplicate: 是否复用了相同原生来源身份的首次接管记录。
+
+    Note:
+        实例字段在构造后不可重新赋值；嵌套值的冻结范围由字段所属契约决定。
+    """
 
     input_id: str
     duplicate: bool
@@ -161,8 +215,22 @@ class Admission:
 class InputRecord:
     """原文、来源和当前处置状态的查询快照。
 
-    ``processed`` 只说明存储收到明确处置提交，不证明模型理解、实际回复或
-    外部效果。媒体正文按引用另行读取；查询和读取待办不会改变处置状态。
+    Attributes:
+        input_id: 正式接管返回的输入身份，用于关联原文与后续处理。
+        source: 含适配器、账号、会话和原生事件身份的可信来源。
+        text: 本次明确传输、输入或呈现的完整文本。
+        occurred_at: 原始事实实际发生的 Unix 时间戳（秒）。
+        received_at: 此事实实际接收的时刻。
+        media: 已接管媒体的引用集合，展开时必须取得原始 BLOB。
+        state: 当前所有者持有的状态或待提交状态值。
+        logical_bytes: 本次操作占用的逻辑载荷字节数，用于接管前背压。
+        context: 宿主或 Core 注入的可信调用上下文，不由模型自行填写。
+
+    Note:
+        实例字段在构造后不可重新赋值；嵌套值的冻结范围由字段所属契约决定。
+
+        ``processed`` 只说明存储收到明确处置提交，不证明模型理解、实际回复或
+        外部效果。媒体正文按引用另行读取；查询和读取待办不会改变处置状态。
     """
 
     input_id: str

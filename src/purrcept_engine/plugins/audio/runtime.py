@@ -48,6 +48,8 @@ type _OwnedTask = asyncio.Task[None] | asyncio.Task[CallOutcome]
 
 @dataclass(slots=True)
 class _Speech:
+    """保存一次已接管声音工作的任务、阶段与真实播放身份。"""
+
     context: CallContext
     playback_id: str
     parameters: SpeechParameters
@@ -106,7 +108,20 @@ class AudioRuntime:
         monotonic: Callable[[], float] = time.monotonic,
         decode: bool = True,
     ) -> None:
-        """登记冻结资源与有限端口，构造不访问 TTS/设备/数据库。"""
+        """登记冻结资源与有限端口，构造不访问 TTS/设备/数据库。
+
+        Args:
+            instance_id: 本次装配中唯一的插件或宿主实例身份。
+            settings: 当前组件已校验的配置或纯声明。
+            source: 当前所有者借用的语音合成源。
+            player: 当前所有者借用的实际播放器。
+            ledger: 当前业务专用账本，不提供任意数据库操作。
+            output_dir: 归此资源所有者管理的输出文件目录。
+            profile_path: 声线预设文件路径；None 使用当前配置的预设。
+            late_results: 将实际迟到确认追加到原调用的有限端口。
+            monotonic: 本实例使用的单调时钟，不与持久化墙钟混用。
+            decode: 是否在素材交付前进行明确的 PCM 解码。 默认 True。
+        """
         self.instance_id, self.settings = instance_id, settings
         self._source, self._player, self._ledger = source, player, ledger
         self._output_dir, self._profile_path, self._clock = output_dir, profile_path, monotonic
@@ -132,20 +147,36 @@ class AudioRuntime:
     def resources_released(self) -> bool:
         """明确证明任务借用结束且播放器、合成连接均已实际关闭。
 
-        宿主仅在 close 报错时读取此明证，区分已释放后的旧任务故障与
-        真正关闭失败。开始关闭、空候播队列或任务数为零均不能使它为真。
-        重复 close 等待同一所有者任务，不重试或覆盖首次关闭的结果。
+        Note:
+            宿主仅在 close 报错时读取此明证，区分已释放后的旧任务故障与
+            真正关闭失败。开始关闭、空候播队列或任务数为零均不能使它为真。
+            重复 close 等待同一所有者任务，不重试或覆盖首次关闭的结果。
         """
         return self._resources_released
 
     def bind_body(self, body: BodyPort | None) -> None:
-        """app 在全部 build 后一次明确接线；无身体用 None 表达。"""
+        """app 在全部 build 后一次明确接线。
+
+        Args:
+            body: 可选身体端口；缺省时声音资源仍独立工作。
+
+        Raises:
+            RuntimeError: 音频身体端口必须在启动前且只绑定一次。
+
+        Note:
+            无身体用 None 表达。
+        """
         if self._body_bound or self._ready:
             raise RuntimeError("音频身体端口必须在启动前且只绑定一次。")
         self._body, self._body_bound = body, True
 
     async def start(self) -> None:
-        """完成装配后允许接管，不预热付费服务或启动播放器。"""
+        """完成装配后允许接管，不预热付费服务或启动播放器。
+
+        Raises:
+            RuntimeError: 音频启动前尚未完成身体端口接线。
+            HostStateError: 音频已经停止新工作。
+        """
         if not self._body_bound:
             raise RuntimeError("音频启动前尚未完成身体端口接线。")
         if self._stopping:
@@ -175,10 +206,23 @@ class AudioRuntime:
         }
 
     async def speak(self, parameters: SpeechParameters, context: CallContext) -> CallOutcome:
-        """接管顺序由循环上的入队顺序确定，排队计入同一绝对期限。
+        """接管本次合成与现场播放，返回真实声音阶段回执。
 
-        执行声明必须使用 parallel，让本模块唯一队列看见并限制每项候播；
-        外层目标锁不能再隐藏一个不受 interrupt 约束的等待序列。
+        Args:
+            parameters: 已通过能力参数模型校验的调用参数。
+            context: 宿主或 Core 注入的可信调用上下文，不由模型自行填写。
+
+        Returns:
+            实际确认、失败或未知结论，以及可 JSON 化的业务值和原生媒体引用。
+
+        Raises:
+            HostStateError: 音频不再接管新说话。
+
+        Note:
+            接管顺序由循环上的入队顺序确定，排队计入同一绝对期限。
+
+            执行声明必须使用 parallel，让本模块唯一队列看见并限制每项候播；
+            外层目标锁不能再隐藏一个不受 interrupt 约束的等待序列。
         """
         if not self._ready or self._stopping:
             raise HostStateError("音频不再接管新说话。")
@@ -507,10 +551,23 @@ class AudioRuntime:
             raise
 
     async def interrupt(self, context: CallContext, *, record_late: bool = False) -> CallOutcome:
-        """先撤当前及已有候播资格；期限内未收回同步合成则报告 pending。
+        """先撤当前及已有候播资格。
 
-        清理等待不保留队列锁，因此停止后新接管的 speak 仍可排队；旧活动
-        合成完成只归入原身份，不能重新取得新请求的播放资格。
+        Args:
+            context: 宿主或 Core 注入的可信调用上下文，不由模型自行填写。
+            record_late: 是否将稍后取得的真实结果写回原调用历史。 默认 False。
+
+        Returns:
+            实际确认、失败或未知结论，以及可 JSON 化的业务值和原生媒体引用。
+
+        Raises:
+            HostStateError: 音频正在释放资源，不再接管新的输出控制。
+
+        Note:
+            期限内未收回同步合成则报告 pending。
+
+            清理等待不保留队列锁，因此停止后新接管的 speak 仍可排队；旧活动
+            合成完成只归入原身份，不能重新取得新请求的播放资格。
         """
         if self._close_task is not None:
             raise HostStateError("音频正在释放资源，不再接管新的输出控制。")
@@ -623,7 +680,21 @@ class AudioRuntime:
         }
 
     async def record(self, parameters: RecordParameters, context: CallContext) -> CallOutcome:
-        """独立文件合成不加入现场队列；取消等待仍持有真实网络/文件任务。"""
+        """合成本次完整音频文件，返回保存的素材与真实回执。
+
+        Args:
+            parameters: 已通过能力参数模型校验的调用参数。
+            context: 宿主或 Core 注入的可信调用上下文，不由模型自行填写。
+
+        Returns:
+            实际确认、失败或未知结论，以及可 JSON 化的业务值和原生媒体引用。
+
+        Raises:
+            HostStateError: 音频已停止新合成。
+
+        Note:
+            独立文件合成不加入现场队列；取消等待仍持有真实网络/文件任务。
+        """
         if self._stopping:
             raise HostStateError("音频已停止新合成。")
         recording = _Recording()
@@ -711,7 +782,12 @@ class AudioRuntime:
         target.write_bytes(data)
 
     def snapshot(self) -> JsonObject:
-        """读取真实阶段和候播身份，不回显密钥、音频或全部说话正文。"""
+        """读取真实阶段和候播身份，不回显密钥、音频或全部说话正文。
+
+        Returns:
+            业务对象，按实际结果提供 ready、revision、active、queued、max_pending、last、
+            control、pending_controls、error 字段。
+        """
         active = self._active
         return {
             "ready": self._ready and not self._stopping,
@@ -748,8 +824,13 @@ class AudioRuntime:
     async def prepare_request(self) -> JsonObject:
         """保留当前播放阶段、排队身份及真实收尾回执，不暴露内部单调截止。
 
-        last/control 是实际播放与停音结果，不能按诊断字段一并丢弃；在途
-        业务状态仍不表示声音已被听见，执行额度和停止资格由宿主继续核验。
+        Returns:
+            业务对象，按实际结果提供 ready、active、queued、last、control、pending_controls、
+            error 字段。
+
+        Note:
+            last/control 是实际播放与停音结果，不能按诊断字段一并丢弃；在途
+            业务状态仍不表示声音已被听见，执行额度和停止资格由宿主继续核验。
         """
         state = self.snapshot()
         return {
@@ -770,7 +851,14 @@ class AudioRuntime:
         }
 
     async def stop_inputs(self) -> None:
-        """宿主关闭先撤全部现场资格，再收回输出；不关闭身体或 Store。"""
+        """宿主关闭先撤全部现场资格，再收回输出。
+
+        Raises:
+            BaseExceptionGroup: 音频停止接入失败。
+
+        Note:
+            不关闭身体或 Store。
+        """
         self._stopping, self._ready = True, False
         affected = (() if self._active is None else (self._active,)) + tuple(self._queue)
         self._queue.clear()

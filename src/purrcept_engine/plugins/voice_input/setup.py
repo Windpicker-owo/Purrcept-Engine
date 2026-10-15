@@ -21,7 +21,15 @@ MAX_MODEL_BYTES = 4 * 1024 * 1024
 
 
 def install_model(path: Path, client: httpx.Client) -> None:
-    """用调用方显式传输下载固定模型，坏响应不留下可加载的半截文件。"""
+    """用调用方显式传输下载固定模型，坏响应不留下可加载的半截文件。
+
+    Args:
+        path: 此操作定位的明确路径。
+        client: 此组件显式借用的客户端，资源寿命由创建者负责。
+
+    Raises:
+        ValueError: VAD 模型下载超过固定限额；Silero VAD 模型校验和不匹配，目标文件未改动。
+    """
     data = bytearray()
     with client.stream("GET", URL) as response:
         response.raise_for_status()
@@ -44,7 +52,11 @@ def install_model(path: Path, client: httpx.Client) -> None:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    """只有显式调用命令才下载，不自动安装 Python 依赖或启动收音。"""
+    """只有显式调用命令才下载，不自动安装 Python 依赖或启动收音。
+
+    Args:
+        argv: 命令行参数；None 读取当前进程参数。
+    """
     parser = argparse.ArgumentParser(description="显式下载并校验本机 Silero VAD 模型。")
     parser.add_argument(
         "--output", type=Path, default=Path(".purrcept/voice-input/silero_vad.onnx")

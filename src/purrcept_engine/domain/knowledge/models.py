@@ -1,4 +1,8 @@
-"""保存公开值及其语义校验，不打开数据库或调用设备。"""
+"""定义原文、片段、认识版本与独立反思的不可变记录。
+
+原文阅读范围、认识有效性和反思写资格分别表达，并保留确切证据与版本。
+这里只校验值，不查询存储、不调用检索模型或提交认识修订。
+"""
 
 from __future__ import annotations
 
@@ -52,16 +56,28 @@ class _Record(BaseModel):
     @model_validator(mode="before")
     @classmethod
     def frozen_mapping(cls, value: object) -> object:
-        """Core 以只读 Mapping 冻结工具对象；展开形状仍由各字段严格校验。
+        """Core 以只读 Mapping 冻结工具对象。
 
-        Pydantic 的 strict model 边界只接受 dict。复制真实 Mapping 可接受
-        Core 的不可变 JSON 对象，同时不对字符串、数值或未知对象作猜测转换。
+        Args:
+            value: 此校验边界接收的原始值，校验失败时保留明确错误。
+
+        Note:
+            展开形状仍由各字段严格校验。
+
+            Pydantic 的 strict model 边界只接受 dict。复制真实 Mapping 可接受
+            Core 的不可变 JSON 对象，同时不对字符串、数值或未知对象作猜测转换。
         """
         if isinstance(value, Mapping):
             return dict(cast(Mapping[object, object], value))
         return value
 
 
+# 维护者属性契约（类说明参与 schema，保持原 docstring）。
+# Attributes:
+#     evidence_id: 原文稳定身份，配合 version 定位不可变快照。
+#     source_json: 完整来源对象的 JSON；外界正文不能自称可信来源。
+#     text: 完整原文，不因摘要或分页裁剪已保存内容。
+#     media: 同库完整媒体的引用，取得页面不等同于模型已阅。
 class EvidenceSnapshot(_Record):
     """一份不可变原文；source_json 保存来源信封，不把它解释为系统权限。
 
@@ -84,14 +100,25 @@ class EvidenceSnapshot(_Record):
     @field_validator("source_json")
     @classmethod
     def source_is_json(cls, value: str) -> str:
-        """来源必须是完整标准 JSON 对象，不从 repr 猜测事实。"""
+        """来源必须是完整标准 JSON 对象，不从 repr 猜测事实。
+
+        Args:
+            value: 此校验边界接收的原始值，校验失败时保留明确错误。
+        """
         validate_json(value, arguments=True)
         return value
 
     @field_validator("items_json")
     @classmethod
     def items_are_json(cls, value: str | None) -> str | None:
-        """结构化分页只接受完整数组，普通人类正文仍保留为 text。"""
+        """结构化分页只接受完整数组，普通人类正文仍保留为 text。
+
+        Args:
+            value: 此校验边界接收的原始值，校验失败时保留明确错误。
+
+        Raises:
+            ValueError: 结构化材料必须是 JSON 数组。
+        """
         if value is not None:
             validate_json(value)
             decoded: object = json.loads(value)
@@ -104,8 +131,20 @@ class EvidenceSnapshot(_Record):
 class EvidenceDelivery:
     """一次真实初始或工具交付，存在不代表已经向模型呈现或复核完成。
 
-    material 保存完整公开 Message 或原工具内容；恢复仅匹配同批次、调用身份
-    和完整值，不能根据模型或外界正文中的来源字符串创建资格。
+    Attributes:
+        delivery_id: 完整材料交付登记的稳定身份。
+        batch_id: 独立反思批次的身份，须与批次版本配对使用。
+        version: 目标记录的确切版本，区别于可变的当前版本。
+        kind: 此业务值所属的稳定种类。
+        tool_call_id: Core 分配的工具调用身份，用于匹配完整工具结果。
+        material: 真正交付的完整消息或工具内容，供后续请求逐项匹配。
+        slice_refs: 当前材料实际覆盖的原文片段身份。
+
+    Note:
+        实例字段在构造后不可重新赋值；嵌套值的冻结范围由字段所属契约决定。
+
+        material 保存完整公开 Message 或原工具内容；恢复仅匹配同批次、调用身份
+        和完整值，不能根据模型或外界正文中的来源字符串创建资格。
     """
 
     delivery_id: str
@@ -117,6 +156,12 @@ class EvidenceDelivery:
     slice_refs: tuple[str, ...]
 
 
+# 维护者属性契约（类说明参与 schema，保持原 docstring）。
+# Attributes:
+#     slice_ref: 宿主保存的不可变原文范围身份。
+#     start: 范围包含的起始字符或条目下标。
+#     end: 范围的排他结束下标，单位由 unit 决定。
+#     media_ids: 本片段完整覆盖的原生媒体身份。
 class EvidenceSlice(_Record):
     """宿主生成的可引用范围，文本范围为半开区间，媒体另按真实引用记录。"""
 
@@ -130,12 +175,28 @@ class EvidenceSlice(_Record):
 
     @model_validator(mode="after")
     def ordered_range(self) -> Self:
-        """空正文仍可携带媒体或来源；倒置区间不能成为阅读证明。"""
+        """空正文仍可携带媒体或来源。
+
+        Returns:
+            校验完成的当前值或解析后的新配置，具体是否复制由实现说明。
+
+        Raises:
+            ValueError: 来源片段范围倒置。
+
+        Note:
+            倒置区间不能成为阅读证明。
+        """
         if self.end < self.start:
             raise ValueError("来源片段范围倒置。")
         return self
 
 
+# 维护者属性契约（类说明参与 schema，保持原 docstring）。
+# Attributes:
+#     snapshot: 原文页的确切快照，与 memory 只能存在一项。
+#     memory: 认识页的确切版本，不生成新的原文阅读资格。
+#     slice: 真正原文范围的凭据；概要或认识展开不凭空生成此值。
+#     next_cursor: 继续读取同一版本的宿主游标；None 表示已读到末尾。
 class EvidencePage(_Record):
     """一次完整阅读结果；摘要没有 slice，创建原文 slice 也不表示模型已读。"""
 
@@ -148,7 +209,14 @@ class EvidencePage(_Record):
 
     @model_validator(mode="after")
     def one_source(self) -> Self:
-        """认识展开是派生页面，不能伪装成新的原文阅读资格。"""
+        """认识展开是派生页面，不能伪装成新的原文阅读资格。
+
+        Returns:
+            校验完成的当前值或解析后的新配置，具体是否复制由实现说明。
+
+        Raises:
+            ValueError: 页面必须且只能对应原文或认识版本；认识正文不能成为独立原文片段。
+        """
         if (self.snapshot is None) == (self.memory is None):
             raise ValueError("页面必须且只能对应原文或认识版本。")
         if self.memory is not None and self.slice is not None:
@@ -180,6 +248,13 @@ class MemoryConflict(MemoryConflictTarget):
     inactive_reason: str | None = None
 
 
+# 维护者属性契约（类说明参与 schema，保持原 docstring）。
+# Attributes:
+#     base_version: 当前修订基于的认识版本；首次创建为 0。
+#     sources: 已实际呈现且仍可引用的原文片段身份。
+#     conflicts: 保留未决反证的目标和确切版本，不自动替代对方。
+#     valid_from: 事实有效时间下界，不是认识写入时间。
+#     valid_until: 事实有效时间上界；None 不设显式上界。
 class MemoryPatch(_Record):
     """本批有据修订；原文来源、替代和未决版本关系由同一事务确认。
 
@@ -203,7 +278,14 @@ class MemoryPatch(_Record):
 
     @model_validator(mode="after")
     def consistent_revision(self) -> Self:
-        """有效期、明确替代与未决关系必须表达相容且无重复的修订。"""
+        """有效期、明确替代与未决关系必须表达相容且无重复的修订。
+
+        Returns:
+            校验完成的当前值或解析后的新配置，具体是否复制由实现说明。
+
+        Raises:
+            ValueError: 参数值或组合不满足本入口的明确约束，错误正文指出具体字段。
+        """
         if self.valid_from is not None and self.valid_until is not None:
             if self.valid_until <= self.valid_from:
                 raise ValueError("认识有效时间区间为空。")
@@ -301,6 +383,11 @@ class ReflectionReceipt(_Record):
     coverage: tuple[Text, ...] = Field(default=(), strict=False)
 
 
+# 维护者属性契约（类说明参与 schema，保持原 docstring）。
+# Attributes:
+#     version: 当前批次的写资格版本，恢复不能借用旧代次。
+#     required_slice_refs: 本批冻结的必需复核范围。
+#     receipt: 结构化结案已提交时存在的真实回执。
 class ReflectionBatch(_Record):
     """宿主冻结的一批范围和异常，version 区分实际处理代次。"""
 
@@ -323,6 +410,12 @@ class PendingEvidence(_Record):
     deferred_slice_refs: tuple[Text, ...] = Field(default=(), strict=False)
 
 
+# 维护者属性契约（类说明参与 schema，保持原 docstring）。
+# Attributes:
+#     evidence: 监管所依据的已呈现原文范围。
+#     activity_id: 可选活动约束，须与 activity_version 同时填写。
+#     activity_version: 监管针对的确切活动版本，迟到意见不能控制新状态。
+#     level: reminder、review 或 urgent；紧急意见仍须宿主交接。
 class SupervisionNotice(_Record):
     """有原文依据的监管意见，urgent 只请求重思考，不取得行动权限。"""
 
@@ -337,7 +430,14 @@ class SupervisionNotice(_Record):
 
     @model_validator(mode="after")
     def activity_pair(self) -> Self:
-        """活动约束须同时给出身份与版本，缺项不能默认作用到当前活动。"""
+        """活动约束须同时给出身份与版本，缺项不能默认作用到当前活动。
+
+        Returns:
+            校验完成的当前值或解析后的新配置，具体是否复制由实现说明。
+
+        Raises:
+            ValueError: 活动监管必须包含确切身份和版本。
+        """
         if (self.activity_id is None) != (self.activity_version is None):
             raise ValueError("活动监管必须包含确切身份和版本。")
         return self

@@ -33,7 +33,13 @@ function pathNodes(action: Action, snapshot: Snapshot): ActionPathNode[] {
   return nodes.slice(0, 5);
 }
 
-/** 展示当前主体和两个功能区域；快照刷新不会重挂载舞台或重复触发入场动画。 */
+/**
+ * 组织当前主体状态、近期行动与关注事项。
+ *
+ * state、agent、attention 必须来自同一共享观察事实，go 只定位完整页面。
+ *
+ * @returns 仅呈现当前输入事实的 React 元素。
+ */
 export function Home({ state, agent, attention, go }: { state: PanelState; agent: AgentView; attention: readonly AttentionItem[]; go: (route: Route) => void }): ReactElement {
   const pathRef = useRef<HTMLDivElement>(null);
   const attentionRef = useRef<HTMLElement>(null);

@@ -15,7 +15,21 @@ from purrcept_engine.values import JsonObject
 
 @dataclass(frozen=True, slots=True)
 class ParsedNote:
-    """一次已稳定取得的文件内容；版本为实际 UTF-8 字节的内容摘要。"""
+    """一次已稳定取得的文件内容；版本为实际 UTF-8 字节的内容摘要。
+
+    Attributes:
+        path: 此操作定位的明确路径。
+        name: 从技能元数据取得的展示名称，区别于文件路径。
+        description: 向调用者或模型说明可观察行为的文字。
+        content: 本次明确写入的完整正文。
+        body_start: 技能文件中正文的起始字符位置。
+        version: 目标记录的确切版本，区别于可变的当前版本。
+        byte_count: 当前内容实际占用的字节数。
+        occurred_at: 原始事实实际发生的 Unix 时间戳（秒）。
+
+    Note:
+        实例字段在构造后不可重新赋值；嵌套值的冻结范围由字段所属契约决定。
+    """
 
     path: str
     name: str
@@ -32,7 +46,14 @@ class ParsedNote:
         return self.description is not None
 
     def catalog_entry(self, read_path: str) -> JsonObject:
-        """投影名称、适用说明、版本和读取入口，正文不能进入目录。"""
+        """投影名称、适用说明、版本和读取入口，正文不能进入目录。
+
+        Args:
+            read_path: 用于后续展开该技能正文的已装配能力路径。
+
+        Returns:
+            业务对象，按实际结果提供 path、name、description、version、read 字段。
+        """
         return {
             "path": self.path,
             "name": self.name,
@@ -47,8 +68,19 @@ def parse_note(
 ) -> ParsedNote:
     """保留既有单行 name/description 解析，未知元数据不提升为宿主指令。
 
-    只采用首个 frontmatter 结束分隔符，正文里的后续分隔符保持正文。引号仅
-    去除一对匹配外层引号；不宣称支持 YAML 转义、嵌套或多行表达式。
+    Args:
+        path: 此操作定位的明确路径。
+        content: 本次明确写入的完整正文。
+        version: 目标记录的确切版本，区别于可变的当前版本。
+        byte_count: 当前内容实际占用的字节数。
+        occurred_at: 原始事实实际发生的 Unix 时间戳（秒）。
+
+    Returns:
+        笔记路径、版本和完整正文的解析结果。
+
+    Note:
+        只采用首个 frontmatter 结束分隔符，正文里的后续分隔符保持正文。引号仅
+        去除一对匹配外层引号；不宣称支持 YAML 转义、嵌套或多行表达式。
     """
     lines = content.splitlines(keepends=True)
     metadata: dict[str, str] = {}

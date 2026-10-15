@@ -29,7 +29,27 @@ def validate_request(
     additional_seconds: float | None,
     reason: str | None,
 ) -> ActivityRequest:
-    """真实边界精确验证组合，不把无关参数忽略为默认值。"""
+    """校验活动控制的命令种类与字段组合，构造明确请求。
+
+    Args:
+        command_id: 控制命令的稳定身份；重复提交须沿用原身份和内容。
+        command: 明确的活动控制种类，目标与预算字段须满足对应命令。
+        activity_id: 已创建活动的稳定身份。
+        definition: 新活动使用的已装配定义名。
+        goal: 明确委托给专业活动的目标文本。
+        additional_seconds: 本次明确增加的活动预算秒数。
+        reason: 供后续核对的明确处置原因。
+
+    Returns:
+        字段与命令用途一致的明确活动控制请求。
+
+    Raises:
+        ActivityError: 命令不属于 start/pause/resume/end/adjust/extend，字段组合不匹配，
+            或所需身份、目标与预算无效。
+
+    Note:
+        真实边界精确验证组合，不把无关参数忽略为默认值。
+    """
     validate_text(command_id, "command_id")
     if command not in ("start", "pause", "resume", "end", "adjust", "extend"):
         raise ActivityError("活动命令无效。", code="activity_arguments")
@@ -66,7 +86,24 @@ def control_record(
     in_flight: bool,
     maximum: float,
 ) -> ActivityRecord:
-    """接管控制立即撤销下一步许可；实际运行计时到真实停止确认才结清。"""
+    """根据当前活动与明确控制，构造下一提交候选。
+
+    Args:
+        current: 规则计算前已确认的活动状态。
+        request: 包含命令身份、目标活动与预算参数的明确控制请求。
+        now: 本次规则计算采用的时刻，便于同一操作保持一致。
+        in_flight: 当前是否仍有尚未归还的专业步骤。
+        maximum: 当前业务规则允许的最大预算值。
+
+    Returns:
+        活动的控制、预算、运行代次与工作快照。
+
+    Raises:
+        ActivityError: 活动已结束、尚有在途步骤、未完成恢复核对，或命令不符合当前状态与预算。
+
+    Note:
+        接管控制立即撤销下一步许可；实际运行计时到真实停止确认才结清。
+    """
     if current.state in ("ended", "completed"):
         raise ActivityError("已结束活动不能恢复或控制。")
     if request.command == "extend":

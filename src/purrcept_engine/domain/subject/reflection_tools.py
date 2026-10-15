@@ -105,7 +105,11 @@ REFLECTION_INSTRUCTIONS = (
 
 
 def reflection_instructions() -> tuple[SystemInstruction, ...]:
-    """构造独立反思的固定规则，完成确认属于工具，原文仍是 user 材料。"""
+    """构造独立反思的固定规则，完成确认属于工具，原文仍是 user 材料。
+
+    Returns:
+        按固定顺序组成 system 前缀的完整指令与能力目录。
+    """
     return (SystemInstruction.from_text(REFLECTION_INSTRUCTIONS),)
 
 
@@ -118,7 +122,14 @@ class ReflectionPorts(Protocol):
     """
 
     async def media_blocks(self, media: tuple[MediaReference, ...]) -> tuple[ContentBlock, ...]:
-        """按传入引用顺序返回全部原生媒体，字节应与持久 BLOB 摘要一致。"""
+        """按传入引用顺序返回全部原生媒体，字节应与持久 BLOB 摘要一致。
+
+        Args:
+            media: 已接管媒体的引用集合，展开时必须取得原始 BLOB。
+
+        Returns:
+            按原始顺序展开的完整 Core 内容块，包括真实原生媒体。
+        """
         ...
 
     def foreground_generation(self) -> int:
@@ -128,12 +139,22 @@ class ReflectionPorts(Protocol):
     async def supervision_committed(
         self, record: SupervisionRecord, *, observed_generation: int
     ) -> None:
-        """交接已经生效的新监管；展示失败不回滚其提交。"""
+        """交接已经生效的新监管。
+
+        Args:
+            record: 带原始依据与版本约束的监管记录。
+            observed_generation: 接管或判断开始时观察到的前台生成代次。
+
+        Note:
+            展示失败不回滚其提交。
+        """
         ...
 
 
 @dataclass(frozen=True, slots=True)
 class _Delivery:
+    """保存当前会话的完整交付候选与精确范围，供真实请求逐项匹配。"""
+
     content: tuple[ContentBlock, ...]
     slice_refs: tuple[str, ...]
 
@@ -152,7 +173,12 @@ class EvidenceDeliveries:
         self._tools: dict[str, list[_Delivery]] = {}
 
     def register_initial(self, message: Message, slice_refs: tuple[str, ...]) -> None:
-        """登记宿主真正组装的完整输入，不从其中的外界正文解析权限标记。"""
+        """登记宿主真正组装的完整输入，不从其中的外界正文解析权限标记。
+
+        Args:
+            message: 当前请求中实际存在的完整 Core 消息。
+            slice_refs: 当前材料实际覆盖的原文片段身份。
+        """
         entry = (message, slice_refs)
         if entry not in self._initial:
             self._initial.append(entry)
@@ -160,7 +186,16 @@ class EvidenceDeliveries:
     def register_result(
         self, tool_call_id: str, result: ToolResult, slice_refs: tuple[str, ...]
     ) -> None:
-        """登记真实工具候选，复用调用 ID 时仍按完整内容区分原始交付。"""
+        """登记真实工具候选，复用调用 ID 时仍按完整内容区分原始交付。
+
+        Args:
+            tool_call_id: Core 分配的工具调用身份，用于匹配完整工具结果。
+            result: Core 工具的完整内容与错误标记。
+            slice_refs: 当前材料实际覆盖的原文片段身份。
+
+        Raises:
+            ValueError: 错误工具结果不能登记原文交付。
+        """
         if result.is_error:
             raise ValueError("错误工具结果不能登记原文交付。")
         delivery = _Delivery(result.content, slice_refs)
@@ -169,10 +204,19 @@ class EvidenceDeliveries:
             entries.append(delivery)
 
     def restore_history(self, deliveries: tuple[EvidenceDelivery, ...]) -> None:
-        """接回账本完整匹配的原交付；持久登记本身不代表本次已经呈现。
+        """接回账本完整匹配的原交付。
 
-        账本返回原批次、完整 Message 或工具内容及确切范围。当前请求仍须通过
-        presented_refs 再次匹配；不能用来源身份字符串恢复删去的正文或媒体。
+        Args:
+            deliveries: 已登记的完整原文交付记录，保存不等同于已呈现。
+
+        Raises:
+            ValueError: 初始交付不能携带工具调用身份；持久交付类别与完整材料不一致。
+
+        Note:
+            持久登记本身不代表本次已经呈现。
+
+            账本返回原批次、完整 Message 或工具内容及确切范围。当前请求仍须通过
+            presented_refs 再次匹配；不能用来源身份字符串恢复删去的正文或媒体。
         """
         for delivery in deliveries:
             if delivery.kind == "initial" and isinstance(delivery.material, Message):
@@ -195,8 +239,12 @@ class EvidenceDeliveries:
     def retain_history(self, messages: tuple[Message, ...]) -> None:
         """只保留当前实际请求中完整存在的登记，摘要安装不扩展原文资格。
 
-        每次请求成功门槛清理缓存，避免连续批次或失败临时历史无限堆积。
-        权威交付记录仍在同库保留，以后恢复相同完整历史时可以重新读取。
+        Args:
+            messages: 按实际先后排列的完整 Core 消息，不从正文猜测交付身份。
+
+        Note:
+            每次请求成功门槛清理缓存，避免连续批次或失败临时历史无限堆积。
+            权威交付记录仍在同库保留，以后恢复相同完整历史时可以重新读取。
         """
         self._initial = [entry for entry in self._initial if entry[0] in messages]
         results: dict[str, list[tuple[ContentBlock, ...]]] = {}
@@ -215,7 +263,14 @@ class EvidenceDeliveries:
         self._tools = retained_tools
 
     def presented_refs(self, request: ModelRequest) -> tuple[str, ...]:
-        """从实际请求找出精确登记的 block 组，不扫描字符串相似或全量待办。"""
+        """从实际请求找出精确登记的 block 组，不扫描字符串相似或全量待办。
+
+        Args:
+            request: 已经按 Core 协议组装的完整生成请求。
+
+        Returns:
+            与本次完整请求逐项匹配的原文片段身份，不能由正文标记伪造。
+        """
         references: dict[str, None] = {}
         for message in request.messages:
             if message.role is MessageRole.USER:
@@ -271,7 +326,18 @@ class ReflectionTools:
         deliveries: EvidenceDeliveries | None = None,
         delivery: ToolDeliveryGate | None = None,
     ) -> None:
-        """借用账本和外围端口，连续会话应复用同一个材料登记实例。"""
+        """借用账本和外围端口，连续会话应复用同一个材料登记实例。
+
+        Args:
+            store: 应用借出的领域存储端口，实际连接和关闭归资源所有者。
+            batch: 当前独立反思批次及其冻结范围。
+            ports: 应用显式借出的有限端口，不包含设备客户端或通用服务定位器。
+            page_chars: 本实例统一的正文分页字符上限。 默认 8000。
+            knowledge: 原文展开与召回服务；None 创建同一账本上的 KnowledgeService。 None
+                表示未借入认识服务。
+            deliveries: 连续反思会话复用的完整材料登记；None 创建本实例登记。
+            delivery: 本轮工具原文交付门槛；None 不执行候选交付替换。
+        """
         self.store = store
         self.batch = batch
         self.ports = ports
@@ -289,15 +355,33 @@ class ReflectionTools:
         )
 
     def toolset(self) -> ToolSet:
-        """返回固定五工具，不包含世界行动、手动压缩或旧 complete_review。"""
+        """返回固定五工具，不包含世界行动、手动压缩或旧 complete_review。
+
+        Returns:
+            当前会话按固定顺序装配的 Core 工具集合。
+        """
         return self._toolset
 
     def presented_refs(self, request: ModelRequest) -> tuple[str, ...]:
-        """对照真正请求取得可信候选，调用本方法本身不修改账本。"""
+        """对照真正请求取得可信候选，调用本方法本身不修改账本。
+
+        Args:
+            request: 已经按 Core 协议组装的完整生成请求。
+
+        Returns:
+            本次真实请求完整覆盖的原文片段身份，不在此提前提交已读资格。
+        """
         return self.deliveries.presented_refs(request)
 
     async def initial_message(self, pages: tuple[EvidencePage, ...]) -> Message:
-        """组装本批原文及完整媒体，只登记候选而不提前声明模型已读。"""
+        """组装本批原文及完整媒体，只登记候选而不提前声明模型已读。
+
+        Args:
+            pages: 当前批次实际取得的完整原文页面。
+
+        Returns:
+            供后续 Core 请求使用的完整消息。
+        """
         blocks: list[ContentBlock] = [
             TextBlock(
                 _json(
@@ -423,6 +507,23 @@ class ReflectionTools:
                 raise RuntimeError("原生媒体与持久引用不一致。")
         return (TextBlock(_json(payload)), *native)
 
+    # 维护者契约（工具说明参与模型请求，保持下方 docstring 原文）。
+    # 检索长时记忆库中有效认识及原始来源。
+    #
+    # Args:
+    #     query: 用于关键词或语义检索的意图文本。
+    #     entities_json: 已编码为 JSON 字符串数组的实体过滤条件。 默认 '[]'。
+    #     start: 按发生时间筛选的起点；None 表示不限制此端。
+    #     end: 按发生时间筛选的终点；None 表示不限制此端。
+    #     at: 核验记录有效性的 Unix 时间戳；None 使用当前时间。
+    #     include_inactive: 是否同时返回已失效的历史记录，并保留失效原因。 默认 False。
+    #
+    # Returns:
+    #     成功时的编码业务结果，或含原生内容与错误标记的完整工具结果。
+    #
+    # Note:
+    #     在更新认识前查重，判断新材料是补充、确认还是推翻旧认识；历史记录须明确
+    #     include_inactive。
     async def recall(
         self,
         query: StrictStr,
@@ -443,6 +544,24 @@ class ReflectionTools:
             return _input_error(error)
         return recall_payload(result)
 
+    # 维护者契约（工具说明参与模型请求，保持下方 docstring 原文）。
+    # 展开本批候选或引用的确切原文版本，查阅完整对话上下文与原生媒体。
+    #
+    # Args:
+    #     id: 当前工具定位的认识、原文或计划身份。
+    #     level: 需要展开的材料层级，具体允许值由认识服务校验。 默认 'evidence'。
+    #     cursor: 宿主签发并保存的不透明续读游标，续读同一快照版本。 None 表示首次读取。
+    #     max_chars: 本页正文的字符上限；分页游标继续绑定原快照。 None
+    #         使用本实例配置的统一页长。
+    #     version: 当前反思批次的确切版本，旧代次不再拥有写入资格。 None 首读当前版本，
+    #         续读仍绑定游标的原版本。
+    #     context: 宿主或 Core 注入的可信调用上下文，不由模型自行填写。
+    #
+    # Returns:
+    #     完整工具内容和错误标记；引用回执可能要求继续展开原文。
+    #
+    # Note:
+    #     省略 version 首读当前版本；历史冲突引用可指定 version。cursor 始终绑定原快照。
     async def read_evidence(
         self,
         id: Text,
@@ -480,6 +599,30 @@ class ReflectionTools:
             )
         return result
 
+    # 维护者契约（工具说明参与模型请求，保持下方 docstring 原文）。
+    # 原子沉淀或修订有据认识（preference/relationship/episode/experience/belief等）。
+    #
+    # Args:
+    #     id: 当前工具定位的认识、原文或计划身份。
+    #     content: 本次明确写入的完整正文。
+    #     sources: 为本次修订或监管提供依据的原文片段身份。
+    #     base_version: 本次认识修订所基于的版本，首次创建使用 0。 默认 0。
+    #     kind: 此业务值所属的稳定种类。 默认 'belief'。
+    #     scope: 本次监管意见所约束的明确业务范围。 默认 'subject'。
+    #     summary: 已冻结的摘要文本或消息，不替代原文已读证明。 默认 ''。
+    #     overview: 用于召回的简短概览，不替代完整正文。 默认 ''。
+    #     entities: 需要共同检索或关联的实体名称集合。 默认不附加此类条目。
+    #     valid_from: 认识事实的生效时间；None 表示未指定下界。
+    #     valid_until: 认识事实的失效时间；None 表示未指定上界。
+    #     supersedes: 本次修订明确替代的旧认识身份。
+    #     conflicts: 与本次认识保持未决反证关系的目标及确切版本。 默认不附加此类条目。
+    #
+    # Returns:
+    #     成功时的编码业务结果，或含原生内容与错误标记的完整工具结果。
+    #
+    # Note:
+    #     sources 必须是本轮已呈现的原文片段引用，base_version 严格对齐当前版本；
+    #     保留时间范围与反例。
     async def revise_memory(
         self,
         id: Text,
@@ -520,6 +663,24 @@ class ReflectionTools:
             return _input_error(error)
         return _json(record.model_dump(mode="json"))
 
+    # 维护者契约（工具说明参与模型请求，保持下方 docstring 原文）。
+    # 向前台提交有据监管意见，纠偏客服腔、未履行的约定或认知冲突。
+    #
+    # Args:
+    #     id: 当前工具定位的认识、原文或计划身份。
+    #     issue: 监管意见指出的具体问题。
+    #     evidence: 本次工具给出的原文片段身份集合。
+    #     suggestion: 基于实际证据提出的修正建议。
+    #     level: 需要展开的材料层级，具体允许值由认识服务校验。 默认 'reminder'。
+    #     activity_id: 已创建活动的稳定身份。 None 只适用于不需要已有活动身份的控制。
+    #     activity_version: 监管意见所约束的活动版本，须与活动身份同时提供。
+    #     expires_at: 监管意见的有效截止时刻；None 表示无显式期限。
+    #
+    # Returns:
+    #     成功时的编码业务结果，或含原生内容与错误标记的完整工具结果。
+    #
+    # Note:
+    #     urgent 仅请求重新思考当前轮次，不代替前台做世界决定，也不直接调用世界能力。
     async def supervise(
         self,
         id: Text,
@@ -555,6 +716,19 @@ class ReflectionTools:
             await self.ports.supervision_committed(record, observed_generation=observed_generation)
         return _json(record.model_dump(mode="json"))
 
+    # 维护者契约（工具说明参与模型请求，保持下方 docstring 原文）。
+    # 原子提交本批反思结案、暂缓和程序异常评估。
+    #
+    # Args:
+    #     reviews: 对本批已复核原文范围给出的结论。
+    #     deferred: 本批未完成范围及明确的延期理由。
+    #     findings: 本批需要核验的实际异常或运行观察。
+    #
+    # Returns:
+    #     成功时的编码业务结果，或含原生内容与错误标记的完整工具结果。
+    #
+    # Note:
+    #     written 必须真实对应本批 revise_memory 产生的有效修订，每项材料明确交代处置决定。
     async def finish_reflection(
         self,
         reviews: tuple[Review, ...],

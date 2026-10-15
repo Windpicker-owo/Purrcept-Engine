@@ -44,7 +44,18 @@ from purrcept_engine.values import JsonObject
 
 @dataclass(frozen=True, slots=True)
 class SubjectAssembly:
-    """宿主持有的主体及摘要资源，客户端仅借用，不在此重复构造或关闭。"""
+    """宿主持有的主体及摘要资源，客户端仅借用，不在此重复构造或关闭。
+
+    Attributes:
+        service: 已装配的业务服务，能力入口借用其已有状态。
+        foreground_history: 前台已提交历史的独立维护所有者。
+        knowledge: 原文展开与认识召回服务，修订仍经过反思批次契约。
+        background: 同一主体的独立反馈和反思所有者。
+        reflection_history: 反思已提交历史的独立维护所有者。
+
+    Note:
+        实例字段在构造后不可重新赋值；嵌套值的冻结范围由字段所属契约决定。
+    """
 
     service: SubjectService
     foreground_history: HistoryPreparation
@@ -69,8 +80,28 @@ def build_subject(
 ) -> SubjectAssembly:
     """按配置 discriminator 选择命名资源，构造不查询库或发起模型请求。
 
-    rules 是明确注册的纯计量依据，不根据模型名猜 Provider 窗口或媒体公式。
-    外部模型不可用沿原预算失败，不从其余配置寻找替代模型。
+    Args:
+        config: 已校验的宿主配置声明，不在构造时连接外部服务。
+        store: 应用借出的领域存储端口，实际连接和关闭归资源所有者。
+        catalog: 全部已启用插件共同生成的冻结目录。
+        generation: 按配置名注入的生成后端集合。
+        decisions: 按配置名注入的专用判断后端集合。
+        execute: 当前主体执行受限行动的有限入口。
+        plugins: 本实例已装配的插件运行资源，不执行隐式发现。
+        can_start: 实际派发前重新检查的资格回调，等待后仍须复核。
+        rules: 已装配容量规则表，未知名称不能静默使用其他规则。
+        wakeup_committed: 计划提交后唤醒调度器的回调，不直接执行计划。
+        knowledge: 原文展开与认识召回服务，修订仍经过反思批次契约。
+
+    Returns:
+        已连接前台、后台、认识及各自历史维护所有者的主体装配结果。
+
+    Raises:
+        TypeError: 已校验主体用途没有生成模型声明。
+
+    Note:
+        rules 是明确注册的纯计量依据，不根据模型名猜 Provider 窗口或媒体公式。
+        外部模型不可用沿原预算失败，不从其余配置寻找替代模型。
     """
     foreground_name = config.subject.foreground
     foreground_settings = config.models[foreground_name]
@@ -90,6 +121,7 @@ def build_subject(
         *,
         enforce: bool,
     ) -> Callable[[JsonObject], CapacityAssessment]:
+        """为一个模型声明绑定完整请求容量评估或强制核验。"""
         declaration = (
             GenerationCapacity(
                 settings.context_window,
@@ -103,6 +135,7 @@ def build_subject(
         )
 
         def measure(payload: JsonObject) -> CapacityAssessment:
+            """按绑定的模型容量声明评估这份完整请求。"""
             operation = check_capacity if enforce else assess_capacity
             return operation(
                 payload,
@@ -160,6 +193,7 @@ def build_subject(
     )
 
     async def native(media: tuple[MediaReference, ...]) -> tuple[ContentBlock, ...]:
+        """从权威媒体存储展开已接管的原生内容。"""
         return await media_blocks(store, media)
 
     async def attention_work() -> JsonObject:
@@ -192,6 +226,7 @@ def build_subject(
         }
 
     async def refresh(budget: RequestBudget) -> DynamicState:
+        """在原轮次预算内读取最新已提交工作，构建动态尾部。"""
         budget.check()
         # Ordering: 当前未决材料全部重新核验，不能用注意的有限背景或已投递
         # 邮箱代替仍有效监管、未完成计划和真实调用事实。超额由完整请求拒绝。

@@ -67,7 +67,15 @@ class RequestBudget:
     """
 
     def __init__(self, *, max_requests: int, deadline: float) -> None:
-        """接收已确定的批次上限和单调截止，不在包装中重新起算整轮。"""
+        """接收已确定的批次上限和单调截止，不在包装中重新起算整轮。
+
+        Args:
+            max_requests: 本轮逻辑模型请求总上限，传输重试不重复占名额。
+            deadline: 所属事件循环的绝对单调截止时间，不是 Unix 时间戳。
+
+        Raises:
+            ValueError: 请求预算需要正数上限及有限截止。
+        """
         if isinstance(max_requests, bool) or max_requests <= 0 or not math.isfinite(deadline):
             raise ValueError("请求预算需要正数上限及有限截止。")
         self._max_requests = max_requests
@@ -91,7 +99,14 @@ class RequestBudget:
         return self._used
 
     def claim(self) -> float:
-        """原子消耗一个逻辑名额并返回原批次截止，重试不得再次调用。"""
+        """原子消耗一个逻辑名额并返回原批次截止，重试不得再次调用。
+
+        Returns:
+            原批次的绝对单调截止时刻；本次调用已消耗一个逻辑名额。
+
+        Raises:
+            RequestBudgetExceeded: 连续批次的逻辑模型请求额度耗尽。
+        """
         self.check()
         if self.used >= self.max_requests:
             raise RequestBudgetExceeded("连续批次的逻辑模型请求额度耗尽", provider="engine")
@@ -99,7 +114,11 @@ class RequestBudget:
         return self.deadline
 
     def check(self) -> None:
-        """在新尝试和等待后核验原轮次仍有效。"""
+        """在新尝试和等待后核验原轮次仍有效。
+
+        Raises:
+            RequestBudgetExceeded: 连续批次已结束或达到截止。
+        """
         if self._revoked or asyncio.get_running_loop().time() >= self.deadline:
             raise RequestBudgetExceeded("连续批次已结束或达到截止", provider="engine")
 
@@ -111,9 +130,16 @@ class RequestBudget:
 async def prepare_off_loop[T](operation: Callable[[], T]) -> T:
     """在线程中串行完成一次本地请求准备，避免阻塞实时收音和停音。
 
-    调用方在返回前独占材料及交付状态；操作不得启动模型、提交事务或
-    操作设备。取消不能停止 Python 线程，因此仍等待原工作归还，再传播
-    取消，禁止其与下一轮共享状态竞争。没有逐帧任务或后台准备队列。
+    Args:
+        operation: 不触发模型、设备或事务的同步材料准备，调用方独占其借用状态直到归还。
+
+    Returns:
+        本地准备操作的实际返回值。
+
+    Note:
+        调用方在返回前独占材料及交付状态；操作不得启动模型、提交事务或
+        操作设备。取消不能停止 Python 线程，因此仍等待原工作归还，再传播
+        取消，禁止其与下一轮共享状态竞争。没有逐帧任务或后台准备队列。
     """
     task = asyncio.create_task(asyncio.to_thread(operation), name="model-local-preparation")
     cancelled = False
@@ -132,6 +158,11 @@ class _EventBuffer:
     """一次尝试的流材料；原参数权威保存，预览缓存按诊断字节有限保留。"""
 
     def __init__(self, limit: int) -> None:
+        """创建单次传输尝试的有界诊断缓冲与完整参数通道。
+
+        Args:
+            limit: 本次尝试允许保留的诊断字节数。
+        """
         self.limit = limit
         self.bytes = 0
         self.events: list[ModelStreamEvent] = []
@@ -144,6 +175,15 @@ class _EventBuffer:
 
     def __call__(self, event: ModelStreamEvent) -> None:
         # 超时或取消撤销采用资格；迟到材料不能被交回 Core 或拼进新尝试。
+        """在当前所有者的契约内完成一次调用，保留原始结果与故障。
+
+        Args:
+            event: 后端本次尝试实际报告的流事件；Started 须在首位，Completed 后不得再发事件。
+
+        Raises:
+            TypeError: 典型拒绝原因：后端必须报告 ModelStreamEvent；后端不能在 Completed
+                之后报告事件；Started 必须是每次尝试的第一个且唯一开始事件。
+        """
         if not self.active:
             return
         if self.protocol_error is not None:
@@ -178,7 +218,17 @@ class _EventBuffer:
         self.events.append(event)
 
     def validate_response(self, response: ModelResponse | DecisionResponse) -> None:
-        """不能采用吞掉观察回调错误或 Completed 与返回值冲突的响应。"""
+        """核对后端返回值与已报告流事件的一致性。
+
+        Args:
+            response: 当前后端或原生协议实际交付的完整响应。
+
+        Raises:
+            TypeError: Completed 的响应必须等于后端返回值。
+
+        Note:
+            不能采用吞掉观察回调错误或 Completed 与返回值冲突的响应。
+        """
         if self.protocol_error is not None:
             raise self.protocol_error
         if self.completed is not None and self.completed != response:
@@ -200,6 +250,22 @@ class _RetryRunner:
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
         can_start: Callable[[], None] | None = None,
     ) -> None:
+        """绑定同一批次预算、编译器和证据端口，准备串行传输尝试。
+
+        Args:
+            sink: 接收逻辑请求及各次尝试事实的权威提交端口。
+            compiler: 按实际 SDK 布局冻结完整请求材料的纯编译器。
+            scope: 冻结的请求因果身份、轮次和来源引用。
+            budget: 当前连续批次共享的请求数量与单调截止预算。
+            policy: 唯一的有界传输重试策略，不另起一轮预算。
+            diagnostic_bytes: 单次尝试允许保留的流诊断字节数，不裁剪原参数或完整响应。
+            sleep: 等待退避间隔的异步函数，可注入确定性的测试时钟。
+            can_start: 实际派发前重新检查的资格回调，等待后仍须复核。 None
+                表示不附加调用方资格条件，宿主固定门槛仍生效。
+
+        Raises:
+            ValueError: 诊断字节上限不能为负。
+        """
         if diagnostic_bytes < 0:
             raise ValueError("诊断字节上限不能为负。")
         self.compiler = compiler
@@ -222,11 +288,14 @@ class _RetryRunner:
         return len(self._tasks)
 
     async def close(self) -> None:
-        """停止新调用并收尾已登记尝试；等待取消不撤销同一个清理任务。
+        """停止新调用并收尾已登记尝试。
 
-        此关闭收回本包装的在途借用并等待已接管证据提交，不关闭 app 拥有的
-        SDK 资源或 Store。宿主以其总关闭截止等待；后端或提交未实际结束时
-        本任务继续存在，不能报告已释放。
+        Note:
+            等待取消不撤销同一个清理任务。
+
+            此关闭收回本包装的在途借用并等待已接管证据提交，不关闭 app 拥有的
+            SDK 资源或 Store。宿主以其总关闭截止等待；后端或提交未实际结束时
+            本任务继续存在，不能报告已释放。
         """
         self._closed = True
         if self._close_task is None:
@@ -234,6 +303,7 @@ class _RetryRunner:
         await asyncio.shield(self._close_task)
 
     async def _drain(self) -> None:
+        """先收回模型借用，再等待全部已接管证据提交；清理不重写尝试结论。"""
         pending = tuple(self._tasks)
         for task in pending:
             task.cancel()
@@ -270,6 +340,7 @@ class _RetryRunner:
                 self._evidence_failure = error
 
     def _check(self) -> None:
+        """在重试和派发前复核包装故障、关闭状态与原批次预算。"""
         if self._evidence_failure is not None:
             raise self._evidence_failure
         if self._closed:
@@ -289,6 +360,7 @@ class _RetryRunner:
         async def call_backend() -> Response:
             # create_task 到调度运行之间可能发生抢占或关闭；资格必须在真正
             # 借用 SDK 资源前重验，不能只依赖创建任务时的有效快照。
+            """在原批次资格仍有效时调用当前尝试的唯一后端。"""
             self._check()
             return await invoke(buffer)
 
@@ -330,6 +402,7 @@ class _RetryRunner:
         invoke: Callable[[_EventBuffer], Awaitable[Response]],
         emit: ModelEventSink | None = None,
     ) -> Response:
+        """在同一原始截止与逻辑请求身份内串行完成尝试和证据提交。"""
         self._check()
         turn_deadline = self.budget.claim()
         started = asyncio.get_running_loop().time()
@@ -467,7 +540,20 @@ class ModelGenerationBackend(_RetryRunner):
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
         can_start: Callable[[], None] | None = None,
     ) -> None:
-        """借用底层、权威 sink 与已校验的生成用途预算，不复制配置秘密。"""
+        """借用底层、权威 sink 与已校验的生成用途预算，不复制配置秘密。
+
+        Args:
+            backend: 显式注入的模型后端，资源取得和关闭归装配层。
+            sink: 接收逻辑请求及各次尝试事实的权威提交端口。
+            compiler: 按实际 SDK 布局冻结完整请求材料的纯编译器。
+            scope: 冻结的请求因果身份、轮次和来源引用。
+            budget: 当前连续批次共享的请求数量与单调截止预算。
+            policy: 唯一的有界传输重试策略，不另起一轮预算。
+            diagnostic_bytes: 单次尝试允许保留的流诊断字节数，不裁剪原参数或完整响应。
+            sleep: 等待退避间隔的异步函数，可注入确定性的测试时钟。
+            can_start: 实际派发前重新检查的资格回调，等待后仍须复核。 None
+                表示不附加调用方资格条件，宿主固定门槛仍生效。
+        """
         self.compiler = compiler
         super().__init__(
             sink,
@@ -484,9 +570,20 @@ class ModelGenerationBackend(_RetryRunner):
     async def generate(
         self, request: ModelRequest, *, model: str, emit: ModelEventSink | None = None
     ) -> ModelResponse:
-        """冻结一次材料，按同一请求对象有界重试，并返回一次完整响应。"""
+        """冻结一次材料，按同一请求对象有界重试，并返回一次完整响应。
+
+        Args:
+            request: 已经按 Core 协议组装的完整生成请求。
+            model: 本次调用使用的显式模型名，不在领域层推断替代模型。
+            emit: 流事件观察回调；None 表示不向外部观察者投递。 None
+                表示不向外部观察者发送流事件。
+
+        Returns:
+            通过协议与证据提交门槛的真实模型响应。
+        """
 
         async def invoke(buffer: _EventBuffer) -> ModelResponse:
+            """在已有业务边界内调用原入口，保留已分类失败和真实回执。"""
             return await self._backend.generate(request, model=model, emit=buffer)
 
         return await self._run(request, kind="generation", model=model, invoke=invoke, emit=emit)
@@ -512,7 +609,20 @@ class ModelDecisionBackend(_RetryRunner):
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
         can_start: Callable[[], None] | None = None,
     ) -> None:
-        """借用专用判断资源，不取得传输客户端或生成采样配置。"""
+        """借用专用判断资源，不取得传输客户端或生成采样配置。
+
+        Args:
+            backend: 显式注入的模型后端，资源取得和关闭归装配层。
+            sink: 接收逻辑请求及各次尝试事实的权威提交端口。
+            compiler: 按实际 SDK 布局冻结完整请求材料的纯编译器。
+            scope: 冻结的请求因果身份、轮次和来源引用。
+            budget: 当前连续批次共享的请求数量与单调截止预算。
+            policy: 唯一的有界传输重试策略，不另起一轮预算。
+            diagnostic_bytes: 单次尝试允许保留的流诊断字节数，不裁剪原参数或完整响应。
+            sleep: 等待退避间隔的异步函数，可注入确定性的测试时钟。
+            can_start: 实际派发前重新检查的资格回调，等待后仍须复核。 None
+                表示不附加调用方资格条件，宿主固定门槛仍生效。
+        """
         self.compiler = compiler
         super().__init__(
             sink,
@@ -527,9 +637,18 @@ class ModelDecisionBackend(_RetryRunner):
         self._backend = backend
 
     async def decide(self, request: DecisionRequest, *, model: str) -> DecisionResponse:
-        """重试一次逻辑判断，保留原始概率及显式拒答。"""
+        """重试一次逻辑判断，保留原始概率及显式拒答。
+
+        Args:
+            request: 已经按 Core 协议组装的专用判断请求。
+            model: 本次调用使用的显式模型名，不在领域层推断替代模型。
+
+        Returns:
+            真实判断响应，概率和拒答仍由所属判断流程解释。
+        """
 
         async def invoke(buffer: _EventBuffer) -> DecisionResponse:
+            """在已有业务边界内调用原入口，保留已分类失败和真实回执。"""
             return await self._backend.decide(request, model=model)
 
         return await self._run(request, kind="decision", model=model, invoke=invoke)
@@ -561,9 +680,16 @@ def _attempt_result(
 def classify_failure(error: Exception) -> tuple[FailureEvidence, bool]:
     """仅按 Core 分类或明确传输事实判断，不猜异常正文或 HTTP 文本。
 
-    已知额度耗尽拒绝重试；未知原因的 429 有限尝试。SDK 丢失的 HTTP 日期型
-    Retry-After 可从公开 cause.response.headers 取得，至少等待本地一秒。
-    内部程序异常保留类型，没有通用失败自动重试。
+    Args:
+        error: 当前流程已经取得的真实故障或失败说明。
+
+    Returns:
+        已脱敏的公开失败分类，以及是否允许在原预算内重试。
+
+    Note:
+        已知额度耗尽拒绝重试；未知原因的 429 有限尝试。SDK 丢失的 HTTP 日期型
+        Retry-After 可从公开 cause.response.headers 取得，至少等待本地一秒。
+        内部程序异常保留类型，没有通用失败自动重试。
     """
     status = None
     code = None

@@ -46,7 +46,18 @@ class AdmitInput(Protocol):
     """
 
     def __call__(self, connection: sqlite3.Connection, submission: InputSubmission) -> Admission:
-        """把不变发生信封加入当前事务；任何拒收使外层闹铃事务全部回滚。"""
+        """把不变发生信封加入当前事务。
+
+        Args:
+            connection: 仅在 Store 专属线程当前短事务中借用的连接，不在回调中等待设备或模型。
+            submission: 待正式接管的来源、原文、媒体与可信信号。
+
+        Returns:
+            正式接管凭证，包含 input_id 与重复来源标记；不表示模型已处理或对外回复。
+
+        Note:
+            任何拒收使外层闹铃事务全部回滚。
+        """
         ...
 
 
@@ -100,7 +111,18 @@ def _get_alarm(connection: sqlite3.Connection, clock_id: str, alarm_id: str) -> 
 
 
 def alarms(connection: sqlite3.Connection, clock_id: str) -> tuple[Alarm, ...]:
-    """读取最多32条当前待响定义，历史消耗记录不冒充待响。"""
+    """读取最多32条当前待响定义，历史消耗记录不冒充待响。
+
+    Args:
+        connection: 仅在 Store 专属线程当前短事务中借用的连接，不在回调中等待设备或模型。
+        clock_id: 已装配时钟对象的身份。
+
+    Returns:
+        条目集合：当前已保存的闹铃定义与真实重复方式。
+
+    Raises:
+        StorageError: 持久化待闹铃数量超出既定额度。
+    """
     rows: list[tuple[object, ...]] = connection.execute(
         "SELECT payload_json,state,at_utc,clock_id,id FROM clock_alarms "
         "WHERE clock_id=? AND state='pending' ORDER BY at_utc,id LIMIT 33",
@@ -121,7 +143,20 @@ def _save_alarm(connection: sqlite3.Connection, alarm: Alarm) -> None:
 
 
 def set_alarm(connection: sqlite3.Connection, alarm: Alarm, now: datetime) -> Alarm:
-    """同事务检查32条额度并保存新发生身份，重复相同定义不新增闹铃。"""
+    """同事务检查32条额度并保存新发生身份，重复相同定义不新增闹铃。
+
+    Args:
+        connection: 仅在 Store 专属线程当前短事务中借用的连接，不在回调中等待设备或模型。
+        alarm: 带稳定身份、时区与重复方式的闹铃定义。
+        now: 带明确时区的本次墙钟时刻。
+
+    Returns:
+        当前已保存的闹铃定义与真实重复方式。
+
+    Raises:
+        TimeError: 典型拒绝原因：新闹铃须是未来的初始待响定义；闹铃身份已属于另一个时钟；
+            闹铃身份已有不同定义；最多32条闹铃待响。
+    """
     validate_aware_datetime(now)
     if alarm.state != "pending" or alarm.version != 1 or alarm.at <= now:
         raise TimeError("新闹铃须是未来的初始待响定义。", code="invalid_time")
@@ -144,7 +179,19 @@ def set_alarm(connection: sqlite3.Connection, alarm: Alarm, now: datetime) -> Al
 
 
 def cancel_alarm(connection: sqlite3.Connection, clock_id: str, alarm_id: str) -> Alarm:
-    """仅取消当前待响定义，未知或已消耗身份明确拒绝。"""
+    """仅取消当前待响定义，未知或已消耗身份明确拒绝。
+
+    Args:
+        connection: 仅在 Store 专属线程当前短事务中借用的连接，不在回调中等待设备或模型。
+        clock_id: 已装配时钟对象的身份。
+        alarm_id: 时钟下闹铃定义的身份。
+
+    Returns:
+        当前已保存的闹铃定义与真实重复方式。
+
+    Raises:
+        TimeError: 闹铃不存在或已经响完。
+    """
     with connection:
         connection.execute("BEGIN IMMEDIATE")
         current = _get_alarm(connection, clock_id, alarm_id)
@@ -158,7 +205,13 @@ def cancel_alarm(connection: sqlite3.Connection, clock_id: str, alarm_id: str) -
 
 
 def recover_daily(connection: sqlite3.Connection, clock_id: str, now: datetime) -> None:
-    """启动时每日错过项只推进未来，单次错过项保持待响供可靠补投。"""
+    """启动时每日错过项只推进未来，单次错过项保持待响供可靠补投。
+
+    Args:
+        connection: 仅在 Store 专属线程当前短事务中借用的连接，不在回调中等待设备或模型。
+        clock_id: 已装配时钟对象的身份。
+        now: 带明确时区的本次墙钟时刻。
+    """
     validate_aware_datetime(now)
     with connection:
         connection.execute("BEGIN IMMEDIATE")
@@ -185,7 +238,23 @@ def fire_alarm(
     now: datetime,
     admit: AdmitInput,
 ) -> AlarmFiring | None:
-    """原生发生身份、输入/pending、消耗或每日推进同事务，取消等待不能回滚它。"""
+    """原生发生身份、输入/pending、消耗或每日推进同事务，取消等待不能回滚它。
+
+    Args:
+        connection: 仅在 Store 专属线程当前短事务中借用的连接，不在回调中等待设备或模型。
+        clock_id: 已装配时钟对象的身份。
+        alarm_id: 时钟下闹铃定义的身份。
+        occurrence_id: 本次闹铃触发的稳定身份，用于同事务去重。
+        now: 带明确时区的本次墙钟时刻。
+        admit: 在调用方当前事务中正式接管输入的同步入口，不另开事务。
+
+    Returns:
+        本次可靠触发及同事务正式接管的输入身份。 未取得对应记录或素材时返回 None；
+        读取故障仍抛出。
+
+    Raises:
+        TimeError: 闹铃发生身份冲突。
+    """
     validate_aware_datetime(now)
     with connection:
         connection.execute("BEGIN IMMEDIATE")
@@ -254,7 +323,21 @@ def fire_alarm(
 
 
 def get_rest(connection: sqlite3.Connection) -> RestState | None:
-    """读取唯一主体明确状态；时间过去不自动清除休息。"""
+    """读取唯一主体明确状态。
+
+    Args:
+        connection: 仅在 Store 专属线程当前短事务中借用的连接，不在回调中等待设备或模型。
+
+    Returns:
+        当前明确休息事实，预计期限不自动解除状态。 未取得对应记录或素材时返回 None；
+        读取故障仍抛出。
+
+    Raises:
+        StorageError: 休息版本索引与正文不一致。
+
+    Note:
+        时间过去不自动清除休息。
+    """
     row: tuple[object, ...] | None = connection.execute(
         "SELECT payload_json,version FROM subject_rest WHERE id=1"
     ).fetchone()
@@ -267,6 +350,7 @@ def get_rest(connection: sqlite3.Connection) -> RestState | None:
 
 
 def _rest_version(connection: sqlite3.Connection) -> int:
+    """从同一事务读取休息版本，缺失或损坏不能制造新的默认版本。"""
     row: tuple[object, ...] | None = connection.execute(
         "SELECT version FROM subject_rest WHERE id=1"
     ).fetchone()
@@ -280,7 +364,24 @@ def _rest_version(connection: sqlite3.Connection) -> int:
 def rest(
     connection: sqlite3.Connection, bed_id: str, minutes: int, now: datetime, call_id: str
 ) -> RestChange:
-    """首次记录开始时刻，已休息只更新打算时长；每次真实变化留下独立回执。"""
+    """首次记录开始时刻，已休息只更新打算时长。
+
+    Args:
+        connection: 仅在 Store 专属线程当前短事务中借用的连接，不在回调中等待设备或模型。
+        bed_id: 提供本次休息状态的床对象身份。
+        minutes: 明确休息的预计分钟数，到期不自动解除休息状态。
+        now: 带明确时区的本次墙钟时刻。
+        call_id: 实际能力调用的唯一身份，用于保存启动门槛及结果版本。
+
+    Returns:
+        此次明确休息或离开实际改变的状态。
+
+    Raises:
+        TimeError: 休息调用身份冲突；休息调用身份已有不同参数。
+
+    Note:
+        每次真实变化留下独立回执。
+    """
     validate_aware_datetime(now)
     with connection:
         connection.execute("BEGIN IMMEDIATE")
@@ -320,7 +421,22 @@ def rest(
 
 
 def leave(connection: sqlite3.Connection, now: datetime, call_id: str) -> RestChange:
-    """醒着仅查询不写入；真正离开时保存原休息事实并清除当前状态。"""
+    """醒着仅查询不写入。
+
+    Args:
+        connection: 仅在 Store 专属线程当前短事务中借用的连接，不在回调中等待设备或模型。
+        now: 带明确时区的本次墙钟时刻。
+        call_id: 实际能力调用的唯一身份，用于保存启动门槛及结果版本。
+
+    Returns:
+        此次明确休息或离开实际改变的状态。
+
+    Raises:
+        TimeError: 休息调用身份冲突。
+
+    Note:
+        真正离开时保存原休息事实并清除当前状态。
+    """
     validate_aware_datetime(now)
     with connection:
         connection.execute("BEGIN IMMEDIATE")
@@ -343,6 +459,10 @@ def leave(connection: sqlite3.Connection, now: datetime, call_id: str) -> RestCh
 
 
 def initialize(connection: sqlite3.Connection) -> None:
-    """只核验当前格式表，不自动响铃、起身、迁移或修复坏状态。"""
+    """只核验当前格式表，不自动响铃、起身、迁移或修复坏状态。
+
+    Args:
+        connection: 仅在 Store 专属线程当前短事务中借用的连接，不在回调中等待设备或模型。
+    """
     for table in ("clock_alarms", "alarm_firings", "subject_rest", "rest_changes"):
         connection.execute(f"SELECT * FROM {table} LIMIT 0")

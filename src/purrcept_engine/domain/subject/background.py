@@ -59,7 +59,26 @@ class BackgroundService:
         interrupt_foreground: Callable[[int], bool],
         can_start: Callable[[], None],
     ) -> None:
-        """保存明确端口；构造不建立任务、不读取材料、不调用模型。"""
+        """保存明确端口。
+
+        Args:
+            store: 应用借出的领域存储端口，实际连接和关闭归资源所有者。
+            feedback: 可靠反馈桥接与反思游标的有限同库端口。
+            knowledge: 原文展开与认识召回服务，修订仍经过反思批次契约。
+            knowledge_store: 同库认识端口，模型或插件不取得通用 SQL 权限。
+            reflection: 独立反思使用的模型、容量与预算声明。
+            instructions: 稳定 system 指令序列，实时状态不得混入缓存前缀。
+            settings: 当前组件已校验的配置或纯声明。
+            media: 已接管媒体的引用集合，展开时必须取得原始 BLOB。
+            refresh: 每次逻辑请求前刷新已提交动态尾部的异步入口。
+            prepare_history: 会话空闲时维护已提交历史的入口；None 不维护。
+            foreground_generation: 读取当前前台生成代次的同步回调。
+            interrupt_foreground: 只抢占仍匹配的前台代次的同步回调。
+            can_start: 实际派发前重新检查的资格回调，等待后仍须复核。
+
+        Note:
+            构造不建立任务、不读取材料、不调用模型。
+        """
         self.store, self.feedback = store, feedback
         self.knowledge, self.knowledge_store = knowledge, knowledge_store
         self.reflection, self.instructions, self.settings = reflection, instructions, settings
@@ -94,7 +113,11 @@ class BackgroundService:
         return len(self.tasks) + len(self.commits) + int(self.session.busy)
 
     def check(self) -> None:
-        """在新工作和真实模型边界撤销故障或关闭后的派发资格。"""
+        """在新工作和真实模型边界撤销故障或关闭后的派发资格。
+
+        Raises:
+            HostStateError: 后台已开始关闭。
+        """
         if self.failure_error is not None:
             raise self.failure_error
         if self.closing:
@@ -102,7 +125,14 @@ class BackgroundService:
         self.can_start()
 
     async def start(self) -> None:
-        """建立两个固定工作器；重复启动不能形成平行反思。"""
+        """启动独立反馈桥接与反思固定工作器。
+
+        Raises:
+            HostStateError: 后台已启动。
+
+        Note:
+            建立两个固定工作器；重复启动不能形成平行反思。
+        """
         if self.started:
             raise HostStateError("后台已启动。")
         self.check()
@@ -113,7 +143,11 @@ class BackgroundService:
             task.add_done_callback(self.worker_done)
 
     def worker_done(self, task: asyncio.Task[None]) -> None:
-        """锁存原型并停止其他派发，不能把程序故障表述为普通延期。"""
+        """锁存原型并停止其他派发，不能把程序故障表述为普通延期。
+
+        Args:
+            task: 当前所有者创建并负责回收结果的任务。
+        """
         self.tasks.discard(task)
         if not task.cancelled() and (error := task.exception()) is not None:
             self.failure_error = self.failure_error or error
@@ -122,7 +156,17 @@ class BackgroundService:
                 other.cancel()
 
     async def commit[Result](self, operation: Awaitable[Result]) -> Result:
-        """持有已接管的副作用任务；等待取消不让事务成为无主后台工作。"""
+        """持有已接管的副作用任务。
+
+        Args:
+            operation: 当前所有者负责推进并回收结果的操作。
+
+        Returns:
+            同步操作完成后的真实返回值，异常保持原类型。
+
+        Note:
+            等待取消不让事务成为无主后台工作。
+        """
         task = asyncio.ensure_future(operation)
         self.commits.add(task)
         try:
@@ -132,7 +176,12 @@ class BackgroundService:
                 self.commits.discard(task)
 
     async def wait(self, revision: int, seconds: float | None = None) -> None:
-        """有限定时器服务节奏和全部计划，查询期间的通知仍立即可见。"""
+        """有限定时器服务节奏和全部计划，查询期间的通知仍立即可见。
+
+        Args:
+            revision: 已观察的状态修订号。
+            seconds: 本次等待的秒数；None 表示等待显式唤醒。
+        """
         if seconds is None:
             await self.store.wait_for_change(revision)
         elif seconds > 0:
@@ -143,7 +192,17 @@ class BackgroundService:
                 pass
 
     async def media_blocks(self, media: tuple[MediaReference, ...]) -> tuple[ContentBlock, ...]:
-        """借用原生媒体端口；字节一致性仍由 ReflectionTools 与 Store 核验。"""
+        """借用原生媒体端口。
+
+        Args:
+            media: 已接管媒体的引用集合，展开时必须取得原始 BLOB。
+
+        Returns:
+            按原始顺序展开的完整 Core 内容块，包括真实原生媒体。
+
+        Note:
+            字节一致性仍由 ReflectionTools 与 Store 核验。
+        """
         return await self.media(media)
 
     def foreground_generation(self) -> int:
@@ -153,7 +212,15 @@ class BackgroundService:
     async def supervision_committed(
         self, record: SupervisionRecord, *, observed_generation: int
     ) -> None:
-        """真实新交接才允许同代次 urgent 抢占；迟到意见不追认新代次。"""
+        """真实新交接才允许同代次 urgent 抢占。
+
+        Args:
+            record: 带原始依据与版本约束的监管记录。
+            observed_generation: 接管或判断开始时观察到的前台生成代次。
+
+        Note:
+            迟到意见不追认新代次。
+        """
         result = await self.commit(
             self.feedback.dispatch_supervision(
                 record,

@@ -37,11 +37,25 @@ class ForegroundPorts(Protocol):
     """
 
     async def play_action(self, source: str) -> ActionRecord:
-        """执行一段受限 Python，返回保存后的实际终态或未知调用事实。"""
+        """执行一段受限 Python，返回保存后的实际终态或未知调用事实。
+
+        Args:
+            source: 待执行的受限 Python 源码。
+
+        Returns:
+            已保存的行动记录，包含逐次真实调用及结果历史；unknown 不证明效果未发生。
+        """
         ...
 
     async def media_blocks(self, media: tuple[MediaReference, ...]) -> tuple[ContentBlock, ...]:
-        """展开完整原生内容，缺失/不支持明确报告。"""
+        """展开完整原生内容，缺失/不支持明确报告。
+
+        Args:
+            media: 已接管媒体的引用集合，展开时必须取得原始 BLOB。
+
+        Returns:
+            按原始顺序展开的完整 Core 内容块，包括真实原生媒体。
+        """
         ...
 
     def wakeup_committed(self) -> None:
@@ -50,7 +64,11 @@ class ForegroundPorts(Protocol):
 
 
 def format_character_card(character: dict[str, str | None]) -> str:
-    """将固定身份配置格式化为结构化角色卡，凸显独立生活实感。"""
+    """将固定身份配置格式化为结构化角色卡，凸显独立生活实感。
+
+    Args:
+        character: 固定身份卡的显式字段，缺省行为由指令构造器决定。
+    """
     lines = ["## 角色身份与存在基准 (Persona & Life Profile)"]
     name = character.get("name")
     lines.append(f"- **角色姓名**：{name if name else '（未指定，保有独立自洽的生活者本色）'}")
@@ -78,9 +96,17 @@ def foreground_instructions(
 ) -> tuple[SystemInstruction, ...]:
     """构造独立生活主体的具身前台系统指令与能力目录说明。
 
-    确立“过自己的日子”之核心主旨：拥有独立生活、节奏与作息，交流仅为日常
-    的一部分；彻底祛除客服味、过度热情与表演型人格；追求真实、松弛、克制
-    的生活质感；同时严格恪守 play_action 唯一外发等底层执行契约。
+    Args:
+        character: 固定身份卡的显式字段，缺省行为由指令构造器决定。
+        catalog: 全部已启用插件共同生成的冻结目录。
+
+    Returns:
+        按固定顺序组成 system 前缀的完整指令与能力目录。
+
+    Note:
+        确立“过自己的日子”之核心主旨：拥有独立生活、节奏与作息，交流仅为日常
+        的一部分；彻底祛除客服味、过度热情与表演型人格；追求真实、松弛、克制
+        的生活质感；同时严格恪守 play_action 唯一外发等底层执行契约。
     """
     profile = format_character_card(character)
     text = (
@@ -157,7 +183,15 @@ class ForegroundTools:
         check: Callable[[], None],
         delivery: ToolDeliveryGate | None = None,
     ) -> None:
-        """绑定现有子系统和本轮资格，Core 在其自身工具循环中调用。"""
+        """绑定现有子系统和本轮资格，Core 在其自身工具循环中调用。
+
+        Args:
+            knowledge: 原文展开与认识召回服务，修订仍经过反思批次契约。
+            store: 应用借出的领域存储端口，实际连接和关闭归资源所有者。
+            ports: 应用显式借出的有限端口，不包含设备客户端或通用服务定位器。
+            check: 在提交或派发前复核本轮资格的同步函数。
+            delivery: 本轮工具原文交付门槛；None 不执行候选交付替换。
+        """
         self.knowledge = knowledge
         self.store = store
         self.ports = ports
@@ -181,6 +215,25 @@ class ForegroundTools:
             )
         )
 
+    # 维护者契约（工具说明参与模型请求，保持下方 docstring 原文）。
+    # 执行 Python 行动代码。
+    #
+    # Args:
+    #     action_code: 待隔离执行的受限 Python 源码。
+    #
+    # Returns:
+    #     完整工具内容和错误标记；引用回执可能要求继续展开原文。
+    #
+    # Note:
+    #     只调用本轮目录中的世界路径，返回真实回执。
+    #
+    #     你对外部世界的全部表达与控制（说话、发QQ、调神态动作、记笔记、
+    #     定闹铃）必须通过此工具进行。
+    #     每次调用都在全新的隔离环境中运行，不保留上次变量或导入，me 不自动存在。
+    #     使用路径前必须写 from world import me, world；能力必须 await 并传 schema 关键字。
+    #     可使用顶层 await 和 return，不要包进函数或 asyncio.run。dotted_path 是调用路径。
+    #     return 返回继续查看的结果，print 只输出调试。禁止反射、文件、网络、函数、类和 lambda。
+    #     失败后按回执纠正，不猜测已经完成，也不重放 UNKNOWN。
     @model_input_boundary
     async def play_action(self, action_code: str) -> ToolResult:
         """执行 Python 行动代码；只调用本轮目录中的世界路径，返回真实回执。
@@ -253,6 +306,8 @@ class ForegroundTools:
             ),
         )
 
+    # 维护者契约（工具说明参与模型请求，保持下方 docstring 原文）。
+    # 让注册工具借用 Core 调用身份，容量选择留到完整下一请求门槛。
     @model_input_boundary
     async def _deliver_action(self, action_code: str, *, context: ToolContext) -> ToolResult:
         """让注册工具借用 Core 调用身份，容量选择留到完整下一请求门槛。"""
@@ -261,6 +316,20 @@ class ForegroundTools:
             return proposal.result
         return self.delivery.stage(context.call, proposal)
 
+    # 维护者契约（工具说明参与模型请求，保持下方 docstring 原文）。
+    # 检索长期记忆与事实经历。
+    #
+    # Args:
+    #     query: 用于关键词或语义检索的意图文本。
+    #     entities_json: 已编码为 JSON 字符串数组的实体过滤条件。 默认 '[]'。
+    #     start: 按发生时间筛选的起点；None 表示不限制此端。
+    #     end: 按发生时间筛选的终点；None 表示不限制此端。
+    #     at: 核验记录有效性的 Unix 时间戳；None 使用当前时间。
+    #     include_inactive: 是否同时返回已失效的历史记录，并保留失效原因。 默认 False。
+    #
+    # Note:
+    #     在回答前主动唤醒关于用户的偏好习惯、过往承诺、情感羁绊或特定经历，深化陪伴默契。
+    #     query 为检索意图，entities_json 是实体数组，start/end 为发生时间，at 为事实有效时间。
     @model_input_boundary
     async def recall(
         self,
@@ -281,6 +350,26 @@ class ForegroundTools:
         )
         return recall_payload(result)
 
+    # 维护者契约（工具说明参与模型请求，保持下方 docstring 原文）。
+    # 展开已存原文或认识的确切版本，深入查阅未展开细节与原生媒体。
+    #
+    # Args:
+    #     id: 当前工具定位的认识、原文或计划身份。
+    #     level: 需要展开的材料层级，具体允许值由认识服务校验。 默认 'evidence'。
+    #     cursor: 宿主签发并保存的不透明续读游标，续读同一快照版本。 None 表示首次读取。
+    #     max_chars: 本页正文的字符上限；分页游标继续绑定原快照。 None
+    #         使用本实例配置的统一页长。
+    #     version: 目标记录的确切版本，区别于可变的当前版本。 None 首读当前版本，
+    #         续读仍绑定游标的原版本。
+    #
+    # Returns:
+    #     完整工具内容和错误标记；引用回执可能要求继续展开原文。
+    #
+    # Note:
+    #     在需要准确核验用户原始输入、对话细节或特定记忆版本时调用，省略 version 首读当前版本。
+    #
+    #     历史冲突引用可指定 version；cursor 绑定同一版本，不能用新的版本
+    #     改写后续页。认识、summary 和 overview 均不授予原文阅读资格。
     @model_input_boundary
     async def read_evidence(
         self,
@@ -361,6 +450,8 @@ class ForegroundTools:
             presented_calls=presented_evidence_calls(page),
         )
 
+    # 维护者契约（工具说明参与模型请求，保持下方 docstring 原文）。
+    # 登记当前工具完整结果，直接调用 read_evidence 仍返回取得的原页。
     @model_input_boundary
     async def _deliver_evidence(
         self,
@@ -378,6 +469,17 @@ class ForegroundTools:
             return proposal.result
         return self.delivery.stage(context.call, proposal)
 
+    # 维护者契约（工具说明参与模型请求，保持下方 docstring 原文）。
+    # 为未来的约定、关怀或承诺保存定时唤醒计划。
+    #
+    # Args:
+    #     id: 当前工具定位的认识、原文或计划身份。
+    #     due: 明确安排的到期 Unix 时间戳（秒）。
+    #     reason: 供后续核对的明确处置原因。
+    #     evidence: 结束计划或确认事实所依据的实际证据文本。
+    #
+    # Note:
+    #     到期后调度器将主动唤起前台，使你能守时履行对用户的承诺与提醒。口头约定在此落入计划。
     @model_input_boundary
     async def plan_wakeup(self, id: str, due: float, reason: str, evidence: str) -> str:
         """为未来的约定、关怀或承诺保存定时唤醒计划。
@@ -390,6 +492,13 @@ class ForegroundTools:
         self.ports.wakeup_committed()
         return result.model_dump_json()
 
+    # 维护者契约（工具说明参与模型请求，保持下方 docstring 原文）。
+    # 以真实行动事实与闭环证据关闭已履行的计划，守护信任，告别口头应付。
+    #
+    # Args:
+    #     id: 当前工具定位的认识、原文或计划身份。
+    #     outcome: 此次操作的真实结论，不由期望效果推断成功。
+    #     evidence: 结束计划或确认事实所依据的实际证据文本。
     @model_input_boundary
     async def resolve_plan(self, id: str, outcome: str, evidence: str) -> str:
         """以真实行动事实与闭环证据关闭已履行的计划，守护信任，告别口头应付。"""
@@ -398,6 +507,17 @@ class ForegroundTools:
         self.ports.wakeup_committed()
         return result.model_dump_json()
 
+    # 维护者契约（工具说明参与模型请求，保持下方 docstring 原文）。
+    # 审阅独立反思提出的监管意见并记录回应。
+    #
+    # Args:
+    #     id: 当前工具定位的认识、原文或计划身份。
+    #     decision: 本次对监管意见的明确回应选择。
+    #     reason: 供后续核对的明确处置原因。
+    #
+    # Note:
+    #     decision 使用 accept（接受）、partial（部分接受）或 reject（拒绝）。
+    #     说明充分理由，促使主体在自我审视与复盘中持续成长。回应不成为新的客观事实证明。
     @model_input_boundary
     async def respond_supervision(self, id: str, decision: str, reason: str) -> str:
         """审阅独立反思提出的监管意见并记录回应。

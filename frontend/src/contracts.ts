@@ -6,18 +6,24 @@
 export type Json = null | boolean | number | string | Json[] | { [key: string]: Json };
 export type ObjectValue = { [key: string]: Json };
 
+/** 当前连续批次的逻辑请求用量与剩余秒数；重试不另占逻辑名额。 */
 export interface Budget { max_requests: number; used_requests: number; remaining_seconds: number }
+/** 前台或反思的独立观察快照，busy 不代表外部行动已归还。 */
 export interface Session { scope: string; generation: number; busy: boolean; closing: boolean; budgets: Budget[] }
+/** 带截断标记和原文字数的展示预览，不授予完整原文已读资格。 */
 export interface PreviewText { text: string; truncated: boolean; original_chars: number }
+/** 原能力调用的真实结果版本；unknown 保留待核对效果，不能自动重做。 */
 export interface Call {
   call_id: string; path: string; state: string; receipt_revision: number;
   started_at: number | null; finished_at: number | null; error_type: string | null;
   error: PreviewText | null; result: PreviewText | null; media_count: number;
 }
+/** 一项行动及其逐次真实调用，整体结束不覆盖局部效果。 */
 export interface Action {
   action_id: string; state: string; created_at: number; finished_at: number | null;
   error: PreviewText | null; calls: Call[];
 }
+/** 权威活动版本、预算与恢复要求，页面不自行推进运行累计。 */
 export interface Activity {
   activity_id: string; definition: string; goal: string; state: string; version: number;
   run_generation: number; remaining_seconds: number; budget_basis: string;
@@ -25,11 +31,14 @@ export interface Activity {
   progress_preview: PreviewText | null;
   last_command: { command_id: string; command: string; status: string; actual_state: string | null; applied: boolean | null; error: PreviewText | null } | null;
 }
+/** 宿主显式开放的快捷控制及允许参数字段，区别于完整模型能力目录。 */
 export interface DeviceControl { key: string; title: string; fields: string[] }
+/** 已装配设备的有限状态与允许控制，读取快照不取得设备连接。 */
 export interface Device {
   instance_id: string; kind: string | null; revision: string | null; state: ObjectValue;
   controls: DeviceControl[]; has_preview: boolean;
 }
+/** 一次成功校验的宿主状态；断线后可只读旧值，控制资格另行复核。 */
 export interface Snapshot {
   instance_id: string; host_version: number; phase: string; pending_resources: string[];
   authority_available: boolean; devices: Device[]; foreground: Session | null; reflection: Session | null;
@@ -38,14 +47,17 @@ export interface Snapshot {
   sessions: { scope: string; version: number; active_turn: string | null }[];
   recent_actions: Action[]; activities: Activity[];
 }
+/** 首次发送前固定的原控制身份、实例、目标版本与参数，重传保持完整内容。 */
 export interface ControlRequest {
   request_id: string; instance_id: string; target: string; operation: string;
   expected_revision: string; arguments: ObjectValue;
 }
+/** 已关联活动命令的实际确认，accepted 与实际 applied 分别表达。 */
 export interface ActivityCommand {
   command_id: string; activity_id: string; status: string; actual_state: string | null;
   applied: boolean | null; error: string | null;
 }
+/** 控制接管状态及真实业务关联，finished 仅说明控制入口已返回。 */
 export interface ControlResult {
   request_id: string; instance_id: string; request: ObjectValue; state: string;
   admitted_at: number; action_id: string | null; command_id: string | null;
@@ -87,7 +99,14 @@ function list<T>(value: unknown, field: string, read: (value: unknown, field: st
   return value.map((item: unknown, index: number) => read(item, `${field}[${index}]`));
 }
 
-/** 插件状态保留嵌套 JSON，但限制深度和节点数以守住浏览器入口。 */
+/**
+ * 校验插件状态的完整 JSON 对象。
+ *
+ * @param value HTTP 或 sessionStorage 实际取得的未知值。
+ * @param field 错误中使用的字段位置；默认采用此入口的业务名称。
+ * @returns 深度和节点数受限的完整 JSON 对象。
+ * @throws ContractError 当形状、必需字段、有限数值或容量限制不满足契约。
+ */
 export function jsonObject(value: unknown, field = "state"): ObjectValue {
   let nodes = 0;
   function read(item: unknown, depth: number): Json {
@@ -124,7 +143,14 @@ function call(value: unknown, field: string): Call {
     media_count: integer(v.media_count, field),
   };
 }
-/** 逐调用状态不由行动 completed 推导，部分未知会一直保留。 */
+/**
+ * 校验一份行动与其逐次能力调用记录。
+ *
+ * @param value HTTP 或 sessionStorage 实际取得的未知值。
+ * @param field 错误中使用的字段位置；默认采用此入口的业务名称。
+ * @returns 保留原行动状态与各次调用真实回执的记录。
+ * @throws ContractError 当形状、必需字段、有限数值或容量限制不满足契约。
+ */
 export function action(value: unknown, field = "action"): Action {
   const v = object(value, field);
   return {
@@ -158,7 +184,13 @@ function device(value: unknown, field: string): Device {
   };
 }
 
-/** GET /api/snapshot 的唯一入口；缺失字段不能用展示默认值掩盖。 */
+/**
+ * 校验 GET /api/snapshot 的完整业务快照。
+ *
+ * @param value HTTP 或 sessionStorage 实际取得的未知值。
+ * @returns 完整校验的当前宿主投影，不因字段缺失补造空闲或成功。
+ * @throws ContractError 当形状、必需字段、有限数值或容量限制不满足契约。
+ */
 export function snapshot(value: unknown): Snapshot {
   const v = object(value, "snapshot");
   const limits = object(v.pending_limits, "pending_limits");
@@ -178,12 +210,24 @@ export function snapshot(value: unknown): Snapshot {
     recent_actions: list(v.recent_actions, "recent_actions", action), activities: list(v.activities, "activities", activity),
   };
 }
-/** 令牌只用于当前同源宿主，不写入持久化页面记录。 */
+/**
+ * 校验本机控制会话的实例身份与令牌。
+ *
+ * @param value HTTP 或 sessionStorage 实际取得的未知值。
+ * @returns 当前宿主实例与本机控制令牌；令牌只留在内存。
+ * @throws ContractError 当形状、必需字段、有限数值或容量限制不满足契约。
+ */
 export function credentials(value: unknown): { token: string; instance_id: string } {
   const v = object(value, "session");
   return { token: text(v.token, "token"), instance_id: text(v.instance_id, "instance_id") };
 }
-/** 网络控制观察保留原业务关联；HTTP 状态本身不是效果。 */
+/**
+ * 校验控制受理记录及其关联真实结果。
+ *
+ * @param value HTTP 或 sessionStorage 实际取得的未知值。
+ * @returns 原受理身份及当前关联业务回执，HTTP 完成不代表效果完成。
+ * @throws ContractError 当形状、必需字段、有限数值或容量限制不满足契约。
+ */
 export function controlResult(value: unknown): ControlResult {
   const v = object(value, "control");
   const result: ControlResult = {
@@ -199,7 +243,13 @@ export function controlResult(value: unknown): ControlResult {
   });
   return result;
 }
-/** 刷新恢复只接受完整原请求，重传绝不重建身份或改写参数。 */
+/**
+ * 校验刷新时恢复的完整原控制请求。
+ *
+ * @param value HTTP 或 sessionStorage 实际取得的未知值。
+ * @returns 可按原身份原参数重传的完整控制请求。
+ * @throws ContractError 当形状、必需字段、有限数值或容量限制不满足契约。
+ */
 export function controlRequest(value: unknown): ControlRequest {
   const v = object(value, "saved_request");
   const request = {

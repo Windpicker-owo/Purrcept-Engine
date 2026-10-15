@@ -78,13 +78,24 @@ class QQSettings(BaseModel):
     @field_validator("group_list", "private_list", "ban_user_id", mode="before")
     @classmethod
     def freeze_ids(cls, value: object) -> tuple[str, ...]:
-        """仅在真实配置边界规范账号值，运行期不重复转换来源身份。"""
+        """仅在真实配置边界规范账号值，运行期不重复转换来源身份。
+
+        Args:
+            value: 配置边界收到的账号身份序列，不把单个字符串拆成字符列表。
+        """
         return _ids(value)
 
     @field_validator("extra_media_roots", mode="before")
     @classmethod
     def freeze_paths(cls, value: object) -> tuple[str, ...]:
-        """保留显式目录声明，拒绝把单条字符串解释成字符列表。"""
+        """保留显式目录声明，拒绝把单条字符串解释成字符列表。
+
+        Args:
+            value: 显式媒体目录声明序列，拒绝以单条字符串代替目录列表。
+
+        Raises:
+            ValueError: extra_media_roots 必须是非空路径数组。
+        """
         values = _array(value)
         if any(not isinstance(item, str) or not item.strip() for item in values):
             raise ValueError("extra_media_roots 必须是非空路径数组。")
@@ -93,7 +104,14 @@ class QQSettings(BaseModel):
     @field_validator("backoff_seconds", mode="before")
     @classmethod
     def freeze_backoff(cls, value: object) -> tuple[float, ...]:
-        """有限退避只按已配置失败序号选择，不使用 SDK 的无限恢复迭代器。"""
+        """有限退避只按已配置失败序号选择，不使用 SDK 的无限恢复迭代器。
+
+        Args:
+            value: 有限重连退避秒数序列，采用顺序与失败次数一致。
+
+        Raises:
+            ValueError: 退避时长必须是有限非负数。
+        """
         result: list[float] = []
         for item in _array(value):
             if isinstance(item, bool) or not isinstance(item, (float, int)):
@@ -105,7 +123,14 @@ class QQSettings(BaseModel):
 
     @model_validator(mode="after")
     def coherent(self) -> QQSettings:
-        """目录标识与恢复次数在纯声明阶段完整核验，不能启动后悄悄补默认值。"""
+        """目录标识与恢复次数在纯声明阶段完整核验，不能启动后悄悄补默认值。
+
+        Returns:
+            已校验并固定基准路径的 QQ 配置。
+
+        Raises:
+            ValueError: 参数值或组合不满足本入口的明确约束，错误正文指出具体字段。
+        """
         if len(self.backoff_seconds) != self.connect_attempts - 1:
             raise ValueError("backoff_seconds 数量须等于 connect_attempts - 1。")
         for name in (self.phone_id, self.segment):
@@ -118,7 +143,14 @@ class QQSettings(BaseModel):
         return self
 
     def typing_pause_seconds(self, text: str) -> float:
-        """保留既有打字间隔，零上限明确关闭延迟；不借此重置调用期限。"""
+        """保留既有打字间隔，零上限明确关闭延迟。
+
+        Args:
+            text: 本次明确传输、输入或呈现的完整文本。
+
+        Note:
+            不借此重置调用期限。
+        """
         return min(
             self.typing_delay_max_seconds,
             self.typing_delay_base_seconds + self.typing_delay_per_char_seconds * len(text),
@@ -126,6 +158,14 @@ class QQSettings(BaseModel):
 
 
 def resolve_path(value: str, base_dir: Path) -> Path:
-    """配置路径采用固定基准，构造时不探测文件系统或依赖进程 cwd。"""
+    """配置路径采用固定基准，构造时不探测文件系统或依赖进程 cwd。
+
+    Args:
+        value: 显式媒体路径，沿当前基准目录解析，不探测文件系统。
+        base_dir: 解析相对配置路径的基准目录。
+
+    Returns:
+        沿显式基准目录解析的绝对路径；不在此验证文件存在性。
+    """
     path = Path(value).expanduser()
     return Path(os.path.abspath(path if path.is_absolute() else base_dir / path))

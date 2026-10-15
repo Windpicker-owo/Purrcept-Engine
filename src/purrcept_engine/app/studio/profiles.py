@@ -19,7 +19,20 @@ class ProfileConflict(ValueError):
 
 
 def load_profile(path: Path) -> tuple[VoiceProfile, str]:
-    """缺失文件表示明确旁通；已存在的坏文件和 I/O 失败原样报告。"""
+    """缺失文件表示明确旁通。
+
+    Args:
+        path: 此操作定位的明确路径。
+
+    Returns:
+        本次读取的完整内容及其版本标记，供后续修改时核验。
+
+    Raises:
+        ValueError: 声线预设超过 16 KiB。
+
+    Note:
+        已存在的坏文件和 I/O 失败原样报告。
+    """
     try:
         with path.open("rb") as stream:
             data = stream.read(16385)
@@ -31,7 +44,20 @@ def load_profile(path: Path) -> tuple[VoiceProfile, str]:
 
 
 def save_profile(path: Path, profile: VoiceProfile, previous: str) -> str:
-    """核对实际版本再原子替换；同实例调用由 Studio 串行，外部修改下次读取可见。"""
+    """核对实际版本再原子替换。
+
+    Args:
+        path: 此操作定位的明确路径。
+        profile: 当前操作采用的已校验模型或声线预设。
+        previous: 调用方持有的先前预设版本，用于拒绝覆盖并发修改。
+
+    Raises:
+        ProfileConflict: 声线预设已被修改，请重新载入后保存；声线预设保存前已被修改，
+            请重新载入。
+
+    Note:
+        同实例调用由 Studio 串行，外部修改下次读取可见。
+    """
     _, revision = load_profile(path)
     if previous != revision:
         raise ProfileConflict("声线预设已被修改，请重新载入后保存。")

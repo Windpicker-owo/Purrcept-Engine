@@ -10,6 +10,12 @@ Engine 在独立仓库实施持续主体宿主。已批准的职责与验收要�
 - `infrastructure`：SQLite、模型 SDK、隔离执行器与进程等资源实现。
 - `plugin_system`：插件及替换执行器的统一公开契约；`plugins` 保留具体设备业务。
 
+开发及注释要求见 [贡献指南](CONTRIBUTING.md)。公开 Python 接口使用中文
+Google 风格契约，先说明用法，再列参数、结果和典型异常；资源、事务、并发与
+取消约束集中到 `Note:`。会进入工具描述或 Pydantic schema（含嵌套 dataclass）的
+文档属于协议材料，维护者说明放在相邻源码注释中，修改其原文须按模型材料
+变更核验。
+
 从 `EngineHost` 进入 `EngineAssembly` 查看装配，进入 `SubjectService` 查看注意、
 前台与独立后台的编排。`ContinuousSession` 继续借用 Core 的工具循环；
 最终文字属于内部结果，只有实际能力调用对外输出。

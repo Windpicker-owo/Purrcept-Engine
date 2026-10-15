@@ -22,11 +22,22 @@ class AudioOutputPort(Protocol):
     """
 
     def bind_body(self, body: BodyPort | None) -> None:
-        """完成装配交接，重复接线属于内部装配错误。"""
+        """完成装配交接，重复接线属于内部装配错误。
+
+        Args:
+            body: 可选身体端口；缺省时声音资源仍独立工作。
+        """
         ...
 
     async def interrupt(self, context: CallContext) -> CallOutcome:
-        """停止当前和已有候播，受理与实际清理确认分别返回。"""
+        """停止当前和已有候播，受理与实际清理确认分别返回。
+
+        Args:
+            context: 宿主或 Core 注入的可信调用上下文，不由模型自行填写。
+
+        Returns:
+            实际确认、失败或未知结论，以及可 JSON 化的业务值和原生媒体引用。
+        """
         ...
 
     def snapshot(self) -> JsonObject:

@@ -31,18 +31,37 @@ class _Connection:
     """借用一个实际 SDK 连接，仅翻译可识别的外部传输错误。"""
 
     def __init__(self, connection: WebSocketConnection) -> None:
-        """借用已完成握手的 SDK 对象，不重新连接。"""
+        """借用已完成握手的 SDK 对象，不重新连接。
+
+        Args:
+            connection: 当前所有者实际取得的协议连接。
+        """
         self.connection = connection
 
     async def send(self, data: str) -> None:
-        """一次完整 SDK 帧发送，断线保留为发送阶段未知。"""
+        """一次完整 SDK 帧发送，断线保留为发送阶段未知。
+
+        Args:
+            data: 当前边界接收的原始协议或媒体内容。
+
+        Raises:
+            ConnectionUnavailable: QQ WebSocket 在发送阶段断开。
+        """
         try:
             await self.connection.send(data)
         except ConnectionClosed as error:
             raise ConnectionUnavailable("QQ WebSocket 在发送阶段断开。") from error
 
     async def receive(self) -> str | bytes:
-        """识别明确协议/凭据关闭，其余网络结束交有限连接恢复。"""
+        """识别明确协议/凭据关闭，其余网络结束交有限连接恢复。
+
+        Returns:
+            当前原生连接实际交付的文本或二进制消息。
+
+        Raises:
+            ConnectionRejected: 参数、材料或当前状态不满足此入口的约束。
+            ConnectionUnavailable: QQ WebSocket 已断开。
+        """
         try:
             return await self.connection.recv()
         except ConnectionClosed as error:
@@ -61,12 +80,20 @@ class _Listener:
     """SDK close(False) 只执行一次，最终须显式关闭它仍持有的实际连接。"""
 
     def __init__(self, server: Server) -> None:
-        """保存由 SDK 已取得的真实监听。"""
+        """保存由 SDK 已取得的真实监听。
+
+        Args:
+            server: 当前所有者创建的 WebSocket 服务端资源。
+        """
         self.server = server
 
     @property
     def port(self) -> int:
-        """只从实际绑定 socket 查询端口，不返回配置值伪造监听成功。"""
+        """只从实际绑定 socket 查询端口，不返回配置值伪造监听成功。
+
+        Raises:
+            RuntimeError: QQ reverse 监听缺少实际绑定套接字；QQ reverse 监听地址形状异常。
+        """
         sockets = tuple(self.server.sockets or ())
         if not sockets:
             raise RuntimeError("QQ reverse 监听缺少实际绑定套接字。")
@@ -94,7 +121,23 @@ class WebSocketConnector:
     """QQ build 创建的冻结 SDK 适配器，只沿同一套 SnowLuma OneBot WebSocket 契约。"""
 
     async def connect(self, settings: QQSettings) -> Connection:
-        """连接配置端点，显式停用环境代理；协议与凭据错误不被包装成临时离线。"""
+        """连接配置端点，显式停用环境代理。
+
+        Args:
+            settings: 当前组件已校验的配置或纯声明。
+
+        Returns:
+            当前尝试实际取得的原生连接，由创建它的所有者最终关闭。
+
+        Raises:
+            ConnectionUnavailable: QQ direct 网络或服务暂时不可用；参数、
+                材料或当前状态不满足此入口的约束。
+            ConnectionRejected: 参数、材料或当前状态不满足此入口的约束；QQ direct WebSocket
+                协议握手无效。
+
+        Note:
+            协议与凭据错误不被包装成临时离线。
+        """
         host = settings.host
         if ":" in host and not host.startswith("["):
             host = "[" + host + "]"
@@ -124,10 +167,22 @@ class WebSocketConnector:
     async def listen(
         self, settings: QQSettings, accepted: Callable[[Connection], Awaitable[None]]
     ) -> Listener:
-        """reverse 只建立监听；成功监听不能声明外部 QQ 已经接入。"""
+        """reverse 只建立监听。
+
+        Args:
+            settings: 当前组件已校验的配置或纯声明。
+            accepted: 接受新连接时移交实际连接所有权的异步函数。
+
+        Returns:
+            当前所有者创建的反向连接监听资源。
+
+        Note:
+            成功监听不能声明外部 QQ 已经接入。
+        """
         token = settings.access_token.get_secret_value()
 
         async def received(socket: ServerConnection) -> None:
+            """校验反向连接的实际请求，再交给当前连接所有者。"""
             request = socket.request
             if request is None:
                 raise RuntimeError("QQ reverse SDK 缺少完成握手的 request。")

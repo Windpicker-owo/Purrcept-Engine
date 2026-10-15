@@ -51,7 +51,21 @@ class _Invoke(Protocol):
         can_start: Callable[[], bool] | None = None,
         on_admitted: Callable[[str], None] | None = None,
     ) -> ActionRecord:
-        """共用真实能力/schema/Provider 和原回执，不先请求语言模型。"""
+        """共用真实能力/schema/Provider 和原回执，不先请求语言模型。
+
+        Args:
+            path: 此操作定位的明确路径。
+            arguments: 按已装配参数模型校验的能力关键字参数。
+            input_id: 正式接管返回的输入身份，用于关联原文与后续处理。 None
+                表示无单一输入因果关联。
+            can_start: 实际派发前重新检查的资格回调，等待后仍须复核。 None
+                表示不附加调用方资格条件，宿主固定门槛仍生效。
+            on_admitted: 首次等待前接收执行器分配身份的同步回调，不授予重投资格。 None
+                表示不向调用方另行通知接管身份。
+
+        Returns:
+            已保存的行动记录，包含逐次真实调用及结果历史；unknown 不证明效果未发生。
+        """
         ...
 
 
@@ -72,7 +86,20 @@ class PanelController:
         invoke: _Invoke,
         activities: ActivityService,
     ) -> None:
-        """绑定已构造插件及原业务端口，不另建能力表、设备连接或数据库。"""
+        """绑定已构造插件及原业务端口，不另建能力表、设备连接或数据库。
+
+        Args:
+            instance_id: 本次装配中唯一的插件或宿主实例身份。
+            catalog: 全部已启用插件共同生成的冻结目录。
+            plugins: 本实例已装配的插件运行资源，不执行隐式发现。
+            ledger: 当前业务专用账本，不提供任意数据库操作。
+            invoke: 借用共享目录与执行器调用单能力的有限入口。
+            activities: 此宿主唯一的活动状态提交服务。
+
+        Raises:
+            ControlError: 插件面板重复操作或借用了其他插件能力；
+                插件快捷控制参数未在能力契约中声明。
+        """
         self.instance_id, self.catalog = instance_id, catalog
         self.plugins, self.ledger = plugins, ledger
         self.invoke, self.activities = invoke, activities
@@ -120,14 +147,42 @@ class PanelController:
         return values
 
     def preview(self, target: str) -> PreviewFrame | None:
-        """借出当前缓存，缺失返回 None；请求本身不打开设备或截图。"""
+        """借出当前缓存，缺失返回 None。
+
+        Args:
+            target: 本次操作明确指定的业务目标身份。
+
+        Returns:
+            当前已经取得的完整预览画面，不触发额外采集。 未取得对应记录或素材时返回 None；
+            读取故障仍抛出。
+
+        Raises:
+            ControlError: 该设备没有缓存预览。
+
+        Note:
+            请求本身不打开设备或截图。
+        """
         runtime = self.plugins.get(target)
         if runtime is None or runtime.panel is None or runtime.panel.preview is None:
             raise ControlError("该设备没有缓存预览。", code="control_target")
         return runtime.panel.preview()
 
     async def submit(self, request: ControlRequest) -> ControlRecord:
-        """合并同身份观察并交给持久去重；取消等待不取消控制所有者。"""
+        """合并同身份观察并交给持久去重。
+
+        Args:
+            request: 包含稳定请求身份、目标和操作参数的显式控制。
+
+        Returns:
+            稳定请求身份的受理记录与当前实际业务关联。
+
+        Raises:
+            ControlError: 典型拒绝原因：宿主已停止面板控制接入；页面实例已过期，请刷新；
+                控制身份对应不同请求；面板控制观察名额已满。
+
+        Note:
+            取消等待不取消控制所有者。
+        """
         if self._closing:
             raise ControlError("宿主已停止面板控制接入。", code="host_closing")
         if request.instance_id != self.instance_id:
@@ -150,6 +205,7 @@ class PanelController:
         self._tasks[request.request_id] = (encoded, task)
 
         def finished(owner: asyncio.Task[ControlRecord]) -> None:
+            """收回已结束的工作所有者，并保留原任务中的真实故障。"""
             self._tasks.pop(request.request_id, None)
             if not owner.cancelled():
                 owner.exception()
@@ -244,7 +300,11 @@ class PanelController:
         await self.ledger.link(request.request_id, command_id=command.command_id)
 
     async def close(self) -> None:
-        """拒绝新控制并等待原业务观察/提交，不随页面断开取消实际工作。"""
+        """拒绝新控制并等待原业务观察/提交，不随页面断开取消实际工作。
+
+        Raises:
+            BaseExceptionGroup: 面板控制收尾失败。
+        """
         self._closing = True
         results = await asyncio.gather(
             *(item[1] for item in tuple(self._tasks.values())), return_exceptions=True

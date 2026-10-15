@@ -23,6 +23,13 @@ const GROUPS: readonly { key: string; title: string; family: string; match: (cal
 /** 能力路径的末段是操作名；完整路径留在技术细节。 */
 function operation(path: string): string { return path.split(".").at(-1) ?? path; }
 
+/**
+ * 展示行动及各次已发生、未知或未开始的真实回执。
+ *
+ * action 提供逐调用事实；snapshot 仅解析设备名称。行动结束不代表所有操作成功。
+ *
+ * @returns 仅呈现当前输入事实的 React 元素。
+ */
 export function ActionDetail({ action, snapshot }: { action: Action; snapshot: Snapshot | null }): ReactElement {
   return <div className="detail">
     <h2>{actionTitle(action, snapshot)}</h2>
@@ -49,7 +56,13 @@ export function ActionDetail({ action, snapshot }: { action: Action; snapshot: S
   </div>;
 }
 
-/** 本页控制：先说明是否送达，再给出关联行动或活动命令的真实结果。 */
+/**
+ * 先展示控制是否送达，再展开关联的真实业务结果。
+ *
+ * entry/state 保留原身份和当前事实；client 只按原身份查询或重传，open 定位行动。
+ *
+ * @returns 仅呈现当前输入事实的 React 元素。
+ */
 export function ControlDetail({ entry, client, state, open }: { entry: Entry; client: PanelClient; state: PanelState; open: (actionId: string) => void }): ReactElement {
   const r = entry.result;
   const actual = r?.action;

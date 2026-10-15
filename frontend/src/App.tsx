@@ -85,7 +85,13 @@ function PageBody({ page, state, client, agent, attention, route, go }: { page: 
   }
 }
 
-/** 挂载只读观察并装配六页导航；卸载清理轮询，设备寿命仍由宿主持有。 */
+/**
+ * 装配单一面板观察者、路由与各页面。
+ *
+ * client 是本次页面唯一观察所有者；卸载只停止轮询，不撤销宿主业务。
+ *
+ * @returns 仅呈现当前输入事实的 React 元素。
+ */
 export function App({ client }: { client: PanelClient }): ReactElement {
   const state = useSyncExternalStore(client.subscribe, client.getState);
   const [route, go] = useRoute();

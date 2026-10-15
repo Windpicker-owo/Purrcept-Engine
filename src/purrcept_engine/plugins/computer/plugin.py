@@ -63,9 +63,17 @@ class _Observe(_Parameters):
 
 
 def make_factory(driver_factory: Callable[[], ComputerDriver]) -> PluginFactory:
-    """按同一生产契约注入实际驱动，调用方不取得主体或任意数据库。"""
+    """按同一生产契约注入实际驱动，调用方不取得主体或任意数据库。
+
+    Args:
+        driver_factory: 为当前插件实例创建独立设备驱动的工厂。
+
+    Returns:
+        接收实例身份、原始配置及基准目录的纯配置工厂。
+    """
 
     def declare(instance_id: str, settings: ComputerSettings, base_dir: Path) -> PluginBlueprint:
+        """解析已校验配置，生成对象、能力和资源构造声明。"""
         preferences = settings.preferences
         if not preferences.is_absolute():
             preferences = base_dir / preferences
@@ -134,6 +142,7 @@ def make_factory(driver_factory: Callable[[], ComputerDriver]) -> PluginFactory:
         )
 
         async def build(ports: PluginPorts) -> PluginRuntime:
+            """借用本实例的有限端口，创建能力实现与插件资源所有者。"""
             evidence = ports.evidence
             if evidence is None:
                 raise ConfigError("computer插件需要宿主原文/媒体端口。")
@@ -143,18 +152,22 @@ def make_factory(driver_factory: Callable[[], ComputerDriver]) -> PluginFactory:
             )
 
             async def run_status(parameters: _Empty, context: CallContext) -> CallOutcome:
+                """只读当前插件已取得的业务状态。"""
                 del parameters, context
                 return CallOutcome("confirmed", computer.snapshot())
 
             async def run_connect(parameters: _Empty, context: CallContext) -> CallOutcome:
+                """明确取得电脑驱动连接，不自动开始持续观察。"""
                 del parameters, context
                 return CallOutcome("confirmed", await computer.connect())
 
             async def run_disconnect(parameters: _Empty, context: CallContext) -> CallOutcome:
+                """明确停止当前电脑连接及相关观察借用。"""
                 del parameters, context
                 return CallOutcome("confirmed", await computer.disconnect())
 
             async def run_foreground(parameters: _Empty, context: CallContext) -> CallOutcome:
+                """查询当前连接实际取得的前台窗口信息。"""
                 del parameters, context
                 try:
                     result = await computer.foreground()
@@ -163,6 +176,7 @@ def make_factory(driver_factory: Callable[[], ComputerDriver]) -> PluginFactory:
                 return CallOutcome("confirmed", result)
 
             async def run_screenshot(parameters: _Screenshot, context: CallContext) -> CallOutcome:
+                """取得真实截图，并按明确参数决定是否接管原生图像。"""
                 del context
                 try:
                     return await computer.screenshot(parameters.target, parameters.monitor_id)
@@ -170,6 +184,7 @@ def make_factory(driver_factory: Callable[[], ComputerDriver]) -> PluginFactory:
                     raise CapabilityInputError(str(error)) from error
 
             async def run_observe(parameters: _Observe, context: CallContext) -> CallOutcome:
+                """按明确策略开始持续观察或采用指定观察配置。"""
                 del context
                 try:
                     result = await computer.observe(parameters.operation)
@@ -178,10 +193,12 @@ def make_factory(driver_factory: Callable[[], ComputerDriver]) -> PluginFactory:
                 return CallOutcome("confirmed", result)
 
             def revision() -> str:
+                """返回当前已取得业务状态的版本标记，供面板观察变化。"""
                 state = computer.snapshot()
                 return f"{state['connection_id']}:{state['generation']}:{state['observing']}"
 
             def preview() -> PreviewFrame | None:
+                """读取已有设备画面，缺失时返回明确的不可用响应。"""
                 frame = computer.preview()
                 return (
                     None

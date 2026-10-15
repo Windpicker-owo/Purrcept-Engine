@@ -25,7 +25,20 @@ from purrcept_engine.domain.knowledge.ports import KnowledgeStore, Reranker, Sem
 
 @dataclass(frozen=True, slots=True)
 class RecallResult:
-    """有限检索结果及实际路线状态，不把禁用或尚未索引解释为没有事实。"""
+    """有限检索结果及实际路线状态，不把禁用或尚未索引解释为没有事实。
+
+    Attributes:
+        items: 经过融合和权威版本复核的有限认识候选。
+        semantic: 可选语义召回路线；未配置时只使用本地检索。
+        reranked: 是否实际执行了已配置的候选重排。
+        index_pending: 当前有限读取发现的关键词索引积压数量。
+        index_pending_is_lower_bound: 关键词积压数量是否仅为有界扫描下界。
+        embedding_pending: 当前有限读取发现的语义索引积压数量。
+        embedding_pending_is_lower_bound: 语义积压数量是否仅为有界扫描下界。
+
+    Note:
+        实例字段在构造后不可重新赋值；嵌套值的冻结范围由字段所属契约决定。
+    """
 
     items: tuple[KnowledgeCandidate, ...]
     semantic: bool
@@ -39,8 +52,12 @@ class RecallResult:
 def recall_payload(result: RecallResult) -> str:
     """前台与反思共用实际召回形状，默认摘要层不授予原文已读资格。
 
-    保留模型可见的 id/text/version/sources/score/ranks，另明确当前资格和
-    启用路线。有限积压预览不能伪装成全部待办数量；容量由实际请求装配核验。
+    Args:
+        result: 已经融合并复核版本有效性的召回结果。
+
+    Note:
+        保留模型可见的 id/text/version/sources/score/ranks，另明确当前资格和
+        启用路线。有限积压预览不能伪装成全部待办数量；容量由实际请求装配核验。
     """
     return json.dumps(
         {
@@ -99,7 +116,17 @@ class KnowledgeService:
         semantic: SemanticRetriever | None = None,
         reranker: Reranker | None = None,
     ) -> None:
-        """固定显式检索资源和页长，不寻找自动替代模型。"""
+        """固定显式检索资源和页长，不寻找自动替代模型。
+
+        Args:
+            store: 应用借出的领域存储端口，实际连接和关闭归资源所有者。
+            page_chars: 本实例统一的正文分页字符上限。 默认 8000。
+            semantic: 可选语义召回路线；未配置时只使用本地检索。
+            reranker: 可选重排器，只能对给定候选排序。 None 表示不重排。
+
+        Raises:
+            ValueError: 原文页长必须是正整数。
+        """
         if isinstance(page_chars, bool) or not isinstance(page_chars, int) or page_chars < 1:
             raise ValueError("原文页长必须是正整数。")
         self.store = store
@@ -115,7 +142,27 @@ class KnowledgeService:
         max_chars: int | None = None,
         version: int | None = None,
     ) -> EvidencePage:
-        """展开指定版本或当前版本；游标始终绑定原版本，取得不登记实际呈现。"""
+        """展开指定版本或当前版本。
+
+        Args:
+            identity: 需要展开的原文或认识稳定身份；游标续读仍核对原身份与版本。
+            level: evidence 展开正文，summary 或 overview 只读对应概要。 默认 'evidence'。
+            cursor: 宿主签发并保存的不透明续读游标，续读同一快照版本。 None 表示首次读取。
+            max_chars: 本页正文的字符上限；分页游标继续绑定原快照。 None
+                使用本实例配置的统一页长。
+            version: 目标记录的确切版本，区别于可变的当前版本。 None 首读当前版本，
+                续读仍绑定游标的原版本。
+
+        Returns:
+            当前版本的一页正文、确切范围和下一游标；取得页面不等于已呈现给模型。
+
+        Raises:
+            KnowledgeInputError: 来源、版本、层级、游标或页长不满足读取要求。
+            StorageError: 权威存储不可用或保存的材料损坏。
+
+        Note:
+            游标始终绑定原版本，取得不登记实际呈现。
+        """
         return await self.store.read_evidence(
             identity,
             level=level,
@@ -135,7 +182,27 @@ class KnowledgeService:
         *,
         limit: int = 12,
     ) -> RecallResult:
-        """RRF 融合保留三条本地路线，语义/重排等待后再次查权威资格。"""
+        """融合本地与已配置的可选路线，返回经版本核验的认识候选。
+
+        Args:
+            query: 用于关键词或语义检索的意图文本。
+            entities_json: 已编码为 JSON 字符串数组的实体过滤条件。 默认 '[]'。
+            start: 按发生时间筛选的起点；None 表示不限制此端。
+            end: 按发生时间筛选的终点；None 表示不限制此端。
+            at: 核验记录有效性的 Unix 时间戳；None 使用当前时间。
+            include_inactive: 是否同时返回已失效的历史记录，并保留失效原因。 默认 False。
+            limit: 本次读取或更新的最大条目数。 默认 12。
+
+        Returns:
+            融合并复核版本后的候选，以及实际启用路线与索引积压信息。
+
+        Raises:
+            KnowledgeInputError: 来源、版本、时间范围或材料引用不满足当前操作要求。
+            RuntimeError: 语义检索返回重复版本身份；重排返回未知或重复候选版本。
+
+        Note:
+            RRF 融合保留三条本地路线，语义/重排等待后再次查权威资格。
+        """
         try:
             entities: object = json.loads(entities_json)
         except json.JSONDecodeError as error:

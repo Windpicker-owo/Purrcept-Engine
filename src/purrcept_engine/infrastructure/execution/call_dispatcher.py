@@ -28,14 +28,22 @@ class CallDispatcher:
     """由执行器构造并独占，借用同一运行状态；资源关闭仍归执行器。"""
 
     def __init__(self, runtime: ExecutionService) -> None:
-        """固定唯一执行器借用，不取得额外 Provider、账本或后台任务。"""
+        """固定唯一执行器借用，不取得额外 Provider、账本或后台任务。
+
+        Args:
+            runtime: 创建此协作者的领域或执行运行实例，不跨实例共享状态。
+        """
         self.runtime = runtime
 
     def reserve_call(self, call: CapabilityCall) -> bool:
         """预留等待及实际收尾位置，普通满额不能挤掉宿主登记的控制类别。
 
-        两类都以既有 Worker 数乘每行动调用数限定未完成记录；这不是额外的
-        Provider 并发额度。已结束观察但仍在返回的 Provider 继续占用原位置。
+        Args:
+            call: 当前真实能力或 Core 工具调用的冻结材料。
+
+        Note:
+            两类都以既有 Worker 数乘每行动调用数限定未完成记录；这不是额外的
+            Provider 并发额度。已结束观察但仍在返回的 Provider 继续占用原位置。
         """
         capacity = self.runtime.settings.max_workers * self.runtime.settings.max_calls
         pending = self.runtime.pending_ordinary if call.ordinary else self.runtime.pending_controls
@@ -49,7 +57,11 @@ class CallDispatcher:
         return True
 
     def release_call(self, call: CapabilityCall) -> None:
-        """只在未接管失败或真实调用任务结束时归还其分类位置。"""
+        """只在未接管失败或真实调用任务结束时归还其分类位置。
+
+        Args:
+            call: 当前真实能力或 Core 工具调用的冻结材料。
+        """
         self.runtime.pending_calls -= 1
         if call.ordinary:
             self.runtime.pending_ordinary -= 1
@@ -60,7 +72,14 @@ class CallDispatcher:
             released.set_result(None)
 
     def enqueue(self, call: CapabilityCall) -> None:
-        """进入共用队列；来源内保持接管次序，控制不进入普通轮转。"""
+        """进入共用队列。
+
+        Args:
+            call: 当前真实能力或 Core 工具调用的冻结材料。
+
+        Note:
+            来源内保持接管次序，控制不进入普通轮转。
+        """
         if call.ordinary:
             source_id = call.source_id
             if source_id not in self.runtime.ordinary:
@@ -131,13 +150,23 @@ class CallDispatcher:
             )
 
     def start_call(self, call: CapabilityCall, *, reserved: bool) -> None:
-        """把已分配名额的调用交给独立所有者，回调在真实结束后归还额度。"""
+        """把已分配名额的调用交给独立所有者，回调在真实结束后归还额度。
+
+        Args:
+            call: 当前真实能力或 Core 工具调用的冻结材料。
+            reserved: 是否占用独立控制名额，具体计数由所属所有者维护。
+        """
         task = asyncio.create_task(self.invoke_call(call, reserved=reserved))
         self.runtime.owned_calls.add(task)
         task.add_done_callback(lambda task: self.call_done(task, call))
 
     def call_done(self, task: asyncio.Task[None], call: CapabilityCall) -> None:
-        """内部故障撤销服务派发而保留原始异常，不能让后台任务静默失踪。"""
+        """内部故障撤销服务派发而保留原始异常，不能让后台任务静默失踪。
+
+        Args:
+            task: 当前所有者创建并负责回收结果的任务。
+            call: 当前真实能力或 Core 工具调用的冻结材料。
+        """
         self.runtime.owned_calls.discard(task)
         self.release_call(call)
         if task.cancelled() and isinstance(call.action, StructuredAction):
@@ -157,7 +186,19 @@ class CallDispatcher:
             self.dispatch()
 
     async def invoke_call(self, call: CapabilityCall, *, reserved: bool) -> None:
-        """持久启动门槛之后再次核验；超时保留真实任务并独立澄清未知回执。"""
+        """持久启动门槛之后再次核验。
+
+        Args:
+            call: 当前真实能力或 Core 工具调用的冻结材料。
+            reserved: 是否占用独立控制名额，具体计数由所属所有者维护。
+
+        Raises:
+            BaseExceptionGroup: 未开始回执提交与资格收尾均失败；
+                未知回执提交与迟到真实结果提交均失败。
+
+        Note:
+            超时保留真实任务并独立澄清未知回执。
+        """
         try:
             if not reserved or not self.call_eligible(call):
                 await self.not_started(call)
@@ -247,7 +288,22 @@ class CallDispatcher:
     async def enter_provider(
         self, call: CapabilityCall, implementation: CapabilityImplementation
     ) -> CallOutcome | None:
-        """异步资格与真实 Provider 分界；权威故障不能被翻译成业务失败。"""
+        """异步资格与真实 Provider 分界。
+
+        Args:
+            call: 当前真实能力或 Core 工具调用的冻结材料。
+            implementation: 本次真实调用绑定的能力实现。
+
+        Returns:
+            实际确认、失败或未知结论，以及可 JSON 化的业务值和原生媒体引用。
+            未取得对应记录或素材时返回 None；读取故障仍抛出。
+
+        Raises:
+            ValueError: 启动资格必须返回正有限剩余秒数或 None。
+
+        Note:
+            权威故障不能被翻译成业务失败。
+        """
         if not self.call_eligible(call):
             return None
         action = call.action
@@ -293,7 +349,14 @@ class CallDispatcher:
             return CallOutcome("failed", None, type(error).__name__, str(error))
 
     def call_eligible(self, call: CapabilityCall) -> bool:
-        """脚本已派发后独立运行；结构化资格仍在真实 Provider 前复核。"""
+        """脚本已派发后独立运行。
+
+        Args:
+            call: 当前真实能力或 Core 工具调用的冻结材料。
+
+        Note:
+            结构化资格仍在真实 Provider 前复核。
+        """
         if (
             self.runtime.closed
             or not call.action.eligible
@@ -314,7 +377,16 @@ class CallDispatcher:
         error_type: str = "CallNotStarted",
         reason: str = "调用在开始前失去资格或期限。",
     ) -> None:
-        """保存未进入 Provider 的事实，再向原观察者交付；不产生未知效果。"""
+        """保存未进入 Provider 的事实，再向原观察者交付。
+
+        Args:
+            call: 当前真实能力或 Core 工具调用的冻结材料。
+            error_type: 回执中稳定的错误类别，无错误时为 None。 默认 'CallNotStarted'。
+            reason: 供后续核对的明确处置原因。 默认 '调用在开始前失去资格或期限。'。
+
+        Note:
+            不产生未知效果。
+        """
         receipt = await self.runtime.store.record_call_result(
             call.context.call_id,
             state="not_started",
@@ -333,7 +405,19 @@ class CallDispatcher:
     async def record(
         self, call: CapabilityCall, outcome: CallOutcome, *, deliver: bool = True
     ) -> None:
-        """原始结果先完整入账；交付超限只改变交付结果，不改变效果或自动重做。"""
+        """原始结果先完整入账。
+
+        Args:
+            call: 当前真实能力或 Core 工具调用的冻结材料。
+            outcome: 此次操作的真实结论，不由期望效果推断成功。
+            deliver: 当前观察是否仍允许把结果交回 Worker，不影响真实回执保存。 默认 True。
+
+        Raises:
+            TypeError: Provider 未返回声明的 CallOutcome。
+
+        Note:
+            交付超限只改变交付结果，不改变效果或自动重做。
+        """
         if not isinstance(outcome, CallOutcome) or outcome.state not in {
             "confirmed",
             "failed",

@@ -94,7 +94,13 @@ class ImageRuntime:
     """
 
     def __init__(self, base_dir: Path, evidence: EvidencePort, client: httpx.AsyncClient) -> None:
-        """接收已经明确取得的客户端和有限存储端口，不启动采集或后台轮询。"""
+        """接收已经明确取得的客户端和有限存储端口，不启动采集或后台轮询。
+
+        Args:
+            base_dir: 解析相对配置路径的基准目录。
+            evidence: 完整原文、媒体及不可变分页服务。
+            client: 此组件显式借用的客户端，资源寿命由创建者负责。
+        """
         self.base_dir, self.evidence, self.client = base_dir, evidence, client
         self._tasks: set[asyncio.Task[CallOutcome]] = set()
         self._closing = False
@@ -102,7 +108,21 @@ class ImageRuntime:
         self._close_task: asyncio.Task[None] | None = None
 
     async def view_image(self, parameters: _ViewImage, context: CallContext) -> CallOutcome:
-        """接管一次明确读取；取消调用者等待不撤销已开始读盘或权威接管。"""
+        """读取明确图像并将完整像素接管到权威库。
+
+        Args:
+            parameters: 已通过能力参数模型校验的调用参数。
+            context: 宿主或 Core 注入的可信调用上下文，不由模型自行填写。
+
+        Returns:
+            实际确认、失败或未知结论，以及可 JSON 化的业务值和原生媒体引用。
+
+        Raises:
+            HostStateError: 看图资源正在关闭。
+
+        Note:
+            接管一次明确读取；取消调用者等待不撤销已开始读盘或权威接管。
+        """
         if self._closing:
             raise HostStateError("看图资源正在关闭。")
         task = asyncio.create_task(self._read(parameters, context), name="image:" + context.call_id)
@@ -192,14 +212,25 @@ class ImageRuntime:
         )
 
     def snapshot(self) -> JsonObject:
-        """只读资源阶段与实际在途数量，不读文件或重新下载媒体。"""
+        """只读资源阶段与实际在途数量，不读文件或重新下载媒体。
+
+        Returns:
+            业务对象，按实际结果提供 state、pending_reads 字段。
+        """
         return {
             "state": "closed" if self._closed else "closing" if self._closing else "ready",
             "pending_reads": len(self._tasks),
         }
 
     async def prepare_request(self) -> JsonObject:
-        """只交付当前可用阶段；在途读取数属于宿主资源诊断。"""
+        """只交付当前可用阶段。
+
+        Returns:
+            业务对象，按实际结果提供 state 字段。
+
+        Note:
+            在途读取数属于宿主资源诊断。
+        """
         return {"state": self.snapshot()["state"]}
 
     @property
@@ -240,8 +271,20 @@ def images_blueprint(
 ) -> PluginBlueprint:
     """声明宿主默认 me.view_image，不要求通过 TOML 另启一个图像插件。
 
-    app 将此 Blueprint 与 subject 对象同时装配，并借出同库 EvidencePort。
-    client_factory 只用于明确的传输替换；生产客户端不开隐式重试或自动重定向。
+    Args:
+        base_dir: 解析相对配置路径的基准目录。
+        client_factory: 为本次图像捕获创建独立 HTTP 客户端的工厂。 None 使用内置 HTTP
+            客户端工厂。
+
+    Returns:
+        对象、能力、依赖与延后构造入口组成的纯声明。
+
+    Raises:
+        ConfigError: 看图能力必须提供绝对的主配置基准目录。
+
+    Note:
+        app 将此 Blueprint 与 subject 对象同时装配，并借出同库 EvidencePort。
+        client_factory 只用于明确的传输替换；生产客户端不开隐式重试或自动重定向。
     """
     if not base_dir.is_absolute():
         raise ConfigError("看图能力必须提供绝对的主配置基准目录。")
@@ -259,6 +302,7 @@ def images_blueprint(
     )
 
     async def build(ports: PluginPorts) -> PluginRuntime:
+        """借用本实例的有限端口，创建能力实现与插件资源所有者。"""
         evidence = ports.evidence
         if evidence is None:
             raise ConfigError("默认看图能力需要宿主原文/媒体端口。")

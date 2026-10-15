@@ -78,22 +78,26 @@ def _declare(instance_id: str, settings: BedSettings, base_dir: Path) -> PluginB
     )
 
     async def build(ports: PluginPorts) -> PluginRuntime:
+        """借用本实例的有限端口，创建能力实现与插件资源所有者。"""
         port = ports.time
         if port is None:
             raise ConfigError("bed插件需要宿主时间业务端口。")
 
         async def run_rest(parameters: _RestParameters, context: CallContext) -> CallOutcome:
+            """用真实调用身份保存本次明确休息变更。"""
             change = await port.rest(
                 object_id, parameters.expected_duration_minutes, datetime.now(UTC), context.call_id
             )
             return CallOutcome("confirmed", change.to_json())
 
         async def run_leave(parameters: _Empty, context: CallContext) -> CallOutcome:
+            """用真实调用身份明确结束当前休息状态。"""
             del parameters
             change = await port.leave(datetime.now(UTC), context.call_id)
             return CallOutcome("confirmed", change.to_json())
 
         async def prepare_request() -> JsonObject:
+            """投影本插件当前业务状态，供下一逻辑请求构建动态尾部。"""
             state = await port.get_rest()
             return {
                 "rest": {"resting": False} if state is None else state.to_json(datetime.now(UTC))

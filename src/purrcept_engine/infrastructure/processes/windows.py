@@ -178,26 +178,103 @@ class _Function(Protocol):
 
 
 class _CreateJob(_Function, Protocol):
-    def __call__(self, security: None, name: None) -> int | None: ...
+    """限定原生库在此适配层使用的调用形状。
+
+    Note:
+        具体资源由外层驱动创建和关闭；该协议不负责加载库或扩大原生 API 范围。
+    """
+
+    def __call__(self, security: None, name: None) -> int | None:
+        """创建当前所有者独占的原生 Job Object。
+
+        Args:
+            security: 原生安全属性；None 使用默认属性。
+            name: 当前声明、字段或协议操作的明确名称。
+        """
+        ...
 
 
 class _SetJob(_Function, Protocol):
-    def __call__(self, job: int, kind: int, data: object, size: int) -> int: ...
+    """限定原生库在此适配层使用的调用形状。
+
+    Note:
+        具体资源由外层驱动创建和关闭；该协议不负责加载库或扩大原生 API 范围。
+    """
+
+    def __call__(self, job: int, kind: int, data: object, size: int) -> int:
+        """向已有 Job 写入明确的原生资源限制结构。
+
+        Args:
+            job: 当前所有者创建的 Windows Job Object 句柄。
+            kind: 此业务值所属的稳定种类。
+            data: 当前边界接收的原始协议或媒体内容。
+            size: 当前缓冲区的字节容量。
+        """
+        ...
 
 
 class _QueryJob(_Function, Protocol):
-    def __call__(self, job: int, kind: int, data: object, size: int, returned: None) -> int: ...
+    """限定原生库在此适配层使用的调用形状。
+
+    Note:
+        具体资源由外层驱动创建和关闭；该协议不负责加载库或扩大原生 API 范围。
+    """
+
+    def __call__(self, job: int, kind: int, data: object, size: int, returned: None) -> int:
+        """读取当前 Job 的原生资源事实到给定缓冲。
+
+        Args:
+            job: 当前所有者创建的 Windows Job Object 句柄。
+            kind: 此业务值所属的稳定种类。
+            data: 当前边界接收的原始协议或媒体内容。
+            size: 当前缓冲区的字节容量。
+            returned: 原生 API 返回实际写入长度的输出位置。
+        """
+        ...
 
 
 class _CloseHandle(_Function, Protocol):
-    def __call__(self, handle: int) -> int: ...
+    """限定原生库在此适配层使用的调用形状。
+
+    Note:
+        具体资源由外层驱动创建和关闭；该协议不负责加载库或扩大原生 API 范围。
+    """
+
+    def __call__(self, handle: int) -> int:
+        """释放当前所有者已经取得的原生句柄。
+
+        Args:
+            handle: 当前所有者持有的原生句柄。
+        """
+        ...
 
 
 class _InitializeAttributes(_Function, Protocol):
-    def __call__(self, data: object, count: int, flags: int, size: object) -> int: ...
+    """限定原生库在此适配层使用的调用形状。
+
+    Note:
+        具体资源由外层驱动创建和关闭；该协议不负责加载库或扩大原生 API 范围。
+    """
+
+    def __call__(self, data: object, count: int, flags: int, size: object) -> int:
+        """为显式进程启动属性分配初始化范围。
+
+        Args:
+            data: 当前边界接收的原始协议或媒体内容。
+            count: 原生缓冲区或句柄数组的有效元素数量。
+            flags: 原生 API 的显式标志位组合。
+            size: 当前缓冲区的字节容量。
+        """
+        ...
 
 
 class _UpdateAttributes(_Function, Protocol):
+    """限定原生库在此适配层使用的调用形状。
+
+    Note:
+        具体资源由外层驱动创建和关闭；该协议不负责加载库或扩大原生 API 范围。
+    """
+
     def __call__(
         self,
         data: object,
@@ -207,14 +284,44 @@ class _UpdateAttributes(_Function, Protocol):
         size: int,
         previous: None,
         returned: None,
-    ) -> int: ...
+    ) -> int:
+        """将明确的可继承句柄等原生属性写入启动结构。
+
+        Args:
+            data: 当前边界接收的原始协议或媒体内容。
+            flags: 原生 API 的显式标志位组合。
+            kind: 此业务值所属的稳定种类。
+            value: 此校验边界接收的原始值，校验失败时保留明确错误。
+            size: 当前缓冲区的字节容量。
+            previous: 调用方持有的先前预设版本，用于拒绝覆盖并发修改。
+            returned: 原生 API 返回实际写入长度的输出位置。
+        """
+        ...
 
 
 class _DeleteAttributes(_Function, Protocol):
-    def __call__(self, data: object) -> None: ...
+    """限定原生库在此适配层使用的调用形状。
+
+    Note:
+        具体资源由外层驱动创建和关闭；该协议不负责加载库或扩大原生 API 范围。
+    """
+
+    def __call__(self, data: object) -> None:
+        """释放当前进程启动属性列表的原生存储。
+
+        Args:
+            data: 当前边界接收的原始协议或媒体内容。
+        """
+        ...
 
 
 class _CreateProcess(_Function, Protocol):
+    """限定原生库在此适配层使用的调用形状。
+
+    Note:
+        具体资源由外层驱动创建和关闭；该协议不负责加载库或扩大原生 API 范围。
+    """
+
     def __call__(
         self,
         executable: str,
@@ -227,30 +334,117 @@ class _CreateProcess(_Function, Protocol):
         directory: None,
         startup: object,
         output: object,
-    ) -> int: ...
+    ) -> int:
+        """按显式命令和启动属性创建隔离子进程。
+
+        Args:
+            executable: 显式配置的外部程序路径，不自动寻找或安装替代程序。
+            command: Windows CreateProcessW 使用的可变原生命令行缓冲。
+            process_security: 原生进程安全属性，此适配层传 None。
+            thread_security: 原生线程安全属性，此适配层传 None。
+            inherit: 是否允许原生句柄继承，仍受显式继承列表限制。
+            flags: 原生 API 的显式标志位组合。
+            environment: 子进程启动的原生环境块。
+            directory: 本次操作使用的明确目录。
+            startup: 已填写的原生启动属性结构。
+            output: 接收原生 API 输出的已分配结构或指针。
+        """
+        ...
 
 
 class _HandleInformation(_Function, Protocol):
-    def __call__(self, handle: int, flags: object) -> int: ...
+    """限定原生库在此适配层使用的调用形状。
+
+    Note:
+        具体资源由外层驱动创建和关闭；该协议不负责加载库或扩大原生 API 范围。
+    """
+
+    def __call__(self, handle: int, flags: object) -> int:
+        """为当前句柄设置明确的继承标志。
+
+        Args:
+            handle: 当前所有者持有的原生句柄。
+            flags: 原生 API 的显式标志位组合。
+        """
+        ...
 
 
 class _IsProcessInJob(_Function, Protocol):
-    def __call__(self, process: int, job: int, result: object) -> int: ...
+    """限定原生库在此适配层使用的调用形状。
+
+    Note:
+        具体资源由外层驱动创建和关闭；该协议不负责加载库或扩大原生 API 范围。
+    """
+
+    def __call__(self, process: int, job: int, result: object) -> int:
+        """查询实际进程与 Job 的归属关系。
+
+        Args:
+            process: 当前所有者持有的 Windows 进程句柄。
+            job: 当前所有者创建的 Windows Job Object 句柄。
+            result: 接收原生 API 返回结果的已分配结构或指针。
+        """
+        ...
 
 
 class _Wait(_Function, Protocol):
-    def __call__(self, process: int, milliseconds: int) -> int: ...
+    """限定原生库在此适配层使用的调用形状。
+
+    Note:
+        具体资源由外层驱动创建和关闭；该协议不负责加载库或扩大原生 API 范围。
+    """
+
+    def __call__(self, process: int, milliseconds: int) -> int:
+        """在原生毫秒期限内等待实际进程结束。
+
+        Args:
+            process: 当前所有者持有的 Windows 进程句柄。
+            milliseconds: 原生进程等待的毫秒上限。
+        """
+        ...
 
 
 class _ExitCode(_Function, Protocol):
-    def __call__(self, process: int, code: object) -> int: ...
+    """限定原生库在此适配层使用的调用形状。
+
+    Note:
+        具体资源由外层驱动创建和关闭；该协议不负责加载库或扩大原生 API 范围。
+    """
+
+    def __call__(self, process: int, code: object) -> int:
+        """读取实际进程报告的原生退出码。
+
+        Args:
+            process: 当前所有者持有的 Windows 进程句柄。
+            code: 供调用方分类处理的稳定错误码。
+        """
+        ...
 
 
 class _TerminateJob(_Function, Protocol):
-    def __call__(self, job: int, exit_code: int) -> int: ...
+    """限定原生库在此适配层使用的调用形状。
+
+    Note:
+        具体资源由外层驱动创建和关闭；该协议不负责加载库或扩大原生 API 范围。
+    """
+
+    def __call__(self, job: int, exit_code: int) -> int:
+        """结束当前 Job 中的实际进程并保留退出码。
+
+        Args:
+            job: 当前所有者创建的 Windows Job Object 句柄。
+            exit_code: 请求终止 Job 时使用的原生退出码。
+        """
+        ...
 
 
 class _ProcessTimes(_Function, Protocol):
+    """限定原生库在此适配层使用的调用形状。
+
+    Note:
+        具体资源由外层驱动创建和关闭；该协议不负责加载库或扩大原生 API 范围。
+    """
+
     def __call__(
         self,
         process: int,
@@ -258,11 +452,34 @@ class _ProcessTimes(_Function, Protocol):
         exit_time: object,
         kernel: object,
         user: object,
-    ) -> int: ...
+    ) -> int:
+        """取得进程实际 CPU 与创建、退出时间。
+
+        Args:
+            process: 当前所有者持有的 Windows 进程句柄。
+            creation: 接收原生进程创建时间的输出位置。
+            exit_time: 接收原生进程退出时间的输出位置。
+            kernel: 接收进程内核态累计 CPU 时间的输出位置。
+            user: 接收进程用户态累计 CPU 时间的输出位置。
+        """
+        ...
 
 
 class _WindowsDirectory(_Function, Protocol):
-    def __call__(self, buffer: object, size: int) -> int: ...
+    """限定原生库在此适配层使用的调用形状。
+
+    Note:
+        具体资源由外层驱动创建和关闭；该协议不负责加载库或扩大原生 API 范围。
+    """
+
+    def __call__(self, buffer: object, size: int) -> int:
+        """读取系统实际 Windows 目录到给定缓冲。
+
+        Args:
+            buffer: 本次操作使用的有界缓冲或原生缓冲地址。
+            size: 当前缓冲区的字节容量。
+        """
+        ...
 
 
 class _Kernel32(ctypes.WinDLL):
@@ -422,8 +639,16 @@ def _environment(api: _Kernel32) -> ctypes.Array[ctypes.c_wchar]:
 class WindowsLimits:
     """所属 Job 已启用的设置；更严格的上级 Job 限制仍可能先发生。
 
-    用户态 CPU 与提交内存对本次 Job 累计和其中单进程采用同值。此快照
-    不代表已经验证资源违规后的业务收尾，也不把上级约束误称为本次额度。
+    Attributes:
+        user_cpu_seconds: 原生进程报告的用户态累计 CPU 秒数。
+        memory_bytes: 此 Worker 允许使用的内存字节上限。
+        kill_on_close: 关闭 Job 句柄时是否结束其仍持有的进程。
+
+    Note:
+        实例字段在构造后不可重新赋值；嵌套值的冻结范围由字段所属契约决定。
+
+        用户态 CPU 与提交内存对本次 Job 累计和其中单进程采用同值。此快照
+        不代表已经验证资源违规后的业务收尾，也不把上级约束误称为本次额度。
     """
 
     user_cpu_seconds: float
@@ -464,7 +689,14 @@ class WindowsProcess:
     """
 
     def __init__(self, api: _Kernel32, pid: int, process: int, job: int) -> None:
-        """接管 launch 已经确认的真实句柄，构造不再创建操作系统资源。"""
+        """接管 launch 已经确认的真实句柄，构造不再创建操作系统资源。
+
+        Args:
+            api: 当前 Windows 进程使用的显式 Kernel32 调用表。
+            pid: 需要纳入隔离资源约束的原生进程 ID。
+            process: 当前所有者持有的 Windows 进程句柄。
+            job: 当前所有者创建的 Windows Job Object 句柄。
+        """
         self._api = api
         self._pid = pid
         self._process: int | None = process
@@ -484,11 +716,29 @@ class WindowsProcess:
     ) -> Self:
         """不经 shell 创建进程，限制与归属失败时回收本次全部资源。
 
-        executable 必须是绝对路径。明确传入的句柄须已经标记为可继承；本入口
-        不临时扩大其他句柄的继承资格。环境只包含操作系统给出的 SystemRoot。
-        原生失败传播 OSError；清理同时失败时汇总原始异常，不伪报成功。
-        两项额度同时为 None 时只取得可信设备辅助进程的完整进程树所有权。
-        模型行动调用始终传入已校验正额度，不能通过此选择取消 Worker 限制。
+        Args:
+            command: 子进程使用的明确可执行文件与参数序列。
+            cpu_seconds: 此 Worker 允许使用的 CPU 秒数上限。 默认 15.0。
+            memory_bytes: 此 Worker 允许使用的内存字节上限。
+            inherited_handles: 子进程启动时唯一允许继承的原生句柄集合。 默认不附加此类条目。
+
+        Returns:
+            校验完成的当前值或解析后的新配置，具体是否复制由实现说明。
+
+        Raises:
+            ValueError: 明确继承的 IPC 句柄必须已标记为可继承。
+            ctypes.WinError: 参数、材料或当前状态不满足此入口的约束。
+            OSError: 典型拒绝原因：Job 回读额度与请求不一致；CreateProcessW
+                未返回完整进程所有权；新进程未归入指定 Job，拒绝采用；
+                启动失败后的进程终止尚未确认。
+            BaseExceptionGroup: 进程启动失败且资源回收失败。
+
+        Note:
+            executable 必须是绝对路径。明确传入的句柄须已经标记为可继承；本入口
+            不临时扩大其他句柄的继承资格。环境只包含操作系统给出的 SystemRoot。
+            原生失败传播 OSError；清理同时失败时汇总原始异常，不伪报成功。
+            两项额度同时为 None 时只取得可信设备辅助进程的完整进程树所有权。
+            模型行动调用始终传入已校验正额度，不能通过此选择取消 Worker 限制。
         """
         cpu_ticks = _validate_launch(command, cpu_seconds, memory_bytes, inherited_handles)
         api = _kernel32()
@@ -609,18 +859,37 @@ class WindowsProcess:
 
     @property
     def pid(self) -> int:
-        """返回本次创建身份；资源处置始终使用原始句柄，避免 PID 重用。"""
+        """返回本次创建身份。
+
+        Note:
+            资源处置始终使用原始句柄，避免 PID 重用。
+        """
         return self._pid
 
     @property
     def process_handle(self) -> int:
-        """借出只在 close 前有效的原始句柄；调用者不能关闭或转交所有权。"""
+        """借出只在 close 前有效的原始句柄。
+
+        Raises:
+            RuntimeError: 进程所有者已经关闭。
+
+        Note:
+            调用者不能关闭或转交所有权。
+        """
         if self._process is None:
             raise RuntimeError("进程所有者已经关闭。")
         return self._process
 
     def poll(self) -> int | None:
-        """读取实际进程退出状态；活跃时返回 None，不误解退出码 259。"""
+        """读取实际进程退出状态。
+
+        Raises:
+            ctypes.WinError: 参数、材料或当前状态不满足此入口的约束。
+            OSError: 进程等待返回无效状态。
+
+        Note:
+            活跃时返回 None，不误解退出码 259。
+        """
         if self._exit_code is not None:
             return self._exit_code
         status = self._api.WaitForSingleObject(self.process_handle, 0)
@@ -640,11 +909,14 @@ class WindowsProcess:
         return self._exit_code
 
     async def wait(self) -> int:
-        """观察本次进程直至实际退出；取消等待不会终止进程或释放句柄。
+        """观察本次进程直至实际退出。
 
-        观察回调目标间隔为 20 毫秒，避开 Windows 常见的 15.6 毫秒时钟
-        分辨率造成的提前热轮询。实际调度仍受事件循环影响，不承诺零延迟
-        终止确认。资源限额由 Job 执行，此等待不负责追加或重置额度。
+        Note:
+            取消等待不会终止进程或释放句柄。
+
+            观察回调目标间隔为 20 毫秒，避开 Windows 常见的 15.6 毫秒时钟
+            分辨率造成的提前热轮询。实际调度仍受事件循环影响，不承诺零延迟
+            终止确认。资源限额由 Job 执行，此等待不负责追加或重置额度。
         """
         loop = asyncio.get_running_loop()
         result: asyncio.Future[int] = loop.create_future()
@@ -673,7 +945,17 @@ class WindowsProcess:
                 scheduled.cancel()
 
     def terminate(self, exit_code: int = 1) -> None:
-        """请求终止本次 Job；之后仍须 wait 确认并 close 释放所有权。"""
+        """请求终止本次 Job。
+
+        Args:
+            exit_code: 请求终止 Job 时使用的原生退出码。 默认 1。
+
+        Raises:
+            ValueError: 退出码必须是无符号 32 位整数。
+
+        Note:
+            之后仍须 wait 确认并 close 释放所有权。
+        """
         if (
             isinstance(exit_code, bool)
             or not isinstance(exit_code, int)
@@ -685,7 +967,11 @@ class WindowsProcess:
 
     @property
     def process_cpu_seconds(self) -> float:
-        """读取主进程的用户态与内核态 CPU；不能代替 Job 内真实解释器总量。"""
+        """读取主进程的用户态与内核态 CPU。
+
+        Note:
+            不能代替 Job 内真实解释器总量。
+        """
         if self._final_process_cpu is not None:
             return self._final_process_cpu
         created, exited, kernel, user = (_FileTime() for _ in range(4))
@@ -722,13 +1008,30 @@ class WindowsProcess:
         return info
 
     def query_limits(self) -> WindowsLimits:
-        """回读硬额度；仅启用进程树所有权的辅助 Job 明确抛 OSError。"""
+        """回读硬额度。
+
+        Returns:
+            已对当前 Worker 生效的平台资源约束。
+
+        Raises:
+            RuntimeError: Job 所有者已经关闭。
+
+        Note:
+            仅启用进程树所有权的辅助 Job 明确抛 OSError。
+        """
         if self._job is None:
             raise RuntimeError("Job 所有者已经关闭。")
         return _read_limits(self._api, self._job)
 
     def close(self) -> None:
-        """仅在实际退出后关闭进程和 Job；重复调用不重新关闭已释放句柄。"""
+        """仅在实际退出后关闭进程和 Job。
+
+        Raises:
+            RuntimeError: 进程仍在运行，须先终止并等待实际退出。
+
+        Note:
+            重复调用不重新关闭已释放句柄。
+        """
         if self.poll() is None:
             raise RuntimeError("进程仍在运行，须先终止并等待实际退出。")
         if self._process is not None:

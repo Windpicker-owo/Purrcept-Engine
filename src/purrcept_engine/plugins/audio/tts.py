@@ -38,11 +38,27 @@ class SpeechSource(Protocol):
     async def synthesize(
         self, parameters: SpeechParameters | RecordParameters, identity: str
     ) -> SpeechAudio:
-        """取得完整已校验音频，未知时长保持为空。"""
+        """取得完整已校验音频，未知时长保持为空。
+
+        Args:
+            parameters: 已通过能力参数模型校验的调用参数。
+            identity: 本次合成的稳定关联身份，不等同于平台提供业务幂等。
+
+        Returns:
+            实际合成或处理完成的完整音频与采样信息。
+        """
         ...
 
     def stream(self, parameters: SpeechParameters, identity: str) -> AsyncGenerator[bytes, None]:
-        """读取一次 aligned MP3 流，异常与截断不可自动续传。"""
+        """读取一次 aligned MP3 流，异常与截断不可自动续传。
+
+        Args:
+            parameters: 已通过能力参数模型校验的调用参数。
+            identity: 本次合成的稳定关联身份，不等同于平台提供业务幂等。
+
+        Returns:
+            按原始采集、解码或播放顺序逐块交付的完整字节流。
+        """
         ...
 
     async def close(self) -> None:
@@ -53,7 +69,22 @@ class SpeechSource(Protocol):
 def validate_request(
     payload: JsonObject, catalog: JsonObject, voice: JsonObject, *, streaming: bool
 ) -> None:
-    """付费前核验实时能力；不丢弃未知或不支持的语速/增益参数。"""
+    """校验活动控制的命令种类与字段组合，构造明确请求。
+
+    Args:
+        payload: 当前边界采用的业务 JSON 或完整模型请求材料。
+        catalog: 全部已启用插件共同生成的冻结目录。
+        voice: 实际发给合成端点的显式声线参数。
+        streaming: 是否采用流式音频传输与播放。
+
+    Raises:
+        AudioError: 声音配置、端点请求、返回音频格式或时长不满足当前合成与播放要求。
+        ActivityError: 命令不属于 start/pause/resume/end/adjust/extend，字段组合不匹配，
+            或所需身份、目标与预算无效。
+
+    Note:
+        付费前核验实时能力；不丢弃未知或不支持的语速/增益参数。
+    """
     models = catalog.get("models")
     if not isinstance(models, list):
         raise AudioError("Fish Audio 能力目录缺少 models。")
@@ -107,7 +138,15 @@ class FishSource:
     def __init__(
         self, settings: AudioSettings, *, transport: httpx.AsyncBaseTransport | None = None
     ) -> None:
-        """构造连接池但不请求；无显式密钥直到合成边界才报错。"""
+        """构造连接池但不请求。
+
+        Args:
+            settings: 当前组件已校验的配置或纯声明。
+            transport: 显式注入的 HTTP 传输；None 使用标准传输实现。
+
+        Note:
+            无显式密钥直到合成边界才报错。
+        """
         self.settings = settings
         self.http = httpx.AsyncClient(
             timeout=settings.timeout_seconds,
@@ -175,7 +214,18 @@ class FishSource:
     async def synthesize(
         self, parameters: SpeechParameters | RecordParameters, identity: str
     ) -> SpeechAudio:
-        """一次文件合成，全程同一时间预算，真实 MIME 与请求必须一致。"""
+        """一次文件合成，全程同一时间预算，真实 MIME 与请求必须一致。
+
+        Args:
+            parameters: 已通过能力参数模型校验的调用参数。
+            identity: 本次合成的稳定关联身份，不等同于平台提供业务幂等。
+
+        Returns:
+            实际合成或处理完成的完整音频与采样信息。
+
+        Raises:
+            AudioError: 声音配置、端点请求、返回音频格式或时长不满足当前合成与播放要求。
+        """
         headers, payload = self._headers(identity), self._payload(parameters, streaming=False)
         try:
             import asyncio
@@ -214,7 +264,18 @@ class FishSource:
     async def stream(
         self, parameters: SpeechParameters, identity: str
     ) -> AsyncGenerator[bytes, None]:
-        """逐事件读 MP3，单事件/总字节均有限，completed 才确认生产终止。"""
+        """逐事件读 MP3，单事件/总字节均有限，completed 才确认生产终止。
+
+        Args:
+            parameters: 已通过能力参数模型校验的调用参数。
+            identity: 本次合成的稳定关联身份，不等同于平台提供业务幂等。
+
+        Yields:
+            按原始采集、解码或播放顺序逐块交付的完整字节流。
+
+        Raises:
+            AudioError: 声音配置、端点请求、返回音频格式或时长不满足当前合成与播放要求。
+        """
         headers, payload = self._headers(identity), self._payload(parameters, streaming=True)
         try:
             import asyncio

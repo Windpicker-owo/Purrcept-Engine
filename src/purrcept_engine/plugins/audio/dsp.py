@@ -40,7 +40,14 @@ class VoiceProfile(BaseModel):
     limiter: bool = True
 
     def filters(self, sample_rate: int) -> str:
-        """连续滤镜保持音高调整后的时长，并补偿 limiter lookahead。"""
+        """连续滤镜保持音高调整后的时长，并补偿 limiter lookahead。
+
+        Args:
+            sample_rate: PCM 的明确采样率（Hz）。
+
+        Raises:
+            AudioError: 调音中频必须低于 Nyquist 频率。
+        """
         nodes: list[str] = []
         if self.enabled:
             # 调音语义以目标mono采样率为基准，不能在远端原采样率上
@@ -77,7 +84,20 @@ class VoiceProfile(BaseModel):
 
 
 def read_profile(path: Path | None) -> VoiceProfile:
-    """缺失文件是明确旁通；已存在的坏文件、超限或 I/O 错误不得静默回退。"""
+    """缺失文件是明确旁通。
+
+    Args:
+        path: 此操作定位的明确路径。
+
+    Returns:
+        已校验的声线预设。
+
+    Raises:
+        AudioError: 声线预设超过16 KiB。
+
+    Note:
+        已存在的坏文件、超限或 I/O 错误不得静默回退。
+    """
     if path is None:
         return VoiceProfile()
     try:
@@ -91,7 +111,14 @@ def read_profile(path: Path | None) -> VoiceProfile:
 
 
 def check_program(executable: str) -> None:
-    """显式输出启用后检查程序，不自动安装或猜另一播放器。"""
+    """显式输出启用后检查程序，不自动安装或猜另一播放器。
+
+    Args:
+        executable: 显式配置的外部程序路径，不自动寻找或安装替代程序。
+
+    Raises:
+        AudioError: 参数、材料或当前状态不满足此入口的约束。
+    """
     if shutil.which(executable) is None:
         raise AudioError(f"音频程序不可用：{executable}。")
 
@@ -155,6 +182,7 @@ async def _decode_raw(
         raise RuntimeError("音频解码子进程缺少已请求管道。")
 
     async def feed() -> None:
+        """按原始顺序向解码进程写入素材，并在结束时关闭标准输入。"""
         try:
             async for chunk in encoded:
                 stdin.write(chunk)
@@ -203,8 +231,20 @@ async def decode_pcm(
 ) -> AsyncGenerator[bytes, None]:
     """先解码目标mono PCM，再以固定原样本数应用一段独立调音状态。
 
-    禁用预设只有解码进程。启用时第二进程接收PCM并补偿滤镜尾帧，
-    变调/limiter不得增加或减少原采样数；取消丢弃尾帧，不补发旧音频。
+    Args:
+        encoded: 合成源实际交付的有界编码音频流，不在解码器内重新请求合成。
+        executable: 显式配置的外部程序路径，不自动寻找或安装替代程序。
+        sample_rate: PCM 的明确采样率（Hz）。
+        profile: 当前操作采用的已校验模型或声线预设。
+        input_format: 明确的输入编码格式；None 由解码器识别。
+        max_seconds: 本次音频处理允许的最大时长（秒）。 默认 180。
+
+    Yields:
+        按原始采集、解码或播放顺序逐块交付的完整字节流。
+
+    Note:
+        禁用预设只有解码进程。启用时第二进程接收PCM并补偿滤镜尾帧，
+        变调/limiter不得增加或减少原采样数；取消丢弃尾帧，不补发旧音频。
     """
     profile.filters(sample_rate)
     async with aclosing(
@@ -313,15 +353,31 @@ async def _filter_pcm(
 async def process_audio(
     audio: SpeechAudio, *, executable: str, sample_rate: int, profile: VoiceProfile
 ) -> SpeechAudio:
-    """完整文件沿同一PCM/DSP图导出原格式；旁通保留原编码字节。
+    """完整文件沿同一PCM/DSP图导出原格式。
 
-    PCM展开最多300秒，MP3编码只执行一次，不把重新编码延迟解释为
-    播放进度。输出最多8 MiB；本函数不播放或保存文件。
+    Args:
+        audio: 包含实际音频字节、编码与采样信息的素材。
+        executable: 显式配置的外部程序路径，不自动寻找或安装替代程序。
+        sample_rate: PCM 的明确采样率（Hz）。
+        profile: 当前操作采用的已校验模型或声线预设。
+
+    Returns:
+        实际合成或处理完成的完整音频与采样信息。
+
+    Raises:
+        AudioError: 调音后MP3导出失败；调音导出为空或超过8 MiB。
+
+    Note:
+        旁通保留原编码字节。
+
+        PCM展开最多300秒，MP3编码只执行一次，不把重新编码延迟解释为
+        播放进度。输出最多8 MiB；本函数不播放或保存文件。
     """
     if not profile.enabled:
         return audio
 
     async def chunks() -> AsyncGenerator[bytes, None]:
+        """按原始顺序交付完整字节块，不改变素材内容。"""
         yield audio.data
 
     async with aclosing(

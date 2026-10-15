@@ -22,7 +22,15 @@ from purrcept_engine.values import decode_object, encode_json
 
 @dataclass(frozen=True, slots=True)
 class VisemeFrame:
-    """分析位置已减去OVR延迟，权重严格沿固定十五视素顺序。"""
+    """分析位置已减去OVR延迟，权重严格沿固定十五视素顺序。
+
+    Attributes:
+        sample: 当前输入的原始采样值。
+        weights: 当前实际分析得到的各音素通道权重。
+
+    Note:
+        实例字段在构造后不可重新赋值；嵌套值的冻结范围由字段所属契约决定。
+    """
 
     sample: int
     weights: tuple[float, ...]
@@ -45,7 +53,15 @@ class VisemeAnalyzer(Protocol):
         ...
 
     async def analyze(self, pcm: bytes, sample: int) -> VisemeFrame:
-        """分析一个20msS16块，不能吞DLL错误降级冒充视素成功。"""
+        """分析一个20msS16块，不能吞DLL错误降级冒充视素成功。
+
+        Args:
+            pcm: 已解码的 PCM 字节或按播放顺序产生的字节流。
+            sample: 当前输入的原始采样值。
+
+        Returns:
+            当前 PCM 片段实际分析得到的口型权重。
+        """
         ...
 
     async def close(self) -> None:
@@ -57,14 +73,24 @@ class AnalyzerProcess:
     """每个身体实例只拥有一个OVR子进程，不与音频共享崩溃边界。"""
 
     def __init__(self, library: Path, sample_rate: int) -> None:
-        """冻结显式DLL与采样率，构造不加载任何原生资源。"""
+        """冻结显式DLL与采样率，构造不加载任何原生资源。
+
+        Args:
+            library: 固定版本的本地分析动态库路径，仅在独立进程加载。
+            sample_rate: PCM 的明确采样率（Hz）。
+        """
         self._library, self._rate = library, sample_rate
         self._process: asyncio.subprocess.Process | None = None
         self._lock = asyncio.Lock()
         self._closed = False
 
     async def start(self) -> None:
-        """有界等待ready，启动期间取消也收回已经创建的进程。"""
+        """有界等待ready，启动期间取消也收回已经创建的进程。
+
+        Raises:
+            BodyError: 身体或分析器未就绪，原生协议材料无效，或资源无法完成此次操作。
+            RuntimeError: OVR进程缺少已请求stdout。
+        """
         if self._process is not None or self._closed:
             raise BodyError("OVR分析资源不能重复创建。")
         launch = asyncio.create_task(
@@ -117,13 +143,29 @@ class AnalyzerProcess:
             return response
 
     async def reset(self) -> None:
-        """清旧上下文的真实确认先于新媒体分析。"""
+        """清旧上下文的真实确认先于新媒体分析。
+
+        Raises:
+            BodyError: OVR重置未确认。
+        """
         response = decode_object(await self._request(encode_json({"operation": "reset"})))
         if response.get("reset") is not True:
             raise BodyError("OVR重置未确认。")
 
     async def analyze(self, pcm: bytes, sample: int) -> VisemeFrame:
-        """核验原生结果的采样位置和十五项有限概率，不猜遗漏字段。"""
+        """核验原生结果的采样位置和十五项有限概率，不猜遗漏字段。
+
+        Args:
+            pcm: 已解码的 PCM 字节或按播放顺序产生的字节流。
+            sample: 当前输入的原始采样值。
+
+        Returns:
+            当前 PCM 片段实际分析得到的口型权重。
+
+        Raises:
+            ValueError: OVR需要一个20ms完整S16采样块。
+            BodyError: 身体或分析器未就绪，原生协议材料无效，或资源无法完成此次操作。
+        """
         if len(pcm) != self._rate // 50 * 2 or sample < 0:
             raise ValueError("OVR需要一个20ms完整S16采样块。")
         try:

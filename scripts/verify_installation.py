@@ -21,7 +21,18 @@ from pathlib import Path
 
 
 def installed_packages() -> dict[str, str]:
-    """导入冻结 SDK 并核对来源，版本号不能替代非 editable 的路径证据。"""
+    """核对冻结 SDK 的安装版本与实际导入位置。
+
+    Returns:
+        当前独立环境的版本记录，供最终机器验收结果关联。
+
+    Raises:
+        RuntimeError: 未明确启用 SDK 本地元数据模式。
+        AssertionError: 包来自源码树，或安装来源和版本不满足要求。
+
+    Note:
+        版本号不能替代非 editable 的实际路径证据。
+    """
     if os.environ.get("LITELLM_LOCAL_MODEL_COST_MAP") != "True":
         raise RuntimeError("请显式设置 LITELLM_LOCAL_MODEL_COST_MAP=True，以离线导入 SDK。")
     import purrcept_core
@@ -50,7 +61,20 @@ def installed_packages() -> dict[str, str]:
 
 
 async def verify_host(directory: Path) -> dict[str, object]:
-    """真实装配、行动、像素保存与重开共用生产入口，不替换执行器或存储。"""
+    """用生产入口验证临时宿主、真实 Worker 与同库媒体重开。
+
+    Args:
+        directory: 本次验收独占的临时目录，不得传入现有用户数据目录。
+
+    Returns:
+        实际行动、逐调用回执、完整媒体与目录锁归还的验收结果。
+
+    Raises:
+        AssertionError: 实际 Worker、媒体重开或资源归还不满足验收条件。
+
+    Note:
+        不替换执行器或存储，不调用真实模型、消息或设备。
+    """
     from PIL import Image
     from purrcept_core.models import ModelEventSink, ModelRequest, ModelResponse
 

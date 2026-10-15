@@ -46,7 +46,14 @@ class EmbeddingProvider(Protocol):
         ...
 
     async def embed(self, texts: tuple[str, ...]) -> tuple[tuple[float, ...], ...]:
-        """为至多 32 个完整文本取得对应向量，缺项或异常维度不能伪造成功。"""
+        """为至多 32 个完整文本取得对应向量，缺项或异常维度不能伪造成功。
+
+        Args:
+            texts: 按原顺序交给 embedding 的非空文本批次。
+
+        Returns:
+            按文本输入顺序取得、数量和维度已核验的有限向量。
+        """
         ...
 
 
@@ -59,7 +66,11 @@ class IndexChanges(Protocol):
         ...
 
     async def wait_for_change(self, after_revision: int) -> int:
-        """等待后于该序号的新提交，不把唤醒当作索引已完成。"""
+        """等待后于该序号的新提交，不把唤醒当作索引已完成。
+
+        Args:
+            after_revision: 查询待办前取得的通知序号，避免查询与等待之间漏唤醒。
+        """
         ...
 
 
@@ -71,18 +82,42 @@ class SemanticStore(KnowledgeStore, Protocol):
     """
 
     async def queue_semantic_rebuild(self, model_id: str, *, limit: int = 32) -> int:
-        """有限补齐当前空间缺少的任务，返回真正新增数，不重排已有身份。"""
+        """有限补齐当前空间缺少的任务，返回真正新增数，不重排已有身份。
+
+        Args:
+            model_id: 标识实际向量空间及其版本的模型身份。
+            limit: 本次读取或更新的最大条目数。 默认 32。
+        """
         ...
 
     async def discard_stale_index(self, reference: KnowledgeReference, *, route: str) -> bool:
-        """仅确认当前仍失效的确切版本任务；不能伪造向量或吞掉有效新版本。"""
+        """仅确认当前仍失效的确切版本任务。
+
+        Args:
+            reference: 包含身份与确切版本的认识或原文引用。
+            route: 派生索引路线名称，用于区分关键词与语义任务。
+
+        Note:
+            不能伪造向量或吞掉有效新版本。
+        """
         ...
 
 
 def validate_vectors(
     vectors: tuple[tuple[float, ...], ...], expected: int
 ) -> tuple[tuple[float, ...], ...]:
-    """核验内置和注入 Provider 的同一契约，不能以零向量补缺或截断维度。"""
+    """核验内置和注入 Provider 的同一契约，不能以零向量补缺或截断维度。
+
+    Args:
+        vectors: 按输入顺序返回的向量序列，数量与维度必须一致。
+        expected: 此次比较或提交必须仍匹配的原始观察值。
+
+    Returns:
+        按文本输入顺序取得、数量和维度已核验的有限向量。
+
+    Raises:
+        ValueError: 参数值或组合不满足本入口的明确约束，错误正文指出具体字段。
+    """
     if len(vectors) != expected:
         raise ValueError("Embedding 返回数量与请求不一致。")
     dimension: int | None = None
@@ -105,7 +140,11 @@ def validate_vectors(
 
 
 def index_text(record: EvidenceSnapshot | MemoryRecord) -> str:
-    """索引完整原文或认识正文，摘要和 overview 不代替这一版本的实际内容。"""
+    """索引完整原文或认识正文，摘要和 overview 不代替这一版本的实际内容。
+
+    Args:
+        record: 当前业务记录的不可变快照。
+    """
     if isinstance(record, EvidenceSnapshot):
         return record.items_json or record.text
     return record.patch.content
@@ -115,12 +154,27 @@ class VectorRetriever:
     """KnowledgeService 借用的语义路线，排名来自当前空间的真实向量。"""
 
     def __init__(self, store: KnowledgeStore, embedding: EmbeddingProvider) -> None:
-        """借入同库账本和明确资源，不触发网络或重建任务。"""
+        """借入同库账本和明确资源，不触发网络或重建任务。
+
+        Args:
+            store: 应用借出的领域存储端口，实际连接和关闭归资源所有者。
+            embedding: 显式借入的向量 Provider；连接释放仍归装配所有者。
+        """
         self.store = store
         self.embedding = embedding
 
     async def retrieve(self, query: str) -> tuple[KnowledgeReference, ...]:
-        """计算查询向量后回同库读取排名；上层融合和返回前还会再次复查资格。"""
+        """计算查询向量后回同库读取排名。
+
+        Args:
+            query: 用于关键词或语义检索的意图文本。
+
+        Returns:
+            按相关性排列的确切版本引用，使用前仍须复查权威资格。
+
+        Note:
+            上层融合和返回前还会再次复查资格。
+        """
         vectors = validate_vectors(await self.embedding.embed((query,)), 1)
         return await self.store.semantic_search(vectors[0], self.embedding.model_id, limit=40)
 
@@ -141,7 +195,17 @@ class KnowledgeIndexWorker:
         *,
         can_start: Callable[[], None],
     ) -> None:
-        """借入明确端口；构造不创建任务，也不读取任何当前内容。"""
+        """借入明确端口。
+
+        Args:
+            store: 应用借出的领域存储端口，实际连接和关闭归资源所有者。
+            changes: 同库提交完成后的变更通知端口。
+            embedding: 显式借入的向量 Provider；连接释放仍归装配所有者。
+            can_start: 实际派发前重新检查的资格回调，等待后仍须复核。
+
+        Note:
+            构造不创建任务，也不读取任何当前内容。
+        """
         self.store, self.changes, self.embedding = store, changes, embedding
         self.can_start = can_start
         self._task: asyncio.Task[None] | None = None
@@ -161,7 +225,14 @@ class KnowledgeIndexWorker:
         return int(self._task is not None and not self._task.done()) + len(self._commits)
 
     async def start(self) -> None:
-        """建立唯一工作器；重复开始或已经关闭不能新增派发。"""
+        """建立唯一工作器。
+
+        Raises:
+            HostStateError: 认识索引工作器不能重复启动。
+
+        Note:
+            重复开始或已经关闭不能新增派发。
+        """
         if self._closing or self._task is not None:
             raise HostStateError("认识索引工作器不能重复启动。")
         self.can_start()

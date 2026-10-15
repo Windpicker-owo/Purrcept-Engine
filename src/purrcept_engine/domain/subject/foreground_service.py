@@ -40,7 +40,19 @@ if TYPE_CHECKING:
 
 @dataclass(frozen=True, slots=True)
 class ForegroundBinding:
-    """本轮六工具的有限绑定，闭包只借出当前代次的行动资格。"""
+    """本轮六工具的有限绑定，闭包只借出当前代次的行动资格。
+
+    Attributes:
+        execute: 当前主体执行受限行动的有限入口。
+        media: 已接管媒体的引用集合，展开时必须取得原始 BLOB。
+        wakeup: 提醒固定调度器重新查询权威事实的同步回调。
+        input_id: 正式接管返回的输入身份，用于关联原文与后续处理。
+        eligible: 在实际行动前复核当前生成代次的同步入口或其冻结结论。
+        delivery: 本轮工具原文交付门槛；None 不执行候选交付替换。
+
+    Note:
+        实例字段在构造后不可重新赋值；嵌套值的冻结范围由字段所属契约决定。
+    """
 
     execute: ActionCallback
     media: NativeMedia
@@ -50,7 +62,14 @@ class ForegroundBinding:
     delivery: ToolDeliveryGate
 
     async def play_action(self, source: str) -> ActionRecord:
-        """传入本轮资格，实际资源与迟到回执仍归 app 的执行器。"""
+        """传入本轮资格，实际资源与迟到回执仍归 app 的执行器。
+
+        Args:
+            source: 待执行的受限 Python 源码。
+
+        Returns:
+            已保存的行动记录，包含逐次真实调用及结果历史；unknown 不证明效果未发生。
+        """
         return await self.execute(
             source,
             input_id=self.input_id,
@@ -59,7 +78,14 @@ class ForegroundBinding:
         )
 
     async def media_blocks(self, media: tuple[MediaReference, ...]) -> tuple[ContentBlock, ...]:
-        """仅展开已经接管的原生内容，缺口不会变为描述性预览。"""
+        """仅展开已经接管的原生内容，缺口不会变为描述性预览。
+
+        Args:
+            media: 已接管媒体的引用集合，展开时必须取得原始 BLOB。
+
+        Returns:
+            按原始顺序展开的完整 Core 内容块，包括真实原生媒体。
+        """
         return await self.media(media)
 
     def wakeup_committed(self) -> None:
@@ -68,22 +94,45 @@ class ForegroundBinding:
 
 
 class ForegroundService:
-    """领域运行时创建的工作所有者，启动一次；取消和汇总关闭由运行时统一协调。"""
+    """串行推进连续前台，连接取批、轮内接入、工具与历史维护。
+
+    Note:
+        SubjectService 创建并持有工作任务；ContinuousSession 拥有会话历史，
+        Core 拥有工具循环。抢占只撤销生成资格，真实行动由执行器独立收尾。
+    """
 
     def __init__(self, runtime: SubjectService) -> None:
-        """借用同一协调状态，不复制会话、生成资格或失败事实。"""
+        """借用同一协调状态，不复制会话、生成资格或失败事实。
+
+        Args:
+            runtime: 创建此协作者的领域或执行运行实例，不跨实例共享状态。
+        """
         self.runtime = runtime
         self.task: asyncio.Task[None] | None = None
 
     def start(self) -> asyncio.Task[None]:
-        """创建唯一固定任务并交给运行时汇总关闭；重复启动明确拒绝。"""
+        """创建唯一固定任务并交给运行时汇总关闭。
+
+        Returns:
+            当前所有者持有的工作观察入口，等待取消不等于实际资源已归还。
+
+        Raises:
+            HostStateError: 领域工作器已经启动。
+
+        Note:
+            重复启动明确拒绝。
+        """
         if self.task is not None:
             raise HostStateError("领域工作器已经启动。")
         self.task = asyncio.create_task(self.foreground(), name="subject-foreground")
         return self.task
 
     async def foreground(self) -> None:
-        """唯一会话串行处理已经交接的输入；最终文字仅提交内部检查点。"""
+        """唯一会话串行处理已经交接的输入。
+
+        Note:
+            最终文字仅提交内部检查点。
+        """
         while True:
             self.runtime.check()
             revision = self.runtime.store.change_revision
@@ -116,7 +165,21 @@ class ForegroundService:
     async def foreground_message(
         self, records: tuple[InputRecord, ...], failures: tuple[TurnRecord, ...]
     ) -> Message:
-        """完整交付当前输入；失败经历带原文、回执和可展开媒体引用。"""
+        """完整交付当前输入。
+
+        Args:
+            records: 按接管顺序取得的完整输入记录。
+            failures: 尚未由后续成功处理承接的失败轮次事实。
+
+        Returns:
+            供后续 Core 请求使用的完整消息。
+
+        Raises:
+            StorageError: 失败经历引用缺失原文。
+
+        Note:
+            失败经历带原文、回执和可展开媒体引用。
+        """
         blocks: list[ContentBlock] = []
         evidence_ids: list[str] = []
         for failure in failures:
@@ -187,7 +250,11 @@ class ForegroundService:
         )
 
     def turn_eligible(self, generation: int) -> bool:
-        """执行器最后核验此闭包，旧代次不能借新会话继续派发脚本。"""
+        """执行器最后核验此闭包，旧代次不能借新会话继续派发脚本。
+
+        Args:
+            generation: 当前会话或设备的代次，用于拒绝迟到结果更新新状态。
+        """
         if (
             self.runtime.closing
             or self.runtime.failure_error is not None
@@ -198,13 +265,27 @@ class ForegroundService:
         return True
 
     def check_turn(self, generation: int) -> None:
-        """工具进入各业务端口前核验原轮次，权威故障保持原型。"""
+        """工具进入各业务端口前核验原轮次，权威故障保持原型。
+
+        Args:
+            generation: 当前会话或设备的代次，用于拒绝迟到结果更新新状态。
+
+        Raises:
+            HostStateError: 前台工具已失去原轮次资格。
+        """
         self.runtime.check()
         if not self.runtime.session.eligible(generation):
             raise HostStateError("前台工具已失去原轮次资格。")
 
     async def run_foreground(self, records: tuple[InputRecord, ...]) -> None:
-        """建立本轮工具资格；后续拉取扩充来源但不刷新代次和主动预算。"""
+        """建立本轮工具资格。
+
+        Args:
+            records: 按接管顺序取得的完整输入记录。
+
+        Note:
+            后续拉取扩充来源但不刷新代次和主动预算。
+        """
         failures = await self.runtime.store.failed_turns("foreground")
         generation = self.runtime.session.generation + 1
         delivery = ToolDeliveryGate(compiler=self.runtime.subject.compiler)

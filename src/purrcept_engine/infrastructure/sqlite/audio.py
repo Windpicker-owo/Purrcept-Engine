@@ -23,7 +23,15 @@ SCHEMA = (
 
 
 def append(connection: sqlite3.Connection, fact: AudioFact) -> None:
-    """同身份同事实只接受相同内容，禁止覆盖此前真实结果。"""
+    """同身份同事实只接受相同内容，禁止覆盖此前真实结果。
+
+    Args:
+        connection: 仅在 Store 专属线程当前短事务中借用的连接，不在回调中等待设备或模型。
+        fact: 已经发生的不可变音频阶段事实。
+
+    Raises:
+        StorageError: 音频事实身份冲突。
+    """
     decode_object(fact.payload_json.encode())
     existing = connection.execute(
         "SELECT payload_json FROM audio_facts WHERE plugin_id=? AND identity=? AND fact=?",
@@ -42,7 +50,19 @@ def append(connection: sqlite3.Connection, fact: AudioFact) -> None:
 
 
 def facts(connection: sqlite3.Connection, plugin_id: str, identity: str) -> tuple[AudioFact, ...]:
-    """按权威提交顺序读取，坏字段明确失败而不是返回空历史。"""
+    """按权威提交顺序读取，坏字段明确失败而不是返回空历史。
+
+    Args:
+        connection: 仅在 Store 专属线程当前短事务中借用的连接，不在回调中等待设备或模型。
+        plugin_id: 事实所属插件实例的身份。
+        identity: 当前事实的稳定身份，用于去重和关联。
+
+    Returns:
+        条目集合：载荷已固定为严格 JSON 的不可变音频阶段事实。
+
+    Raises:
+        StorageError: 权威记录缺失、版本不一致、载荷无效或提交条件不成立。
+    """
     rows = connection.execute(
         "SELECT plugin_id,identity,fact,occurred_at,payload_json FROM audio_facts "
         "WHERE plugin_id=? AND identity=? ORDER BY sequence",

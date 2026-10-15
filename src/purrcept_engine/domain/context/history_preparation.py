@@ -2,7 +2,8 @@
 
 借用同一会话的已提交版本及保护身份，生成布局与正式派发共用编译端口。
 这里只协调领域步骤，不取得 SQLite 连接、模型凭据或客户端；容量不足明确
-失败，内部故障不能伪装为一个空历史。"""
+失败，内部故障不能伪装为一个空历史。
+"""
 
 import logging
 
@@ -46,7 +47,25 @@ def preview_request(
     dynamic: DynamicState,
     max_requests: int,
 ) -> ModelRequest:
-    """取得 Core 真正首个请求，关闭未执行流程，不复制编译器或工具循环。"""
+    """取得 Core 真正首个请求，关闭未执行流程，不复制编译器或工具循环。
+
+    Args:
+        backend: 显式注入的模型后端，资源取得和关闭归装配层。
+        model: 本次调用使用的显式模型名，不在领域层推断替代模型。
+        checkpoint: 完整 Core 检查点；None 表示尚无已提交历史。
+        message: 当前请求中实际存在的完整 Core 消息。
+        instructions: 稳定 system 指令序列，实时状态不得混入缓存前缀。
+        tools: 本会话允许使用的固定 Core 工具集合。
+        settings: 当前组件已校验的配置或纯声明。
+        dynamic: 当前逻辑请求实际采用的动态状态材料。
+        max_requests: 本轮逻辑模型请求总上限，传输重试不重复占名额。
+
+    Returns:
+        按实际消息顺序构造的完整 Core 请求。
+
+    Raises:
+        TypeError: Core 首个公开请求预览没有返回 Generate。
+    """
     reminder = DynamicReminder(dynamic)
     conversation = Model(backend, model).conversation(
         instructions=instructions,
@@ -88,7 +107,17 @@ class HistoryPreparation:
         assess: CapacityCheck,
         context: HistoryContext,
     ) -> None:
-        """借用有限模型与同库账本，构造不读库或启动摘要。"""
+        """借用有限模型与同库账本，构造不读库或启动摘要。
+
+        Args:
+            store: 应用借出的领域存储端口，实际连接和关闭归资源所有者。
+            maintenance: 当前会话唯一的历史摘要计算所有者。
+            compiler: 按实际 SDK 布局冻结完整请求材料的纯编译器。
+            backend: 显式注入的模型后端，资源取得和关闭归装配层。
+            model: 本次调用使用的显式模型名，不在领域层推断替代模型。
+            assess: 只生成完整请求容量评估的函数。
+            context: 宿主或 Core 注入的可信调用上下文，不由模型自行填写。
+        """
         self.compiler = compiler
         self.store, self.maintenance = store, maintenance
         self.backend, self.model, self.assess, self.context = backend, model, assess, context
@@ -105,13 +134,30 @@ class HistoryPreparation:
         dynamic: DynamicState,
         budget: RequestBudget,
     ) -> SessionRecord:
-        """只在超阈值且存在未受保护旧前缀时摘要，返回实际权威版本。"""
+        """只在超阈值且存在未受保护旧前缀时摘要，返回实际权威版本。
+
+        Args:
+            session: 当前已提交会话版本及完整检查点。
+            message: 当前请求中实际存在的完整 Core 消息。
+            instructions: 稳定 system 指令序列，实时状态不得混入缓存前缀。
+            tools: 本会话允许使用的固定 Core 工具集合。
+            settings: 当前组件已校验的配置或纯声明。
+            dynamic: 当前逻辑请求实际采用的动态状态材料。
+            budget: 当前连续批次共享的请求数量与单调截止预算。
+
+        Returns:
+            会话已提交版本与完整检查点，不包含尚未提交的临时历史。
+
+        Raises:
+            TypeError: Engine 历史来源元数据格式无效。
+        """
         budget.check()
         checkpoint = (
             None if session.checkpoint_json is None else decode_checkpoint(session.checkpoint_json)
         )
 
         def layout(candidate: ConversationCheckpoint | None) -> ModelRequest:
+            """用当前完整请求布局核验候选历史的真实交付容量。"""
             preview = preview_request(
                 self.backend,
                 self.model,

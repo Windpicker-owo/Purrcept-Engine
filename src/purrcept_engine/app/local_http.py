@@ -24,12 +24,27 @@ class LocalHttpBoundary:
     """
 
     def __init__(self, app: ASGIApp, *, port: int, token: str) -> None:
-        """保存实际已绑定端口及所有者生成的随机 ASCII 令牌。"""
+        """保存实际已绑定端口及所有者生成的随机 ASCII 令牌。
+
+        Args:
+            app: 已装配的 ASGI 应用。
+            port: 已绑定的本机 HTTP 端口。
+            token: 当前本机控制实例的随机 ASCII 凭据。
+        """
         self.app, self.token = app, token
         self.hosts = frozenset((f"127.0.0.1:{port}", f"localhost:{port}"))
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        """先核对来源，再放行有限路由；拒绝不执行对应业务。"""
+        """先核对来源，再放行有限路由。
+
+        Args:
+            scope: ASGI 提供的当前连接和请求元数据。
+            receive: ASGI 提供的当前请求接收回调。
+            send: ASGI 提供的当前请求发送回调。
+
+        Note:
+            拒绝不执行对应业务。
+        """
         if scope["type"] != "http":
             await self.app(scope, receive, send)
             return

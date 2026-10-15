@@ -38,7 +38,15 @@ _BUILTIN_ENTRIES = {
 
 @dataclass(frozen=True, slots=True)
 class PreparedPlugins:
-    """已核验的冻结目录与按显式配置顺序排列的资源构造计划。"""
+    """已核验的冻结目录与按显式配置顺序排列的资源构造计划。
+
+    Attributes:
+        catalog: 全部已启用插件共同生成的冻结目录。
+        blueprints: 按已核验依赖排列的插件实例身份与纯声明。
+
+    Note:
+        实例字段在构造后不可重新赋值；嵌套值的冻结范围由字段所属契约决定。
+    """
 
     catalog: Catalog
     blueprints: tuple[tuple[str, PluginBlueprint], ...]
@@ -53,9 +61,22 @@ def prepare_plugins(
 ) -> PreparedPlugins:
     """纯校验所有启用插件及依赖，失败前不构造任何实际资源。
 
-    factories 是应用明确登记的内置或程序式工厂；外部 entry 采用包的
-    module:attribute。导入工厂必须遵循纯声明契约，第三方 Python 插件属于
-    可信宿主代码，不声称以 Worker 沙箱隔离插件本身。
+    Args:
+        settings: 当前组件已校验的配置或纯声明。
+        base_dir: 解析相对配置路径的基准目录。
+        factories: 按配置入口名显式登记的可信插件工厂。
+        console_output: 显式控制台能力使用的文字输出回调。
+
+    Returns:
+        全部已核验 Blueprint 与冻结目录，不包含已启动的设备。
+
+    Raises:
+        ConfigError: 配置字段、资源声明或目录绑定不满足本入口的装配要求。
+
+    Note:
+        factories 是应用明确登记的内置或程序式工厂；外部 entry 采用包的
+        module:attribute。导入工厂必须遵循纯声明契约，第三方 Python 插件属于
+        可信宿主代码，不声称以 Worker 沙箱隔离插件本身。
     """
     if not base_dir.is_absolute():
         raise ConfigError("插件路径解析必须提供绝对基准目录。")

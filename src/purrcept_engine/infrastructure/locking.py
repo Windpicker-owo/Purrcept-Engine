@@ -23,12 +23,23 @@ class InstanceLock:
     """
 
     def __init__(self, directory: Path) -> None:
-        """保存目录位置，构造不创建文件或取得锁。"""
+        """保存目录位置，构造不创建文件或取得锁。
+
+        Args:
+            directory: 本次操作使用的明确目录。
+        """
         self._directory = directory
         self._file: BinaryIO | None = None
 
     def acquire(self) -> None:
-        """非阻塞地取得目录独占权；真实文件系统错误原样传播。"""
+        """非阻塞地取得目录独占权。
+
+        Raises:
+            InstanceLocked: 该宿主已经取得数据目录锁；数据目录正在被另一宿主使用。
+
+        Note:
+            真实文件系统错误原样传播。
+        """
         if self._file is not None:
             raise InstanceLocked("该宿主已经取得数据目录锁。")
 
@@ -64,7 +75,11 @@ class InstanceLock:
         self._file = lock_file
 
     def release(self) -> None:
-        """释放操作系统锁和句柄；仅在所有目录借用者已退出后调用。"""
+        """释放操作系统锁和句柄。
+
+        Note:
+            仅在所有目录借用者已退出后调用。
+        """
         if self._file is None:
             return
         # 关闭句柄解除锁，也覆盖正常 shutdown 的平台释放路径。

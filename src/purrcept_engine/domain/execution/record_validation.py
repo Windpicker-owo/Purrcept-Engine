@@ -1,4 +1,8 @@
-"""保存公开值及其语义校验，不打开数据库或调用设备。"""
+"""校验执行记录的数值、身份和已编码 JSON 字段。
+
+调用者在接管外部记录前使用这些纯校验；它们不修改记录、不提交账本，
+也不将字段合法性当作真实效果或派发资格。
+"""
 
 from __future__ import annotations
 
@@ -9,7 +13,14 @@ from typing import cast
 
 
 def payload_bytes(*values: str | None) -> int:
-    """在异步提交边界核验 UTF-8 文本，并计入控制队列实际载荷。"""
+    """在异步提交边界核验 UTF-8 文本，并计入控制队列实际载荷。
+
+    Args:
+        values: 待校验、编码或构造数组的原始值集合。
+
+    Raises:
+        ValueError: 执行记录字段必须是字符串或 None；执行记录不能表示为 UTF-8。
+    """
     total = 0
     for value in values:
         if value is None:
@@ -24,7 +35,18 @@ def payload_bytes(*values: str | None) -> int:
 
 
 def validate_json(value: str | None, *, arguments: bool = False) -> None:
-    """只校验真实 JSON 边界；参数要求对象，结果允许任意标准 JSON 值。"""
+    """只校验真实 JSON 边界。
+
+    Args:
+        value: 已编码 JSON 文本；解析后必须仍符合执行记录的值边界。
+        arguments: 是否要求顶层为参数对象；False 允许结果为任意支持的 JSON 值。 默认 False。
+
+    Raises:
+        ValueError: 参数值或组合不满足本入口的明确约束，错误正文指出具体字段。
+
+    Note:
+        参数要求对象，结果允许任意标准 JSON 值。
+    """
     if value is None:
         if arguments:
             raise ValueError("调用参数 JSON 不能缺失。")

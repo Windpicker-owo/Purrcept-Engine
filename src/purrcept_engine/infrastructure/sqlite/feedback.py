@@ -95,7 +95,22 @@ def _decode[Record: knowledge_models.SupervisionNotice | knowledge_models.Wakeup
 
 
 def prepare(connection: sqlite3.Connection, *, now: float, limit: int = 16) -> FeedbackWork:
-    """读取有限实际待办，不提前确认任何消费者；无网络和新事实推断。"""
+    """读取有限实际待办，不提前确认任何消费者。
+
+    Args:
+        connection: 仅在 Store 专属线程当前短事务中借用的连接，不在回调中等待设备或模型。
+        now: 本次规则计算采用的时刻，便于同一操作保持一致。
+        limit: 本次读取或更新的最大条目数。 默认 16。
+
+    Returns:
+        同一次读取取得的有限待桥接来源。
+
+    Raises:
+        StorageError: 前台失败状态损坏。
+
+    Note:
+        无网络和新事实推断。
+    """
     calls = execution.pending_call_receipts(connection, limit)
     activity = activities.pending_activity_feedback(connection, "reflection", limit=limit)
     foreground = activities.pending_activity_feedback(connection, "foreground", limit=limit)
@@ -303,7 +318,21 @@ def bridge(
     now: float,
     limit: int = 16,
 ) -> FeedbackBridge:
-    """原子桥接已读真实版本，第一版调用不额外开启前台预算，迟到版本只投一次。"""
+    """原子桥接已读真实版本，第一版调用不额外开启前台预算，迟到版本只投一次。
+
+    Args:
+        connection: 仅在 Store 专属线程当前短事务中借用的连接，不在回调中等待设备或模型。
+        admit: 在调用方当前事务中正式接管输入的同步入口，不另开事务。
+        work: 同一权威读取取得的有限反馈来源快照。
+        now: 本次规则计算采用的时刻，便于同一操作保持一致。
+        limit: 本次读取或更新的最大条目数。 默认 16。
+
+    Returns:
+        实际提交的消费者交接与仍需等待容量的状态。
+
+    Raises:
+        StorageError: 真实回执缺少行动或完成时刻；失败轮次缺少结束时刻。
+    """
     with connection:
         connection.execute("BEGIN IMMEDIATE")
         changed = False
@@ -451,10 +480,18 @@ def _foreground_failure_priority(turn: TurnRecord) -> bool:
 def call_material(call: execution_models.CallRecord) -> dict[str, object]:
     """保存这一版本完整参数和结果，以确切引用关联旧回执而不复制其原文。
 
-    同连接的可靠反馈桥接与当前请求原文核验共用本表示。调用方提供从执行
-    账本取得的冻结 CallRecord；函数不解析外部正文、不决定效果或呈现资格。
-    这是事实投影，不伪造一个 history 为空的 CallRecord；原始历史仍属于执行
-    账本，各版反思原文身份来自已经核验的真实 CallResultRecord。
+    Args:
+        call: 当前真实能力或 Core 工具调用的冻结材料。
+
+    Returns:
+        业务对象，按实际结果提供 call_id、action_id、sequence、path、target_id、arguments_json、
+        state、prepared_at、started_at、finished_at 等 字段。
+
+    Note:
+        同连接的可靠反馈桥接与当前请求原文核验共用本表示。调用方提供从执行
+        账本取得的冻结 CallRecord；函数不解析外部正文、不决定效果或呈现资格。
+        这是事实投影，不伪造一个 history 为空的 CallRecord；原始历史仍属于执行
+        账本，各版反思原文身份来自已经核验的真实 CallResultRecord。
     """
     return {
         "call_id": call.call_id,
@@ -485,7 +522,20 @@ def dispatch_supervision(
     *,
     observed_generation: int,
 ) -> FeedbackBridge:
-    """交付前复核当前有效资格；已交接意见不再取得紧急抢占身份。"""
+    """交付前复核当前有效资格。
+
+    Args:
+        connection: 仅在 Store 专属线程当前短事务中借用的连接，不在回调中等待设备或模型。
+        admit: 在调用方当前事务中正式接管输入的同步入口，不另开事务。
+        record: 当前业务记录的不可变快照。
+        observed_generation: 接管或判断开始时观察到的前台生成代次。
+
+    Returns:
+        实际提交的消费者交接与仍需等待容量的状态。
+
+    Note:
+        已交接意见不再取得紧急抢占身份。
+    """
     current = knowledge.get_supervision(connection, record.notice.id)
     if current is None or not current.active or not record.active or record.duplicate:
         return FeedbackBridge()
@@ -531,7 +581,14 @@ def dispatch_supervision(
 
 
 def reflection_state(connection: sqlite3.Connection) -> ReflectionState:
-    """按独立原文行序与真正成功轮次计算节奏，不把读取/监管回应当新事实。"""
+    """按独立原文行序与真正成功轮次计算节奏，不把读取/监管回应当新事实。
+
+    Args:
+        connection: 仅在 Store 专属线程当前短事务中借用的连接，不在回调中等待设备或模型。
+
+    Returns:
+        反思来源序号与实际成功前台轮数。
+    """
     row = connection.execute(
         "SELECT coalesce(max(e.rowid),0),min(CASE WHEN p.state='pending' AND e.rowid>"
         "(SELECT coalesce(max(epoch),0) FROM feedback_reflection_epochs) "
@@ -631,7 +688,17 @@ def _resume_cursor(connection: sqlite3.Connection, evidence_id: str, version: in
 def reflection_sources(
     connection: sqlite3.Connection, *, epoch: int, limit: int = 32, after: int = 0
 ) -> tuple[ReflectionSource, ...]:
-    """新 epoch 可选旧未覆盖来源，扫描和分页不会自行开启另一个批次预算。"""
+    """新 epoch 可选旧未覆盖来源，扫描和分页不会自行开启另一个批次预算。
+
+    Args:
+        connection: 仅在 Store 专属线程当前短事务中借用的连接，不在回调中等待设备或模型。
+        epoch: 后台可靠来源的已提交单调序号，不等同于模型输出次数。
+        limit: 本次读取或更新的最大条目数。 默认 32。
+        after: 已观察的变更序号。 默认 0。
+
+    Returns:
+        条目集合：待复核来源的确切版本与可靠游标。
+    """
     if (
         connection.execute(
             "SELECT 1 FROM feedback_reflection_epochs WHERE epoch=?", (epoch,)
@@ -669,7 +736,22 @@ def reserve_reflection(
     pages: tuple[knowledge_models.EvidencePage, ...],
     successful_turns: int,
 ) -> bool:
-    """在首次派发前保存覆盖尝试与下一页；失败不撤销接管，也不确认理解。"""
+    """在首次派发前保存覆盖尝试与下一页。
+
+    Args:
+        connection: 仅在 Store 专属线程当前短事务中借用的连接，不在回调中等待设备或模型。
+        batch_id: 独立反思批次的身份，须与批次版本配对使用。
+        epoch: 后台可靠来源的已提交单调序号，不等同于模型输出次数。
+        pages: 当前批次实际取得的完整原文页面。
+        successful_turns: 已提交成功的前台轮数，用于后台调度判断。
+
+    Raises:
+        ValueError: 反思只能接管真实原文片段。
+        AssertionError: 已核对原文片段。
+
+    Note:
+        失败不撤销接管，也不确认理解。
+    """
     with connection:
         connection.execute("BEGIN IMMEDIATE")
         if (
@@ -717,7 +799,14 @@ def reserve_reflection(
 
 
 def initialize(connection: sqlite3.Connection) -> None:
-    """启动时核对实际查询列；接管身份保留，不自动重放中断批次或信号。"""
+    """启动时核对实际查询列。
+
+    Args:
+        connection: 仅在 Store 专属线程当前短事务中借用的连接，不在回调中等待设备或模型。
+
+    Note:
+        接管身份保留，不自动重放中断批次或信号。
+    """
     for columns, table in (
         ("kind,identity,payload_json,occurred_at,input_id", "feedback_deliveries"),
         ("kind,identity,ordinal,media_id,media_type,name", "feedback_delivery_media"),

@@ -2,7 +2,8 @@
 
 这里只恢复明确的 Core 内容块和状态，不按名字导入任意类型，也不访问 BLOB
 或数据库。媒体引用的同事务保存与恢复属于 infrastructure.sqlite.checkpoints；
-其还原后的完整材料仍须通过本模块校验，不能把缺失媒体假装为空内容。"""
+其还原后的完整材料仍须通过本模块校验，不能把缺失媒体假装为空内容。
+"""
 
 from __future__ import annotations
 
@@ -43,15 +44,23 @@ class CheckpointError(StorageError):
     """检查点材料缺失、不支持或损坏，不能替换为一个空会话。"""
 
     def __init__(self, message: str) -> None:
-        """统一暴露已知检查点损坏原因，不回显完整正文或隐藏材料。"""
+        """统一暴露已知检查点损坏原因，不回显完整正文或隐藏材料。
+
+        Args:
+            message: 对调用方公开的原因或错误说明。
+        """
         super().__init__(message, code="invalid_checkpoint")
 
 
 def encode_checkpoint(checkpoint: ConversationCheckpoint) -> str:
     """编码完整公开状态，未知扩展内容块明确失败，不静默忽略。
 
-    history 保留完整消息、工具关联、隐藏 reasoning、continuation 及真实轮次
-    边界；reminders 保留顺序、作用域、位置和优先级。配置和资源不在状态内。
+    Args:
+        checkpoint: 完整 Core 检查点；None 表示尚无已提交历史。
+
+    Note:
+        history 保留完整消息、工具关联、隐藏 reasoning、continuation 及真实轮次
+        边界；reminders 保留顺序、作用域、位置和优先级。配置和资源不在状态内。
     """
     encoded = encode(checkpoint)
     decode_checkpoint(encoded)
@@ -59,7 +68,21 @@ def encode_checkpoint(checkpoint: ConversationCheckpoint) -> str:
 
 
 def decode_checkpoint(encoded: str) -> ConversationCheckpoint:
-    """严格恢复 Core 值；字段和标签封闭，Core 构造器再次核验跨字段约束。"""
+    """严格恢复 Core 值。
+
+    Args:
+        encoded: 按 Engine 封闭协议编码的完整 Core 检查点 JSON。
+
+    Returns:
+        可供 Core 无损恢复的完整检查点，未知格式或损坏媒体会明确失败。
+
+    Raises:
+        CheckpointError: 检查点提醒含重复身份，恢复不能改变既有顺序或内容；检查点不满足公开
+            Core 值约束。
+
+    Note:
+        字段和标签封闭，Core 构造器再次核验跨字段约束。
+    """
     try:
         value: object = json.loads(
             encoded, parse_constant=_reject_constant, object_pairs_hook=_unique_fields
@@ -93,7 +116,17 @@ def decode_checkpoint(encoded: str) -> ConversationCheckpoint:
 
 
 def decode_message(encoded: str) -> Message:
-    """封闭恢复真实交付的完整 Core Message，不恢复任意类或资源实例。"""
+    """封闭恢复真实交付的完整 Core Message，不恢复任意类或资源实例。
+
+    Args:
+        encoded: 包含一份完整 Core Message 的封闭 JSON 编码。
+
+    Returns:
+        按封闭标签和字段恢复的一份完整 Core Message。
+
+    Raises:
+        CheckpointError: 交付 Message 不满足公开 Core 值约束。
+    """
     try:
         value: object = json.loads(
             encoded, parse_constant=_reject_constant, object_pairs_hook=_unique_fields
@@ -106,7 +139,17 @@ def decode_message(encoded: str) -> Message:
 
 
 def decode_content(encoded: str) -> tuple[ContentBlock, ...]:
-    """封闭恢复真实工具交付的全部内容块，保持原顺序及原生媒体。"""
+    """封闭恢复真实工具交付的全部内容块，保持原顺序及原生媒体。
+
+    Args:
+        encoded: 按原顺序编码的完整工具内容块 JSON。
+
+    Returns:
+        按原始顺序恢复的完整 Core 内容块，包含精确媒体字节。
+
+    Raises:
+        CheckpointError: 交付内容不满足公开 Core 值约束。
+    """
     try:
         value: object = json.loads(
             encoded, parse_constant=_reject_constant, object_pairs_hook=_unique_fields
@@ -119,6 +162,7 @@ def decode_content(encoded: str) -> tuple[ContentBlock, ...]:
 
 
 def _record(value: object, tag: str, *fields: str) -> Mapping[str, object]:
+    """核对封闭类型标签与精确字段，未知记录不能降级为空对象。"""
     if not isinstance(value, Mapping):
         raise CheckpointError("检查点对象结构无效。")
     item = cast(Mapping[str, object], value)
@@ -170,6 +214,7 @@ def _unique_fields(pairs: list[tuple[str, object]]) -> dict[str, object]:
 
 
 def _json(value: object) -> JsonValue:
+    """仅恢复检查点协议支持的 JSON 值，拒绝未知形状以免静默丢失材料。"""
     if value is None or isinstance(value, (str, bool, int)):
         return value
     if isinstance(value, float) and math.isfinite(value):
@@ -194,6 +239,7 @@ def _json_object(value: object) -> Mapping[str, JsonValue]:
 
 
 def _bytes(value: object) -> bytes:
+    """严格恢复检查点中的字节编码，损坏材料不能降级为空媒体。"""
     item = _record(value, "bytes", "base64")
     text = _text(item["base64"])
     content = base64.b64decode(text, validate=True)
@@ -282,7 +328,14 @@ def _reminder(value: object) -> SystemReminder:
 
 
 def validate_checkpoint_json(encoded: str) -> None:
-    """先拒绝媒体引用表示中的歧义 JSON，不能让 BLOB 还原掩盖原始损坏。"""
+    """先拒绝媒体引用表示中的歧义 JSON，不能让 BLOB 还原掩盖原始损坏。
+
+    Args:
+        encoded: 按 Engine 封闭协议编码的完整 Core 检查点 JSON。
+
+    Raises:
+        CheckpointError: 已保存检查点 JSON 无效。
+    """
     try:
         json.loads(encoded, parse_constant=_reject_constant, object_pairs_hook=_unique_fields)
     except (ValueError, TypeError, RecursionError) as error:

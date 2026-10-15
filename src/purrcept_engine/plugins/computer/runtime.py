@@ -45,7 +45,17 @@ _LOG = logging.getLogger(__name__)
 
 
 def load_policy(path: Path) -> ObservationPolicy:
-    """只有不存在的业务文件采用初值；坏JSON或不可读文件明确失败。"""
+    """只有不存在的业务文件采用初值。
+
+    Args:
+        path: 此操作定位的明确路径。
+
+    Returns:
+        经过完整边界校验的观察策略。
+
+    Note:
+        坏JSON或不可读文件明确失败。
+    """
     try:
         text = path.read_text(encoding="utf-8")
     except FileNotFoundError:
@@ -54,7 +64,12 @@ def load_policy(path: Path) -> ObservationPolicy:
 
 
 def save_policy(path: Path, policy: ObservationPolicy) -> None:
-    """先写同目录临时文件，再原子替换，失败不采用未保存的新偏好。"""
+    """先写同目录临时文件，再原子替换，失败不采用未保存的新偏好。
+
+    Args:
+        path: 此操作定位的明确路径。
+        policy: 明确的观察间隔、变化门槛与帧节流规则。
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
     descriptor, temporary = tempfile.mkstemp(prefix="computer-", suffix=".tmp", dir=path.parent)
     try:
@@ -69,6 +84,8 @@ def save_policy(path: Path, policy: ObservationPolicy) -> None:
 
 @dataclass(frozen=True, slots=True)
 class _Candidate:
+    """冻结一帧观察候选及其连接和运行代次。"""
+
     frame: ComputerFrame
     blocks: tuple[float, ...]
     native_id: str
@@ -93,7 +110,17 @@ class ComputerRuntime:
         *,
         monotonic: Callable[[], float] = time.monotonic,
     ) -> None:
-        """构造只登记所有权，不读取设备或创建后台任务。"""
+        """构造只登记所有权，不读取设备或创建后台任务。
+
+        Args:
+            instance_id: 本次装配中唯一的插件或宿主实例身份。
+            driver_factory: 为当前插件实例创建独立设备驱动的工厂。
+            inputs: 正式接管与查询输入的有限端口，不持有主脑或通用存储。
+            evidence: 完整原文、媒体及不可变分页服务。
+            policy: 明确的观察间隔、变化门槛与帧节流规则。
+            preferences: 显式保存的观察偏好文件路径。
+            monotonic: 本实例使用的单调时钟，不与持久化墙钟混用。
+        """
         self.instance_id, self._factory = instance_id, driver_factory
         self._inputs, self._evidence = inputs, evidence
         self.policy, self._preferences = policy, preferences
@@ -139,7 +166,13 @@ class ComputerRuntime:
         return self._driver
 
     async def connect(self) -> JsonObject:
-        """并发连接只创建一个驱动，未完成断开不构造第二份资源。"""
+        """并发连接只创建一个驱动，未完成断开不构造第二份资源。
+
+        Raises:
+            HostStateError: 电脑已停止新的连接；上次电脑资源尚未确认释放，不能创建另一驱动。
+            ComputerError: 连接在启动期间已撤销。
+            BaseExceptionGroup: 电脑启动及资源清理失败。
+        """
         async with self._connect_lock:
             if self._stopping or self._close_task is not None:
                 raise HostStateError("电脑已停止新的连接。")
@@ -190,7 +223,14 @@ class ComputerRuntime:
             )
 
     async def configure(self, policy: ObservationPolicy) -> JsonObject:
-        """宿主保存完整偏好，不建立连接；写入成功后才采用。"""
+        """宿主保存完整偏好，不建立连接。
+
+        Args:
+            policy: 明确的观察间隔、变化门槛与帧节流规则。
+
+        Note:
+            写入成功后才采用。
+        """
         async with self._policy_lock:
             return await self._configure(policy)
 
@@ -213,7 +253,18 @@ class ComputerRuntime:
         return self.snapshot()
 
     async def observe(self, operation: str) -> JsonObject:
-        """明确start建立新观察代次，pause撤采样，status不读屏幕。"""
+        """开始、暂停或查询当前电脑持续观察。
+
+        Args:
+            operation: start、pause 或 status；开始建立新观察代次，查询不读取屏幕。
+
+        Raises:
+            ComputerError: operation必须为start、pause或status。
+            HostStateError: 电脑已停止新的观察。
+
+        Note:
+            明确start建立新观察代次，pause撤采样，status不读屏幕。
+        """
         if operation == "status":
             return self.snapshot()
         if operation not in ("start", "pause"):
@@ -226,7 +277,11 @@ class ComputerRuntime:
         return await self.configure(policy)
 
     async def foreground(self) -> JsonObject:
-        """返回当次窗口，撤销连接后的迟到身份不能采用。"""
+        """返回当次窗口，撤销连接后的迟到身份不能采用。
+
+        Raises:
+            ComputerError: 前台读取属于已撤销连接。
+        """
         driver, generation = self._require_driver(), self._generation
         foreground = await driver.foreground()
         if generation != self._generation:
@@ -236,7 +291,21 @@ class ComputerRuntime:
     async def capture(
         self, policy: ObservationPolicy | None = None, *, native: bool = False
     ) -> ComputerFrame:
-        """采集互斥但断开不取采集锁；迟到帧不覆盖当前预览。"""
+        """采集互斥但断开不取采集锁。
+
+        Args:
+            policy: 此次观察显式覆盖的策略；None 使用已保存偏好。
+            native: 是否接管完整原生媒体，区别于文字投影。 默认 False。
+
+        Returns:
+            当前连接真实取得的完整画面、采集时刻与比较特征。
+
+        Raises:
+            ComputerError: 排队截图资格已撤销；截图属于已撤销连接或观察代次。
+
+        Note:
+            迟到帧不覆盖当前预览。
+        """
         driver, generation = self._require_driver(), self._generation
         async with self._capture_lock:
             if generation != self._generation:
@@ -261,7 +330,18 @@ class ComputerRuntime:
         }
 
     async def screenshot(self, target: str | None, monitor_id: str | None) -> CallOutcome:
-        """单次原始分辨率截图先接管BLOB，再返回原生媒体引用，不另投输入。"""
+        """采集一次原始图像并保存完整同库媒体。
+
+        Args:
+            target: 可选的明确截图目标，具体支持范围由驱动核验。
+            monitor_id: 明确选择的显示器身份；None 使用驱动的默认显示器。
+
+        Returns:
+            实际确认、失败或未知结论，以及可 JSON 化的业务值和原生媒体引用。
+
+        Note:
+            单次原始分辨率截图先接管BLOB，再返回原生媒体引用，不另投输入。
+        """
         policy = ObservationPolicy.model_validate(
             {
                 **self.policy.model_dump(),
@@ -302,7 +382,14 @@ class ComputerRuntime:
         }
 
     async def step(self) -> bool:
-        """采样任务的一次有限步骤；先核实际处理状态，再替换唯一候选。"""
+        """采样任务的一次有限步骤。
+
+        Raises:
+            RuntimeError: 已接管电脑输入缺少实际处理状态。
+
+        Note:
+            先核实际处理状态，再替换唯一候选。
+        """
         if not self._observing or self._stopping:
             return False
         if self._inflight is not None:
@@ -388,11 +475,24 @@ class ComputerRuntime:
                 pass
 
     def preview(self) -> ComputerFrame | None:
-        """只读当前连接真实缓存；UI读取此值不触发采样或保存候选。"""
+        """只读当前连接真实缓存。
+
+        Returns:
+            当前连接真实取得的完整画面、采集时刻与比较特征。 未取得对应记录或素材时返回 None；
+            读取故障仍抛出。
+
+        Note:
+            UI读取此值不触发采样或保存候选。
+        """
         return self._latest
 
     def snapshot(self) -> JsonObject:
-        """展示真实预览身份、接管/处理等待和错误，不带编码像素或解释字段。"""
+        """展示真实预览身份、接管/处理等待和错误，不带编码像素或解释字段。
+
+        Returns:
+            业务对象，按实际结果提供 connected、connection_id、observing、generation、policy、
+            foreground、captured_at、original_size、delivered_size、input_id 等 字段。
+        """
         frame = self._latest
         return {
             "connected": bool(self._connection) and self._driver is not None and self._driver.alive,
@@ -414,8 +514,13 @@ class ComputerRuntime:
     async def prepare_request(self) -> JsonObject:
         """给主体连接、观察及最新窗口语境，不把驱动参数和进程句柄当作认知材料。
 
-        截图仍由正式输入交付；标题和采集时间只说明最后观察到什么窗口，不
-        冒充当前画面或重新采集。完整尺寸、策略和连接代次留在 snapshot。
+        Returns:
+            业务对象，按实际结果提供 connected、observing、last_window_title、captured_at、
+            pending_input_id、error 字段。
+
+        Note:
+            截图仍由正式输入交付；标题和采集时间只说明最后观察到什么窗口，不
+            冒充当前画面或重新采集。完整尺寸、策略和连接代次留在 snapshot。
         """
         state = self.snapshot()
         frame = self._latest
@@ -442,7 +547,11 @@ class ComputerRuntime:
             await self._sampler
 
     async def disconnect(self) -> JsonObject:
-        """先撤连接代次，再让驱动结束阻塞采集；不关闭电脑应用。"""
+        """先撤连接代次，再让驱动结束阻塞采集。
+
+        Note:
+            不关闭电脑应用。
+        """
         self._connection, self._observing = None, False
         self._generation += 1
         self._latest, self._candidate = None, None

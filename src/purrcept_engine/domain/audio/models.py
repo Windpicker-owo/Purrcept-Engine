@@ -1,4 +1,8 @@
-"""保存公开值及其语义校验，不打开数据库或调用设备。"""
+"""定义合成、播放与中断共用的不可变音频阶段记录。
+
+载荷采用已编码 JSON，与实际插件及播放身份关联；这里只恢复数据形状，
+不持有播放器、客户端或数据库连接。
+"""
 
 from __future__ import annotations
 
@@ -27,7 +31,18 @@ MAX_FACT_BYTES = 65536
 
 @dataclass(frozen=True, slots=True)
 class AudioFact:
-    """一项阶段的持久结果，不以同一字节或文本作为发声经历身份。"""
+    """一项阶段的持久结果，不以同一字节或文本作为发声经历身份。
+
+    Attributes:
+        plugin_id: 事实所属插件实例的身份。
+        identity: 当前事实的稳定身份，用于去重和关联。
+        fact: 此音频阶段事实的稳定名称。
+        occurred_at: 原始事实实际发生的 Unix 时间戳（秒）。
+        payload_json: 已编码的业务事实，不包含任意 Python 对象。
+
+    Note:
+        实例字段在构造后不可重新赋值；嵌套值的冻结范围由字段所属契约决定。
+    """
 
     plugin_id: str
     identity: str

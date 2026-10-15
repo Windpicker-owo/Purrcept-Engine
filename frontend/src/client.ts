@@ -6,10 +6,12 @@
 import { controlRequest, controlResult, credentials, snapshot, ContractError } from "./contracts";
 import type { ControlRequest, ControlResult, ObjectValue, Snapshot } from "./contracts";
 
+/** 本标签页持有的原控制与观察进度，业务所有权仍归宿主。 */
 export interface Entry {
   request: ControlRequest; title: string; result: ControlResult | null;
   sending: boolean; unresolved: boolean; rejected: boolean; unavailable: boolean; error: string | null;
 }
+/** 页面单一观察者发布的状态，发布后以新顶层快照替换，不在组件内改写。 */
 export interface PanelState {
   snapshot: Snapshot | null; online: boolean; receivedAt: number | null; error: string | null;
   entries: Entry[]; storageError: string | null; controlError: string | null;
@@ -36,7 +38,14 @@ function message(error: unknown): string {
   return "无法取得本机服务回应；受理与实际结果仍需查询。";
 }
 
-/** 是否仍有业务工作等待确认；控制 finished 本身不能结束观察。 */
+/**
+ * 判断当前页面控制是否仍须继续观察。
+ *
+ * 控制 finished 不会替尚在运行的行动或未确认命令结束观察。
+ *
+ * @param entry 包含原请求、接收状态和关联业务回执的本页记录。
+ * @returns 只有受理或真实业务仍未结束时为 true；旧实例且明确查无回执时为 false。
+ */
 export function awaiting(entry: Entry): boolean {
   // 旧实例且当前账本明确查无记录，只能保留未知说明，不能无限占用新控制名额。
   if (entry.unavailable) return false;
@@ -71,6 +80,7 @@ export class PanelClient {
     this.state = { ...this.state, ...patch };
     this.listeners.forEach((listener) => listener());
   }
+  /** 浏览器恢复只装回原身份；格式或存储故障保留可见原因，不自动重发旧业务。 */
   private restore(): void {
     try {
       const raw = this.storage.getItem(STORAGE_KEY);
@@ -104,7 +114,13 @@ export class PanelClient {
     return await this.fetcher(path, { cache: "no-store", ...init, signal: AbortSignal.timeout(8000) });
   }
 
-  /** 合并并发刷新；会话/快照实例一致才开放控制，旧快照保持可阅读。 */
+  /**
+   * 刷新并校验宿主快照，合并当前并发观察。
+   *
+   * 实例与控制会话一致后才标记在线；随后查询原控制身份，不重投业务。
+   *
+   * @returns 同一轮刷新完成的 Promise；失败在 PanelState 中保留原因和旧快照。
+   */
   refresh = (): Promise<void> => {
     if (this.refreshing !== null) return this.refreshing;
     this.refreshing = this.readSnapshot().finally(() => { this.refreshing = null; });
@@ -127,7 +143,14 @@ export class PanelClient {
     }
   }
 
-  /** 取得当前关联的真实业务结果；不以按钮意图推断设备已改变。 */
+  /**
+   * 按原控制身份查询真实关联结果。
+   *
+   * 旧实例且查无回执时保留不可用事实；同实例查无身份仍需用户明确原样重传。
+   *
+   * @param requestId 当前标签页已保存的原请求身份；未知身份不发起请求。
+   * @returns 查询完成的 Promise，故障写回对应条目，不将失败查询当作业务未受理。
+   */
   observe = async (requestId: string): Promise<void> => {
     const entry = this.state.entries.find((item) => item.request.request_id === requestId);
     if (!entry || entry.sending || entry.rejected) return;
@@ -149,6 +172,7 @@ export class PanelClient {
       this.update(requestId, { error: message(error) });
     }
   };
+  /** 先核对原实例、身份和完整参数，再采用回执，避免并发查询将另一操作标成已确认。 */
   private accept(entry: Entry, result: ControlResult): void {
     if (result.request_id !== entry.request.request_id || result.instance_id !== entry.request.instance_id) throw new ContractError("control_identity");
     if (result.request.target !== entry.request.target || result.request.operation !== entry.request.operation || result.request.expected_revision !== entry.request.expected_revision
@@ -158,7 +182,18 @@ export class PanelClient {
     this.update(entry.request.request_id, { result, unresolved: false, unavailable: false, error: null });
   }
 
-  /** 新意图在首次网络 await 前取得并保存身份，双击不会产生第二个请求。 */
+  /**
+   * 为一个新控制意图分配稳定身份并提交。
+   *
+   * 首次等待前保存身份并合并同目标同操作；未在线、宿主不就绪或观察名额全满时不新增请求。
+   *
+   * @param target 宿主声明的活动或设备身份。
+   * @param operation 允许的明确操作名称。
+   * @param revision 页面实际观察到的目标版本，宿主会在接管时核验。
+   * @param argumentsValue 本次明确控制的业务参数，在首次等待前复制。
+   * @param title 当前标签页用于展示这次意图的名称。
+   * @returns 发送与后续结果观察完成的 Promise；不代表关联业务已经完成。
+   */
   submit = async (target: string, operation: string, revision: string, argumentsValue: ObjectValue, title: string): Promise<void> => {
     if (!this.state.online || this.session === null || this.state.snapshot?.phase !== "running" || !this.state.snapshot.authority_available) return;
     // 去重按具体操作合并；停止和结束是独立意图，必须能打断正在启动/收尾的其它操作。
@@ -184,13 +219,21 @@ export class PanelClient {
     await this.transmit(entry);
   };
 
-  /** 网络未确认时原样重传；宿主实例变化或业务已返回后不进行重做。 */
+  /**
+   * 对仍未确认的原控制进行原样重传。
+   *
+   * 必须仍属于当前同一宿主实例；已经取得业务结论或仍在发送时不重传。
+   *
+   * @param requestId 本标签页已保存、仍 unresolved 的原请求身份。
+   * @returns 本次发送与观察完成的 Promise，保留原参数和原业务身份。
+   */
   retry = async (requestId: string): Promise<void> => {
     const entry = this.state.entries.find((item) => item.request.request_id === requestId);
     if (!entry || entry.sending || !entry.unresolved || !this.state.online || this.session?.instance_id !== entry.request.instance_id) return;
     this.update(requestId, { sending: true, error: null });
     await this.transmit(entry);
   };
+  /** 发送仍使用原身份；网络失败保留受理未知，明确 HTTP 拒绝与未知传输分别记账。 */
   private async transmit(entry: Entry): Promise<void> {
     const session = this.session;
     if (session === null || session.instance_id !== entry.request.instance_id) return;

@@ -271,11 +271,27 @@ class QQCapabilities:
     """按冻结声明进入实际业务，唯一 Service 持有连接、文件与事实端口。"""
 
     def __init__(self, service: QQService) -> None:
-        """由 build 绑定实际资源，不在模型端构造远端对象。"""
+        """由 build 绑定实际资源，不在模型端构造远端对象。
+
+        Args:
+            service: 已装配的业务服务，能力入口借用其已有状态。
+        """
         self.service = service
 
     async def invoke(self, name: str, parameters: BaseModel, context: CallContext) -> CallOutcome:
-        """只捕获明确媒体参数拒绝与原生平台拒绝，内部和权威故障保持原型。"""
+        """只捕获明确媒体参数拒绝与原生平台拒绝，内部和权威故障保持原型。
+
+        Args:
+            name: 当前插件已声明并绑定的能力名。
+            parameters: 当前能力参数模型已校验的字段，不在此重新猜测原生参数。
+            context: 宿主或 Core 注入的可信调用上下文，不由模型自行填写。
+
+        Returns:
+            实际确认、失败或未知结论，以及可 JSON 化的业务值和原生媒体引用。
+
+        Raises:
+            CapabilityInputError: 参数、材料或当前状态不满足此入口的约束。
+        """
         try:
             return await self._invoke(name, parameters, context)
         except QQMediaError as error:
@@ -579,7 +595,14 @@ class QQCapabilities:
         return await self.qzone(name, parameters, context)
 
     def image_data_source(self, data: JsonValue) -> str:
-        """只取旧 get_image/get_msg 实际编码或 URL 字段，不把本地缓存名猜成路径。"""
+        """只取旧 get_image/get_msg 实际编码或 URL 字段，不把本地缓存名猜成路径。
+
+        Args:
+            data: get_image 或 get_msg 实际返回的原生 data。
+
+        Raises:
+            QQMediaError: 平台未返回实际图片编码或可取得 URL。
+        """
         mapping = object_value(data)
         for key in ("base64", "file", "url"):
             value = mapping.get(key)
@@ -604,7 +627,22 @@ class QQCapabilities:
         temporary: tuple[Path, ...] = (),
         extra: JsonObject | None = None,
     ) -> CallOutcome:
-        """已准备消息只派发一次；确认缺 message_id 时保留字段未知。"""
+        """已准备消息只派发一次。
+
+        Args:
+            chat: 原生会话身份，私聊与群聊按 QQ 协议区分。
+            target_id: 能力绑定的目标对象身份。
+            message: 已经按 OneBot 协议构造的文字或消息分段。
+            context: 宿主或 Core 注入的可信调用上下文，不由模型自行填写。
+            temporary: 本次调用持有的临时媒体路径，真实借用结束后才清理。 默认不附加此类条目。
+            extra: 显式附加的原生请求字段。
+
+        Returns:
+            实际确认、失败或未知结论，以及可 JSON 化的业务值和原生媒体引用。
+
+        Note:
+            确认缺 message_id 时保留字段未知。
+        """
         action = "send_group_msg" if chat == "group" else "send_private_msg"
         params: JsonObject = {
             "group_id" if chat == "group" else "user_id": int(target_id),
@@ -613,6 +651,7 @@ class QQCapabilities:
         generation = self.service.client.generation
 
         def result(data: JsonValue) -> JsonObject:
+            """按原请求身份查询当前真实控制结果。"""
             message_id = id_text(object_value(data).get("message_id"))
             if message_id:
                 cached = project_message(
@@ -638,7 +677,17 @@ class QQCapabilities:
         return await self.service.rpc(action, params, context, result, temporary=temporary)
 
     def forward_result(self, data: JsonValue, chat: str, target: str) -> JsonObject:
-        """保留实际转发身份，空 data 不以原输入消息身份补造新消息。"""
+        """保留实际转发身份，空 data 不以原输入消息身份补造新消息。
+
+        Args:
+            data: 当前边界接收的原始协议或媒体内容。
+            chat: 原生会话身份，私聊与群聊按 QQ 协议区分。
+            target: 明确的私聊或群聊转发目标，不使用原消息身份替代新结果。
+
+        Returns:
+            业务对象，按实际结果提供 chat、target_id、message_id、forward_id、
+            platform_reported_success 字段。
+        """
         mapping = object_value(data)
         return {
             "chat": chat,
@@ -658,7 +707,22 @@ class QQCapabilities:
         extra: JsonObject | None = None,
         request_extra: JsonObject | None = None,
     ) -> CallOutcome:
-        """前置读取完整成功后才执行合并转发；不安排迟到续写。"""
+        """前置读取完整成功后才执行合并转发。
+
+        Args:
+            chat: 原生会话身份，私聊与群聊按 QQ 协议区分。
+            target: 明确的私聊或群聊转发目标，不使用原消息身份替代新结果。
+            nodes: 已校验的原生合并转发节点。
+            context: 宿主或 Core 注入的可信调用上下文，不由模型自行填写。
+            extra: 显式附加的原生请求字段。
+            request_extra: 此原生请求显式附带的额外字段。
+
+        Returns:
+            实际确认、失败或未知结论，以及可 JSON 化的业务值和原生媒体引用。
+
+        Note:
+            不安排迟到续写。
+        """
         action = "send_group_forward_msg" if chat == "group" else "send_private_forward_msg"
         params: JsonObject = {
             "group_id" if chat == "group" else "user_id": int(target),
@@ -677,7 +741,19 @@ class QQCapabilities:
         )
 
     async def qzone(self, name: str, parameters: BaseModel, context: CallContext) -> CallOutcome:
-        """九个实际空间动作共用信封/原文机制，各自保持原参数和响应字段。"""
+        """九个实际空间动作共用信封/原文机制，各自保持原参数和响应字段。
+
+        Args:
+            name: 当前插件已声明并绑定的能力名。
+            parameters: 当前能力参数模型已校验的字段，不在此重新猜测原生参数。
+            context: 宿主或 Core 注入的可信调用上下文，不由模型自行填写。
+
+        Returns:
+            实际确认、失败或未知结论，以及可 JSON 化的业务值和原生媒体引用。
+
+        Raises:
+            TypeError: QQ 冻结声明与实际参数模型不一致。
+        """
         params: JsonObject = {}
         if isinstance(parameters, p.QZonePost):
             action = "send_qzone_msg"
@@ -727,6 +803,7 @@ class QQCapabilities:
             raise TypeError("QQ 冻结声明与实际参数模型不一致。")
 
         def project(data: JsonValue) -> JsonObject:
+            """将实际 QQ 回包转换为对应业务结果。"""
             if name not in {"qzone_list", "qzone_feeds"}:
                 return write_result(name, data, params)
             value = cards(data, feeds=name == "qzone_feeds")
@@ -775,6 +852,7 @@ def _declare(
     )
 
     async def build(ports: PluginPorts) -> PluginRuntime:
+        """借用本实例的有限端口，创建能力实现与插件资源所有者。"""
         actual = connector
         if actual is None:
             from purrcept_engine.plugins.qq.websocket import WebSocketConnector
@@ -784,7 +862,10 @@ def _declare(
         capabilities = QQCapabilities(service)
 
         def bind(declaration: CapabilityDeclaration[BaseModel]) -> FunctionCapability[BaseModel]:
+            """将一项冻结能力声明绑定到当前 QQ 业务入口。"""
+
             async def run(parameters: BaseModel, context: CallContext) -> CallOutcome:
+                """将已校验参数交给当前冻结能力绑定的真实实现。"""
                 return await capabilities.invoke(declaration.name, parameters, context)
 
             return FunctionCapability(declaration, run)
@@ -815,7 +896,17 @@ factory: PluginFactory = typed_factory(QQSettings, _declare)
 
 
 def factory_with_connector(connector: Connector) -> PluginFactory:
-    """程序式装配显式传输端口，供离线契约验证；不会自动替换生产传输。"""
+    """程序式装配显式传输端口，供离线契约验证。
+
+    Args:
+        connector: 创建实际协议连接的显式工厂。
+
+    Returns:
+        接收实例身份、原始配置及基准目录的纯配置工厂。
+
+    Note:
+        不会自动替换生产传输。
+    """
     return typed_factory(
         QQSettings,
         lambda instance_id, settings, base_dir: _declare(

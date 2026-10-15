@@ -48,11 +48,26 @@ class ComputerDriver(Protocol):
         ...
 
     async def foreground(self) -> ForegroundInfo:
-        """读取当前实际前台，不可访问桌面时明确失败。"""
+        """读取当前实际前台，不可访问桌面时明确失败。
+
+        Returns:
+            当前实际取得的前台窗口信息。
+        """
         ...
 
     async def capture(self, policy: ObservationPolicy, *, native: bool = False) -> ComputerFrame:
-        """取得完整当次画面及身份；目标消失不能选其他屏幕补位。"""
+        """取得完整当次画面及身份。
+
+        Args:
+            policy: 明确的观察间隔、变化门槛与帧节流规则。
+            native: 是否接管完整原生媒体，区别于文字投影。 默认 False。
+
+        Returns:
+            当前连接真实取得的完整画面、采集时刻与比较特征。
+
+        Note:
+            目标消失不能选其他屏幕补位。
+        """
         ...
 
     async def close(self) -> None:
@@ -78,7 +93,11 @@ class ProcessDriver:
         return self._process is not None and self._process.poll() is None
 
     async def start(self) -> None:
-        """新连接创建可信脚本，隐藏Windows窗口，不读取环境中的模型配置。"""
+        """新连接创建可信脚本，隐藏Windows窗口，不读取环境中的模型配置。
+
+        Raises:
+            ComputerError: 电脑驱动已关闭。
+        """
         if self._close_task is not None:
             raise ComputerError("电脑驱动已关闭。")
         if self._start_task is None:
@@ -178,7 +197,11 @@ class ProcessDriver:
             task.exception()
 
     async def foreground(self) -> ForegroundInfo:
-        """在IPC边界校验完整身份，不返回旧窗口。"""
+        """在IPC边界校验完整身份，不返回旧窗口。
+
+        Returns:
+            当前实际取得的前台窗口信息。
+        """
         return ForegroundInfo.model_validate(await self._bounded_request("foreground"))
 
     async def _bounded_request(self, command: str, **arguments: object) -> dict[str, object]:
@@ -194,7 +217,18 @@ class ProcessDriver:
             raise ComputerError("电脑采集进程已结束，未返回完整当次画面。") from error
 
     async def capture(self, policy: ObservationPolicy, *, native: bool = False) -> ComputerFrame:
-        """原生编码材料先严格base64解码，再验证8MiB单帧边界。"""
+        """原生编码材料先严格base64解码，再验证8MiB单帧边界。
+
+        Args:
+            policy: 明确的观察间隔、变化门槛与帧节流规则。
+            native: 是否接管完整原生媒体，区别于文字投影。 默认 False。
+
+        Returns:
+            当前连接真实取得的完整画面、采集时刻与比较特征。
+
+        Raises:
+            ComputerError: 电脑回复缺少图像编码；电脑回复包含无效base64。
+        """
         result = await self._bounded_request(
             "capture", policy=policy.model_dump(mode="json"), native=native
         )

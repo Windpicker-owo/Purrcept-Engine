@@ -61,7 +61,13 @@ SCHEMA = (
 
 
 def register_input(connection: sqlite3.Connection, input_id: str, *, minimum_wake: bool) -> None:
-    """由输入接管事务登记唯一待处理身份，不另开或提交事务。"""
+    """由输入接管事务登记唯一待处理身份，不另开或提交事务。
+
+    Args:
+        connection: 仅在 Store 专属线程当前短事务中借用的连接，不在回调中等待设备或模型。
+        input_id: 正式接管返回的输入身份，用于关联原文与后续处理。
+        minimum_wake: 直接唤起所建立的最低 WAKE 事实或对应升级判断资格。
+    """
     connection.execute(
         "INSERT INTO input_processing(input_id,version,stage,reason,admitted_at) VALUES(?,1,?,?,?)",
         (
@@ -74,7 +80,18 @@ def register_input(connection: sqlite3.Connection, input_id: str, *, minimum_wak
 
 
 def processing(connection: sqlite3.Connection, input_id: str) -> InputProcessing | None:
-    """读取实际处置状态，查询不会交接延后输入。"""
+    """读取实际处置状态，查询不会交接延后输入。
+
+    Args:
+        connection: 仅在 Store 专属线程当前短事务中借用的连接，不在回调中等待设备或模型。
+        input_id: 正式接管返回的输入身份，用于关联原文与后续处理。
+
+    Returns:
+        输入实际处理阶段、版本和关联轮次。 未取得对应记录或素材时返回 None；读取故障仍抛出。
+
+    Raises:
+        StorageError: 输入处置状态无效。
+    """
     row: tuple[object, ...] | None = connection.execute(
         "SELECT version,stage,reason,attention_request_id,due_at,handed_off,admitted_at "
         "FROM input_processing WHERE input_id=?",
@@ -98,7 +115,13 @@ def processing(connection: sqlite3.Connection, input_id: str) -> InputProcessing
 
 
 def pending_ids(connection: sqlite3.Connection, stage: InputStage, limit: int) -> tuple[str, ...]:
-    """按正式接管顺序返回有限待办，不能凭正文相似合并来源。"""
+    """按正式接管顺序返回有限待办，不能凭正文相似合并来源。
+
+    Args:
+        connection: 仅在 Store 专属线程当前短事务中借用的连接，不在回调中等待设备或模型。
+        stage: 输入当前或待查询的处理阶段。
+        limit: 本次读取或更新的最大条目数。
+    """
     rows: list[tuple[object, ...]] = connection.execute(
         "SELECT p.input_id FROM pending_inputs p JOIN input_processing s USING(input_id) "
         "WHERE s.stage=? ORDER BY p.sequence LIMIT ?",
@@ -108,11 +131,21 @@ def pending_ids(connection: sqlite3.Connection, stage: InputStage, limit: int) -
 
 
 def take_foreground_inputs(connection: sqlite3.Connection, turn_id: str | None) -> tuple[str, ...]:
-    """在一次事务内取尽开放缓冲池；活动轮次同时接管来源身份。
+    """在一次事务内取尽开放缓冲池。
 
-    空闲时至少有一个已唤起输入才启动，随后连同尚在缓冲/判断中的普通输入
-    一起取走。活动轮次的每次拉取不再等待各输入窗口。延期和已处理输入不
-    属于缓冲池。版本递增使在途注意结果失效，事务后的新接管留到下一次。
+    Args:
+        connection: 仅在 Store 专属线程当前短事务中借用的连接，不在回调中等待设备或模型。
+        turn_id: 连续会话中本轮处理的身份。
+
+    Raises:
+        StorageError: 新输入已失去活动前台轮次。
+
+    Note:
+        活动轮次同时接管来源身份。
+
+        空闲时至少有一个已唤起输入才启动，随后连同尚在缓冲/判断中的普通输入
+        一起取走。活动轮次的每次拉取不再等待各输入窗口。延期和已处理输入不
+        属于缓冲池。版本递增使在途注意结果失效，事务后的新接管留到下一次。
     """
     with connection:
         connection.execute("BEGIN IMMEDIATE")
@@ -157,7 +190,22 @@ def decide_inputs(
     request_id: str | None,
     defer_until: float | None,
 ) -> bool:
-    """整批采用同一判断，版本过期不覆盖已处理身份；defer 仅登记一次到期。"""
+    """整批采用同一判断，版本过期不覆盖已处理身份。
+
+    Args:
+        connection: 仅在 Store 专属线程当前短事务中借用的连接，不在回调中等待设备或模型。
+        expected: 此次比较或提交必须仍匹配的原始观察值。
+        level: 本批明确的注意处置等级。
+        reason: 供后续核对的明确处置原因。
+        request_id: 逻辑请求的稳定身份，用于查询或关联同一次受理。
+        defer_until: 保留原输入身份的延期到期时间；非延期决策不需要此值。
+
+    Raises:
+        ValueError: 参数值或组合不满足本入口的明确约束，错误正文指出具体字段。
+
+    Note:
+        defer 仅登记一次到期。
+    """
     if not expected or any(item.stage != "attention" for item in expected):
         raise ValueError("注意提交需要尚未筛选的非空输入批次。")
     if level not in ("observe", "defer", "wake", "urgent"):
@@ -189,7 +237,20 @@ def register_minimum_wake_assessment(
     owner_id: str,
     observed_generation: int,
 ) -> bool:
-    """同事务绑定首次升级观察；重放或已接管输入不获得新的判断资格。"""
+    """同事务绑定首次升级观察。
+
+    Args:
+        connection: 仅在 Store 专属线程当前短事务中借用的连接，不在回调中等待设备或模型。
+        expected: 此次比较或提交必须仍匹配的原始观察值。
+        owner_id: 发起本次工作并持有提交资格的所有者身份。
+        observed_generation: 接管或判断开始时观察到的前台生成代次。
+
+    Raises:
+        ValueError: 最低唤起升级必须绑定待处理输入和有效旧生成。
+
+    Note:
+        重放或已接管输入不获得新的判断资格。
+    """
     if expected.stage != "foreground" or not owner_id or observed_generation <= 0:
         raise ValueError("最低唤起升级必须绑定待处理输入和有效旧生成。")
     with connection:
@@ -207,7 +268,16 @@ def register_minimum_wake_assessment(
 def minimum_wake_assessments(
     connection: sqlite3.Connection, owner_id: str, *, limit: int
 ) -> tuple[MinimumWakeAssessment, ...]:
-    """按接管顺序取得本宿主的有限升级身份，不建立全部积压的内存副本。"""
+    """按接管顺序取得本宿主的有限升级身份，不建立全部积压的内存副本。
+
+    Args:
+        connection: 仅在 Store 专属线程当前短事务中借用的连接，不在回调中等待设备或模型。
+        owner_id: 发起本次工作并持有提交资格的所有者身份。
+        limit: 本次读取或更新的最大条目数。
+
+    Returns:
+        属于当前宿主的有限紧急升级判断待办。
+    """
     rows: list[tuple[object, ...]] = connection.execute(
         "SELECT a.input_id,a.observed_generation,a.input_version "
         "FROM minimum_wake_assessments a JOIN input_processing p USING(input_id) "
@@ -228,10 +298,23 @@ def finish_minimum_wake_assessment(
     *,
     request_id: str | None,
 ) -> bool:
-    """永久结案一次判断，只有原 foreground 版本可采用；最低 WAKE 始终保留。
+    """永久结案一次判断，只有原 foreground 版本可采用。
 
-    observe/defer 是模型的实际回答，不能撤销已经接管的直接唤起或新设延期。
-    迟到结果仍记录在升级身份，但不覆盖 processing/终态，也不重复投递输入。
+    Args:
+        connection: 仅在 Store 专属线程当前短事务中借用的连接，不在回调中等待设备或模型。
+        assessment: 已取得并需按原版本核验的判断结果。
+        level: 本批明确的注意处置等级。
+        reason: 供后续核对的明确处置原因。
+        request_id: 逻辑请求的稳定身份，用于查询或关联同一次受理。
+
+    Raises:
+        ValueError: 注意级别无效。
+
+    Note:
+        最低 WAKE 始终保留。
+
+        observe/defer 是模型的实际回答，不能撤销已经接管的直接唤起或新设延期。
+        迟到结果仍记录在升级身份，但不覆盖 processing/终态，也不重复投递输入。
     """
     if level not in ("observe", "defer", "wake", "urgent"):
         raise ValueError("注意级别无效。")
@@ -262,7 +345,12 @@ def finish_minimum_wake_assessment(
 
 
 def deliver_due(connection: sqlite3.Connection, now: float) -> tuple[str, ...]:
-    """延后到期与唯一前台交接同事务，恢复后不重新进入注意判断。"""
+    """延后到期与唯一前台交接同事务，恢复后不重新进入注意判断。
+
+    Args:
+        connection: 仅在 Store 专属线程当前短事务中借用的连接，不在回调中等待设备或模型。
+        now: 本次规则计算采用的时刻，便于同一操作保持一致。
+    """
     with connection:
         connection.execute("BEGIN IMMEDIATE")
         rows: list[tuple[object, ...]] = connection.execute(
@@ -281,7 +369,11 @@ def deliver_due(connection: sqlite3.Connection, now: float) -> tuple[str, ...]:
 
 
 def next_deferred(connection: sqlite3.Connection) -> float | None:
-    """返回最早未交接期限，宿主用单一定时等待而非每输入一个任务。"""
+    """返回最早未交接期限，宿主用单一定时等待而非每输入一个任务。
+
+    Args:
+        connection: 仅在 Store 专属线程当前短事务中借用的连接，不在回调中等待设备或模型。
+    """
     row: tuple[object, ...] = connection.execute(
         "SELECT min(due_at) FROM input_processing WHERE stage='deferred' AND handed_off=0"
     ).fetchone()
@@ -289,7 +381,15 @@ def next_deferred(connection: sqlite3.Connection) -> float | None:
 
 
 def session(connection: sqlite3.Connection, scope: SessionScope) -> SessionRecord:
-    """返回尚未建立的空版本或完整已提交历史，不以空值覆盖损坏记录。"""
+    """返回尚未建立的空版本或完整已提交历史，不以空值覆盖损坏记录。
+
+    Args:
+        connection: 仅在 Store 专属线程当前短事务中借用的连接，不在回调中等待设备或模型。
+        scope: 目标连续会话，foreground 与 reflection 拥有独立历史。
+
+    Returns:
+        会话已提交版本与完整检查点，不包含尚未提交的临时历史。
+    """
     row: tuple[object, ...] | None = connection.execute(
         "SELECT version,checkpoint_json,active_turn FROM subject_sessions WHERE scope=?",
         (scope,),
@@ -313,7 +413,25 @@ def begin_turn(
     generation: int,
     input_ids: tuple[str, ...],
 ) -> TurnRecord:
-    """先接管处理身份与固定会话版本；不得与同一会话的在途轮次重叠。"""
+    """先接管处理身份与固定会话版本。
+
+    Args:
+        connection: 仅在 Store 专属线程当前短事务中借用的连接，不在回调中等待设备或模型。
+        turn_id: 连续会话中本轮处理的身份。
+        scope: 目标连续会话，foreground 与 reflection 拥有独立历史。
+        expected_version: 提交前观察到的版本，用于拒绝并发覆盖。
+        generation: 当前会话或设备的代次，用于拒绝迟到结果更新新状态。
+        input_ids: 本轮接管的输入身份集合，保留真实因果关联。
+
+    Returns:
+        本轮接管身份、来源输入、生成代次与当前结论。
+
+    Raises:
+        StorageError: 会话版本变化或已有在途处理；输入不再具有前台交接资格。
+
+    Note:
+        不得与同一会话的在途轮次重叠。
+    """
     with connection:
         connection.execute("BEGIN IMMEDIATE")
         current = session(connection, scope)
@@ -356,7 +474,26 @@ def finish_turn(
     error_json: str | None,
     accepted_failures: tuple[str, ...] = (),
 ) -> SessionRecord:
-    """成功检查点和输入结案原子安装；失败保留来源和旧历史，不重放行动。"""
+    """成功检查点和输入结案原子安装。
+
+    Args:
+        connection: 仅在 Store 专属线程当前短事务中借用的连接，不在回调中等待设备或模型。
+        turn: 已接管的本轮记录，携带提交前版本与生成代次。
+        outcome: 此次操作的真实结论，不由期望效果推断成功。
+        checkpoint_json: 完整 Core 检查点的编码；失败轮次可不安装新历史。
+        error_json: 编码后的失败证据，供后续交互追溯原轮次。
+        accepted_failures: 当前成功交互明确承接的先前失败轮次身份。 默认不附加此类条目。
+
+    Returns:
+        会话已提交版本与完整检查点，不包含尚未提交的临时历史。
+
+    Raises:
+        ValueError: 参数值或组合不满足本入口的明确约束，错误正文指出具体字段。
+        StorageError: 权威记录缺失、版本不一致、载荷无效或提交条件不成立。
+
+    Note:
+        失败保留来源和旧历史，不重放行动。
+    """
     if outcome == "running" or (outcome == "succeeded") != (checkpoint_json is not None):
         raise ValueError("只有成功终态可安装候选检查点。")
     if error_json is not None:
@@ -422,7 +559,18 @@ def finish_turn(
 
 
 def failures(connection: sqlite3.Connection, scope: SessionScope) -> tuple[TurnRecord, ...]:
-    """读取尚未由后续成功交互承接的失败事实，事实永久留在原批次。"""
+    """读取尚未由后续成功交互承接的失败事实，事实永久留在原批次。
+
+    Args:
+        connection: 仅在 Store 专属线程当前短事务中借用的连接，不在回调中等待设备或模型。
+        scope: 目标连续会话，foreground 与 reflection 拥有独立历史。
+
+    Returns:
+        条目集合：本轮接管身份、来源输入、生成代次与当前结论。
+
+    Raises:
+        StorageError: 失败经历引用非失败轮次。
+    """
     rows: list[tuple[object, ...]] = connection.execute(
         "SELECT t.turn_id,t.session_version,t.generation,t.state,t.started_at,"
         "t.finished_at,t.error_json "
@@ -455,7 +603,19 @@ def failures(connection: sqlite3.Connection, scope: SessionScope) -> tuple[TurnR
 
 
 def get_turn(connection: sqlite3.Connection, turn_id: str) -> TurnRecord | None:
-    """查询已接管主动处理，取消 begin_turn 等待后仍可核对真正所有权。"""
+    """查询已接管主动处理，取消 begin_turn 等待后仍可核对真正所有权。
+
+    Args:
+        connection: 仅在 Store 专属线程当前短事务中借用的连接，不在回调中等待设备或模型。
+        turn_id: 连续会话中本轮处理的身份。
+
+    Returns:
+        本轮接管身份、来源输入、生成代次与当前结论。 未取得对应记录或素材时返回 None；
+        读取故障仍抛出。
+
+    Raises:
+        StorageError: 主体处理身份损坏。
+    """
     row: tuple[object, ...] | None = connection.execute(
         "SELECT scope,session_version,generation,state,started_at,finished_at,error_json "
         "FROM subject_turns WHERE turn_id=?",
@@ -491,7 +651,11 @@ def get_turn(connection: sqlite3.Connection, turn_id: str) -> TurnRecord | None:
 
 
 def initialize(connection: sqlite3.Connection) -> None:
-    """借用调用方启动事务将旧处理记为中断，不提交或自动重做输入。"""
+    """借用调用方启动事务将旧处理记为中断，不提交或自动重做输入。
+
+    Args:
+        connection: 仅在 Store 专属线程当前短事务中借用的连接，不在回调中等待设备或模型。
+    """
     connection.execute("SELECT input_id,stage FROM input_processing LIMIT 0")
     connection.execute(
         "SELECT input_id,owner_id,observed_generation,input_version,state,level,reason,request_id "

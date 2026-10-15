@@ -9,7 +9,11 @@ from pathlib import Path
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    """解析明确路径和端口后常驻服务，安装包中的静态资源无需 Node。"""
+    """解析明确路径和端口后常驻服务，安装包中的静态资源无需 Node。
+
+    Args:
+        argv: 命令行参数；None 读取当前进程参数。
+    """
     parser = argparse.ArgumentParser(description="Purrcept 独立声线调音室")
     parser.add_argument("--profile", type=Path, default=Path(".purrcept/voice-profile.json"))
     parser.add_argument("--port", type=int, default=8766)

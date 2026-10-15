@@ -44,7 +44,14 @@ class ObservationPolicy(_Record):
 
     @model_validator(mode="after")
     def valid_target_and_intervals(self) -> ObservationPolicy:
-        """拒绝未指定显示器或反向采样区间，不静默选另一块屏幕。"""
+        """拒绝未指定显示器或反向采样区间，不静默选另一块屏幕。
+
+        Returns:
+            经过完整边界校验的观察策略。
+
+        Raises:
+            ValueError: monitor目标必须给出monitor_id；最小采样间隔不能超过最大采样间隔。
+        """
         if self.target == "monitor" and not self.monitor_id.strip():
             raise ValueError("monitor目标必须给出monitor_id。")
         if self.min_interval > self.max_interval:
@@ -65,13 +72,26 @@ class ForegroundInfo(_Record):
 
     @model_validator(mode="after")
     def positive_area(self) -> ForegroundInfo:
-        """真实驱动与IPC都必须满足矩形约束。"""
+        """真实驱动与IPC都必须满足矩形约束。
+
+        Returns:
+            当前实际取得的前台窗口信息。
+
+        Raises:
+            ValueError: 窗口和显示器必须有正面积。
+        """
         for bounds in (self.bounds, self.monitor_bounds):
             if bounds[2] <= bounds[0] or bounds[3] <= bounds[1]:
                 raise ValueError("窗口和显示器必须有正面积。")
         return self
 
 
+# 维护者属性契约（类说明参与 schema，保持原 docstring）。
+# Attributes:
+#     data: 原始分辨率下实际取得的完整图像字节。
+#     captured_at: 这帧真实采集的 Unix 时间戳。
+#     foreground: 采集时窗口与显示器身份，不能用新窗口标题覆盖旧帧。
+#     delivered_size: 本次实际交付图像的宽高，区别于 original_size。
 class ComputerFrame(_Record):
     """本次完整编码像素；失败不能用旧帧代替，时间为UTC Unix秒。"""
 
@@ -108,7 +128,18 @@ class ChangeDetector:
     def sample(
         self, frame: ComputerFrame, policy: ObservationPolicy
     ) -> tuple[bool, tuple[float, ...]]:
-        """仅计算变化；接管成功后才由committed推进累计基准。"""
+        """仅计算变化。
+
+        Args:
+            frame: 当前连接实际取得的完整画面与采集时刻。
+            policy: 明确的观察间隔、变化门槛与帧节流规则。
+
+        Returns:
+            是否达到画面变化门槛，以及本次实际取得的块特征。
+
+        Note:
+            接管成功后才由committed推进累计基准。
+        """
         from PIL import Image, ImageStat
 
         with Image.open(io.BytesIO(frame.data)) as source:
@@ -142,5 +173,9 @@ class ChangeDetector:
         return changed, blocks
 
     def committed(self, blocks: tuple[float, ...]) -> None:
-        """丢弃候选不影响最后正式接管基准。"""
+        """丢弃候选不影响最后正式接管基准。
+
+        Args:
+            blocks: 截图比较得到的块特征，用于观察变化判断。
+        """
         self.submitted = blocks

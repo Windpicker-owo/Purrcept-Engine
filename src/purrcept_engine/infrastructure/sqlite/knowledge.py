@@ -192,6 +192,7 @@ def _one(
 def _evidence(
     connection: sqlite3.Connection, evidence_id: str, version: int | None
 ) -> EvidenceSnapshot | None:
+    """恢复原文记录并核对已保存媒体，权威损坏不能用缺省值掩盖。"""
     row = _one(
         connection,
         "SELECT payload_json,valid FROM knowledge_evidence WHERE evidence_id=? "
@@ -208,7 +209,19 @@ def _evidence(
 def put_evidence(
     connection: sqlite3.Connection, snapshot: EvidenceSnapshot, *, needs_reflection: bool = True
 ) -> EvidenceSnapshot:
-    """原文与待复核身份同事务接管；相同事实幂等，重复保存不复活撤销来源。"""
+    """原文与待复核身份同事务接管。
+
+    Args:
+        connection: 仅在 Store 专属线程当前短事务中借用的连接，不在回调中等待设备或模型。
+        snapshot: 完整不可变原文快照，含来源、确切版本及媒体引用。
+        needs_reflection: 是否为新原文登记可靠的待反思关系。 默认 True。
+
+    Returns:
+        完整保存的原文快照，包含确切来源、版本与媒体关系。
+
+    Note:
+        相同事实幂等，重复保存不复活撤销来源。
+    """
     with connection:
         connection.execute("BEGIN IMMEDIATE")
         return put_evidence_in_transaction(connection, snapshot, needs_reflection=needs_reflection)
@@ -219,8 +232,22 @@ def put_evidence_in_transaction(
 ) -> EvidenceSnapshot:
     """借用调用方事务接管原文、BLOB 关系和待办，不自行开始或结束事务。
 
-    输入和轮次事实由 Store 先保存同库媒体，再在同一事务调用此入口；任一步
-    失败由外层回滚全部接管。独立调用使用 put_evidence，不能依赖提交后通知。
+    Args:
+        connection: 仅在 Store 专属线程当前短事务中借用的连接，不在回调中等待设备或模型。
+        snapshot: 完整不可变原文快照，含来源、确切版本及媒体引用。
+        needs_reflection: 是否为新原文登记可靠的待反思关系。 默认 True。
+
+    Returns:
+        完整保存的原文快照，包含确切来源、版本与媒体关系。
+
+    Raises:
+        RuntimeError: 原文接管必须处于调用方拥有的事务中。
+        KnowledgeConflict: 原文身份与认识身份冲突；原文版本已有不同内容。
+        StorageError: 原文引用的权威媒体缺失；原文引用的权威媒体摘要或长度不匹配。
+
+    Note:
+        输入和轮次事实由 Store 先保存同库媒体，再在同一事务调用此入口；任一步
+        失败由外层回滚全部接管。独立调用使用 put_evidence，不能依赖提交后通知。
     """
     if not connection.in_transaction:
         raise RuntimeError("原文接管必须处于调用方拥有的事务中。")
@@ -274,13 +301,37 @@ def get_evidence(
     version: int | None = None,
     include_inactive: bool = False,
 ) -> EvidenceSnapshot | None:
-    """按确切原文版本查询；显式历史查询保留撤销事实，不赋予引用资格。"""
+    """按确切原文版本查询。
+
+    Args:
+        connection: 仅在 Store 专属线程当前短事务中借用的连接，不在回调中等待设备或模型。
+        evidence_id: 已保存原文快照的稳定身份。
+        version: 目标记录的确切版本，区别于可变的当前版本。 None 首读当前版本，
+            续读仍绑定游标的原版本。
+        include_inactive: 是否同时返回已失效的历史记录，并保留失效原因。 默认 False。
+
+    Returns:
+        完整保存的原文快照，包含确切来源、版本与媒体关系。 未取得对应记录或素材时返回 None；
+        读取故障仍抛出。
+
+    Note:
+        显式历史查询保留撤销事实，不赋予引用资格。
+    """
     snapshot = _evidence(connection, evidence_id, version)
     return snapshot if snapshot is not None and (snapshot.valid or include_inactive) else None
 
 
 def get_slice(connection: sqlite3.Connection, slice_ref: str) -> EvidenceSlice | None:
-    """展开宿主生成的范围身份，不接受模型手填坐标代替真实片段。"""
+    """展开宿主生成的范围身份，不接受模型手填坐标代替真实片段。
+
+    Args:
+        connection: 仅在 Store 专属线程当前短事务中借用的连接，不在回调中等待设备或模型。
+        slice_ref: 已保存原文片段的不可变身份。
+
+    Returns:
+        同一原文版本中已保存的精确范围及不可变片段身份。 未取得对应记录或素材时返回 None；
+        读取故障仍抛出。
+    """
     row = _one(
         connection, "SELECT payload_json FROM knowledge_slices WHERE slice_ref=?", (slice_ref,)
     )
@@ -350,7 +401,29 @@ def read_evidence(
     max_chars: int = 8000,
     version: int | None = None,
 ) -> EvidencePage:
-    """同快照分页，结构化条目不切断；认识/摘要页面不生成原文引用资格。"""
+    """同快照分页，结构化条目不切断。
+
+    Args:
+        connection: 仅在 Store 专属线程当前短事务中借用的连接，不在回调中等待设备或模型。
+        evidence_id: 已保存原文快照的稳定身份。
+        level: evidence 展开原文，summary 或 overview 读取概要；与目标材料种类一并核验。 默认
+            'evidence'。
+        cursor: 宿主签发并保存的不透明续读游标，续读同一快照版本。 None 表示首次读取。
+        max_chars: 本页正文的字符上限；分页游标继续绑定原快照。 默认 8000。
+        version: 目标记录的确切版本，区别于可变的当前版本。 None 首读当前版本，
+            续读仍绑定游标的原版本。
+
+    Returns:
+        当前版本的一页正文、确切范围和下一游标；取得页面不等于已呈现给模型。
+
+    Raises:
+        KnowledgeInputError: 来源、版本、时间范围或材料引用不满足当前操作要求。
+        StorageError: 保存的续读资格损坏。
+        KnowledgeConflict: 原文或认识版本不存在；原文已撤销。
+
+    Note:
+        认识/摘要页面不生成原文引用资格。
+    """
     if level not in ("summary", "overview", "evidence"):
         raise KnowledgeInputError("level 只接受 summary、overview 或 evidence。")
     if isinstance(max_chars, bool) or not isinstance(max_chars, int) or max_chars < 1:
@@ -458,7 +531,19 @@ def read_evidence(
 def read_evidence_cursor(
     connection: sqlite3.Connection, cursor: str, *, max_chars: int = 8000
 ) -> EvidencePage:
-    """只按已保存的游标恢复确切来源，Notebook 可以核验返回快照的路径元数据。"""
+    """只按已保存的游标恢复确切来源，Notebook 可以核验返回快照的路径元数据。
+
+    Args:
+        connection: 仅在 Store 专属线程当前短事务中借用的连接，不在回调中等待设备或模型。
+        cursor: 宿主签发并保存的不透明续读游标，续读同一快照版本。
+        max_chars: 本页正文的字符上限；分页游标继续绑定原快照。 默认 8000。
+
+    Returns:
+        当前版本的一页正文、确切范围和下一游标；取得页面不等于已呈现给模型。
+
+    Raises:
+        KnowledgeInputError: 续读游标不存在。
+    """
     row = _one(connection, "SELECT evidence_id FROM knowledge_cursors WHERE cursor=?", (cursor,))
     if row is None:
         raise KnowledgeInputError("续读游标不存在。")
@@ -495,7 +580,15 @@ def _require_slices(
 def pending_reflection(
     connection: sqlite3.Connection, *, limit: int = 32
 ) -> tuple[PendingEvidence, ...]:
-    """读取有限可靠来源及已有范围结论，局部一页不冒充整份复核。"""
+    """读取有限可靠来源及已有范围结论，局部一页不冒充整份复核。
+
+    Args:
+        connection: 仅在 Store 专属线程当前短事务中借用的连接，不在回调中等待设备或模型。
+        limit: 本次读取或更新的最大条目数。 默认 32。
+
+    Returns:
+        本次有限读取的可靠待反思来源及已有范围结论。
+    """
     _page_limit(limit)
     rows: list[tuple[object, ...]] = connection.execute(
         "SELECT p.evidence_id,p.version,p.queued_at FROM pending_knowledge p JOIN "
@@ -543,7 +636,23 @@ def begin_reflection(
     required_slice_refs: tuple[str, ...],
     findings: tuple[OperationalFinding, ...] = (),
 ) -> ReflectionBatch:
-    """冻结本批范围；中断恢复以新版本取代资格，已完成批次直接返回回执。"""
+    """冻结本批范围。
+
+    Args:
+        connection: 仅在 Store 专属线程当前短事务中借用的连接，不在回调中等待设备或模型。
+        batch_id: 独立反思批次的身份，须与批次版本配对使用。
+        required_slice_refs: 本批必须完成复核的冻结原文范围。
+        findings: 本批需要核验的实际异常或运行观察。 默认不附加此类条目。
+
+    Returns:
+        冻结的反思范围与批次版本，后续修订须携带同一资格。
+
+    Raises:
+        KnowledgeConflict: 反思批次身份与既有范围冲突。
+
+    Note:
+        中断恢复以新版本取代资格，已完成批次直接返回回执。
+    """
     with connection:
         connection.execute("BEGIN IMMEDIATE")
         _require_slices(connection, required_slice_refs)
@@ -575,7 +684,20 @@ def begin_reflection(
 
 
 def get_reflection(connection: sqlite3.Connection, batch_id: str, version: int) -> ReflectionBatch:
-    """读取确切批次代次，普通最终文字不会改变此状态。"""
+    """读取确切批次代次，普通最终文字不会改变此状态。
+
+    Args:
+        connection: 仅在 Store 专属线程当前短事务中借用的连接，不在回调中等待设备或模型。
+        batch_id: 独立反思批次的身份，须与批次版本配对使用。
+        version: 当前反思批次的确切版本，旧代次不再拥有写入资格。
+
+    Returns:
+        冻结的反思范围与批次版本，后续修订须携带同一资格。
+
+    Raises:
+        KnowledgeConflict: 反思批次不存在。
+        StorageError: 反思批次状态损坏。
+    """
     row = _one(
         connection,
         "SELECT payload_json,state,receipt_json FROM reflection_batches WHERE batch_id=? "
@@ -599,8 +721,21 @@ def abandon_reflection(
 ) -> ReflectionBatch:
     """撤销失败批次的后续写资格，保留呈现、逐项修订及未完成来源。
 
-    首次中断原因保存在该代次 payload。完成事实不可退回；重复中断不覆盖
-    原因。下一批是否可开始由主体依据新事实决定，此入口不产生重试或唤醒。
+    Args:
+        connection: 仅在 Store 专属线程当前短事务中借用的连接，不在回调中等待设备或模型。
+        batch_id: 独立反思批次的身份，须与批次版本配对使用。
+        version: 当前反思批次的确切版本，旧代次不再拥有写入资格。
+        reason: 供后续核对的明确处置原因。
+
+    Returns:
+        冻结的反思范围与批次版本，后续修订须携带同一资格。
+
+    Raises:
+        KnowledgeInputError: 中断批次需要明确原因。
+
+    Note:
+        首次中断原因保存在该代次 payload。完成事实不可退回；重复中断不覆盖
+        原因。下一批是否可开始由主体依据新事实决定，此入口不产生重试或唤醒。
     """
     if not reason.strip():
         raise KnowledgeInputError("中断批次需要明确原因。")
@@ -637,9 +772,20 @@ def mark_presented(
 ) -> None:
     """为实际请求中仍有效的完整片段登记资格，取得片段不属于成功门槛。
 
-    已提交连续历史可以保留后来撤销的来源。它仍是曾经交付的事实，但不再
-    取得认识引用资格；这一项不能阻断同请求里的有效新来源。缺失关系和有效
-    候选的坏范围仍是明确故障，revise/finish 继续核验真正引用的来源和版本。
+    Args:
+        connection: 仅在 Store 专属线程当前短事务中借用的连接，不在回调中等待设备或模型。
+        batch_id: 独立反思批次的身份，须与批次版本配对使用。
+        version: 目标记录的确切版本，区别于可变的当前版本。
+        slice_refs: 当前材料实际覆盖的原文片段身份。
+
+    Raises:
+        KnowledgeConflict: 呈现候选的原文片段不存在。
+        StorageError: 呈现候选缺少原文版本。
+
+    Note:
+        已提交连续历史可以保留后来撤销的来源。它仍是曾经交付的事实，但不再
+        取得认识引用资格；这一项不能阻断同请求里的有效新来源。缺失关系和有效
+        候选的坏范围仍是明确故障，revise/finish 继续核验真正引用的来源和版本。
     """
     with connection:
         connection.execute("BEGIN IMMEDIATE")
@@ -739,9 +885,25 @@ def record_delivery(
 ) -> EvidenceDelivery:
     """原子保存真实交付及原批次，重复相同登记返回原记录，不提前确认呈现。
 
-    本入口由 ReflectionTools 在构造完整初始输入或原文工具结果后调用。
-    工具登记只接受成功结果的完整 content，调用 ID 和 read_evidence 名称由
-    Core 实际工具上下文提供。媒体缩为同库 BLOB，关系与材料同事务保存。
+    Args:
+        connection: 仅在 Store 专属线程当前短事务中借用的连接，不在回调中等待设备或模型。
+        batch_id: 独立反思批次的身份，须与批次版本配对使用。
+        version: 目标记录的确切版本，区别于可变的当前版本。
+        tool_call_id: Core 分配的工具调用身份，用于匹配完整工具结果。
+        material: 真正交付的完整消息或工具内容，供后续请求逐项匹配。
+        slice_refs: 当前材料实际覆盖的原文片段身份。
+
+    Returns:
+        本次完整材料与精确原文范围的持久交付登记。
+
+    Raises:
+        KnowledgeInputError: 来源、版本、时间范围或材料引用不满足当前操作要求。
+        KnowledgeConflict: 相同交付身份已有不同完整材料或切片关系。
+
+    Note:
+        本入口由 ReflectionTools 在构造完整初始输入或原文工具结果后调用。
+        工具登记只接受成功结果的完整 content，调用 ID 和 read_evidence 名称由
+        Core 实际工具上下文提供。媒体缩为同库 BLOB，关系与材料同事务保存。
     """
     if not slice_refs or len(slice_refs) != len(set(slice_refs)):
         raise KnowledgeInputError("真实交付需要非空且唯一的切片关系。")
@@ -798,9 +960,17 @@ def deliveries_for_history(
 ) -> tuple[EvidenceDelivery, ...]:
     """只查真实历史的完整值候选，恢复原始批次和切片，不赋予本批写资格。
 
-    初始 Message 的全部字段必须一致；工具历史需要 read_evidence 名称、相同
-    tool_call_id、成功标记以及原结果的全部有序内容。摘要、局部媒体、伪造身份
-    字符串不能匹配。旧批次是否结束与历史事实能否再次呈现是独立判断。
+    Args:
+        connection: 仅在 Store 专属线程当前短事务中借用的连接，不在回调中等待设备或模型。
+        messages: 按实际先后排列的完整 Core 消息，不从正文猜测交付身份。
+
+    Returns:
+        条目集合：本次完整材料与精确原文范围的持久交付登记。
+
+    Note:
+        初始 Message 的全部字段必须一致；工具历史需要 read_evidence 名称、相同
+        tool_call_id、成功标记以及原结果的全部有序内容。摘要、局部媒体、伪造身份
+        字符串不能匹配。旧批次是否结束与历史事实能否再次呈现是独立判断。
     """
     result: dict[str, EvidenceDelivery] = {}
     candidates: list[tuple[str, str | None, Message | tuple[ContentBlock, ...]]] = []
@@ -852,6 +1022,7 @@ def _covered(required: EvidenceSlice, slices: Sequence[EvidenceSlice]) -> bool:
 def _presented(
     connection: sqlite3.Connection, batch_id: str, version: int, references: Sequence[str]
 ) -> tuple[EvidenceSlice, ...]:
+    """核对本批已实际呈现的原文范围，不从片段存在推断已读。"""
     wanted = _require_slices(connection, references)
     rows: list[tuple[object, ...]] = connection.execute(
         "SELECT slice_ref FROM reflection_presented WHERE batch_id=? AND version=?",
@@ -968,7 +1139,20 @@ def get_memory(
     include_inactive: bool = False,
     at: float | None = None,
 ) -> MemoryRecord | None:
-    """显式历史查询保留版本和失效理由，默认只返回当前有效认识。"""
+    """显式历史查询保留版本和失效理由，默认只返回当前有效认识。
+
+    Args:
+        connection: 仅在 Store 专属线程当前短事务中借用的连接，不在回调中等待设备或模型。
+        memory_id: 已保存认识的稳定身份。
+        version: 目标记录的确切版本，区别于可变的当前版本。 None 首读当前版本，
+            续读仍绑定游标的原版本。
+        include_inactive: 是否同时返回已失效的历史记录，并保留失效原因。 默认 False。
+        at: 核验记录有效性的 Unix 时间戳；None 使用当前时间。
+
+    Returns:
+        包含原始依据、关系、有效期与确切版本的认识记录。 未取得对应记录或素材时返回 None；
+        读取故障仍抛出。
+    """
     result = _memory(connection, memory_id, version, time.time() if at is None else at)
     return result if result is not None and (result.active or include_inactive) else None
 
@@ -978,8 +1162,22 @@ def revise_memory(
 ) -> MemoryRecord:
     """原子提交版本、来源、替代、未决关系、索引及本批真实整合回执。
 
-    关系目标必须仍是有效确切版本；拒绝迟到提案而非改指最新版本。对方
-    认识不是新原文来源，不将关系或认识正文登记成已读原文。
+    Args:
+        connection: 仅在 Store 专属线程当前短事务中借用的连接，不在回调中等待设备或模型。
+        batch_id: 独立反思批次的身份，须与批次版本配对使用。
+        version: 目标记录的确切版本，区别于可变的当前版本。
+        patch: 含原始证据、版本、关系与有效期的认识修订提案。
+
+    Returns:
+        包含原始依据、关系、有效期与确切版本的认识记录。
+
+    Raises:
+        KnowledgeConflict: 批次、来源或认识版本已变化，不能采用本次提交。
+        StorageError: 新认识缺少事务内记录。
+
+    Note:
+        关系目标必须仍是有效确切版本；拒绝迟到提案而非改指最新版本。对方
+        认识不是新原文来源，不将关系或认识正文登记成已读原文。
     """
     with connection:
         connection.execute("BEGIN IMMEDIATE")
@@ -1029,7 +1227,16 @@ def revise_memory(
 
 
 def revoke_evidence(connection: sqlite3.Connection, evidence_id: str, version: int) -> None:
-    """立即撤销该来源资格，原文、片段、认识历史及已有索引全部保留。"""
+    """立即撤销该来源资格，原文、片段、认识历史及已有索引全部保留。
+
+    Args:
+        connection: 仅在 Store 专属线程当前短事务中借用的连接，不在回调中等待设备或模型。
+        evidence_id: 已保存原文快照的稳定身份。
+        version: 目标记录的确切版本，区别于可变的当前版本。
+
+    Raises:
+        KnowledgeConflict: 撤销的原文版本不存在。
+    """
     with connection:
         connection.execute("BEGIN IMMEDIATE")
         if _evidence(connection, evidence_id, version) is None:
@@ -1048,7 +1255,20 @@ def revoke_evidence(connection: sqlite3.Connection, evidence_id: str, version: i
 def pending_index(
     connection: sqlite3.Connection, *, route: str | None = None, limit: int = 32
 ) -> tuple[IndexJob, ...]:
-    """分页读取独立关键词/语义任务，消费一条路线不丢另一条更新。"""
+    """分页读取独立关键词/语义任务，消费一条路线不丢另一条更新。
+
+    Args:
+        connection: 仅在 Store 专属线程当前短事务中借用的连接，不在回调中等待设备或模型。
+        route: 派生索引路线名称，用于区分关键词与语义任务。 None 按此账本的全部可用路线读取。
+        limit: 本次读取或更新的最大条目数。 默认 32。
+
+    Returns:
+        本次有限读取的可重建索引任务。
+
+    Raises:
+        ValueError: 未知索引路线。
+        StorageError: 索引任务路线损坏。
+    """
     _page_limit(limit)
     if route not in (None, "keyword", "semantic"):
         raise ValueError("未知索引路线。")
@@ -1083,10 +1303,22 @@ def get_candidate(
     include_inactive: bool = False,
     at: float | None = None,
 ) -> EvidenceSnapshot | MemoryRecord | None:
-    """当前索引只采用最新有效版本；显式历史保留原快照和真实撤销标记。
+    """当前索引只采用最新有效版本。
 
-    原文历史自身的 valid 不等于授权当前索引继续使用旧向量。历史查询不修改
-    保存事实，默认安装/排名入口仍会再次核验最新版本和来源状态。
+    Args:
+        connection: 仅在 Store 专属线程当前短事务中借用的连接，不在回调中等待设备或模型。
+        reference: 包含身份与确切版本的认识或原文引用。
+        include_inactive: 是否同时返回已失效的历史记录，并保留失效原因。 默认 False。
+        at: 核验记录有效性的 Unix 时间戳；None 使用当前时间。
+
+    Returns:
+        经权威版本核验的原文或认识记录。 未取得对应记录或素材时返回 None；读取故障仍抛出。
+
+    Note:
+        显式历史保留原快照和真实撤销标记。
+
+        原文历史自身的 valid 不等于授权当前索引继续使用旧向量。历史查询不修改
+        保存事实，默认安装/排名入口仍会再次核验最新版本和来源状态。
     """
     if reference.kind == "memory":
         current = get_memory(
@@ -1114,7 +1346,22 @@ def get_candidate(
 def semantic_rebuild_candidates(
     connection: sqlite3.Connection, model_id: str, *, limit: int = 32
 ) -> tuple[KnowledgeReference, ...]:
-    """有限扫描当前空间缺少的版本；旧模型向量保留，不成为当前排名的依据。"""
+    """有限扫描当前空间缺少的版本。
+
+    Args:
+        connection: 仅在 Store 专属线程当前短事务中借用的连接，不在回调中等待设备或模型。
+        model_id: 标识实际向量空间及其版本的模型身份。
+        limit: 本次读取或更新的最大条目数。 默认 32。
+
+    Returns:
+        按相关性排列的确切版本引用，使用前仍须复查权威资格。
+
+    Raises:
+        ValueError: 向量重建需要明确空间版本。
+
+    Note:
+        旧模型向量保留，不成为当前排名的依据。
+    """
     _page_limit(limit)
     if not model_id.strip():
         raise ValueError("向量重建需要明确空间版本。")
@@ -1151,7 +1398,16 @@ def semantic_rebuild_candidates(
 def queue_semantic_rebuild(
     connection: sqlite3.Connection, model_id: str, references: tuple[KnowledgeReference, ...]
 ) -> int:
-    """原子补齐有限派生任务，等待期间已经失效或被安装的候选不再重复排队。"""
+    """原子补齐有限派生任务，等待期间已经失效或被安装的候选不再重复排队。
+
+    Args:
+        connection: 仅在 Store 专属线程当前短事务中借用的连接，不在回调中等待设备或模型。
+        model_id: 标识实际向量空间及其版本的模型身份。
+        references: 包含身份与确切版本的引用集合。
+
+    Raises:
+        ValueError: 向量重建需要明确空间版本和至多 32 个候选。
+    """
     if not model_id.strip() or not 1 <= len(references) <= 32:
         raise ValueError("向量重建需要明确空间版本和至多 32 个候选。")
     with connection:
@@ -1178,7 +1434,19 @@ def queue_semantic_rebuild(
 def discard_stale_index(
     connection: sqlite3.Connection, reference: KnowledgeReference, *, route: str
 ) -> bool:
-    """只确认当前仍失效的原版本任务；不向 apply_index 填入合成向量。"""
+    """只确认当前仍失效的原版本任务。
+
+    Args:
+        connection: 仅在 Store 专属线程当前短事务中借用的连接，不在回调中等待设备或模型。
+        reference: 包含身份与确切版本的认识或原文引用。
+        route: 派生索引路线名称，用于区分关键词与语义任务。
+
+    Raises:
+        ValueError: 未知索引路线。
+
+    Note:
+        不向 apply_index 填入合成向量。
+    """
     if route not in ("keyword", "semantic"):
         raise ValueError("未知索引路线。")
     with connection:
@@ -1256,7 +1524,18 @@ def apply_index(
     vector: tuple[float, ...] | None = None,
     model: str | None = None,
 ) -> bool:
-    """异步计算后只安装仍有效的同版本索引，不复活撤销或被替代认识。"""
+    """异步计算后只安装仍有效的同版本索引，不复活撤销或被替代认识。
+
+    Args:
+        connection: 仅在 Store 专属线程当前短事务中借用的连接，不在回调中等待设备或模型。
+        reference: 包含身份与确切版本的认识或原文引用。
+        terms: 从同版本完整正文生成的关键词索引文本。
+        vector: 对应明确模型空间的有限数值向量。
+        model: 本次调用使用的显式模型名，不在领域层推断替代模型。
+
+    Raises:
+        ValueError: 向量必须绑定明确模型；无向量不能标记向量模型。
+    """
     normalized = None
     if vector is not None:
         if not model:
@@ -1270,7 +1549,12 @@ def apply_index(
 
 
 def refresh_keyword_index(connection: sqlite3.Connection, *, limit: int = 100) -> int:
-    """仅提交有限本地关键词任务，不消费语义计算，也不等待外部服务。"""
+    """仅提交有限本地关键词任务，不消费语义计算，也不等待外部服务。
+
+    Args:
+        connection: 仅在 Store 专属线程当前短事务中借用的连接，不在回调中等待设备或模型。
+        limit: 本次读取或更新的最大条目数。 默认 100。
+    """
     with connection:
         connection.execute("BEGIN IMMEDIATE")
         jobs = pending_index(connection, route="keyword", limit=limit)
@@ -1290,7 +1574,20 @@ def refresh_keyword_index(connection: sqlite3.Connection, *, limit: int = 100) -
 def semantic_search(
     connection: sqlite3.Connection, vector: tuple[float, ...], model: str, *, limit: int = 40
 ) -> tuple[KnowledgeReference, ...]:
-    """对同模型派生向量做有限候选选择，读取前核验当前版本及来源。"""
+    """对同模型派生向量做有限候选选择，读取前核验当前版本及来源。
+
+    Args:
+        connection: 仅在 Store 专属线程当前短事务中借用的连接，不在回调中等待设备或模型。
+        vector: 对应明确模型空间的有限数值向量。
+        model: 本次调用使用的显式模型名，不在领域层推断替代模型。
+        limit: 本次读取或更新的最大条目数。 默认 40。
+
+    Returns:
+        按相关性排列的确切版本引用，使用前仍须复查权威资格。
+
+    Raises:
+        StorageError: 权威记录缺失、版本不一致、载荷无效或提交条件不成立。
+    """
     import heapq
 
     _page_limit(limit)
@@ -1385,7 +1682,21 @@ def search_knowledge(
     include_inactive: bool = False,
     limit: int = 40,
 ) -> tuple[KnowledgeCandidate, ...]:
-    """保留 BM25 关键词、明确一跳关系、原文发生时间路线，并在排名前核验资格。"""
+    """保留 BM25 关键词、明确一跳关系、原文发生时间路线，并在排名前核验资格。
+
+    Args:
+        connection: 仅在 Store 专属线程当前短事务中借用的连接，不在回调中等待设备或模型。
+        query: 用于关键词或语义检索的意图文本。
+        entities: 需要共同检索或关联的实体名称集合。 默认不附加此类条目。
+        start: 按发生时间筛选的起点；None 表示不限制此端。
+        end: 按发生时间筛选的终点；None 表示不限制此端。
+        at: 核验记录有效性的 Unix 时间戳；None 使用当前时间。
+        include_inactive: 是否同时返回已失效的历史记录，并保留失效原因。 默认 False。
+        limit: 本次读取或更新的最大条目数。 默认 40。
+
+    Returns:
+        已通过来源及版本核验的候选集合，保留各路线排名。
+    """
     _page_limit(limit)
     routes: dict[str, tuple[tuple[KnowledgeReference, EvidenceSnapshot | MemoryRecord], ...]] = {}
     terms = _terms(query)
@@ -1482,7 +1793,21 @@ def _overlap(left: EvidenceSlice, right: EvidenceSlice) -> bool:
 def finish_reflection(
     connection: sqlite3.Connection, batch_id: str, version: int, submission: FinishSubmission
 ) -> ReflectionReceipt:
-    """核验实际呈现、范围覆盖及真实修订后，原子结束批次并确认对应邮箱。"""
+    """核验实际呈现、范围覆盖及真实修订后，原子结束批次并确认对应邮箱。
+
+    Args:
+        connection: 仅在 Store 专属线程当前短事务中借用的连接，不在回调中等待设备或模型。
+        batch_id: 独立反思批次的身份，须与批次版本配对使用。
+        version: 当前反思批次的确切版本，旧代次不再拥有写入资格。
+        submission: 本批已复核与明确延期的范围及完成结论。
+
+    Returns:
+        实际已提交的结案回执，重复完成复用原结果。
+
+    Raises:
+        KnowledgeInputError: 来源、版本、时间范围或材料引用不满足当前操作要求。
+        StorageError: 批次来源缺失。
+    """
     with connection:
         connection.execute("BEGIN IMMEDIATE")
         batch = get_reflection(connection, batch_id, version)
@@ -1650,7 +1975,20 @@ def _notice_active(connection: sqlite3.Connection, notice: SupervisionNotice) ->
 def supervise(
     connection: sqlite3.Connection, batch_id: str, version: int, notice: SupervisionNotice
 ) -> SupervisionRecord:
-    """立即提交有据监管意见，完成批次失败不会撤销已经提交的意见。"""
+    """立即提交有据监管意见，完成批次失败不会撤销已经提交的意见。
+
+    Args:
+        connection: 仅在 Store 专属线程当前短事务中借用的连接，不在回调中等待设备或模型。
+        batch_id: 独立反思批次的身份，须与批次版本配对使用。
+        version: 目标记录的确切版本，区别于可变的当前版本。
+        notice: 有原文依据的监管意见，紧急意见仍须显式交接前台。
+
+    Returns:
+        包含原始依据、活动版本约束和当前回应的监管记录。
+
+    Raises:
+        KnowledgeConflict: 监管来源、期限或活动版本已失效；监管身份已有不同意见。
+    """
     with connection:
         connection.execute("BEGIN IMMEDIATE")
         _active_batch(connection, batch_id, version)
@@ -1684,8 +2022,17 @@ def supervise(
 def get_supervision(connection: sqlite3.Connection, identity: str) -> SupervisionRecord | None:
     """读取确切意见并复核当前资格，交接事务不能借用先前扫描的有效性。
 
-    查询不改回应或删除历史；active 表达当前未回应、来源仍有效、期限及活动
-    版本匹配。调用方负责自己事务中的交接，失效意见仍可查到原记录。
+    Args:
+        connection: 仅在 Store 专属线程当前短事务中借用的连接，不在回调中等待设备或模型。
+        identity: 待查询或回应的监管意见身份。
+
+    Returns:
+        包含原始依据、活动版本约束和当前回应的监管记录。 未取得对应记录或素材时返回 None；
+        读取故障仍抛出。
+
+    Note:
+        查询不改回应或删除历史；active 表达当前未回应、来源仍有效、期限及活动
+        版本匹配。调用方负责自己事务中的交接，失效意见仍可查到原记录。
     """
     row = _one(
         connection,
@@ -1708,7 +2055,15 @@ def get_supervision(connection: sqlite3.Connection, identity: str) -> Supervisio
 def pending_supervision(
     connection: sqlite3.Connection, *, limit: int = 32
 ) -> tuple[SupervisionRecord, ...]:
-    """交付前再次核验期限、原文及可选活动版本，不交付已失效旧意见。"""
+    """交付前再次核验期限、原文及可选活动版本，不交付已失效旧意见。
+
+    Args:
+        connection: 仅在 Store 专属线程当前短事务中借用的连接，不在回调中等待设备或模型。
+        limit: 本次读取或更新的最大条目数。 默认 32。
+
+    Returns:
+        条目集合：包含原始依据、活动版本约束和当前回应的监管记录。
+    """
     _page_limit(limit)
     cursor = connection.execute(
         "SELECT payload_json,response,created_at FROM knowledge_supervision WHERE "
@@ -1737,7 +2092,21 @@ def pending_supervision(
 def respond_supervision(
     connection: sqlite3.Connection, identity: str, decision: str, reason: str
 ) -> SupervisionRecord:
-    """前台明确回应监管，回应不能被用作反思结论的独立证明。"""
+    """前台明确回应监管，回应不能被用作反思结论的独立证明。
+
+    Args:
+        connection: 仅在 Store 专属线程当前短事务中借用的连接，不在回调中等待设备或模型。
+        identity: 待查询或回应的监管意见身份。
+        decision: accept、partial 或 reject，分别表示接受、部分接受或拒绝。
+        reason: 供后续核对的明确处置原因。
+
+    Returns:
+        包含原始依据、活动版本约束和当前回应的监管记录。
+
+    Raises:
+        KnowledgeInputError: 监管回应需 accept/partial/reject 与明确理由。
+        KnowledgeConflict: 批次、来源或认识版本已变化，不能采用本次提交。
+    """
     if decision not in ("accept", "partial", "reject") or not reason.strip():
         raise KnowledgeInputError("监管回应需 accept/partial/reject 与明确理由。")
     with connection:
@@ -1776,7 +2145,19 @@ def _require_plan_evidence(connection: sqlite3.Connection, identity: str) -> Non
 
 
 def plan_wakeup(connection: sqlite3.Connection, plan: WakeupPlan) -> WakeupPlan:
-    """持久保存未来唤起，证据与 deadline 不从注意 defer 的默认值推导。"""
+    """持久保存未来唤起，证据与 deadline 不从注意 defer 的默认值推导。
+
+    Args:
+        connection: 仅在 Store 专属线程当前短事务中借用的连接，不在回调中等待设备或模型。
+        plan: 带来源与到期时刻的唤醒计划，不直接执行外部行动。
+
+    Returns:
+        已保存的计划及其当前结论，不直接代表外部行动完成。
+
+    Raises:
+        KnowledgeInputError: 计划需要未来期限与未完成状态。
+        KnowledgeConflict: 计划身份已有不同内容。
+    """
     if plan.due <= time.time() or plan.state != "pending":
         raise KnowledgeInputError("计划需要未来期限与未完成状态。")
     with connection:
@@ -1797,7 +2178,21 @@ def plan_wakeup(connection: sqlite3.Connection, plan: WakeupPlan) -> WakeupPlan:
 def resolve_plan(
     connection: sqlite3.Connection, identity: str, outcome: str, evidence: str
 ) -> WakeupPlan:
-    """以真实证据结束计划，文字声称完成不能替代来源存在性。"""
+    """以真实证据结束计划，文字声称完成不能替代来源存在性。
+
+    Args:
+        connection: 仅在 Store 专属线程当前短事务中借用的连接，不在回调中等待设备或模型。
+        identity: 需要明确结案的未完成计划身份。
+        outcome: 本次计划的明确结案结论。
+        evidence: 结束计划或确认事实所依据的实际证据文本。
+
+    Returns:
+        已保存的计划及其当前结论，不直接代表外部行动完成。
+
+    Raises:
+        KnowledgeInputError: 计划完成需要实际结果说明。
+        KnowledgeConflict: 计划不存在；计划已有不同完成事实。
+    """
     if not outcome.strip():
         raise KnowledgeInputError("计划完成需要实际结果说明。")
     with connection:
@@ -1824,7 +2219,19 @@ def resolve_plan(
 def pending_plans(
     connection: sqlite3.Connection, *, due_before: float | None = None, limit: int = 32
 ) -> tuple[WakeupPlan, ...]:
-    """读取有限未完成计划，取出到期计划不自动执行或重复确认。"""
+    """读取有限未完成计划，取出到期计划不自动执行或重复确认。
+
+    Args:
+        connection: 仅在 Store 专属线程当前短事务中借用的连接，不在回调中等待设备或模型。
+        due_before: 仅返回此 Unix 时刻前到期的计划；None 不限制到期时间。
+        limit: 本次读取或更新的最大条目数。 默认 32。
+
+    Returns:
+        条目集合：已保存的计划及其当前结论，不直接代表外部行动完成。
+
+    Raises:
+        ValueError: 期限必须是有限时间。
+    """
     _page_limit(limit)
     if due_before is not None and not math.isfinite(due_before):
         raise ValueError("期限必须是有限时间。")
@@ -1839,7 +2246,11 @@ def pending_plans(
 
 
 def initialize(connection: sqlite3.Connection) -> None:
-    """借用调用方启动事务核验表并撤旧批次资格，不独立提交认识恢复。"""
+    """借用调用方启动事务核验表并撤旧批次资格，不独立提交认识恢复。
+
+    Args:
+        connection: 仅在 Store 专属线程当前短事务中借用的连接，不在回调中等待设备或模型。
+    """
     for table in (
         "knowledge_evidence",
         "evidence_media",

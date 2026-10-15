@@ -70,6 +70,13 @@ function draft() {
   return value;
 }
 
+/**
+ * 验证并完整替换本地声线草稿。
+ *
+ * @param {object} profile 从预设文件或服务读取的完整版本 1 预设。
+ * @throws {Error} 字段或范围不符合当前 VoiceProfile 契约。
+ * @remarks 全部字段核验成功后才替换控件，失败保留原草稿。
+ */
 function fill(profile) {
   if (profile === null || typeof profile !== "object" || Array.isArray(profile) ||
       profile.version !== 1 || Object.keys(flat).some((name) => !(name in profile)) ||
@@ -92,6 +99,14 @@ function fill(profile) {
   draftVersion += 1;
 }
 
+/**
+ * 携带当前本机令牌发送一次显式服务请求。
+ *
+ * @param {string} url 同源调音室 API 路径。
+ * @param {RequestInit} options 明确请求方法、正文和附加头。
+ * @returns {Promise<Response>} 实际成功响应；非成功状态保留服务错误。
+ * @throws {Error} 服务拒绝、非 JSON 错误响应或实际网络故障。
+ */
 async function request(url, options = {}) {
   const response = await fetch(url, {
     ...options, headers: {...options.headers, "X-Purrcept-Token": token},
@@ -106,6 +121,11 @@ async function request(url, options = {}) {
   return response;
 }
 
+/**
+ * 登记本地草稿变更，并合并连续拖动产生的试听请求。
+ *
+ * @remarks 只持有一个可替换定时器；处理期间的修改在原处理归还后采用。
+ */
 function changed() {
   draftVersion += 1;
   status("save-message", "草稿已修改，保存后用于下一段语音。", "waiting-user");
@@ -118,6 +138,12 @@ function release(url) {
   if (url.startsWith("blob:")) URL.revokeObjectURL(url);
 }
 
+/**
+ * 在同一播放器上切换原声或处理版。
+ *
+ * @param {string} which original 选择原声，processed 选择当前已采用的处理版。
+ * @remarks 尽量保留实际播放位置；没有对应素材时不改变播放器。
+ */
 function choose(which) {
   const url = which === "original" ? original : processed;
   if (!url) return;
@@ -135,6 +161,12 @@ function choose(which) {
   $("processed").setAttribute("aria-pressed", String(which === "processed"));
 }
 
+/**
+ * 从完整有界 WAV 绘制本地波形。
+ *
+ * @param {Blob} blob 服务实际返回的原声音频，不触发自动播放。
+ * @returns {Promise<void>} 解码和绘图完成；分析上下文始终在 finally 中关闭。
+ */
 async function waveform(blob) {
   // 只解码服务返回的有界 WAV 画波形；分析上下文立即释放，不自动播放。
   const context = new AudioContext();
@@ -156,6 +188,13 @@ async function waveform(blob) {
   }
 }
 
+/**
+ * 向调音服务交接新素材，并采用实际返回的音频。
+ *
+ * @param {File} file 用户明确选择的本地素材；缺失时不提交。
+ * @returns {Promise<void>} 原声采用与当前草稿首次处理完成。
+ * @remarks 当前处理未结束时拒绝替换，确认新素材后才撤销旧 blob URL。
+ */
 async function upload(file) {
   if (!file) return;
   if (busy) {
@@ -197,6 +236,12 @@ async function upload(file) {
   if (adopted) await render();
 }
 
+/**
+ * 按当前素材与草稿生成一份串行试听结果。
+ *
+ * @returns {Promise<void>} 本次生成完成，失败原因展示在原位置。
+ * @remarks 仅当前 clip 与草稿代次仍匹配时采用；过期结果不冒充新参数效果。
+ */
 async function render() {
   if (!clip || busy) return;
   busy = true;
@@ -230,6 +275,11 @@ async function render() {
   }
 }
 
+/**
+ * 从服务读取已保存预设，更新草稿和版本。
+ *
+ * @returns {Promise<void>} 完成预设校验与采用；已有素材时再生成对应试听。
+ */
 async function reload() {
   try {
     const value = await (await request("/api/profile")).json();

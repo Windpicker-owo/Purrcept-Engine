@@ -21,11 +21,28 @@ class LateCallResults:
     """app 借给一个插件的迟到提交权限，使用同一 Store 的有界控制队列。"""
 
     def __init__(self, store: Store, paths: frozenset[str]) -> None:
-        """固定实际能力绑定范围，运行期重连不扩大路径或替换原身份。"""
+        """固定实际能力绑定范围，运行期重连不扩大路径或替换原身份。
+
+        Args:
+            store: 应用借出的领域存储端口，实际连接和关闭归资源所有者。
+            paths: 当前端口允许关联的冻结能力路径集合。
+        """
         self.store, self.paths = store, paths
 
     async def record(self, context: CallContext, outcome: CallOutcome) -> CallRecord:
-        """核验真实来源并等待初次入账，再追加实际回包，取消不回滚提交。"""
+        """核验真实来源并等待初次入账，再追加实际回包，取消不回滚提交。
+
+        Args:
+            context: 宿主或 Core 注入的可信调用上下文，不由模型自行填写。
+            outcome: 此次操作的真实结论，不由期望效果推断成功。
+
+        Returns:
+            原调用当前的权威结果及不可变版本历史。
+
+        Raises:
+            CapabilityInputError: 迟到回执没有对应本插件的实际已开始调用。
+            StorageError: 权威存储不能保存迟到回执。
+        """
         while True:
             revision = self.store.change_revision
             action = await self.store.get_action(context.action_id)

@@ -2,7 +2,8 @@
 
 ActivityService 创建 ActivityPort；驱动只能借出与当前活动关联的有限步骤，
 不能直接改控制状态、增加额度或取得数据库。取消观察不撤销已经开始的真实
-能力调用，ActivityStep 的结束只归还本次步骤资格。"""
+能力调用，ActivityStep 的结束只归还本次步骤资格。
+"""
 
 from __future__ import annotations
 
@@ -27,8 +28,16 @@ if TYPE_CHECKING:
 class ActivityStep:
     """宿主执行服务取得的步骤身份，直到真实收尾才归还并发事实。
 
-    此值只用于本服务所属循环。finish 是幂等的等待，取消外部等待不会把仍在途
-    的步骤当作已结束；宿主执行所有者须在取得真实结果之后调用它。
+    Attributes:
+        activity_id: 已创建活动的稳定身份。
+        run_generation: 活动当前运行代次；旧代次只能留下历史事实。
+        step_id: 宿主分配的专业步骤稳定身份。
+
+    Note:
+        实例字段在构造后不可重新赋值；嵌套值的冻结范围由字段所属契约决定。
+
+        此值只用于本服务所属循环。finish 是幂等的等待，取消外部等待不会把仍在途
+        的步骤当作已结束；宿主执行所有者须在取得真实结果之后调用它。
     """
 
     activity_id: str
@@ -49,7 +58,12 @@ class ActivityPort:
     """
 
     def __init__(self, service: ActivityService, activity_id: str) -> None:
-        """绑定一项不可变活动身份，不启动驱动或建立后台任务。"""
+        """绑定一项不可变活动身份，不启动驱动或建立后台任务。
+
+        Args:
+            service: 已装配的业务服务，能力入口借用其已有状态。
+            activity_id: 已创建活动的稳定身份。
+        """
         self._activity_id = activity_id
         self._service = service
 
@@ -59,14 +73,25 @@ class ActivityPort:
         return self._activity_id
 
     async def snapshot(self) -> ActivityRecord:
-        """读取本活动的当前权威快照，不产生恢复或控制副作用。"""
+        """读取本活动的当前权威快照，不产生恢复或控制副作用。
+
+        Returns:
+            活动的控制、预算、运行代次与工作快照。
+        """
         return await self._service.activity(self.activity_id)
 
     async def begin_step(self, *, run_generation: int) -> ActivityStep:
         """在本活动进入专业步骤前复核资格，并取得直到真实收尾才归还的身份。
 
-        端口固定活动身份，不能借此为兄弟活动派发。驱动保存真实结果后调用
-        ActivityStep.finish；取消观察或停止请求不代替实际步骤结束。
+        Args:
+            run_generation: 活动当前运行代次；旧代次只能留下历史事实。
+
+        Returns:
+            当前运行代次下获得执行资格的专业步骤凭证。
+
+        Note:
+            端口固定活动身份，不能借此为兄弟活动派发。驱动保存真实结果后调用
+            ActivityStep.finish；取消观察或停止请求不代替实际步骤结束。
         """
         return await self._service.begin_step(self.activity_id, run_generation)
 
@@ -80,8 +105,19 @@ class ActivityPort:
     ) -> ActionRecord:
         """本活动经真实执行服务调用能力，首版 unknown 不归还仍在途步骤。
 
-        驱动可在观察超时后停止并报告 needs_decision；实际所有者仍保存迟到
-        回执。观察取消不撤销已接管调用，不能借此直接运行 Provider 或脚本。
+        Args:
+            path: 冻结目录中的完整能力调用路径，例如 me.console.output。
+            arguments: 按已装配参数模型校验的能力关键字参数。
+            run_generation: 活动当前运行代次；旧代次只能留下历史事实。
+            timeout_seconds: 本次操作的等待上限（秒），不得扩大所属行动或活动期限。 None
+                使用所属能力或行动的既定期限。
+
+        Returns:
+            已保存的行动记录，包含逐次真实调用及结果历史；unknown 不证明效果未发生。
+
+        Note:
+            驱动可在观察超时后停止并报告 needs_decision；实际所有者仍保存迟到
+            回执。观察取消不撤销已接管调用，不能借此直接运行 Provider 或脚本。
         """
         return await self._service.invoke(
             self.activity_id,
@@ -99,7 +135,20 @@ class ActivityPort:
         version: int,
         state: ActivityState,
     ) -> ActivityCommand:
-        """提交实际控制结果；version 是原命令版本，迟到结果仍保留但不复活。"""
+        """提交实际控制结果。
+
+        Args:
+            command_id: 控制命令的稳定身份；重复提交须沿用原身份和内容。
+            run_generation: 活动当前运行代次；旧代次只能留下历史事实。
+            version: 目标记录的确切版本，区别于可变的当前版本。
+            state: 驱动实际确认的当前活动状态。
+
+        Returns:
+            命令接管与实际确认记录；受理成功不等于驱动已完成。
+
+        Note:
+            version 是原命令版本，迟到结果仍保留但不复活。
+        """
         return await self._service.confirm(
             self.activity_id,
             command_id,
@@ -111,7 +160,16 @@ class ActivityPort:
     async def checkpoint(
         self, *, run_generation: int, version: int, work_json: str
     ) -> ActivityRecord:
-        """按当前观察版本保存局部工作，旧代次或旧版本不能覆盖新工作。"""
+        """按当前观察版本保存局部工作，旧代次或旧版本不能覆盖新工作。
+
+        Args:
+            run_generation: 活动当前运行代次；旧代次只能留下历史事实。
+            version: 目标记录的确切版本，区别于可变的当前版本。
+            work_json: 驱动报告的工作快照 JSON，不替代宿主控制状态。
+
+        Returns:
+            活动的控制、预算、运行代次与工作快照。
+        """
         return await self._service.checkpoint_work(
             self.activity_id,
             run_generation=run_generation,
@@ -129,7 +187,22 @@ class ActivityPort:
         version: int,
         command_id: str | None = None,
     ) -> ActivityFeedback:
-        """原始反馈可靠保存；旧版本进展不覆盖当前状态，关键事实仍交付。"""
+        """原始反馈可靠保存。
+
+        Args:
+            feedback_id: 驱动反馈的稳定身份，用于去重和查询实际确认。
+            kind: 此业务值所属的稳定种类。
+            payload_json: 已编码的业务事实，不包含任意 Python 对象。
+            run_generation: 活动当前运行代次；旧代次只能留下历史事实。
+            version: 目标记录的确切版本，区别于可变的当前版本。
+            command_id: 控制命令的稳定身份；重复提交须沿用原身份和内容。
+
+        Returns:
+            已经按身份去重并保存的真实驱动反馈。
+
+        Note:
+            旧版本进展不覆盖当前状态，关键事实仍交付。
+        """
         return await self._service.feedback(
             self.activity_id,
             feedback_id,

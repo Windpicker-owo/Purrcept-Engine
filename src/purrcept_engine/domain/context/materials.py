@@ -28,7 +28,14 @@ class MediaStore(Protocol):
     """app 注入的只读 BLOB 端口，返回完整字节并核验内容摘要。"""
 
     async def get_media(self, media_id: str) -> bytes | None:
-        """读取同库已接管材料；不存在返回 None，损坏原样失败。"""
+        """读取同库已接管材料。
+
+        Args:
+            media_id: 权威库内由内容摘要标识的完整媒体身份。
+
+        Note:
+            不存在返回 None，损坏原样失败。
+        """
         ...
 
 
@@ -39,7 +46,19 @@ class UnsupportedMaterial(EngineError):
 async def media_blocks(
     store: MediaStore, media: tuple[MediaReference, ...]
 ) -> tuple[ContentBlock, ...]:
-    """按引用顺序展开全部原生媒体，不按附件数量猜测模型是否已经查看。"""
+    """按引用顺序展开全部原生媒体，不按附件数量猜测模型是否已经查看。
+
+    Args:
+        store: 应用借出的领域存储端口，实际连接和关闭归资源所有者。
+        media: 已接管媒体的引用集合，展开时必须取得原始 BLOB。
+
+    Returns:
+        按原始顺序展开的完整 Core 内容块，包括真实原生媒体。
+
+    Raises:
+        StorageError: 原生媒体引用不存在的 BLOB；原生媒体长度与引用不符。
+        UnsupportedMaterial: 参数、材料或当前状态不满足此入口的约束。
+    """
     blocks: list[ContentBlock] = []
     for reference in media:
         content = await store.get_media(reference.media_id)
@@ -67,9 +86,21 @@ async def input_message(
 ) -> Message:
     """提供完整原文与媒体身份，默认展开本批原生媒体。
 
-    media_as_references 只用于已失败轮次的经历接续：保留正文、来源及全部
-    附件引用，明确注明尚未展开，模型可通过 read_evidence 请求原件。这不是
-    对当前输入的降级；失败原件仍在同库，不能把引用声称为已经听到或看过。
+    Args:
+        store: 应用借出的领域存储端口，实际连接和关闭归资源所有者。
+        records: 按接管顺序取得的完整输入记录。
+        media_as_references: 是否仅呈现原生媒体引用，保留未交付像素或音频的区别。 默认 False。
+
+    Returns:
+        供后续 Core 请求使用的完整消息。
+
+    Raises:
+        ValueError: 前台输入批次不能为空。
+
+    Note:
+        media_as_references 只用于已失败轮次的经历接续：保留正文、来源及全部
+        附件引用，明确注明尚未展开，模型可通过 read_evidence 请求原件。这不是
+        对当前输入的降级；失败原件仍在同库，不能把引用声称为已经听到或看过。
     """
     if not records:
         raise ValueError("前台输入批次不能为空。")

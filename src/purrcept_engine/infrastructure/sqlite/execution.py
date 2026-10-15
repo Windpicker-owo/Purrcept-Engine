@@ -98,6 +98,7 @@ def _json(value: object, *, arguments: bool = False) -> str | None:
 
 
 def _result(connection: sqlite3.Connection, row: Sequence[object]) -> CallResultRecord:
+    """从已保存的确切结果版本恢复回执，不用缺省值伪造成功。"""
     state = row[2]
     if state not in ("confirmed", "failed", "unknown", "not_started"):
         raise StorageError("调用回执状态无效。", code="invalid_record")
@@ -189,7 +190,21 @@ def begin_action(
     source: str,
     input_id: str | None = None,
 ) -> None:
-    """保存不可变行动意图；同身份同材料幂等，不同材料拒绝覆盖。"""
+    """保存不可变行动意图。
+
+    Args:
+        connection: 仅在 Store 专属线程当前短事务中借用的连接，不在回调中等待设备或模型。
+        action_id: 执行器分配的行动身份，用于关联逐次调用和真实回执。
+        catalog_version: 本次行动冻结的目录内容摘要，执行期间保持不变。
+        source: 行动原始材料，保存受限源码或冻结的 structured_call JSON。
+        input_id: 正式接管返回的输入身份，用于关联原文与后续处理。 None 表示无单一输入因果关联。
+
+    Raises:
+        StorageError: 行动身份与既有意图冲突。
+
+    Note:
+        同身份同材料幂等，不同材料拒绝覆盖。
+    """
     with connection:
         connection.execute("BEGIN IMMEDIATE")
         row: tuple[object, ...] | None = connection.execute(
@@ -216,7 +231,20 @@ def begin_call(
     target_id: str,
     arguments_json: str,
 ) -> None:
-    """派发前提交准备事实，未提交成功不得进入能力实现。"""
+    """派发前提交准备事实，未提交成功不得进入能力实现。
+
+    Args:
+        connection: 仅在 Store 专属线程当前短事务中借用的连接，不在回调中等待设备或模型。
+        call_id: 实际能力调用的唯一身份，用于保存启动门槛及结果版本。
+        action_id: 执行器分配的行动身份，用于关联逐次调用和真实回执。
+        sequence: 行动内从 1 开始的调用顺序号。
+        path: 冻结目录中的完整能力调用路径，例如 me.console.output。
+        target_id: 能力绑定的目标对象身份。
+        arguments_json: 已编码为严格 JSON 对象的原始能力参数。
+
+    Raises:
+        StorageError: 权威记录缺失、版本不一致、载荷无效或提交条件不成立。
+    """
     with connection:
         connection.execute("BEGIN IMMEDIATE")
         existing: tuple[object, ...] | None = connection.execute(
@@ -247,7 +275,15 @@ def begin_call(
 
 
 def mark_call_started(connection: sqlite3.Connection, call_id: str) -> None:
-    """只允许准备态通过一次门槛，重复门槛不能成为重复执行许可。"""
+    """只允许准备态通过一次门槛，重复门槛不能成为重复执行许可。
+
+    Args:
+        connection: 仅在 Store 专属线程当前短事务中借用的连接，不在回调中等待设备或模型。
+        call_id: 实际能力调用的唯一身份，用于保存启动门槛及结果版本。
+
+    Raises:
+        StorageError: 调用已失去启动资格。
+    """
     with connection:
         connection.execute("BEGIN IMMEDIATE")
         call = _get_call(connection, call_id)
@@ -270,7 +306,23 @@ def record_call_result(
     error: str | None,
     media: tuple[MediaReference, ...] = (),
 ) -> CallRecord:
-    """结果、不可变历史与可靠交接同事务保存，不借行动结束回滚效果。"""
+    """结果、不可变历史与可靠交接同事务保存，不借行动结束回滚效果。
+
+    Args:
+        connection: 仅在 Store 专属线程当前短事务中借用的连接，不在回调中等待设备或模型。
+        call_id: 实际能力调用的唯一身份，用于保存启动门槛及结果版本。
+        state: 本次实际调用的确认、失败或未知结论。
+        result_json: 已编码的实际结果；无可用结果时为 None。
+        error_type: 回执中稳定的错误类别，无错误时为 None。
+        error: 当前流程已经取得的真实故障或失败说明。
+        media: 已接管媒体的引用集合，展开时必须取得原始 BLOB。 默认不附加此类条目。
+
+    Returns:
+        原调用当前的权威结果及不可变版本历史。
+
+    Raises:
+        StorageError: 已保存的真实回执不能被覆盖；未通过启动门槛的调用没有外界效果。
+    """
     with connection:
         connection.execute("BEGIN IMMEDIATE")
         call = _get_call(connection, call_id)
@@ -322,7 +374,19 @@ def finish_action(
     output: str,
     error: str | None,
 ) -> None:
-    """结束行动整体状态，不修改任何已保存或仍在途的调用记录。"""
+    """结束行动整体状态，不修改任何已保存或仍在途的调用记录。
+
+    Args:
+        connection: 仅在 Store 专属线程当前短事务中借用的连接，不在回调中等待设备或模型。
+        action_id: 执行器分配的行动身份，用于关联逐次调用和真实回执。
+        state: 行动结束状态，不能抹除已经发生的逐次效果。
+        result_json: 已编码的实际结果；无可用结果时为 None。
+        output: 此次 Worker 实际产生的有界标准输出。
+        error: 当前流程已经取得的真实故障或失败说明。
+
+    Raises:
+        StorageError: 行动身份不存在；行动结束结果不能被覆盖。
+    """
     with connection:
         connection.execute("BEGIN IMMEDIATE")
         row: tuple[object, ...] | None = connection.execute(
@@ -342,7 +406,19 @@ def finish_action(
 
 
 def get_action(connection: sqlite3.Connection, action_id: str) -> ActionRecord | None:
-    """在同一读取快照中取得行动和当前调用，旧回执仍在每项 history 中。"""
+    """在同一读取快照中取得行动和当前调用，旧回执仍在每项 history 中。
+
+    Args:
+        connection: 仅在 Store 专属线程当前短事务中借用的连接，不在回调中等待设备或模型。
+        action_id: 执行器分配的行动身份，用于关联逐次调用和真实回执。
+
+    Returns:
+        已保存的行动记录，包含逐次真实调用及结果历史；unknown 不证明效果未发生。
+        未取得对应记录或素材时返回 None；读取故障仍抛出。
+
+    Raises:
+        StorageError: 行动状态无效。
+    """
     with connection:
         connection.execute("BEGIN")
         row: tuple[object, ...] | None = connection.execute(
@@ -372,7 +448,18 @@ def get_action(connection: sqlite3.Connection, action_id: str) -> ActionRecord |
 
 
 def pending_call_receipts(connection: sqlite3.Connection, limit: int) -> tuple[CallRecord, ...]:
-    """读取有限历史版本但不确认交接，重复查询不会删除可靠待办。"""
+    """读取有限历史版本但不确认交接，重复查询不会删除可靠待办。
+
+    Args:
+        connection: 仅在 Store 专属线程当前短事务中借用的连接，不在回调中等待设备或模型。
+        limit: 本次读取或更新的最大条目数。
+
+    Returns:
+        条目集合：原调用当前的权威结果及不可变版本历史。
+
+    Raises:
+        StorageError: 待办引用无效回执版本。
+    """
     with connection:
         connection.execute("BEGIN")
         identities: list[tuple[object, ...]] = connection.execute(
@@ -402,7 +489,11 @@ def pending_call_receipts(connection: sqlite3.Connection, limit: int) -> tuple[C
 
 
 def initialize(connection: sqlite3.Connection) -> None:
-    """借用调用方启动事务核对必需列并结束旧派发，不独立提交恢复。"""
+    """借用调用方启动事务核对必需列并结束旧派发，不独立提交恢复。
+
+    Args:
+        connection: 仅在 Store 专属线程当前短事务中借用的连接，不在回调中等待设备或模型。
+    """
     connection.execute(f"SELECT {_ACTION_COLUMNS} FROM actions LIMIT 0")
     connection.execute(f"SELECT {_CALL_COLUMNS} FROM calls LIMIT 0")
     connection.execute(f"SELECT {_RESULT_COLUMNS} FROM call_results LIMIT 0")

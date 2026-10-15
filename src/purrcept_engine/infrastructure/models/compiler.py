@@ -21,9 +21,15 @@ from purrcept_engine.serialization import encode
 class _GenerationCompiler(Protocol):
     """冻结 SDK 纯编译入口的精确借用签名，不持有传输资源。"""
 
-    def __call__(
-        self, request: ModelRequest, *, model: str, config: object
-    ) -> dict[str, object]: ...
+    def __call__(self, request: ModelRequest, *, model: str, config: object) -> dict[str, object]:
+        """按冻结 SDK 规则将完整生成请求编译为原生 payload。
+
+        Args:
+            request: 已经按 Core 协议组装的完整生成请求。
+            model: 本次调用使用的显式模型名，不在领域层推断替代模型。
+            config: 冻结 SDK 的请求编译配置，仅含明确调用选项，不借入真实凭据。
+        """
+        ...
 
 
 class _DecisionCompiler(Protocol):
@@ -31,7 +37,15 @@ class _DecisionCompiler(Protocol):
 
     def __call__(
         self, request: DecisionRequest, *, model: str, config: object
-    ) -> dict[str, object]: ...
+    ) -> dict[str, object]:
+        """按冻结 SDK 规则将完整判断请求编译为原生 payload。
+
+        Args:
+            request: 已经按 Core 协议组装的专用判断请求。
+            model: 本次调用使用的显式模型名，不在领域层推断替代模型。
+            config: 冻结 SDK 的请求编译配置，仅含明确调用选项，不借入真实凭据。
+        """
+        ...
 
 
 _TRANSPORT_FIELDS = frozenset(
@@ -63,9 +77,21 @@ _TRANSPORT_FIELDS = frozenset(
 def compile_materials(request: ModelRequest | DecisionRequest, *, model: str) -> tuple[str, str]:
     """借用冻结 SDK 的纯编译器，记录真实顺序且不给编译器凭据。
 
-    当前 SDK 未公开编译入口，因此这处接缝精确绑定 0.2.x 的两个模块并记录
-    源码摘要。它不再实现消息或 TypeSafe 协议转换。公开生成参数保持原值；
-    明确传输字段仅记录排除名称，不能将秘密写入原始请求证据。
+    Args:
+        request: 已按 Core 协议组装的完整生成或判断请求。
+        model: 本次调用使用的显式模型名，不在领域层推断替代模型。
+
+    Returns:
+        公开请求材料的完整 JSON 与实际 SDK 编译器源码身份；传输秘密只保留排除字段名。
+
+    Raises:
+        ModelRequestError: SDK 自动重试必须显式关闭。
+        TypeError: 冻结 SDK 编译器没有可核验源码。
+
+    Note:
+        当前 SDK 未公开编译入口，因此这处接缝精确绑定 0.2.x 的两个模块并记录
+        源码摘要。它不再实现消息或 TypeSafe 协议转换。公开生成参数保持原值；
+        明确传输字段仅记录排除名称，不能将秘密写入原始请求证据。
     """
     if isinstance(request, ModelRequest):
         module = import_module("purrcept_litellm._request")

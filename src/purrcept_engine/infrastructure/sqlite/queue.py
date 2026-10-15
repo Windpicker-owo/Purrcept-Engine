@@ -36,11 +36,28 @@ class _QueuedJob(Protocol):
     writing: bool
 
     def run(self, connection: sqlite3.Connection) -> Callable[[], None]:
-        """执行事务并返回结果交付动作；线程先归还交接位置再公开结果。"""
+        """执行事务并返回结果交付动作。
+
+        Args:
+            connection: 仅在 Store 专属线程当前短事务中借用的连接，不在回调中等待设备或模型。
+
+        Returns:
+            将已完成结果交回原事件循环的动作，在线程归还队列名额后调用。
+
+        Note:
+            线程先归还交接位置再公开结果。
+        """
         ...
 
     def fail(self, error: BaseException) -> None:
-        """送回原错误；内部异常不转换成容量拒收或可纠正参数错误。"""
+        """送回原错误。
+
+        Args:
+            error: 当前流程已经取得的真实故障或失败说明。
+
+        Note:
+            内部异常不转换成容量拒收或可纠正参数错误。
+        """
         ...
 
 
@@ -55,16 +72,28 @@ class _Job[Result]:
     writing: bool
 
     def run(self, connection: sqlite3.Connection) -> Callable[[], None]:
-        """冻结事务结果，延迟公开到队列名额实际归还后。"""
+        """冻结事务结果，延迟公开到队列名额实际归还后。
+
+        Args:
+            connection: 仅在 Store 专属线程当前短事务中借用的连接，不在回调中等待设备或模型。
+
+        Returns:
+            将已完成结果交回原事件循环的动作，在线程归还队列名额后调用。
+        """
         result = self.operation(connection)
 
         def publish() -> None:
+            """在所属事件循环公开已完成的结果，线程不直接修改 Future。"""
             self.loop.call_soon_threadsafe(self.future.set_result, result)
 
         return publish
 
     def fail(self, error: BaseException) -> None:
-        """在所属循环保留错误，即使原等待者已经取消。"""
+        """在所属循环保留错误，即使原等待者已经取消。
+
+        Args:
+            error: 当前流程已经取得的真实故障或失败说明。
+        """
         self.loop.call_soon_threadsafe(self.future.set_exception, error)
 
 
@@ -78,9 +107,17 @@ class SqliteExecutor:
     """由 Store 创建的唯一连接所有者，全部异步入口只在创建循环调用。"""
 
     def __init__(self, path: Path, max_inputs: int, max_input_bytes: int) -> None:
-        """准备未启动的提交器；Store 随后调用 start 等待线程初始化结果。
+        """准备未启动的提交器。
 
-        路径在交接前固定到当前工作目录，实际文件与 SQLite I/O 全部在线程上。
+        Args:
+            path: 此操作定位的明确路径。
+            max_inputs: 有界提交队列允许接管的条目上限。
+            max_input_bytes: 有界提交队列允许接管的逻辑字节上限。
+
+        Note:
+            Store 随后调用 start 等待线程初始化结果。
+
+            路径在交接前固定到当前工作目录，实际文件与 SQLite I/O 全部在线程上。
         """
         self._initialize = initialize
         self._path = Path(os.path.abspath(path))
@@ -106,7 +143,11 @@ class SqliteExecutor:
         self._changed = asyncio.Event()
 
     async def start(self) -> None:
-        """启动专属连接；等待取消仍收回真实连接，失败不遗留线程。"""
+        """启动专属连接。
+
+        Note:
+            等待取消仍收回真实连接，失败不遗留线程。
+        """
         self._thread.start()
         try:
             await asyncio.shield(self._ready)
@@ -124,10 +165,16 @@ class SqliteExecutor:
         return self._change_revision
 
     async def wait_for_change(self, after_revision: int) -> int:
-        """等待新提交或关闭唤醒；通知丢失不能替代持久待办查询。
+        """等待新提交或关闭唤醒。
 
-        工作器先记录代次再查可靠待办，查询期间发生的写入会立即结束本次
-        等待。固定工作器可借用此等待，不创建每行订阅或无界消息总线。
+        Args:
+            after_revision: 查询待办前取得的通知序号，避免查询与等待之间漏唤醒。
+
+        Note:
+            通知丢失不能替代持久待办查询。
+
+            工作器先记录代次再查可靠待办，查询期间发生的写入会立即结束本次
+            等待。固定工作器可借用此等待，不创建每行订阅或无界消息总线。
         """
         while self._change_revision <= after_revision and not self._closing:
             self._changed.clear()
@@ -145,8 +192,9 @@ class SqliteExecutor:
     def authority_available(self) -> bool:
         """返回派发前可同步核验的权威资格，不以查询成功替代写入健康。
 
-        故障与关闭门槛由同一线程条件锁读取；调用者在 await 后仍须再次核验，
-        该快照不预留提交容量，也不是外部效果已经发生的证明。
+        Note:
+            故障与关闭门槛由同一线程条件锁读取；调用者在 await 后仍须再次核验，
+            该快照不预留提交容量，也不是外部效果已经发生的证明。
         """
         with self._condition:
             return self._failure is None and not self._closing and not self._connection_closing
@@ -154,8 +202,9 @@ class SqliteExecutor:
     async def close(self) -> None:
         """禁止新的写入并等待同一排空与关闭过程。
 
-        取消本次等待不会取消线程收尾；再次调用加入原关闭过程，不再次关闭
-        连接。宿主负责整体关闭期限，本入口等待实际完成才返回。
+        Note:
+            取消本次等待不会取消线程收尾；再次调用加入原关闭过程，不再次关闭
+            连接。宿主负责整体关闭期限，本入口等待实际完成才返回。
         """
         self._check_loop()
         self._begin_close()
@@ -173,7 +222,23 @@ class SqliteExecutor:
         control: bool = False,
         writing: bool = False,
     ) -> Result:
-        """在取得有限交接位置后提交；shield 保护的是实际提交所有权。"""
+        """向专属数据库线程提交有界同步操作，并等待真实结果。
+
+        Args:
+            operation: 在专属数据库线程执行的同步短事务，返回值交回原事件循环。
+            logical_bytes: 本次操作占用的逻辑载荷字节数，用于接管前背压。 默认 0。
+            control: 是否使用独立控制名额，避免普通输入阻塞真实回执收尾。 默认 False。
+            writing: 是否属于写操作，以便关闭或权威故障时撤销派发资格。 默认 False。
+
+        Returns:
+            同步操作完成后的真实返回值，异常保持原类型。
+
+        Raises:
+            StorageError: 权威记录缺失、版本不一致、载荷无效或提交条件不成立。
+
+        Note:
+            在取得有限交接位置后提交；shield 保护的是实际提交所有权。
+        """
         self._check_loop()
         future: asyncio.Future[Result] = self._loop.create_future()
         future.add_done_callback(_observe_result)
@@ -341,7 +406,11 @@ class SqliteExecutor:
         return result
 
     def check_writing(self) -> None:
-        """事务入口复查已锁存的权威故障，不撤销关闭前接管的正常提交。"""
+        """事务入口复查已锁存的权威故障，不撤销关闭前接管的正常提交。
+
+        Raises:
+            StorageError: 权威存储已故障，拒绝新的写入。
+        """
         with self._condition:
             if self._failure is not None:
                 raise StorageError("权威存储已故障，拒绝新的写入。") from self._failure

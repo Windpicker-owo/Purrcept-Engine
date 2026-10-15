@@ -89,7 +89,15 @@ class OpenAIEmbeddingResource:
     def __init__(
         self, settings: EmbeddingSettings, *, transport: httpx.AsyncBaseTransport | None = None
     ) -> None:
-        """构造不连接网络；提供 transport 时将其关闭责任交给此资源。"""
+        """构造不连接网络。
+
+        Args:
+            settings: 当前组件已校验的配置或纯声明。
+            transport: 显式注入的 HTTP 传输；None 使用标准传输实现。
+
+        Note:
+            提供 transport 时将其关闭责任交给此资源。
+        """
         self.settings = settings
         headers: dict[str, str] = {}
         if settings.api_key is not None:
@@ -115,7 +123,21 @@ class OpenAIEmbeddingResource:
         return len(self._requests)
 
     async def embed(self, texts: tuple[str, ...]) -> tuple[tuple[float, ...], ...]:
-        """仅提交一份完整有限文本批；HTTP、协议错误和取消保留原型。"""
+        """仅提交一份完整有限文本批。
+
+        Args:
+            texts: 按原顺序交给 embedding 的非空文本批次。
+
+        Returns:
+            按文本输入顺序取得、数量和维度已核验的有限向量。
+
+        Raises:
+            HostStateError: Embedding 资源已开始关闭。
+            ValueError: Embedding 一次需要至多 32 个完整字符串。
+
+        Note:
+            HTTP、协议错误和取消保留原型。
+        """
         if self._close_task is not None:
             raise HostStateError("Embedding 资源已开始关闭。")
         if not texts:
@@ -140,7 +162,11 @@ class OpenAIEmbeddingResource:
         return _vectors(response, len(texts))
 
     async def close(self) -> None:
-        """等待同一次资源归还；一个关闭观察者取消不会撤销连接池清理。"""
+        """等待同一次资源归还。
+
+        Note:
+            一个关闭观察者取消不会撤销连接池清理。
+        """
         if self._close_task is None:
             self._close_task = asyncio.create_task(self._close(), name="embedding-close")
         await asyncio.shield(self._close_task)
