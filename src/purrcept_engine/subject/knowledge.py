@@ -15,7 +15,7 @@ from typing import Protocol, cast
 
 from purrcept_core.models import ContentBlock, Message
 
-from purrcept_engine.storage.knowledge import (
+from purrcept_engine.domain.knowledge.models import (
     EvidenceDelivery,
     EvidencePage,
     EvidenceSlice,

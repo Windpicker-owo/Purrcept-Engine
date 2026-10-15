@@ -10,11 +10,16 @@ from pydantic import BaseModel, ConfigDict
 
 from purrcept_engine import EngineConfig, EngineHost
 from purrcept_engine.app.panel import ControlRequest
+from purrcept_engine.domain.controls.models import ControlError
 from purrcept_engine.execution.catalog import CapabilityDeclaration, ObjectDeclaration
 from purrcept_engine.execution.providers import CallContext, CallOutcome, FunctionCapability
-from purrcept_engine.plugins.base import PluginBlueprint, PluginPorts, PluginRuntime, typed_factory
-from purrcept_engine.plugins.panels import DevicePanel, PanelControl, PreviewFrame
-from purrcept_engine.storage.controls import ControlError
+from purrcept_engine.plugin_system.contracts import (
+    PluginBlueprint,
+    PluginPorts,
+    PluginRuntime,
+    typed_factory,
+)
+from purrcept_engine.plugin_system.panels import DevicePanel, PanelControl, PreviewFrame
 from purrcept_engine.storage.store import Store
 
 

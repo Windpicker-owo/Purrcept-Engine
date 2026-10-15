@@ -14,26 +14,25 @@ from typing import Protocol
 
 from pydantic import BaseModel
 
-from purrcept_engine.execution.catalog import CapabilityDeclaration, ObjectDeclaration
-from purrcept_engine.execution.protocol import JsonObject
-from purrcept_engine.execution.providers import CallContext, CallOutcome, CapabilityImplementation
-from purrcept_engine.plugins.audio.ports import AudioOutputPort
-from purrcept_engine.plugins.live2d.ports import BodyPort
-from purrcept_engine.storage.audio_port import AudioPort
-from purrcept_engine.storage.execution import CallRecord
-from purrcept_engine.storage.knowledge import EvidencePage, EvidenceSnapshot
-from purrcept_engine.storage.models import (
+from purrcept_engine.domain.execution.models import CallRecord
+from purrcept_engine.domain.inputs.models import (
     Admission,
     InputRecord,
     InputSource,
     InputSubmission,
     MediaAsset,
 )
-from purrcept_engine.storage.subject import InputProcessing
+from purrcept_engine.domain.knowledge.models import EvidencePage, EvidenceSnapshot
+from purrcept_engine.domain.subject.models import InputProcessing
+from purrcept_engine.execution.catalog import CapabilityDeclaration, ObjectDeclaration
+from purrcept_engine.execution.providers import CallContext, CallOutcome, CapabilityImplementation
+from purrcept_engine.plugin_system.audio_port import AudioOutputPort
+from purrcept_engine.plugin_system.body_port import BodyPort
+from purrcept_engine.plugin_system.panels import DevicePanel
+from purrcept_engine.storage.audio_port import AudioPort
 from purrcept_engine.storage.time_port import TimePort
 from purrcept_engine.subject.activities import ActivityDefinition
-
-from .panels import DevicePanel
+from purrcept_engine.values import JsonObject
 
 
 class InputPort(Protocol):

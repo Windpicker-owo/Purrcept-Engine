@@ -30,14 +30,8 @@ from purrcept_core.models import (
 )
 from purrcept_core.models.tools import InvokeTool, ToolResult
 
-from purrcept_engine.errors import StorageError
-from purrcept_engine.execution.protocol import JsonValue, decode_object, encode_json
-from purrcept_engine.storage import (
-    InputSource,
-    InputSubmission,
-    MediaAsset,
-)
-from purrcept_engine.storage.knowledge import (
+from purrcept_engine.domain.inputs.models import MediaReference
+from purrcept_engine.domain.knowledge.models import (
     EvidencePage,
     EvidenceSnapshot,
     KnowledgeCandidate,
@@ -45,10 +39,16 @@ from purrcept_engine.storage.knowledge import (
     MemoryPatch,
     SupervisionRecord,
 )
-from purrcept_engine.storage.models import MediaReference
+from purrcept_engine.errors import StorageError
+from purrcept_engine.storage import (
+    InputSource,
+    InputSubmission,
+    MediaAsset,
+)
 from purrcept_engine.storage.store import Store
 from purrcept_engine.subject.knowledge import KnowledgeService
 from purrcept_engine.subject.reflection import EvidenceDeliveries, ReflectionTools
+from purrcept_engine.values import JsonValue, decode_object, encode_json
 
 
 @pytest_asyncio.fixture

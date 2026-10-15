@@ -12,19 +12,31 @@ import hashlib
 import math
 import sqlite3
 import time
-from dataclasses import dataclass
 from datetime import UTC, datetime
 
 from pydantic import ValidationError
 
+import purrcept_engine.domain.execution.models as execution_models
+import purrcept_engine.domain.knowledge.models as knowledge_models
+from purrcept_engine.domain.inputs.models import (
+    InputContext,
+    InputSource,
+    InputSubmission,
+    MediaAsset,
+    MediaReference,
+)
+from purrcept_engine.domain.subject.feedback_models import (
+    FeedbackBridge,
+    FeedbackWork,
+    ReflectionSource,
+    ReflectionState,
+)
+from purrcept_engine.domain.subject.models import TurnRecord
 from purrcept_engine.errors import StorageError
-from purrcept_engine.execution.protocol import decode_object
-
-from . import activities, execution, knowledge
-from .model_requests import encode
-from .models import InputContext, InputSource, InputSubmission, MediaAsset, MediaReference
-from .subject import TurnRecord
-from .time import AdmitInput
+from purrcept_engine.serialization import encode
+from purrcept_engine.storage import activities, execution, knowledge
+from purrcept_engine.storage.time import AdmitInput
+from purrcept_engine.values import decode_object
 
 SCHEMA = (
     "CREATE TABLE feedback_deliveries (kind TEXT NOT NULL,identity TEXT NOT NULL,"
@@ -55,64 +67,6 @@ SCHEMA = (
 )
 
 
-@dataclass(frozen=True, slots=True)
-class FeedbackWork:
-    """有限的真实来源快照；只在 Store 队列两次交接之间持有。"""
-
-    calls: tuple[execution.CallRecord, ...]
-    activity: tuple[activities.ActivityFeedback, ...]
-    failures: tuple[TurnRecord, ...]
-    plans: tuple[knowledge.WakeupPlan, ...]
-    supervision: tuple[knowledge.SupervisionRecord, ...]
-    deliveries: bool
-
-    @property
-    def available(self) -> bool:
-        """空扫描不申请写队列，避免自己制造变化通知。"""
-        return bool(
-            self.calls
-            or self.activity
-            or self.failures
-            or self.plans
-            or self.supervision
-            or self.deliveries
-        )
-
-
-@dataclass(frozen=True, slots=True)
-class FeedbackBridge:
-    """实际已提交的前台交接，blocked 表示输入额度仍须等待。"""
-
-    foreground_ids: tuple[str, ...] = ()
-    changed: bool = False
-    blocked: bool = False
-    urgent_generations: tuple[int, ...] = ()
-
-
-@dataclass(frozen=True, slots=True)
-class ReflectionState:
-    """独立来源序号和实际成功前台轮数，模型自己的输出不增加 epoch。"""
-
-    epoch: int
-    successful_turns: int
-    last_taken_successful_turns: int
-    oldest_queued_at: float | None
-    priority: bool
-    next_plan_at: float | None
-
-
-@dataclass(frozen=True, slots=True)
-class ReflectionSource:
-    """一份有限候选的确切版本和已接管游标，不复制原文到调度队列。"""
-
-    sequence: int
-    evidence_id: str
-    version: int
-    queued_at: float
-    cursor: str | None
-    priority: bool
-
-
 def _text(value: object) -> str:
     if not isinstance(value, str):
         raise StorageError("反馈账本文本字段损坏。", code="invalid_record")
@@ -131,7 +85,7 @@ def _number(value: object) -> float:
     return float(value)
 
 
-def _decode[Record: knowledge.SupervisionNotice | knowledge.WakeupPlan](
+def _decode[Record: knowledge_models.SupervisionNotice | knowledge_models.WakeupPlan](
     value: object, model: type[Record]
 ) -> Record:
     try:
@@ -187,7 +141,7 @@ def prepare(connection: sqlite3.Connection, *, now: float, limit: int = 16) -> F
         "(SELECT 1 FROM feedback_deliveries d WHERE d.kind='supervision' AND d.identity=s.id) "
         "ORDER BY created_at,id"
     )
-    notices: list[knowledge.SupervisionRecord] = []
+    notices: list[knowledge_models.SupervisionRecord] = []
     while notice_rows := notice_cursor.fetchmany(32):
         for notice_row in notice_rows:
             record = knowledge.get_supervision(connection, _text(notice_row[0]))
@@ -207,14 +161,14 @@ def prepare(connection: sqlite3.Connection, *, now: float, limit: int = 16) -> F
         calls,
         tuple(merged.values()),
         tuple(failures),
-        tuple(_decode(row[0], knowledge.WakeupPlan) for row in plan_rows),
+        tuple(_decode(row[0], knowledge_models.WakeupPlan) for row in plan_rows),
         tuple(notices),
         deliveries,
     )
 
 
 def _source(
-    connection: sqlite3.Connection, snapshot: knowledge.EvidenceSnapshot, *, priority: bool
+    connection: sqlite3.Connection, snapshot: knowledge_models.EvidenceSnapshot, *, priority: bool
 ) -> None:
     """正式证据与宿主异常优先级一起接管，派生唤醒不会再次增加事实代次。"""
     knowledge.put_evidence_in_transaction(connection, snapshot)
@@ -275,7 +229,10 @@ def _admit_deliveries(
             current = connection.execute(
                 "SELECT payload_json FROM knowledge_plans WHERE id=?", (identity,)
             ).fetchone()
-            if current is None or _decode(current[0], knowledge.WakeupPlan).state != "pending":
+            if (
+                current is None
+                or _decode(current[0], knowledge_models.WakeupPlan).state != "pending"
+            ):
                 connection.execute(
                     "DELETE FROM feedback_deliveries WHERE kind=? AND identity=?", (kind, identity)
                 )
@@ -366,7 +323,7 @@ def bridge(
             )
             _source(
                 connection,
-                knowledge.EvidenceSnapshot(
+                knowledge_models.EvidenceSnapshot(
                     evidence_id=identity,
                     version=1,
                     kind="call_receipt",
@@ -395,7 +352,7 @@ def bridge(
             payload = encode({"source": "actual_activity_feedback", "feedback": item})
             _source(
                 connection,
-                knowledge.EvidenceSnapshot(
+                knowledge_models.EvidenceSnapshot(
                     evidence_id=identity,
                     version=1,
                     kind="activity_feedback",
@@ -432,7 +389,7 @@ def bridge(
                 raise StorageError("失败轮次缺少结束时刻。", code="invalid_record")
             _source(
                 connection,
-                knowledge.EvidenceSnapshot(
+                knowledge_models.EvidenceSnapshot(
                     evidence_id=identity,
                     version=1,
                     kind="foreground_failure",
@@ -491,7 +448,7 @@ def _foreground_failure_priority(turn: TurnRecord) -> bool:
     )
 
 
-def call_material(call: execution.CallRecord) -> dict[str, object]:
+def call_material(call: execution_models.CallRecord) -> dict[str, object]:
     """保存这一版本完整参数和结果，以确切引用关联旧回执而不复制其原文。
 
     同连接的可靠反馈桥接与当前请求原文核验共用本表示。调用方提供从执行
@@ -524,7 +481,7 @@ def call_material(call: execution.CallRecord) -> dict[str, object]:
 def dispatch_supervision(
     connection: sqlite3.Connection,
     admit: AdmitInput,
-    record: knowledge.SupervisionRecord,
+    record: knowledge_models.SupervisionRecord,
     *,
     observed_generation: int,
 ) -> FeedbackBridge:
@@ -632,7 +589,7 @@ def _resume_cursor(connection: sqlite3.Connection, evidence_id: str, version: in
         (evidence_id, version),
     ).fetchall()
     effective = {_text(row[0]): _text(row[1]) for row in rows}
-    fragments: list[knowledge.EvidenceSlice] = []
+    fragments: list[knowledge_models.EvidenceSlice] = []
     deferred_start: int | None = None
     for reference, state in effective.items():
         fragment = knowledge.get_slice(connection, reference)
@@ -709,7 +666,7 @@ def reserve_reflection(
     *,
     batch_id: str,
     epoch: int,
-    pages: tuple[knowledge.EvidencePage, ...],
+    pages: tuple[knowledge_models.EvidencePage, ...],
     successful_turns: int,
 ) -> bool:
     """在首次派发前保存覆盖尝试与下一页；失败不撤销接管，也不确认理解。"""

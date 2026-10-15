@@ -23,10 +23,10 @@ from pydantic import ValidationError
 from purrcept_engine import EngineConfig, EngineHost, HostStateError
 from purrcept_engine.app.evidence import EvidenceAccess
 from purrcept_engine.execution.catalog import Catalog, ObjectDeclaration
-from purrcept_engine.execution.protocol import JsonObject, decode_object
 from purrcept_engine.plugins.notebook import Notebook, NotebookError, factory
 from purrcept_engine.plugins.skills import parse_note
 from purrcept_engine.storage.store import Store
+from purrcept_engine.values import JsonObject, decode_object
 
 
 @dataclass(frozen=True)

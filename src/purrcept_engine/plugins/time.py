@@ -17,19 +17,25 @@ from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from purrcept_engine.domain.time.models import Alarm, TimeError
 from purrcept_engine.errors import ConfigError, HostStateError, StorageError
 from purrcept_engine.execution.catalog import CapabilityDeclaration, ObjectDeclaration
-from purrcept_engine.execution.protocol import JsonObject
 from purrcept_engine.execution.providers import (
     CallContext,
     CallOutcome,
     CapabilityInputError,
     FunctionCapability,
 )
-from purrcept_engine.storage.time import Alarm, TimeError, parse_alarm_at, resolve_timezone
+from purrcept_engine.plugin_system.contracts import (
+    PluginBlueprint,
+    PluginFactory,
+    PluginPorts,
+    PluginRuntime,
+    typed_factory,
+)
+from purrcept_engine.storage.time import parse_alarm_at, resolve_timezone
 from purrcept_engine.storage.time_port import TimePort
-
-from .base import PluginBlueprint, PluginFactory, PluginPorts, PluginRuntime, typed_factory
+from purrcept_engine.values import JsonObject
 
 _MAX_SLEEP_SECONDS = 60.0
 

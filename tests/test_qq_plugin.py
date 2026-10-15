@@ -16,11 +16,11 @@ from pydantic import ValidationError
 from test_qq_transport import Connector, Socket
 
 from purrcept_engine import EngineConfig, EngineHost
+from purrcept_engine.domain.execution.models import ActionRecord
 from purrcept_engine.execution.catalog import Catalog, ObjectDeclaration
-from purrcept_engine.execution.protocol import JsonObject, JsonValue, decode_object, encode_json
 from purrcept_engine.plugins.qq import factory
 from purrcept_engine.plugins.qq.plugin import factory_with_connector
-from purrcept_engine.storage.execution import ActionRecord
+from purrcept_engine.values import JsonObject, JsonValue, decode_object, encode_json
 
 
 def config(directory: Path, *, call_timeout: float = 15.0, page_chars: int = 8000) -> EngineConfig:

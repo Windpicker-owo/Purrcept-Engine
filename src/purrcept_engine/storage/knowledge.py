@@ -14,366 +14,41 @@ import math
 import re
 import sqlite3
 import time
-from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
-from typing import Annotated, Literal, Self, cast
+from collections.abc import Sequence
+from typing import Literal, cast
 
 from purrcept_core.models import ContentBlock, Message, MessageRole, ToolResultBlock
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
+from pydantic import BaseModel, ValidationError
 
 from purrcept_engine.context.checkpoints import decode_content, decode_message
+from purrcept_engine.domain.knowledge.models import (
+    EvidenceDelivery,
+    EvidencePage,
+    EvidenceSlice,
+    EvidenceSnapshot,
+    FinishSubmission,
+    IndexJob,
+    KnowledgeCandidate,
+    KnowledgeConflict,
+    KnowledgeInputError,
+    KnowledgeReference,
+    MemoryConflict,
+    MemoryPatch,
+    MemoryRecord,
+    OperationalFinding,
+    PendingEvidence,
+    RangeUnit,
+    ReflectionBatch,
+    ReflectionReceipt,
+    SupervisionNotice,
+    SupervisionRecord,
+    WakeupPlan,
+)
 from purrcept_engine.errors import StorageError
-
-from .execution import validate_json
-from .model_requests import encode, intern_core_media, restore_core_media
-from .models import MediaReference
-
-Text = Annotated[str, Field(min_length=1, pattern=r"\S", strict=True)]
-Version = Annotated[int, Field(ge=1, strict=True)]
-Finite = Annotated[float, Field(allow_inf_nan=False, strict=True)]
-MemoryKind = Literal[
-    "statement",
-    "observation",
-    "belief",
-    "preference",
-    "relationship",
-    "experience",
-    "self_understanding",
-    "document",
-    "episode",
-]
-RangeUnit = Literal["characters", "items"]
-
-
-class KnowledgeInputError(ValueError):
-    """来源、范围或参数不符合公开阅读契约，可在原批次预算内纠正。"""
-
-
-class KnowledgeConflict(KnowledgeInputError):
-    """来源、版本或批次已变化，必须重读实际状态，不能盲目重放修订。"""
-
-
-class _Record(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True, frozen=True)
-
-    @model_validator(mode="before")
-    @classmethod
-    def frozen_mapping(cls, value: object) -> object:
-        """Core 以只读 Mapping 冻结工具对象；展开形状仍由各字段严格校验。
-
-        Pydantic 的 strict model 边界只接受 dict。复制真实 Mapping 可接受
-        Core 的不可变 JSON 对象，同时不对字符串、数值或未知对象作猜测转换。
-        """
-        if isinstance(value, Mapping):
-            return dict(cast(Mapping[object, object], value))
-        return value
-
-
-class EvidenceSnapshot(_Record):
-    """一份不可变原文；source_json 保存来源信封，不把它解释为系统权限。
-
-    items_json 仅供明确声明的结构化列表；分页不拆开其中一个条目。媒体引用
-    指向 Store BLOB，valid 是查询时的来源资格，不覆盖已经保存的发生事实。
-    """
-
-    evidence_id: Text
-    version: Version
-    kind: Text
-    text: str
-    source_json: str
-    occurred_at: Finite
-    summary: str = ""
-    overview: str = ""
-    media: tuple[MediaReference, ...] = Field(default=(), strict=False)
-    items_json: str | None = None
-    valid: bool = True
-
-    @field_validator("source_json")
-    @classmethod
-    def source_is_json(cls, value: str) -> str:
-        """来源必须是完整标准 JSON 对象，不从 repr 猜测事实。"""
-        validate_json(value, arguments=True)
-        return value
-
-    @field_validator("items_json")
-    @classmethod
-    def items_are_json(cls, value: str | None) -> str | None:
-        """结构化分页只接受完整数组，普通人类正文仍保留为 text。"""
-        if value is not None:
-            validate_json(value)
-            decoded: object = json.loads(value)
-            if not isinstance(decoded, list):
-                raise ValueError("结构化材料必须是 JSON 数组。")
-        return value
-
-
-@dataclass(frozen=True, slots=True)
-class EvidenceDelivery:
-    """一次真实初始或工具交付，存在不代表已经向模型呈现或复核完成。
-
-    material 保存完整公开 Message 或原工具内容；恢复仅匹配同批次、调用身份
-    和完整值，不能根据模型或外界正文中的来源字符串创建资格。
-    """
-
-    delivery_id: str
-    batch_id: str
-    version: int
-    kind: Literal["initial", "tool"]
-    tool_call_id: str | None
-    material: Message | tuple[ContentBlock, ...]
-    slice_refs: tuple[str, ...]
-
-
-class EvidenceSlice(_Record):
-    """宿主生成的可引用范围，文本范围为半开区间，媒体另按真实引用记录。"""
-
-    slice_ref: Text
-    evidence_id: Text
-    version: Version
-    start: Annotated[int, Field(ge=0)]
-    end: Annotated[int, Field(ge=0)]
-    unit: RangeUnit = "characters"
-    media_ids: tuple[Text, ...] = Field(default=(), strict=False)
-
-    @model_validator(mode="after")
-    def ordered_range(self) -> Self:
-        """空正文仍可携带媒体或来源；倒置区间不能成为阅读证明。"""
-        if self.end < self.start:
-            raise ValueError("来源片段范围倒置。")
-        return self
-
-
-class EvidencePage(_Record):
-    """一次完整阅读结果；摘要没有 slice，创建原文 slice 也不表示模型已读。"""
-
-    snapshot: EvidenceSnapshot | None = None
-    memory: MemoryRecord | None = None
-    slice: EvidenceSlice | None
-    text: str
-    level: Literal["summary", "overview", "evidence"]
-    next_cursor: str | None = None
-
-    @model_validator(mode="after")
-    def one_source(self) -> Self:
-        """认识展开是派生页面，不能伪装成新的原文阅读资格。"""
-        if (self.snapshot is None) == (self.memory is None):
-            raise ValueError("页面必须且只能对应原文或认识版本。")
-        if self.memory is not None and self.slice is not None:
-            raise ValueError("认识正文不能成为独立原文片段。")
-        return self
-
-
-class KnowledgeReference(_Record):
-    """权威材料的确切版本引用，异步排名后仍须核验当前版本与来源资格。"""
-
-    kind: Literal["evidence", "memory"]
-    id: Text
-    version: Version
-
-
-class MemoryConflictTarget(_Record):
-    """反思明确提出的对方认识版本，原文来源仍由修订的 sources 单独核验。"""
-
-    kind: Literal["memory"]
-    id: Text
-    version: Version
-
-
-class MemoryConflict(MemoryConflictTarget):
-    """保留的未决关系及对方确切版本当前资格，不推断冲突已经消解。"""
-
-    status: Literal["unresolved"] = "unresolved"
-    active: bool
-    inactive_reason: str | None = None
-
-
-class MemoryPatch(_Record):
-    """本批有据修订；原文来源、替代和未决版本关系由同一事务确认。
-
-    sources 只接受实际呈现的原文片段。conflicts 指向当前有效的确切认识版本，
-    不授予对方原文的阅读资格，也不将未决反证解释为自动替代。
-    """
-
-    id: Text
-    content: Text
-    sources: tuple[Text, ...] = Field(min_length=1, strict=False)
-    base_version: Annotated[int, Field(ge=0)] = 0
-    kind: MemoryKind = "belief"
-    scope: Text = "subject"
-    summary: str = ""
-    overview: str = ""
-    entities: tuple[Text, ...] = Field(default=(), strict=False)
-    valid_from: Finite | None = None
-    valid_until: Finite | None = None
-    supersedes: Text | None = None
-    conflicts: tuple[MemoryConflictTarget, ...] = Field(default=(), strict=False)
-
-    @model_validator(mode="after")
-    def consistent_revision(self) -> Self:
-        """有效期、明确替代与未决关系必须表达相容且无重复的修订。"""
-        if self.valid_from is not None and self.valid_until is not None:
-            if self.valid_until <= self.valid_from:
-                raise ValueError("认识有效时间区间为空。")
-        if self.supersedes == self.id:
-            raise ValueError("认识不能替代自身。")
-        if len(set(self.conflicts)) != len(self.conflicts):
-            raise ValueError("冲突认识版本不能重复。")
-        if any(item.id == self.id for item in self.conflicts):
-            raise ValueError("认识不能与自身登记未决冲突。")
-        if any(item.id == self.supersedes for item in self.conflicts):
-            raise ValueError("同一认识不能同时被替代并登记为未决反证。")
-        return self
-
-
-class MemoryRecord(_Record):
-    """保留的认识版本及双向未决关系，失效历史不会自动转移到新版本。
-
-    active 由版本、时间、替代和来源共同计算；conflicts 显示对方确切版本的
-    同时点资格，不包含对方正文，也不撤销双方已经保存的来源。
-    """
-
-    patch: MemoryPatch
-    version: Version
-    learned_at: Finite
-    active: bool
-    inactive_reason: str | None = None
-    conflicts: tuple[MemoryConflict, ...] = Field(default=(), strict=False)
-
+from purrcept_engine.serialization import encode
+from purrcept_engine.storage.model_requests import intern_core_media, restore_core_media
 
 EvidencePage.model_rebuild()
-
-
-class KnowledgeCandidate(_Record):
-    """一条权威检索候选及其有限路线排名，排名不能授予来源资格。"""
-
-    reference: KnowledgeReference
-    record: EvidenceSnapshot | MemoryRecord
-    ranks: tuple[tuple[str, int], ...] = Field(default=(), strict=False)
-
-
-class IndexJob(_Record):
-    """可重建索引的版本任务，完成旧任务不得复活失效认识。"""
-
-    reference: KnowledgeReference
-    queued_at: Finite
-    route: Literal["keyword", "semantic"]
-
-
-class OperationalFinding(_Record):
-    """宿主列出的具体异常事实；模型只评估它，不根据正文 status 自造异常。"""
-
-    id: Text
-    fact: Text
-    evidence: tuple[Text, ...] = Field(default=(), strict=False)
-
-
-class Review(_Record):
-    """一项有明确范围的复核与知识处理取舍，不手抄修订 ID/版本。"""
-
-    issue: Annotated[str, Field(min_length=1, max_length=300)]
-    evidence: tuple[Text, ...] = Field(min_length=1, strict=False)
-    conclusion: Annotated[str, Field(min_length=1, max_length=1200)]
-    memory_decision: Literal["written", "no_change", "defer"]
-    reason: Annotated[str, Field(min_length=1, max_length=600)]
-
-
-class Deferred(_Record):
-    """尚未完成复核的明确范围与理由，不安排无新事实的自动循环。"""
-
-    evidence: tuple[Text, ...] = Field(min_length=1, strict=False)
-    reason: Annotated[str, Field(min_length=1, max_length=600)]
-
-
-class FindingAssessment(_Record):
-    """对本批程序异常逐项说明确定或未决，不声称全局系统健康。"""
-
-    id: Text
-    status: Literal["confirmed", "uncertain"]
-    reason: Annotated[str, Field(min_length=1, max_length=600)]
-
-
-class FinishSubmission(_Record):
-    """五工具协议的完成输入，范围核验和真实修订关联由事务完成。"""
-
-    reviews: tuple[Review, ...] = Field(strict=False)
-    deferred: tuple[Deferred, ...] = Field(strict=False)
-    findings: tuple[FindingAssessment, ...] = Field(strict=False)
-
-
-class ReflectionReceipt(_Record):
-    """已成功完成的不可变回执，后续会话失败或重复确认不改写它。"""
-
-    batch_id: Text
-    version: Version
-    completed_at: Finite
-    submission: FinishSubmission
-    written: tuple[KnowledgeReference, ...] = Field(default=(), strict=False)
-    coverage: tuple[Text, ...] = Field(default=(), strict=False)
-
-
-class ReflectionBatch(_Record):
-    """宿主冻结的一批范围和异常，version 区分实际处理代次。"""
-
-    batch_id: Text
-    version: Version
-    required_slice_refs: tuple[Text, ...] = Field(min_length=1, strict=False)
-    findings: tuple[OperationalFinding, ...] = Field(default=(), strict=False)
-    state: Literal["running", "completed", "interrupted"] = "running"
-    interrupted_reason: Text | None = None
-    receipt: ReflectionReceipt | None = None
-
-
-class PendingEvidence(_Record):
-    """可靠待复核来源与首次入队时刻，扫描或分页读取不确认处理。"""
-
-    evidence_id: Text
-    version: Version
-    queued_at: Finite
-    reviewed_slice_refs: tuple[Text, ...] = Field(default=(), strict=False)
-    deferred_slice_refs: tuple[Text, ...] = Field(default=(), strict=False)
-
-
-class SupervisionNotice(_Record):
-    """有原文依据的监管意见，urgent 只请求重思考，不取得行动权限。"""
-
-    id: Text
-    issue: Text
-    evidence: tuple[Text, ...] = Field(min_length=1, strict=False)
-    suggestion: Text
-    level: Literal["reminder", "review", "urgent"] = "reminder"
-    activity_id: Text | None = None
-    activity_version: Annotated[int, Field(ge=0)] | None = None
-    expires_at: Finite | None = None
-
-    @model_validator(mode="after")
-    def activity_pair(self) -> Self:
-        """活动约束须同时给出身份与版本，缺项不能默认作用到当前活动。"""
-        if (self.activity_id is None) != (self.activity_version is None):
-            raise ValueError("活动监管必须包含确切身份和版本。")
-        return self
-
-
-class SupervisionRecord(_Record):
-    """监管的保存事实及当前交付资格，前台回应不成为独立事实证明。"""
-
-    notice: SupervisionNotice
-    state: Literal["open", "accept", "partial", "reject"]
-    created_at: Finite
-    active: bool
-    response: str | None = None
-    duplicate: bool = False
-
-
-class WakeupPlan(_Record):
-    """前台显式计划，到期只进入决策待办，不等同于注意 defer。"""
-
-    id: Text
-    due: Finite
-    reason: Text
-    evidence: Text
-    state: Literal["pending", "completed"] = "pending"
-    outcome: str | None = None
-    result_evidence: str | None = None
 
 
 # ---------------------------------------------------------------------------

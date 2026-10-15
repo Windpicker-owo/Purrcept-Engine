@@ -1,6 +1,6 @@
 """完整请求容量、公开 Core 检查点与有版本的历史维护边界。"""
 
-from .capacity import (
+from purrcept_engine.context.capacity import (
     CapacityAssessment,
     CapacityDeclaration,
     CapacityError,
@@ -11,14 +11,14 @@ from .capacity import (
     assess_capacity,
     check_capacity,
 )
-from .checkpoints import (
+from purrcept_engine.context.checkpoints import (
     CheckpointError,
     decode_checkpoint,
     encode_checkpoint,
     intern_checkpoint,
     restore_checkpoint,
 )
-from .maintenance import (
+from purrcept_engine.context.maintenance import (
     MaintenanceStore,
     SummaryError,
     SummaryProposal,

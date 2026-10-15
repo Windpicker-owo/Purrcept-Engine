@@ -20,7 +20,7 @@ from pydantic import BaseModel, ConfigDict
 from purrcept_engine.app.config import ExecutionSettings
 from purrcept_engine.errors import ConfigError
 from purrcept_engine.execution.catalog import CapabilityDeclaration, Catalog, ObjectDeclaration
-from purrcept_engine.execution.protocol import FrameChannel, JsonObject
+from purrcept_engine.execution.protocol import FrameChannel
 from purrcept_engine.execution.providers import (
     CallContext,
     CallOutcome,
@@ -35,6 +35,7 @@ from purrcept_engine.execution.service import (
 )
 from purrcept_engine.execution.windows import WindowsProcess
 from purrcept_engine.storage.store import Store
+from purrcept_engine.values import JsonObject
 
 
 class _Parameters(BaseModel):

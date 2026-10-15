@@ -17,17 +17,22 @@ from pathlib import Path
 from typing import Literal, cast
 from uuid import uuid4
 
-from purrcept_engine.execution.protocol import JsonObject, decode_object, encode_json
+from purrcept_engine.domain.inputs.models import MediaAsset, MediaReference
+from purrcept_engine.domain.knowledge.models import EvidencePage, EvidenceSnapshot
 from purrcept_engine.execution.providers import CallOutcome
-from purrcept_engine.plugins.base import EvidencePort
-from purrcept_engine.storage.knowledge import EvidencePage, EvidenceSnapshot
-from purrcept_engine.storage.models import MediaAsset, MediaReference
-
-from .driver import BrowserActionError, BrowserDriver, BrowserError, BrowserInputError, PageView
-from .extract import html_to_markdown, html_to_text
-from .navigation import normalize_and_authorize_url
-from .search import build_search_url, parse_search_results
-from .settings import BrowserSettings
+from purrcept_engine.plugin_system.contracts import EvidencePort
+from purrcept_engine.plugins.browser.driver import (
+    BrowserActionError,
+    BrowserDriver,
+    BrowserError,
+    BrowserInputError,
+    PageView,
+)
+from purrcept_engine.plugins.browser.extract import html_to_markdown, html_to_text
+from purrcept_engine.plugins.browser.navigation import normalize_and_authorize_url
+from purrcept_engine.plugins.browser.search import build_search_url, parse_search_results
+from purrcept_engine.plugins.browser.settings import BrowserSettings
+from purrcept_engine.values import JsonObject, decode_object, encode_json
 
 _CAPTCHA = ("captcha", "recaptcha", "hcaptcha", "verify you are human", "unusual traffic")
 _CHALLENGE = (

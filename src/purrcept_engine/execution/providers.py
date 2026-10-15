@@ -13,11 +13,10 @@ from typing import Literal, Protocol
 
 from pydantic import BaseModel, ValidationError
 
+from purrcept_engine.domain.inputs.models import MediaReference
 from purrcept_engine.errors import EngineError
-from purrcept_engine.storage.models import MediaReference
-
-from .catalog import CapabilityDeclaration
-from .protocol import JsonObject, JsonValue
+from purrcept_engine.execution.catalog import CapabilityDeclaration
+from purrcept_engine.values import JsonObject, JsonValue
 
 
 class CapabilityInputError(EngineError):

@@ -47,15 +47,15 @@ def _install_package_namespace() -> None:
 try:
     if __name__ == "__main__":
         _install_package_namespace()
-    from purrcept_engine.execution.protocol import (
+    from purrcept_engine.execution.protocol import FrameChannel
+    from purrcept_engine.execution.validation import validate_source
+    from purrcept_engine.values import (
         ActionProtocolError,
-        FrameChannel,
         JsonObject,
         JsonValue,
         decode_object,
         encode_json,
     )
-    from purrcept_engine.execution.validation import validate_source
 except ImportError as error:
     # 包内标准库模块缺失属于安装产物错误，不加载 SDK 或另一实现代替。
     raise RuntimeError("Worker 所需的包内协议或校验模块不可用。") from error

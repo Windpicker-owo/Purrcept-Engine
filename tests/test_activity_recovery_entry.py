@@ -26,21 +26,20 @@ from purrcept_core.models import (
 from pydantic import BaseModel, ConfigDict
 
 from purrcept_engine import EngineConfig, EngineHost, InputSource, InputSubmission
-from purrcept_engine.execution.protocol import JsonObject, decode_object
-from purrcept_engine.plugins.base import (
+from purrcept_engine.domain.activities.models import (
+    ActivityCommand,
+    ActivityFeedback,
+    ActivityRecord,
+    ActivityState,
+)
+from purrcept_engine.plugin_system.contracts import (
     PluginBlueprint,
     PluginFactory,
     PluginPorts,
     PluginRuntime,
     typed_factory,
 )
-from purrcept_engine.storage.activities import (
-    ActivityCommand,
-    ActivityFeedback,
-    ActivityRecord,
-    ActivityState,
-    get_activity_feedback,
-)
+from purrcept_engine.storage.activities import get_activity_feedback
 from purrcept_engine.storage.store import Store
 from purrcept_engine.subject.activities import (
     ActivityDefinition,
@@ -51,6 +50,7 @@ from purrcept_engine.subject.activities import (
     DriverAcceptance,
     RecoveryObservation,
 )
+from purrcept_engine.values import JsonObject, decode_object
 
 
 class _Settings(BaseModel):

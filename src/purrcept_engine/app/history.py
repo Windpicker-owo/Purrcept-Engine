@@ -21,12 +21,12 @@ from purrcept_core.models import (
 )
 from purrcept_core.models.effects import Generate
 
+from purrcept_engine.app.config import ContextSettings
 from purrcept_engine.context.capacity import CapacityAssessment, CapacityError
 from purrcept_engine.context.checkpoints import decode_checkpoint
 from purrcept_engine.context.maintenance import SummaryError, freeze_summary_source
-from purrcept_engine.execution.protocol import decode_object
+from purrcept_engine.domain.subject.models import SessionRecord
 from purrcept_engine.storage.store import Store
-from purrcept_engine.storage.subject import SessionRecord
 from purrcept_engine.subject.delivery import ToolDeliveryGate
 from purrcept_engine.subject.history import HistoryMaintenance
 from purrcept_engine.subject.model_requests import (
@@ -35,8 +35,7 @@ from purrcept_engine.subject.model_requests import (
     prepare_off_loop,
 )
 from purrcept_engine.subject.session import CapacityCheck, DynamicReminder, DynamicState
-
-from .config import ContextSettings
+from purrcept_engine.values import decode_object
 
 _logger = logging.getLogger(__name__)
 

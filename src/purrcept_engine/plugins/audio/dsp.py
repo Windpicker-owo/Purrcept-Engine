@@ -20,7 +20,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from .models import AudioError, SpeechAudio
+from purrcept_engine.plugins.audio.models import AudioError, SpeechAudio
 
 
 def encode_wav(pcm: bytes, sample_rate: int) -> bytes:

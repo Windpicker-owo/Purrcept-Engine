@@ -23,9 +23,13 @@ from typing import cast
 
 from PIL import Image, UnidentifiedImageError
 
-from purrcept_engine.storage.model_requests import encode
-
-from .capacity import CapacityDeclaration, CapacityError, CapacityEstimate, GenerationCapacity
+from purrcept_engine.context.capacity import (
+    CapacityDeclaration,
+    CapacityError,
+    CapacityEstimate,
+    GenerationCapacity,
+)
+from purrcept_engine.serialization import encode
 
 RULE = "litellm-token-counter-v1"
 GEMINI_MEDIA = "gemini-3-inline-v1"

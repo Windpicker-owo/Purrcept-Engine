@@ -19,16 +19,21 @@ from test_qq_transport import Connector, Socket
 from purrcept_engine import EngineHost
 from purrcept_engine.app.evidence import EvidenceAccess
 from purrcept_engine.app.receipts import LateCallResults
+from purrcept_engine.domain.inputs.models import (
+    Admission,
+    InputRecord,
+    InputSource,
+    InputSubmission,
+)
 from purrcept_engine.errors import StorageError
-from purrcept_engine.execution.protocol import JsonObject, decode_object, encode_json
-from purrcept_engine.plugins.base import PluginPorts
+from purrcept_engine.plugin_system.contracts import PluginPorts
 from purrcept_engine.plugins.qq.messages import HistoryCache, project_message
 from purrcept_engine.plugins.qq.plugin import factory_with_connector
 from purrcept_engine.plugins.qq.service import QQService
 from purrcept_engine.plugins.qq.settings import QQSettings
 from purrcept_engine.plugins.qq.stickers import StickerRecord
-from purrcept_engine.storage.models import Admission, InputRecord, InputSource, InputSubmission
 from purrcept_engine.storage.store import Store
+from purrcept_engine.values import JsonObject, decode_object, encode_json
 
 
 class Backend:

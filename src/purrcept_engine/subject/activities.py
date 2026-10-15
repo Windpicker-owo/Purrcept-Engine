@@ -23,9 +23,7 @@ from dataclasses import dataclass, replace
 from typing import Literal, Protocol
 from uuid import uuid4
 
-from purrcept_engine.errors import EngineError, HostStateError, StorageError
-from purrcept_engine.execution.protocol import JsonObject, decode_object, encode_json
-from purrcept_engine.storage.activities import (
+from purrcept_engine.domain.activities.models import (
     ActivityCommand,
     ActivityFeedback,
     ActivityRecord,
@@ -34,7 +32,10 @@ from purrcept_engine.storage.activities import (
     CommandKind,
     FeedbackKind,
 )
-from purrcept_engine.storage.execution import ActionRecord, validate_json
+from purrcept_engine.domain.execution.models import ActionRecord
+from purrcept_engine.domain.execution.record_validation import validate_json
+from purrcept_engine.errors import EngineError, HostStateError, StorageError
+from purrcept_engine.values import JsonObject, decode_object, encode_json
 
 
 class ActivityError(EngineError):

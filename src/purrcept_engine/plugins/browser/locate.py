@@ -11,7 +11,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
-from .settings import BrowserSettings
+from purrcept_engine.plugins.browser.settings import BrowserSettings
 
 
 @dataclass(frozen=True, slots=True)

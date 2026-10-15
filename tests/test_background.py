@@ -34,13 +34,18 @@ from purrcept_core.models import (
     ToolSet,
 )
 
+import purrcept_engine.domain.subject.feedback_models as subject_feedback_models
 from purrcept_engine.app.config import RetrySettings
 from purrcept_engine.context.capacity import CapacityAssessment, GenerationCapacity, check_capacity
-from purrcept_engine.errors import HostStateError, StorageError
-from purrcept_engine.execution.protocol import JsonObject, decode_object
-from purrcept_engine.storage import feedback as feedback_sql
-from purrcept_engine.storage.activities import ActivityFeedback, ActivityRecord
-from purrcept_engine.storage.knowledge import (
+from purrcept_engine.domain.activities.models import ActivityFeedback, ActivityRecord
+from purrcept_engine.domain.inputs.models import (
+    InputContext,
+    InputSource,
+    InputSubmission,
+    MediaAsset,
+    MediaReference,
+)
+from purrcept_engine.domain.knowledge.models import (
     Deferred,
     EvidenceSnapshot,
     FindingAssessment,
@@ -49,15 +54,10 @@ from purrcept_engine.storage.knowledge import (
     SupervisionNotice,
     WakeupPlan,
 )
-from purrcept_engine.storage.models import (
-    InputContext,
-    InputSource,
-    InputSubmission,
-    MediaAsset,
-    MediaReference,
-)
+from purrcept_engine.domain.subject.models import TurnOutcome
+from purrcept_engine.errors import HostStateError, StorageError
+from purrcept_engine.storage import feedback as feedback_sql
 from purrcept_engine.storage.store import Store
-from purrcept_engine.storage.subject import TurnOutcome
 from purrcept_engine.storage.time import AdmitInput
 from purrcept_engine.subject import background as background_module
 from purrcept_engine.subject.background import BackgroundService, BackgroundSettings
@@ -65,6 +65,7 @@ from purrcept_engine.subject.coordinator import SubjectModel
 from purrcept_engine.subject.knowledge import KnowledgeService
 from purrcept_engine.subject.model_requests import RequestBudget
 from purrcept_engine.subject.session import ContinuousSession, DynamicState
+from purrcept_engine.values import JsonObject, decode_object
 
 
 @pytest.fixture(autouse=True)
@@ -1046,11 +1047,11 @@ async def test_close_holds_cancelled_feedback_commit_until_real_database_return(
     def blocked(
         connection: sqlite3.Connection,
         admit: AdmitInput,
-        work: feedback_sql.FeedbackWork,
+        work: subject_feedback_models.FeedbackWork,
         *,
         now: float,
         limit: int = 16,
-    ) -> feedback_sql.FeedbackBridge:
+    ) -> subject_feedback_models.FeedbackBridge:
         entered.set()
         if not release.wait(3):
             raise TimeoutError("测试没有释放数据库交接。")

@@ -17,17 +17,22 @@ from test_qq_transport import Connector, Socket
 
 from purrcept_engine.app.evidence import EvidenceAccess
 from purrcept_engine.app.receipts import LateCallResults
-from purrcept_engine.execution.protocol import JsonObject, decode_object, encode_json
+from purrcept_engine.domain.inputs.models import (
+    Admission,
+    InputRecord,
+    InputSource,
+    InputSubmission,
+)
+from purrcept_engine.domain.knowledge.models import EvidenceSnapshot, KnowledgeInputError
+from purrcept_engine.domain.subject.models import InputProcessing
 from purrcept_engine.execution.providers import CallContext
-from purrcept_engine.plugins.base import PluginPorts
+from purrcept_engine.plugin_system.contracts import PluginPorts
 from purrcept_engine.plugins.qq.parameters import Read
 from purrcept_engine.plugins.qq.ports import ConnectionRejected
 from purrcept_engine.plugins.qq.service import QQService
 from purrcept_engine.plugins.qq.settings import QQSettings
-from purrcept_engine.storage.knowledge import EvidenceSnapshot, KnowledgeInputError
-from purrcept_engine.storage.models import Admission, InputRecord, InputSource, InputSubmission
 from purrcept_engine.storage.store import Store
-from purrcept_engine.storage.subject import InputProcessing
+from purrcept_engine.values import JsonObject, decode_object, encode_json
 
 PNG = base64.b64decode(
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII="

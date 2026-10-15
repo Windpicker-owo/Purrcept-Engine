@@ -18,11 +18,10 @@ from urllib.parse import unquote, urlparse
 
 import httpx
 
-from purrcept_engine.execution.protocol import JsonValue, encode_json
-from purrcept_engine.storage.models import MediaAsset
-
-from .parameters import Send
-from .settings import QQSettings, resolve_path
+from purrcept_engine.domain.inputs.models import MediaAsset
+from purrcept_engine.plugins.qq.parameters import Send
+from purrcept_engine.plugins.qq.settings import QQSettings, resolve_path
+from purrcept_engine.values import JsonValue, encode_json
 
 
 class QQMediaError(ValueError):

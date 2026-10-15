@@ -24,7 +24,7 @@ from purrcept_core.models import (
 
 from purrcept_engine import EngineConfig, EngineHost, InputSource, InputSubmission
 from purrcept_engine.app.config import GenerationModelSettings
-from purrcept_engine.execution.protocol import decode_object
+from purrcept_engine.values import decode_object
 
 
 class Backend:

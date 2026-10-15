@@ -19,19 +19,17 @@ from uuid import uuid4
 
 from websockets.exceptions import WebSocketException
 
-from purrcept_engine.errors import StorageError
-from purrcept_engine.execution.protocol import JsonObject, encode_json
-from purrcept_engine.plugins.audio.dsp import encode_wav
-from purrcept_engine.plugins.base import InputPort
-from purrcept_engine.storage.models import (
+from purrcept_engine.domain.inputs.models import (
     Admission,
     InputContext,
     InputSource,
     InputSubmission,
     MediaAsset,
 )
-
-from .models import (
+from purrcept_engine.errors import StorageError
+from purrcept_engine.plugin_system.contracts import InputPort
+from purrcept_engine.plugins.audio.dsp import encode_wav
+from purrcept_engine.plugins.voice_input.models import (
     CaptureDriver,
     InputDevice,
     InputMode,
@@ -41,7 +39,8 @@ from .models import (
     VoiceInputError,
     VoiceInputSettings,
 )
-from .vad import Segmenter
+from purrcept_engine.plugins.voice_input.vad import Segmenter
+from purrcept_engine.values import JsonObject, encode_json
 
 
 @dataclass(slots=True)

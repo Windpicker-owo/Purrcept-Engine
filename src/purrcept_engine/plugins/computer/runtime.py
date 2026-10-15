@@ -20,21 +20,25 @@ from pathlib import Path
 from typing import cast
 from uuid import uuid4
 
-from purrcept_engine.errors import HostStateError
-from purrcept_engine.execution.protocol import JsonObject, encode_json
-from purrcept_engine.execution.providers import CallOutcome
-from purrcept_engine.plugins.base import EvidencePort, InputPort
-from purrcept_engine.storage.knowledge import EvidenceSnapshot
-from purrcept_engine.storage.models import (
+from purrcept_engine.domain.inputs.models import (
     InputContext,
     InputSource,
     InputSubmission,
     MediaAsset,
     MediaReference,
 )
-
-from .driver import ComputerDriver
-from .models import ChangeDetector, ComputerError, ComputerFrame, ObservationPolicy
+from purrcept_engine.domain.knowledge.models import EvidenceSnapshot
+from purrcept_engine.errors import HostStateError
+from purrcept_engine.execution.providers import CallOutcome
+from purrcept_engine.plugin_system.contracts import EvidencePort, InputPort
+from purrcept_engine.plugins.computer.driver import ComputerDriver
+from purrcept_engine.plugins.computer.models import (
+    ChangeDetector,
+    ComputerError,
+    ComputerFrame,
+    ObservationPolicy,
+)
+from purrcept_engine.values import JsonObject, encode_json
 
 _LOG = logging.getLogger(__name__)
 

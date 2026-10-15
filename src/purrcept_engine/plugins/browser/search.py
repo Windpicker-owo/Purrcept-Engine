@@ -9,7 +9,7 @@ from __future__ import annotations
 from html.parser import HTMLParser
 from urllib.parse import parse_qs, quote_plus, unquote, urlparse
 
-from .settings import BrowserSettings, SearchEngine
+from purrcept_engine.plugins.browser.settings import BrowserSettings, SearchEngine
 
 _BING = "https://www.bing.com/search?q={query}"
 _DUCKDUCKGO = "https://html.duckduckgo.com/html/?q={query}"

@@ -11,7 +11,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Literal
 
-from purrcept_engine.execution.protocol import JsonObject, decode_object
+from purrcept_engine.values import JsonObject, decode_object
 
 
 @dataclass(frozen=True, slots=True)

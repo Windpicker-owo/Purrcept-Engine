@@ -28,12 +28,11 @@ from purrcept_core.models import (
 
 from purrcept_engine.context.materials import UnsupportedMaterial
 from purrcept_engine.context.presentation import render_input, render_material
-from purrcept_engine.execution.protocol import JsonObject, decode_object
-from purrcept_engine.storage.model_requests import encode
-from purrcept_engine.storage.models import InputRecord, MediaReference
-
-from .model_requests import RetryPolicy, compile_materials, prepare_off_loop
-from .session import CapacityCheck
+from purrcept_engine.domain.inputs.models import InputRecord, MediaReference
+from purrcept_engine.serialization import encode
+from purrcept_engine.subject.model_requests import RetryPolicy, compile_materials, prepare_off_loop
+from purrcept_engine.subject.session import CapacityCheck
+from purrcept_engine.values import JsonObject, decode_object
 
 ATTENTION_QUESTION = ChoiceQuestion(
     "attention",

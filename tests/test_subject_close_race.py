@@ -19,11 +19,10 @@ from purrcept_core.models import ModelEventSink, ModelRequest, ModelResponse
 
 from purrcept_engine.context.capacity import GenerationCapacity, check_capacity
 from purrcept_engine.context.materials import media_blocks
+from purrcept_engine.domain.execution.models import ActionRecord
 from purrcept_engine.errors import HostStateError
 from purrcept_engine.execution.catalog import Catalog, ObjectDeclaration
-from purrcept_engine.execution.protocol import JsonObject
 from purrcept_engine.storage import InputSource, InputSubmission
-from purrcept_engine.storage.execution import ActionRecord
 from purrcept_engine.storage.store import Store
 from purrcept_engine.subject.coordinator import (
     CoordinatorSettings,
@@ -33,6 +32,7 @@ from purrcept_engine.subject.coordinator import (
 from purrcept_engine.subject.knowledge import KnowledgeService
 from purrcept_engine.subject.model_requests import RequestBudget
 from purrcept_engine.subject.session import DynamicState
+from purrcept_engine.values import JsonObject
 
 
 @dataclass(frozen=True)

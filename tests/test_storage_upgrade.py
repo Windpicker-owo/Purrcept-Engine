@@ -17,14 +17,18 @@ from pathlib import Path
 
 import pytest
 
+from purrcept_engine.domain.activities.models import ActivityCommand, ActivityRecord
+from purrcept_engine.domain.inputs.models import InputSource, InputSubmission, MediaAsset
+from purrcept_engine.domain.knowledge.models import (
+    EvidenceSnapshot,
+    MemoryConflictTarget,
+    MemoryPatch,
+)
+from purrcept_engine.domain.model_requests.models import AttemptStart, RequestEvidence, RequestScope
 from purrcept_engine.errors import StorageError
 from purrcept_engine.storage import activities as activity_storage
 from purrcept_engine.storage import execution as execution_storage
 from purrcept_engine.storage import model_requests as request_storage
-from purrcept_engine.storage.activities import ActivityCommand, ActivityRecord
-from purrcept_engine.storage.knowledge import EvidenceSnapshot, MemoryConflictTarget, MemoryPatch
-from purrcept_engine.storage.model_requests import AttemptStart, RequestEvidence, RequestScope
-from purrcept_engine.storage.models import InputSource, InputSubmission, MediaAsset
 from purrcept_engine.storage.store import Store
 
 type SqlValue = int | float | str | bytes | None

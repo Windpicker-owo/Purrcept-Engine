@@ -20,16 +20,29 @@ from uuid import uuid4
 
 from purrcept_core.models import DecisionBackend, ModelBackend
 
+from purrcept_engine.app.activity import activity_capability
+from purrcept_engine.app.assembly import prepare_plugins
+from purrcept_engine.app.config import EngineConfig, ExecutionSettings, GenerationModelSettings
+from purrcept_engine.app.evidence import EvidenceAccess
+from purrcept_engine.app.knowledge_resources import KnowledgeResources
+from purrcept_engine.app.locking import InstanceLock
+from purrcept_engine.app.models import DecisionResource, OpenAIGenerationResource
+from purrcept_engine.app.panel import ControlRequest, PanelController
+from purrcept_engine.app.receipts import LateCallResults
+from purrcept_engine.app.subject import SubjectAssembly, build_subject
 from purrcept_engine.context.capacity import CapacityRule
 from purrcept_engine.context.litellm_capacity import GEMINI_MEDIA, RULE, count_litellm_capacity
+from purrcept_engine.domain.activities.models import ActivityCommand, ActivityRecord, CommandKind
+from purrcept_engine.domain.controls.models import ControlRecord
+from purrcept_engine.domain.model_requests.models import RequestRecord
+from purrcept_engine.domain.subject.models import InputProcessing
 from purrcept_engine.errors import ConfigError, HostStateError, StorageError
 from purrcept_engine.execution.catalog import Catalog
 from purrcept_engine.execution.ports import ActionExecutor, ExecutionJournal
-from purrcept_engine.execution.protocol import JsonObject, JsonValue
 from purrcept_engine.execution.providers import CallContext, CallOutcome, CapabilityImplementation
-from purrcept_engine.plugins.audio.ports import AudioOutputPort
-from purrcept_engine.plugins.base import PluginFactory, PluginPorts, PluginRuntime
-from purrcept_engine.plugins.panels import PreviewFrame
+from purrcept_engine.plugin_system.audio_port import AudioOutputPort
+from purrcept_engine.plugin_system.contracts import PluginFactory, PluginPorts, PluginRuntime
+from purrcept_engine.plugin_system.panels import PreviewFrame
 from purrcept_engine.storage import (
     ActionRecord,
     Admission,
@@ -37,26 +50,12 @@ from purrcept_engine.storage import (
     InputSource,
     InputSubmission,
 )
-from purrcept_engine.storage.activities import ActivityCommand, ActivityRecord, CommandKind
-from purrcept_engine.storage.controls import ControlRecord
-from purrcept_engine.storage.model_requests import RequestRecord
 from purrcept_engine.storage.projections import action_projection
 from purrcept_engine.storage.store import Store
-from purrcept_engine.storage.subject import InputProcessing
 from purrcept_engine.subject.activities import ActivityService
 from purrcept_engine.subject.knowledge import Reranker
 from purrcept_engine.subject.semantic import EmbeddingProvider
-
-from .activity import activity_capability
-from .assembly import prepare_plugins
-from .config import EngineConfig, ExecutionSettings, GenerationModelSettings
-from .evidence import EvidenceAccess
-from .knowledge_resources import KnowledgeResources
-from .locking import InstanceLock
-from .models import DecisionResource, OpenAIGenerationResource
-from .panel import ControlRequest, PanelController
-from .receipts import LateCallResults
-from .subject import SubjectAssembly, build_subject
+from purrcept_engine.values import JsonObject, JsonValue
 
 _logger = logging.getLogger(__name__)
 type HostPhase = Literal["new", "starting", "running", "closing", "closed", "failed"]

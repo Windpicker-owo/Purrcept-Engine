@@ -16,10 +16,9 @@ from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from purrcept_engine.execution.protocol import JsonObject, decode_object, encode_json
-from purrcept_engine.storage.models import MediaAsset
-
-from .media import QQMediaError
+from purrcept_engine.domain.inputs.models import MediaAsset
+from purrcept_engine.plugins.qq.media import QQMediaError
+from purrcept_engine.values import JsonObject, decode_object, encode_json
 
 
 class StickerRecord(BaseModel):

@@ -23,7 +23,6 @@ from websockets.exceptions import (
 from websockets.frames import Close
 from websockets.http11 import Response
 
-from purrcept_engine.execution.protocol import JsonObject, decode_object, encode_json
 from purrcept_engine.plugins.live2d.models import (
     BodyError,
     BodyUnavailable,
@@ -31,6 +30,7 @@ from purrcept_engine.plugins.live2d.models import (
     ParameterBinding,
 )
 from purrcept_engine.plugins.live2d.vts import VTSDriver
+from purrcept_engine.values import JsonObject, decode_object, encode_json
 
 
 class Socket:

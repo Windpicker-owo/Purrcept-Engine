@@ -11,15 +11,14 @@ import re
 from collections import OrderedDict
 from dataclasses import dataclass
 
-from purrcept_engine.execution.protocol import (
+from purrcept_engine.plugins.qq.settings import QQSettings
+from purrcept_engine.values import (
     ActionProtocolError,
     JsonObject,
     JsonValue,
     decode_object,
     encode_json,
 )
-
-from .settings import QQSettings
 
 
 def id_text(value: JsonValue) -> str:

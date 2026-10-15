@@ -20,19 +20,23 @@ import httpx
 from PIL import Image, UnidentifiedImageError
 from pydantic import BaseModel, ConfigDict, Field
 
+from purrcept_engine.domain.inputs.models import MediaAsset, MediaReference
+from purrcept_engine.domain.knowledge.models import EvidenceSnapshot
 from purrcept_engine.errors import ConfigError, HostStateError
 from purrcept_engine.execution.catalog import CapabilityDeclaration
-from purrcept_engine.execution.protocol import JsonObject, encode_json
 from purrcept_engine.execution.providers import (
     CallContext,
     CallOutcome,
     CapabilityInputError,
     FunctionCapability,
 )
-from purrcept_engine.storage.knowledge import EvidenceSnapshot
-from purrcept_engine.storage.models import MediaAsset, MediaReference
-
-from .base import EvidencePort, PluginBlueprint, PluginPorts, PluginRuntime
+from purrcept_engine.plugin_system.contracts import (
+    EvidencePort,
+    PluginBlueprint,
+    PluginPorts,
+    PluginRuntime,
+)
+from purrcept_engine.values import JsonObject, encode_json
 
 MAX_IMAGE_BYTES = 8 * 1024 * 1024
 _MEDIA_TYPES = {

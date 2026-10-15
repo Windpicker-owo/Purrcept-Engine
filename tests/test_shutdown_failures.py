@@ -24,7 +24,12 @@ from purrcept_engine.app.knowledge_resources import OpenAIEmbeddingResource
 from purrcept_engine.app.locking import InstanceLock
 from purrcept_engine.execution.catalog import CapabilityDeclaration, ObjectDeclaration
 from purrcept_engine.execution.providers import CallContext, CallOutcome, FunctionCapability
-from purrcept_engine.plugins.base import PluginBlueprint, PluginFactory, PluginPorts, PluginRuntime
+from purrcept_engine.plugin_system.contracts import (
+    PluginBlueprint,
+    PluginFactory,
+    PluginPorts,
+    PluginRuntime,
+)
 from purrcept_engine.storage.store import Store
 from purrcept_engine.subject.semantic import KnowledgeIndexWorker
 

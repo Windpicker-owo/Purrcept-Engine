@@ -15,15 +15,15 @@ from pathlib import Path
 import pytest
 
 from purrcept_engine import EngineConfig, EngineHost, StorageError
-from purrcept_engine.execution.protocol import JsonObject
-from purrcept_engine.storage import model_requests as sql
-from purrcept_engine.storage.model_requests import (
+from purrcept_engine.domain.model_requests.models import (
     AttemptEvidence,
     AttemptStart,
     RequestEvidence,
     RequestScope,
 )
+from purrcept_engine.storage import model_requests as sql
 from purrcept_engine.storage.store import Store
+from purrcept_engine.values import JsonObject
 
 
 def evidence() -> tuple[RequestEvidence, AttemptEvidence]:

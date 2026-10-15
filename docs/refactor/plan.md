@@ -4,6 +4,13 @@
 
 ## 当前实施状态
 
+2026-10-15 架构重构以 `9329231` 为基线，按 domain/infrastructure/app 分层；
+只调整组织和依赖，不改变 Purrcept 业务、数据库或模型材料。此前标为未提交
+的功能修改已包含在该基线。阶段一迁出领域记录、公开材料编码、严格 JSON
+值以及共享插件契约，保持类名、字段和编码规则。1080 项后端测试、Ruff、
+格式与 strict Pyright 通过；仍保留第三方 Pydantic ReadOnly 提示。
+
+
 2026-10-14 模型状态精简（未提交）：`app/subject.py` 不再自动注入插件诊断
 snapshot，模型状态由各插件的 `prepare_request` 显式提供，不按实例名推测类型。
 `context/presentation.py` 从完整宿主工作对象投影业务字段：保留全部未决计划、

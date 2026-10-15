@@ -11,9 +11,9 @@ import pytest
 
 from purrcept_engine.app.panel import ControlRequest
 from purrcept_engine.app.web import WebServer, create_app
-from purrcept_engine.execution.protocol import JsonObject, encode_json
-from purrcept_engine.plugins.panels import PreviewFrame
-from purrcept_engine.storage.controls import ControlRecord
+from purrcept_engine.domain.controls.models import ControlRecord
+from purrcept_engine.plugin_system.panels import PreviewFrame
+from purrcept_engine.values import JsonObject, encode_json
 
 
 class Host:

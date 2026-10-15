@@ -23,11 +23,10 @@ from starlette.routing import Route
 from starlette.types import ASGIApp
 
 from purrcept_engine.app.local_http import LocalHttpBoundary
-from purrcept_engine.execution.protocol import ActionProtocolError, JsonObject, decode_object
+from purrcept_engine.app.studio.profiles import ProfileConflict, load_profile, save_profile
 from purrcept_engine.plugins.audio.dsp import VoiceProfile, decode_pcm, encode_wav
 from purrcept_engine.plugins.audio.models import AudioError
-
-from .profiles import ProfileConflict, load_profile, save_profile
+from purrcept_engine.values import ActionProtocolError, JsonObject, decode_object
 
 MAX_UPLOAD_BYTES = 20 * 1024 * 1024
 MAX_SECONDS = 90

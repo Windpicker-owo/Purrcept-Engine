@@ -29,18 +29,18 @@ from purrcept_engine.app.config import EngineConfig
 from purrcept_engine.app.subject import SubjectAssembly, build_subject
 from purrcept_engine.context.capacity import CapacityError
 from purrcept_engine.context.checkpoints import encode_checkpoint
+from purrcept_engine.domain.activities.models import ActivityRecord
+from purrcept_engine.domain.execution.models import ActionRecord
+from purrcept_engine.domain.inputs.models import InputContext, InputSource, InputSubmission
+from purrcept_engine.domain.knowledge.models import EvidenceSnapshot, SupervisionNotice, WakeupPlan
 from purrcept_engine.errors import StorageError
-from purrcept_engine.execution.protocol import JsonObject, JsonValue, decode_object
-from purrcept_engine.plugins.base import PluginRuntime
+from purrcept_engine.plugin_system.contracts import PluginRuntime
+from purrcept_engine.serialization import encode
 from purrcept_engine.storage import knowledge as knowledge_sql
-from purrcept_engine.storage.activities import ActivityRecord
-from purrcept_engine.storage.execution import ActionRecord
-from purrcept_engine.storage.knowledge import EvidenceSnapshot, SupervisionNotice, WakeupPlan
-from purrcept_engine.storage.model_requests import encode
-from purrcept_engine.storage.models import InputContext, InputSource, InputSubmission
 from purrcept_engine.storage.store import Store
 from purrcept_engine.subject.knowledge import KnowledgeService
 from purrcept_engine.subject.model_requests import compile_materials
+from purrcept_engine.values import JsonObject, JsonValue, decode_object
 
 
 @pytest.fixture

@@ -15,7 +15,7 @@ import sys
 from pathlib import Path
 from typing import Protocol, cast
 
-from purrcept_engine.execution.protocol import JsonObject, decode_object, encode_json
+from purrcept_engine.values import JsonObject, decode_object, encode_json
 
 
 class _Function(Protocol):

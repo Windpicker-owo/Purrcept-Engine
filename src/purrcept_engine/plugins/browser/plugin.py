@@ -13,28 +13,31 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from purrcept_engine.domain.knowledge.models import KnowledgeInputError
 from purrcept_engine.errors import ConfigError
 from purrcept_engine.execution.catalog import CapabilityDeclaration, ObjectDeclaration
-from purrcept_engine.execution.protocol import JsonObject
 from purrcept_engine.execution.providers import (
     CallContext,
     CallOutcome,
     CapabilityInputError,
     FunctionCapability,
 )
-from purrcept_engine.plugins.base import (
+from purrcept_engine.plugin_system.contracts import (
     PluginBlueprint,
     PluginFactory,
     PluginPorts,
     PluginRuntime,
     typed_factory,
 )
-from purrcept_engine.storage.knowledge import KnowledgeInputError
-
-from .driver import BrowserActionError, BrowserDriver, BrowserInputError
-from .patchright import PatchrightDriver
-from .session import BrowserSession
-from .settings import BrowserSettings
+from purrcept_engine.plugins.browser.driver import (
+    BrowserActionError,
+    BrowserDriver,
+    BrowserInputError,
+)
+from purrcept_engine.plugins.browser.patchright import PatchrightDriver
+from purrcept_engine.plugins.browser.session import BrowserSession
+from purrcept_engine.plugins.browser.settings import BrowserSettings
+from purrcept_engine.values import JsonObject
 
 
 class _Parameters(BaseModel):

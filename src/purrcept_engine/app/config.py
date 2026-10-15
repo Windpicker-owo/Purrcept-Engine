@@ -28,11 +28,10 @@ from pydantic import (
     model_validator,
 )
 
+from purrcept_engine.app.knowledge_resources import EmbeddingSettings
 from purrcept_engine.errors import ConfigError
-from purrcept_engine.execution.protocol import JsonObject, decode_object, encode_json
 from purrcept_engine.execution.settings import ExecutionSettings
-
-from .knowledge_resources import EmbeddingSettings
+from purrcept_engine.values import JsonObject, decode_object, encode_json
 
 __all__ = [
     "ActivitySettings",

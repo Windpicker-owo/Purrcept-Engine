@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Literal
 
-from purrcept_engine.execution.protocol import decode_object, encode_json
+from purrcept_engine.values import decode_object, encode_json
 
 
 def _nonempty(value: str, field: str) -> None:

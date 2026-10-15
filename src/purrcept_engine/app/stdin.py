@@ -18,9 +18,9 @@ from datetime import UTC, datetime
 from typing import Protocol, TextIO
 from uuid import uuid4
 
+from purrcept_engine.domain.inputs.models import InputContext, InputSource, InputSubmission
 from purrcept_engine.errors import ConfigError, StorageError
-from purrcept_engine.plugins.base import InputPort
-from purrcept_engine.storage.models import InputContext, InputSource, InputSubmission
+from purrcept_engine.plugin_system.contracts import InputPort
 
 _logger = logging.getLogger(__name__)
 

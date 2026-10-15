@@ -12,113 +12,31 @@ import re
 import sqlite3
 from datetime import UTC, datetime, timedelta, tzinfo
 from functools import cache
-from typing import Annotated, Literal, Protocol
+from typing import Protocol
 from uuid import uuid4
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ValidationError
 
-from purrcept_engine.errors import EngineError, StorageError
-from purrcept_engine.execution.protocol import JsonObject, encode_json
+from purrcept_engine.domain.inputs.models import (
+    Admission,
+    InputContext,
+    InputSource,
+    InputSubmission,
+)
+from purrcept_engine.domain.time.models import (
+    Alarm,
+    AlarmFiring,
+    RestChange,
+    RestState,
+    TimeError,
+    validate_aware_datetime,
+)
+from purrcept_engine.errors import StorageError
+from purrcept_engine.values import JsonObject, encode_json
 
-from .models import Admission, InputContext, InputSource, InputSubmission
-
-Text = Annotated[str, Field(min_length=1, pattern=r"\S", strict=True)]
-Minutes = Annotated[int, Field(ge=1, le=20160, strict=True)]
-Version = Annotated[int, Field(ge=1, strict=True)]
 MAX_ALARMS = 32
 _TIME_OF_DAY = re.compile(r"^([01]?\d|2[0-3]):([0-5]\d)(?::([0-5]\d))?$")
-
-
-class TimeError(EngineError):
-    """明确时间参数或业务拒绝，不把SQLite/内部故障改成可纠正参数错误。"""
-
-    def __init__(self, message: str, *, code: str) -> None:
-        """保留未知身份、额度及时间原因，供插件报告真实拒绝。"""
-        super().__init__(message)
-        self.code = code
-
-
-class _Record(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True, frozen=True)
-
-
-class Alarm(_Record):
-    """一个时钟的正式定义和当前发生身份，at保存配置时区中的下一应响时刻。"""
-
-    id: Text
-    clock_id: Text
-    at: AwareDatetime
-    timezone: Text
-    message: Annotated[str, Field(max_length=500)] = ""
-    repeat: Literal["once", "daily"] = "once"
-    occurrence_id: Text
-    version: Version = 1
-    state: Literal["pending", "consumed", "cancelled"] = "pending"
-    call_id: Text | None = None
-
-    def to_json(self) -> JsonObject:
-        """保留read/set/cancel的原有id/at/timezone/message/repeat字段。"""
-        return {
-            "id": self.id,
-            "at": self.at.isoformat(),
-            "timezone": self.timezone,
-            "message": self.message,
-            "repeat": self.repeat,
-        }
-
-
-class AlarmFiring(_Record):
-    """已与正式输入同事务提交的闹铃发生事实，不依赖后续通知是否送达。"""
-
-    clock_id: Text
-    alarm_id: Text
-    occurrence_id: Text
-    input_id: Text
-    scheduled_at: AwareDatetime
-    fired_at: AwareDatetime
-    next_at: AwareDatetime | None = None
-
-
-class RestState(_Record):
-    """主体明确休息的当前事实；elapsed按读取时刻投影，不持久化另一份时长。"""
-
-    bed_id: Text
-    expected_duration_minutes: Minutes
-    started_at: AwareDatetime
-    version: Version
-
-    def to_json(self, now: datetime) -> JsonObject:
-        """按客观UTC时差给整分钟数，下限0，到预计期限后仍resting。"""
-        _aware(now)
-        elapsed = max(
-            0, int((now.astimezone(UTC) - self.started_at.astimezone(UTC)).total_seconds() // 60)
-        )
-        return {
-            "resting": True,
-            "expected_duration_minutes": self.expected_duration_minutes,
-            "started_at": self.started_at.isoformat(),
-            "elapsed_minutes": elapsed,
-            "bed_id": self.bed_id,
-        }
-
-
-class RestChange(_Record):
-    """一次休息提交的真实前后状态，重复call_id不产生第二次变化。"""
-
-    at: AwareDatetime
-    state: RestState | None
-    previous: RestState | None
-    changed: bool
-    updated: bool = False
-
-    def to_json(self) -> JsonObject:
-        """沿用rest/leave结果，醒着leave只返回resting=false/changed=false。"""
-        if self.state is not None:
-            return {**self.state.to_json(self.at), "changed": self.changed, "updated": self.updated}
-        if self.previous is not None:
-            return {**self.previous.to_json(self.at), "resting": False, "changed": self.changed}
-        return {"resting": False, "changed": False}
 
 
 class AdmitInput(Protocol):
@@ -159,14 +77,9 @@ def resolve_timezone(name: str) -> tzinfo:
         raise TimeError("IANA时区不存在或缺少tzdata。", code="timezone") from error
 
 
-def _aware(value: datetime) -> None:
-    if not isinstance(value, datetime) or value.utcoffset() is None:
-        raise TimeError("时间必须带明确时区。", code="invalid_time")
-
-
 def parse_alarm_at(value: str, *, timezone: str, now: datetime) -> datetime:
     """HH:MM(:SS)取下一次墙钟时刻，ISO无偏移按配置时区，过去ISO明确拒绝。"""
-    _aware(now)
+    validate_aware_datetime(now)
     if not isinstance(value, str) or not value.strip():
         raise TimeError("闹铃时间不能为空。", code="invalid_time")
     zone = resolve_timezone(timezone)
@@ -196,8 +109,8 @@ def parse_alarm_at(value: str, *, timezone: str, now: datetime) -> datetime:
 
 def next_daily_occurrence(at: datetime, *, timezone: str, now: datetime) -> datetime:
     """每日仅取严格晚于now的下次同一墙钟时刻，跨多日不逐条追补。"""
-    _aware(at)
-    _aware(now)
+    validate_aware_datetime(at)
+    validate_aware_datetime(now)
     zone = resolve_timezone(timezone)
     candidate, current = at.astimezone(zone), now.astimezone(zone)
     if candidate <= current:
@@ -265,7 +178,7 @@ def _save_alarm(connection: sqlite3.Connection, alarm: Alarm) -> None:
 
 def set_alarm(connection: sqlite3.Connection, alarm: Alarm, now: datetime) -> Alarm:
     """同事务检查32条额度并保存新发生身份，重复相同定义不新增闹铃。"""
-    _aware(now)
+    validate_aware_datetime(now)
     if alarm.state != "pending" or alarm.version != 1 or alarm.at <= now:
         raise TimeError("新闹铃须是未来的初始待响定义。", code="invalid_time")
     with connection:
@@ -302,7 +215,7 @@ def cancel_alarm(connection: sqlite3.Connection, clock_id: str, alarm_id: str) -
 
 def recover_daily(connection: sqlite3.Connection, clock_id: str, now: datetime) -> None:
     """启动时每日错过项只推进未来，单次错过项保持待响供可靠补投。"""
-    _aware(now)
+    validate_aware_datetime(now)
     with connection:
         connection.execute("BEGIN IMMEDIATE")
         for alarm in alarms(connection, clock_id):
@@ -329,7 +242,7 @@ def fire_alarm(
     admit: AdmitInput,
 ) -> AlarmFiring | None:
     """原生发生身份、输入/pending、消耗或每日推进同事务，取消等待不能回滚它。"""
-    _aware(now)
+    validate_aware_datetime(now)
     with connection:
         connection.execute("BEGIN IMMEDIATE")
         row: tuple[object, ...] | None = connection.execute(
@@ -424,7 +337,7 @@ def rest(
     connection: sqlite3.Connection, bed_id: str, minutes: int, now: datetime, call_id: str
 ) -> RestChange:
     """首次记录开始时刻，已休息只更新打算时长；每次真实变化留下独立回执。"""
-    _aware(now)
+    validate_aware_datetime(now)
     with connection:
         connection.execute("BEGIN IMMEDIATE")
         row: tuple[object, ...] | None = connection.execute(
@@ -464,7 +377,7 @@ def rest(
 
 def leave(connection: sqlite3.Connection, now: datetime, call_id: str) -> RestChange:
     """醒着仅查询不写入；真正离开时保存原休息事实并清除当前状态。"""
-    _aware(now)
+    validate_aware_datetime(now)
     with connection:
         connection.execute("BEGIN IMMEDIATE")
         row: tuple[object, ...] | None = connection.execute(

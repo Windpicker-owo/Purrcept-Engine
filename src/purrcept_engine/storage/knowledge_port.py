@@ -12,9 +12,10 @@ from typing import Protocol
 
 from purrcept_core.models import ContentBlock, Message
 
-from . import knowledge as sql
-from .model_requests import encode
-from .models import MediaAsset, MediaReference
+import purrcept_engine.domain.knowledge.models as knowledge_models
+from purrcept_engine.domain.inputs.models import MediaAsset, MediaReference
+from purrcept_engine.serialization import encode
+from purrcept_engine.storage import knowledge as sql
 
 
 class _Submit(Protocol):
@@ -51,9 +52,9 @@ class KnowledgeLedger:
 
     async def capture(
         self,
-        snapshot: sql.EvidenceSnapshot,
+        snapshot: knowledge_models.EvidenceSnapshot,
         assets: tuple[MediaAsset, ...],
-    ) -> sql.EvidenceSnapshot:
+    ) -> knowledge_models.EvidenceSnapshot:
         """原子接管工具取得的原生媒体及原文，不创建第二条外界输入批次。"""
         expected = tuple(
             MediaReference(
@@ -65,9 +66,9 @@ class KnowledgeLedger:
             for asset in assets
         )
         if expected != snapshot.media:
-            raise sql.KnowledgeInputError("捕获原文的媒体引用与完整字节不一致。")
+            raise knowledge_models.KnowledgeInputError("捕获原文的媒体引用与完整字节不一致。")
 
-        def commit(connection: sqlite3.Connection) -> sql.EvidenceSnapshot:
+        def commit(connection: sqlite3.Connection) -> knowledge_models.EvidenceSnapshot:
             with connection:
                 connection.execute("BEGIN IMMEDIATE")
                 for reference, asset in zip(expected, assets, strict=True):
@@ -85,8 +86,8 @@ class KnowledgeLedger:
         )
 
     async def put_evidence(
-        self, snapshot: sql.EvidenceSnapshot, *, needs_reflection: bool = True
-    ) -> sql.EvidenceSnapshot:
+        self, snapshot: knowledge_models.EvidenceSnapshot, *, needs_reflection: bool = True
+    ) -> knowledge_models.EvidenceSnapshot:
         """原文/媒体资格及可靠复核身份一并提交。"""
         return await self._submit(
             lambda connection: sql.put_evidence(
@@ -99,7 +100,7 @@ class KnowledgeLedger:
 
     async def get_evidence(
         self, evidence_id: str, *, version: int | None = None, include_inactive: bool = False
-    ) -> sql.EvidenceSnapshot | None:
+    ) -> knowledge_models.EvidenceSnapshot | None:
         """读取确切原文资格，历史查询不授予当前引用权限。"""
         return await self._submit(
             lambda connection: sql.get_evidence(
@@ -108,7 +109,7 @@ class KnowledgeLedger:
             logical_bytes=_bytes(evidence_id),
         )
 
-    async def get_slice(self, slice_ref: str) -> sql.EvidenceSlice | None:
+    async def get_slice(self, slice_ref: str) -> knowledge_models.EvidenceSlice | None:
         """读取宿主保存的范围身份，不从文本标记推断阅读资格。"""
         return await self._submit(
             lambda connection: sql.get_slice(connection, slice_ref), logical_bytes=_bytes(slice_ref)
@@ -122,7 +123,7 @@ class KnowledgeLedger:
         cursor: str | None = None,
         max_chars: int = 8000,
         version: int | None = None,
-    ) -> sql.EvidencePage:
+    ) -> knowledge_models.EvidencePage:
         """同快照范围读取并保存游标；取得正文不等于已向模型呈现。"""
         return await self._submit(
             lambda connection: sql.read_evidence(
@@ -138,7 +139,9 @@ class KnowledgeLedger:
             writing=True,
         )
 
-    async def read_evidence_cursor(self, cursor: str, *, max_chars: int = 8000) -> sql.EvidencePage:
+    async def read_evidence_cursor(
+        self, cursor: str, *, max_chars: int = 8000
+    ) -> knowledge_models.EvidencePage:
         """用已保存的 opaque 游标查回原始快照，不建立插件分页缓存。"""
         return await self._submit(
             lambda connection: sql.read_evidence_cursor(connection, cursor, max_chars=max_chars),
@@ -156,7 +159,9 @@ class KnowledgeLedger:
             writing=True,
         )
 
-    async def pending_reflection(self, *, limit: int = 32) -> tuple[sql.PendingEvidence, ...]:
+    async def pending_reflection(
+        self, *, limit: int = 32
+    ) -> tuple[knowledge_models.PendingEvidence, ...]:
         """读取有限可靠批次，查询不会确认已读或理解。"""
         return await self._submit(
             lambda connection: sql.pending_reflection(connection, limit=limit)
@@ -166,8 +171,8 @@ class KnowledgeLedger:
         self,
         batch_id: str,
         required_slice_refs: tuple[str, ...],
-        findings: tuple[sql.OperationalFinding, ...] = (),
-    ) -> sql.ReflectionBatch:
+        findings: tuple[knowledge_models.OperationalFinding, ...] = (),
+    ) -> knowledge_models.ReflectionBatch:
         """冻结原文范围及程序异常，重复等待沿同一批次身份核验。"""
         return await self._submit(
             lambda connection: sql.begin_reflection(
@@ -182,7 +187,7 @@ class KnowledgeLedger:
             writing=True,
         )
 
-    async def get_reflection(self, batch_id: str, version: int) -> sql.ReflectionBatch:
+    async def get_reflection(self, batch_id: str, version: int) -> knowledge_models.ReflectionBatch:
         """读取当前资格或真实完成回执，不解析最终模型文字。"""
         return await self._submit(
             lambda connection: sql.get_reflection(connection, batch_id, version),
@@ -191,7 +196,7 @@ class KnowledgeLedger:
 
     async def abandon_reflection(
         self, batch_id: str, version: int, reason: str
-    ) -> sql.ReflectionBatch:
+    ) -> knowledge_models.ReflectionBatch:
         """结束本批写入资格，保留真实逐项修订与未确认范围，不伪造完成。"""
         return await self._submit(
             lambda connection: sql.abandon_reflection(connection, batch_id, version, reason),
@@ -219,7 +224,7 @@ class KnowledgeLedger:
         tool_call_id: str | None,
         material: Message | tuple[ContentBlock, ...],
         slice_refs: tuple[str, ...],
-    ) -> sql.EvidenceDelivery:
+    ) -> knowledge_models.EvidenceDelivery:
         """原子登记原批次、完整材料、媒体和切片，不能提前取得已读资格。"""
         return await self._submit(
             lambda connection: sql.record_delivery(
@@ -237,7 +242,7 @@ class KnowledgeLedger:
 
     async def deliveries_for_history(
         self, messages: tuple[Message, ...]
-    ) -> tuple[sql.EvidenceDelivery, ...]:
+    ) -> tuple[knowledge_models.EvidenceDelivery, ...]:
         """只读核验当前完整历史中的原交付，返回原批次身份和确切切片关系。"""
         return await self._submit(
             lambda connection: sql.deliveries_for_history(connection, messages),
@@ -245,8 +250,8 @@ class KnowledgeLedger:
         )
 
     async def revise_memory(
-        self, batch_id: str, version: int, patch: sql.MemoryPatch
-    ) -> sql.MemoryRecord:
+        self, batch_id: str, version: int, patch: knowledge_models.MemoryPatch
+    ) -> knowledge_models.MemoryRecord:
         """逐项修订原子生效，后续批次失败不撤销已经确认的认识。"""
         return await self._submit(
             lambda connection: sql.revise_memory(connection, batch_id, version, patch),
@@ -262,7 +267,7 @@ class KnowledgeLedger:
         version: int | None = None,
         include_inactive: bool = False,
         at: float | None = None,
-    ) -> sql.MemoryRecord | None:
+    ) -> knowledge_models.MemoryRecord | None:
         """默认读取当前有效版本，显式历史显示失效原因及发生时间。"""
         return await self._submit(
             lambda connection: sql.get_memory(
@@ -281,7 +286,7 @@ class KnowledgeLedger:
         at: float | None = None,
         include_inactive: bool = False,
         limit: int = 40,
-    ) -> tuple[sql.KnowledgeCandidate, ...]:
+    ) -> tuple[knowledge_models.KnowledgeCandidate, ...]:
         """融合本地权威核验后的关键词、关系及时间候选。"""
         return await self._submit(
             lambda connection: sql.search_knowledge(
@@ -299,11 +304,11 @@ class KnowledgeLedger:
 
     async def get_candidate(
         self,
-        reference: sql.KnowledgeReference,
+        reference: knowledge_models.KnowledgeReference,
         *,
         include_inactive: bool = False,
         at: float | None = None,
-    ) -> sql.EvidenceSnapshot | sql.MemoryRecord | None:
+    ) -> knowledge_models.EvidenceSnapshot | knowledge_models.MemoryRecord | None:
         """异步排名结束后复核实际版本，拒绝过时派生数据复活来源。"""
         return await self._submit(
             lambda connection: sql.get_candidate(
@@ -314,7 +319,7 @@ class KnowledgeLedger:
 
     async def pending_index(
         self, *, route: str | None = None, limit: int = 32
-    ) -> tuple[sql.IndexJob, ...]:
+    ) -> tuple[knowledge_models.IndexJob, ...]:
         """读取有限可重建任务，关键词和语义路线各自确认。"""
         return await self._submit(
             lambda connection: sql.pending_index(connection, route=route, limit=limit)
@@ -339,7 +344,9 @@ class KnowledgeLedger:
             writing=True,
         )
 
-    async def discard_stale_index(self, reference: sql.KnowledgeReference, *, route: str) -> bool:
+    async def discard_stale_index(
+        self, reference: knowledge_models.KnowledgeReference, *, route: str
+    ) -> bool:
         """在同事务复查后只确认已经失效的确切版本任务，不安装任何猜测向量。"""
         return await self._submit(
             lambda connection: sql.discard_stale_index(connection, reference, route=route),
@@ -350,7 +357,7 @@ class KnowledgeLedger:
 
     async def apply_index(
         self,
-        reference: sql.KnowledgeReference,
+        reference: knowledge_models.KnowledgeReference,
         *,
         terms: str,
         vector: tuple[float, ...] | None = None,
@@ -376,7 +383,7 @@ class KnowledgeLedger:
 
     async def semantic_search(
         self, vector: tuple[float, ...], model: str, *, limit: int = 40
-    ) -> tuple[sql.KnowledgeReference, ...]:
+    ) -> tuple[knowledge_models.KnowledgeReference, ...]:
         """查询实际同模型派生向量，返回确切来源版本供复核。"""
         return await self._submit(
             lambda connection: sql.semantic_search(connection, vector, model, limit=limit),
@@ -384,8 +391,8 @@ class KnowledgeLedger:
         )
 
     async def supervise(
-        self, batch_id: str, version: int, notice: sql.SupervisionNotice
-    ) -> sql.SupervisionRecord:
+        self, batch_id: str, version: int, notice: knowledge_models.SupervisionNotice
+    ) -> knowledge_models.SupervisionRecord:
         """有据监管立即入账，后续前台回应另有自己的实际记录。"""
         return await self._submit(
             lambda connection: sql.supervise(connection, batch_id, version, notice),
@@ -394,15 +401,17 @@ class KnowledgeLedger:
             writing=True,
         )
 
-    async def pending_supervision(self, *, limit: int = 32) -> tuple[sql.SupervisionRecord, ...]:
+    async def pending_supervision(
+        self, *, limit: int = 32
+    ) -> tuple[knowledge_models.SupervisionRecord, ...]:
         """读取仍符合来源/期限/活动版本的待回应意见。"""
         return await self._submit(
             lambda connection: sql.pending_supervision(connection, limit=limit)
         )
 
     async def finish_reflection(
-        self, batch_id: str, version: int, submission: sql.FinishSubmission
-    ) -> sql.ReflectionReceipt:
+        self, batch_id: str, version: int, submission: knowledge_models.FinishSubmission
+    ) -> knowledge_models.ReflectionReceipt:
         """原子确认具体覆盖、真实认识修订与邮箱交接，普通文字无此权限。"""
         return await self._submit(
             lambda connection: sql.finish_reflection(connection, batch_id, version, submission),
@@ -411,7 +420,7 @@ class KnowledgeLedger:
             writing=True,
         )
 
-    async def plan_wakeup(self, plan: sql.WakeupPlan) -> sql.WakeupPlan:
+    async def plan_wakeup(self, plan: knowledge_models.WakeupPlan) -> knowledge_models.WakeupPlan:
         """保存明确未来计划，注意 defer 的默认期限不用于它。"""
         return await self._submit(
             lambda connection: sql.plan_wakeup(connection, plan),
@@ -420,7 +429,9 @@ class KnowledgeLedger:
             writing=True,
         )
 
-    async def resolve_plan(self, identity: str, outcome: str, evidence: str) -> sql.WakeupPlan:
+    async def resolve_plan(
+        self, identity: str, outcome: str, evidence: str
+    ) -> knowledge_models.WakeupPlan:
         """以真实来源结案未完成计划，不能自动填入完成结论。"""
         return await self._submit(
             lambda connection: sql.resolve_plan(connection, identity, outcome, evidence),
@@ -431,7 +442,7 @@ class KnowledgeLedger:
 
     async def pending_plans(
         self, *, due_before: float | None = None, limit: int = 32
-    ) -> tuple[sql.WakeupPlan, ...]:
+    ) -> tuple[knowledge_models.WakeupPlan, ...]:
         """读取有限未完成计划，到期交接仍由主体调度事务确认。"""
         return await self._submit(
             lambda connection: sql.pending_plans(connection, due_before=due_before, limit=limit)
@@ -439,7 +450,7 @@ class KnowledgeLedger:
 
     async def respond_supervision(
         self, identity: str, decision: str, reason: str
-    ) -> sql.SupervisionRecord:
+    ) -> knowledge_models.SupervisionRecord:
         """保存前台回应及理由，回应不证明该监管意见正确。"""
         return await self._submit(
             lambda connection: sql.respond_supervision(connection, identity, decision, reason),

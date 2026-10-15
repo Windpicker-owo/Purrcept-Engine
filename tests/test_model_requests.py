@@ -61,8 +61,16 @@ from purrcept_core.models import (
     ToolSpec,
 )
 
+import purrcept_engine.serialization as serialization
 from purrcept_engine.app.config import DecisionModelSettings, GenerationModelSettings, RetrySettings
 from purrcept_engine.app.models import DecisionResource, OpenAIGenerationResource
+from purrcept_engine.domain.model_requests.models import (
+    AttemptEvidence,
+    AttemptStart,
+    RequestEvidence,
+    RequestOutcome,
+    RequestScope,
+)
 from purrcept_engine.errors import StorageError
 from purrcept_engine.storage import (
     InputSource,
@@ -70,13 +78,6 @@ from purrcept_engine.storage import (
     MediaAsset,
 )
 from purrcept_engine.storage import model_requests as sql
-from purrcept_engine.storage.model_requests import (
-    AttemptEvidence,
-    AttemptStart,
-    RequestEvidence,
-    RequestOutcome,
-    RequestScope,
-)
 from purrcept_engine.storage.store import Store
 from purrcept_engine.subject.model_requests import (
     ModelDecisionBackend,
@@ -277,7 +278,7 @@ async def test_permanent_and_internal_failures_preserve_original_exception(
     assert len(backend.requests) == 1
     assert sink.results[0].failure is not None
     assert sink.results[0].failure.error_type.endswith(type(error).__name__)
-    assert "implementation" not in sql.encode(sink.results[0])
+    assert "implementation" not in serialization.encode(sink.results[0])
     await wrapper.close()
 
 
@@ -576,7 +577,7 @@ async def test_actual_sdk_http_payload_matches_recorded_ordered_materials(
         expected = cast(dict[str, object], json.loads(sink.requests[0].materials_json)["payload"])
         assert actual["messages"] == expected["messages"]
         assert actual["tools"] == expected["tools"]
-        assert "synthetic-secret-never-recorded" not in sql.encode(sink.requests)
+        assert "synthetic-secret-never-recorded" not in serialization.encode(sink.requests)
         assert sink.requests[0].compiler.startswith("purrcept_litellm/0.2.")
     finally:
         await wrapper.close()
@@ -922,7 +923,9 @@ async def test_real_store_sink_reconstructs_media_and_independent_attempts(tmp_p
                 assert record.request.materials_json == material
                 assert record.request.scope.input_ids == (admission.input_id,)
                 result = record.attempts[-1].result
-                assert result is not None and result.response_json == sql.encode(responses[-1])
+                assert result is not None and result.response_json == serialization.encode(
+                    responses[-1]
+                )
                 opaque = json.loads(cast(str, result.response_json))["message"]["content"][2][
                     "arguments"
                 ]["opaque"]
@@ -1068,7 +1071,7 @@ def test_core_checkpoint_media_roundtrip_and_transaction_ownership(tmp_path: Pat
         ),
         ReminderState((SystemReminder((AudioBlock(AudioBytes(_MEDIA)),)),)),
     )
-    original = sql.encode(checkpoint)
+    original = serialization.encode(checkpoint)
     connection = sqlite3.connect(tmp_path / "checkpoint.sqlite")
     connection.execute("CREATE TABLE media (media_id TEXT PRIMARY KEY, content BLOB NOT NULL)")
     connection.commit()
@@ -1236,7 +1239,7 @@ def test_core_media_intern_does_not_reuse_existing_damaged_blob(tmp_path: Path) 
     try:
         connection.execute("BEGIN IMMEDIATE")
         with pytest.raises(StorageError) as caught:
-            sql.intern_core_media(connection, sql.encode(response))
+            sql.intern_core_media(connection, serialization.encode(response))
         assert caught.value.code == "invalid_record"
         connection.rollback()
         assert connection.execute("SELECT content FROM media").fetchone() == (b"old corrupt bytes",)

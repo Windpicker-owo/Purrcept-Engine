@@ -29,26 +29,30 @@ from purrcept_core.models import (
 
 from purrcept_engine.context.capacity import CapacityError
 from purrcept_engine.context.materials import UnsupportedMaterial
-from purrcept_engine.errors import HostStateError
-from purrcept_engine.storage.feedback import ReflectionSource, ReflectionState
-from purrcept_engine.storage.feedback_port import FeedbackLedger
-from purrcept_engine.storage.knowledge import (
+from purrcept_engine.domain.inputs.models import MediaReference
+from purrcept_engine.domain.knowledge.models import (
     EvidencePage,
     KnowledgeConflict,
     KnowledgeInputError,
     OperationalFinding,
     SupervisionRecord,
 )
-from purrcept_engine.storage.models import MediaReference
-
-from .attention import NativeMedia
-from .coordinator import SubjectModel
-from .delivery import ToolDeliveryGate
-from .knowledge import KnowledgeService, KnowledgeStore
-from .model_requests import RequestEvidenceSink
-from .reflection import EvidenceDeliveries, ReflectionTools
-from .semantic import EmbeddingProtocolError
-from .session import ContinuousSession, PrepareHistory, RefreshState, SessionStore
+from purrcept_engine.domain.subject.feedback_models import ReflectionSource, ReflectionState
+from purrcept_engine.errors import HostStateError
+from purrcept_engine.storage.feedback_port import FeedbackLedger
+from purrcept_engine.subject.attention import NativeMedia
+from purrcept_engine.subject.coordinator import SubjectModel
+from purrcept_engine.subject.delivery import ToolDeliveryGate
+from purrcept_engine.subject.knowledge import KnowledgeService, KnowledgeStore
+from purrcept_engine.subject.model_requests import RequestEvidenceSink
+from purrcept_engine.subject.reflection import EvidenceDeliveries, ReflectionTools
+from purrcept_engine.subject.semantic import EmbeddingProtocolError
+from purrcept_engine.subject.session import (
+    ContinuousSession,
+    PrepareHistory,
+    RefreshState,
+    SessionStore,
+)
 
 
 class BackgroundStore(SessionStore, RequestEvidenceSink, Protocol):

@@ -15,7 +15,7 @@ from purrcept_engine.context.capacity import (
     assess_capacity,
     check_capacity,
 )
-from purrcept_engine.storage.model_requests import encode
+from purrcept_engine.serialization import encode
 
 
 def payload() -> dict[str, object]:

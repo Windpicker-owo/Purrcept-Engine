@@ -14,9 +14,14 @@ from pathlib import Path
 
 import pytest
 
+import purrcept_engine.domain.activities.models as activities_models
+from purrcept_engine.domain.activities.models import (
+    ActivityCommand,
+    ActivityFeedback,
+    ActivityRecord,
+)
 from purrcept_engine.errors import HostStateError, StorageError
 from purrcept_engine.storage import activities as sql
-from purrcept_engine.storage.activities import ActivityCommand, ActivityFeedback, ActivityRecord
 from purrcept_engine.subject.activities import (
     ActivityDefinition,
     ActivityError,
@@ -133,7 +138,9 @@ class _Driver:
         if self.accept_gate is not None:
             self.accept_gate.set()
 
-    async def confirm(self, command: ActivityCommand, state: sql.ActivityState) -> ActivityCommand:
+    async def confirm(
+        self, command: ActivityCommand, state: activities_models.ActivityState
+    ) -> ActivityCommand:
         return await self.port.confirm(
             command.command_id,
             run_generation=command.run_generation,

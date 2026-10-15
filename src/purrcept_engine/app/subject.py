@@ -11,6 +11,8 @@ from dataclasses import dataclass
 
 from purrcept_core.models import ContentBlock, DecisionBackend, ModelBackend
 
+from purrcept_engine.app.config import DecisionModelSettings, EngineConfig, GenerationModelSettings
+from purrcept_engine.app.history import HistoryPreparation
 from purrcept_engine.context.capacity import (
     CapacityAssessment,
     CapacityRule,
@@ -20,10 +22,9 @@ from purrcept_engine.context.capacity import (
     check_capacity,
 )
 from purrcept_engine.context.materials import media_blocks
+from purrcept_engine.domain.inputs.models import MediaReference
 from purrcept_engine.execution.catalog import Catalog
-from purrcept_engine.execution.protocol import JsonObject
-from purrcept_engine.plugins.base import PluginRuntime
-from purrcept_engine.storage.models import MediaReference
+from purrcept_engine.plugin_system.contracts import PluginRuntime
 from purrcept_engine.storage.store import Store
 from purrcept_engine.subject.attention import AttentionModel
 from purrcept_engine.subject.background import BackgroundService, BackgroundSettings
@@ -39,9 +40,7 @@ from purrcept_engine.subject.knowledge import KnowledgeService
 from purrcept_engine.subject.model_requests import RequestBudget
 from purrcept_engine.subject.reflection import reflection_instructions
 from purrcept_engine.subject.session import DynamicState
-
-from .config import DecisionModelSettings, EngineConfig, GenerationModelSettings
-from .history import HistoryPreparation
+from purrcept_engine.values import JsonObject
 
 
 @dataclass(frozen=True, slots=True)

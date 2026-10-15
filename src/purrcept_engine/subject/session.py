@@ -42,13 +42,17 @@ from purrcept_core.models import (
 from purrcept_engine.context.capacity import CapacityAssessment
 from purrcept_engine.context.checkpoints import decode_checkpoint, encode_checkpoint
 from purrcept_engine.context.presentation import render_host_state
+from purrcept_engine.domain.model_requests.models import RequestScope
+from purrcept_engine.domain.subject.models import (
+    SessionRecord,
+    SessionScope,
+    TurnOutcome,
+    TurnRecord,
+)
 from purrcept_engine.errors import HostStateError
-from purrcept_engine.execution.protocol import JsonObject, decode_object
-from purrcept_engine.storage.model_requests import RequestScope, encode
-from purrcept_engine.storage.subject import SessionRecord, SessionScope, TurnOutcome, TurnRecord
-
-from .delivery import ToolDeliveryGate
-from .model_requests import (
+from purrcept_engine.serialization import encode
+from purrcept_engine.subject.delivery import ToolDeliveryGate
+from purrcept_engine.subject.model_requests import (
     ModelGenerationBackend,
     RequestBudget,
     RequestBudgetExceeded,
@@ -57,6 +61,7 @@ from .model_requests import (
     compile_materials,
     prepare_off_loop,
 )
+from purrcept_engine.values import JsonObject, decode_object
 
 
 class SessionStore(Protocol):
@@ -583,7 +588,7 @@ class ContinuousSession:
                     raise BaseExceptionGroup(
                         "会话准备及失败身份提交失败。", [error, commit_error]
                     ) from None
-            from purrcept_engine.execution.protocol import encode_json
+            from purrcept_engine.values import encode_json
 
             outcome = "cancelled" if isinstance(error, asyncio.CancelledError) else "failed"
             failure: JsonObject = {"error_type": type(error).__name__}

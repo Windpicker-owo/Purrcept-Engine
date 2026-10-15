@@ -11,7 +11,8 @@ import sqlite3
 from collections.abc import Awaitable, Callable
 from typing import Protocol
 
-from . import audio as sql
+import purrcept_engine.domain.audio.models as audio_models
+from purrcept_engine.storage import audio as sql
 
 _logger = logging.getLogger(__name__)
 
@@ -39,11 +40,11 @@ class AudioPort(Protocol):
     负责不可覆盖、阶段/材料有界和真实提交。
     """
 
-    async def append(self, fact: sql.AudioFact) -> None:
+    async def append(self, fact: audio_models.AudioFact) -> None:
         """真实提交后返回，既有事实不得被新结果覆盖。"""
         ...
 
-    async def facts(self, plugin_id: str, identity: str) -> tuple[sql.AudioFact, ...]:
+    async def facts(self, plugin_id: str, identity: str) -> tuple[audio_models.AudioFact, ...]:
         """读取保存顺序，不自动合成、播放或补写确认。"""
         ...
 
@@ -55,7 +56,7 @@ class AudioLedger:
         """只借用母 Store 唯一队列，构造没有外部副作用。"""
         self._submit = submit
 
-    async def append(self, fact: sql.AudioFact) -> None:
+    async def append(self, fact: audio_models.AudioFact) -> None:
         """完整 UTF-8 事实计入控制额度，权威错误不转为空成功。"""
         size = len((fact.plugin_id + fact.identity + fact.fact + fact.payload_json).encode())
         await self._submit(
@@ -70,7 +71,7 @@ class AudioLedger:
             extra={"plugin_id": fact.plugin_id, identity: fact.identity, "outcome": fact.fact},
         )
 
-    async def facts(self, plugin_id: str, identity: str) -> tuple[sql.AudioFact, ...]:
+    async def facts(self, plugin_id: str, identity: str) -> tuple[audio_models.AudioFact, ...]:
         """按播放或控制身份取得正式记录。"""
         return await self._submit(
             lambda connection: sql.facts(connection, plugin_id, identity),

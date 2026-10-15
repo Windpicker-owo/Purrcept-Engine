@@ -18,8 +18,13 @@ from websockets.asyncio.connection import Connection as WebSocketConnection
 from websockets.asyncio.server import Server, ServerConnection, serve
 from websockets.exceptions import ConnectionClosed, InvalidHandshake, InvalidStatus
 
-from .ports import Connection, ConnectionRejected, ConnectionUnavailable, Listener
-from .settings import QQSettings
+from purrcept_engine.plugins.qq.ports import (
+    Connection,
+    ConnectionRejected,
+    ConnectionUnavailable,
+    Listener,
+)
+from purrcept_engine.plugins.qq.settings import QQSettings
 
 
 class _Connection:

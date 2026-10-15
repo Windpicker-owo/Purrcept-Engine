@@ -42,15 +42,15 @@ from purrcept_engine.context.maintenance import (
     candidate_checkpoint,
     freeze_summary_source,
 )
-from purrcept_engine.storage import knowledge, maintenance, model_requests, subject
-from purrcept_engine.storage.knowledge import EvidenceSnapshot
-from purrcept_engine.storage.model_requests import (
+from purrcept_engine.domain.knowledge.models import EvidenceSnapshot
+from purrcept_engine.domain.model_requests.models import (
     AttemptEvidence,
     AttemptStart,
     RequestEvidence,
     RequestScope,
-    encode,
 )
+from purrcept_engine.serialization import encode
+from purrcept_engine.storage import knowledge, maintenance, model_requests, subject
 
 
 @pytest.fixture

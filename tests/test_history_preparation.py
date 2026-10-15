@@ -33,15 +33,15 @@ from purrcept_engine.context.capacity import (
     check_capacity,
 )
 from purrcept_engine.context.checkpoints import encode_checkpoint
-from purrcept_engine.execution.protocol import JsonObject
+from purrcept_engine.domain.knowledge.models import EvidenceSnapshot, WakeupPlan
+from purrcept_engine.domain.subject.models import SessionRecord
+from purrcept_engine.serialization import encode
 from purrcept_engine.storage import InputContext, InputSource, InputSubmission
-from purrcept_engine.storage.knowledge import EvidenceSnapshot, WakeupPlan
-from purrcept_engine.storage.model_requests import encode
 from purrcept_engine.storage.store import Store
-from purrcept_engine.storage.subject import SessionRecord
 from purrcept_engine.subject.history import HistoryMaintenance
 from purrcept_engine.subject.model_requests import RequestBudget
 from purrcept_engine.subject.session import ContinuousSession, DynamicState
+from purrcept_engine.values import JsonObject
 
 
 class Backend:

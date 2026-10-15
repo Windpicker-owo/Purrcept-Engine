@@ -13,7 +13,7 @@ from importlib import import_module
 from pathlib import Path
 from typing import Literal, Protocol, cast
 
-from .models import VoiceInputError, VoiceInputSettings
+from purrcept_engine.plugins.voice_input.models import VoiceInputError, VoiceInputSettings
 
 type SegmentEvent = tuple[Literal["begin", "pcm", "speech_started", "end", "discard"], bytes]
 

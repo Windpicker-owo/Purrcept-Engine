@@ -10,7 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import PurePosixPath
 
-from purrcept_engine.execution.protocol import JsonObject
+from purrcept_engine.values import JsonObject
 
 
 @dataclass(frozen=True, slots=True)

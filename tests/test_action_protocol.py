@@ -10,15 +10,8 @@ from types import MappingProxyType
 
 import pytest
 
-from purrcept_engine.execution.protocol import (
-    ActionProtocolError,
-    FrameChannel,
-    JsonObject,
-    decode_object,
-    encode_json,
-    read_frame,
-    write_frame,
-)
+from purrcept_engine.execution.protocol import FrameChannel, read_frame, write_frame
+from purrcept_engine.values import ActionProtocolError, JsonObject, decode_object, encode_json
 
 
 @contextmanager

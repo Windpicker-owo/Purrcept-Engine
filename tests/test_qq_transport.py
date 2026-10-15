@@ -7,7 +7,6 @@ from collections.abc import Awaitable, Callable
 
 import pytest
 
-from purrcept_engine.execution.protocol import JsonObject, decode_object, encode_json
 from purrcept_engine.execution.providers import CallContext
 from purrcept_engine.plugins.qq.client import QQClient
 from purrcept_engine.plugins.qq.ports import (
@@ -18,6 +17,7 @@ from purrcept_engine.plugins.qq.ports import (
     Reply,
 )
 from purrcept_engine.plugins.qq.settings import QQSettings
+from purrcept_engine.values import JsonObject, decode_object, encode_json
 
 
 class Socket:

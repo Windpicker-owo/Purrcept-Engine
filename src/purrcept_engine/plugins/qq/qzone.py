@@ -8,9 +8,8 @@
 import re
 from html import unescape
 
-from purrcept_engine.execution.protocol import JsonObject, JsonValue
-
-from .messages import id_text, object_value
+from purrcept_engine.plugins.qq.messages import id_text, object_value
+from purrcept_engine.values import JsonObject, JsonValue
 
 
 def cards(data: JsonValue, *, feeds: bool) -> JsonObject:

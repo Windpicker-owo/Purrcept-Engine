@@ -24,13 +24,12 @@ from starlette.responses import JSONResponse, Response
 from starlette.routing import Route
 from starlette.types import ASGIApp
 
+from purrcept_engine.app.local_http import LocalHttpBoundary
+from purrcept_engine.app.panel import ControlRequest
+from purrcept_engine.domain.controls.models import ControlError, ControlRecord
 from purrcept_engine.errors import HostStateError, StorageError
-from purrcept_engine.execution.protocol import ActionProtocolError, JsonObject, decode_object
-from purrcept_engine.plugins.panels import PreviewFrame
-from purrcept_engine.storage.controls import ControlError, ControlRecord
-
-from .local_http import LocalHttpBoundary
-from .panel import ControlRequest
+from purrcept_engine.plugin_system.panels import PreviewFrame
+from purrcept_engine.values import ActionProtocolError, JsonObject, decode_object
 
 
 class PanelHost(Protocol):

@@ -14,24 +14,35 @@ from pathlib import Path
 from pydantic import BaseModel
 
 from purrcept_engine.execution.catalog import CapabilityDeclaration, ObjectDeclaration
-from purrcept_engine.execution.protocol import JsonObject, JsonValue, encode_json
 from purrcept_engine.execution.providers import (
     CallContext,
     CallOutcome,
     CapabilityInputError,
     FunctionCapability,
 )
-
-from ..base import PluginBlueprint, PluginFactory, PluginPorts, PluginRuntime, typed_factory
-from ..panels import DevicePanel, PanelControl
-from . import parameters as p
-from .media import QQMediaError
-from .messages import directory, id_text, image_references, object_value, project_message
-from .ports import ConnectionRejected, Connector, QQCallError
-from .qzone import cards, write_result
-from .service import QQService
-from .settings import QQSettings
-from .stickers import StickerPublicationError
+from purrcept_engine.plugin_system.contracts import (
+    PluginBlueprint,
+    PluginFactory,
+    PluginPorts,
+    PluginRuntime,
+    typed_factory,
+)
+from purrcept_engine.plugin_system.panels import DevicePanel, PanelControl
+from purrcept_engine.plugins.qq import parameters as p
+from purrcept_engine.plugins.qq.media import QQMediaError
+from purrcept_engine.plugins.qq.messages import (
+    directory,
+    id_text,
+    image_references,
+    object_value,
+    project_message,
+)
+from purrcept_engine.plugins.qq.ports import ConnectionRejected, Connector, QQCallError
+from purrcept_engine.plugins.qq.qzone import cards, write_result
+from purrcept_engine.plugins.qq.service import QQService
+from purrcept_engine.plugins.qq.settings import QQSettings
+from purrcept_engine.plugins.qq.stickers import StickerPublicationError
+from purrcept_engine.values import JsonObject, JsonValue, encode_json
 
 _SCHEMAS: tuple[tuple[str, type[BaseModel], str, str, str], ...] = (
     (
@@ -766,7 +777,7 @@ def _declare(
     async def build(ports: PluginPorts) -> PluginRuntime:
         actual = connector
         if actual is None:
-            from .websocket import WebSocketConnector
+            from purrcept_engine.plugins.qq.websocket import WebSocketConnector
 
             actual = WebSocketConnector()
         service = QQService(instance_id, settings, base_dir, ports, actual)

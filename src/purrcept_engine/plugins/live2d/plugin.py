@@ -16,19 +16,19 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from purrcept_engine.execution.catalog import CapabilityDeclaration, ObjectDeclaration
 from purrcept_engine.execution.providers import CallContext, CallOutcome, FunctionCapability
-from purrcept_engine.plugins.base import (
+from purrcept_engine.plugin_system.body import BodyIntent
+from purrcept_engine.plugin_system.contracts import (
     PluginBlueprint,
     PluginFactory,
     PluginPorts,
     PluginRuntime,
     typed_factory,
 )
-from purrcept_engine.plugins.panels import DevicePanel
-
-from .analyzer import AnalyzerProcess
-from .models import BodyIntent, BodyStyle, ModelProfile
-from .runtime import Live2DRuntime
-from .vts import BodyDriver, VTSDriver
+from purrcept_engine.plugin_system.panels import DevicePanel
+from purrcept_engine.plugins.live2d.analyzer import AnalyzerProcess
+from purrcept_engine.plugins.live2d.models import BodyStyle, ModelProfile
+from purrcept_engine.plugins.live2d.runtime import Live2DRuntime
+from purrcept_engine.plugins.live2d.vts import BodyDriver, VTSDriver
 
 
 class Live2DSettings(BaseModel):

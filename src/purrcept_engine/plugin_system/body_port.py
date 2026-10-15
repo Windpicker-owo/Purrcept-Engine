@@ -7,9 +7,8 @@ app 在全部插件构造后绑定同实例 BodyPort。调用只改变身体本�
 
 from typing import Protocol
 
-from purrcept_engine.execution.protocol import JsonObject
-
-from .models import BodyIntent
+from purrcept_engine.plugin_system.body import BodyIntent
+from purrcept_engine.values import JsonObject
 
 
 class BodyPort(Protocol):

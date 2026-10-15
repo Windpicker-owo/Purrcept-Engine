@@ -9,10 +9,10 @@ from __future__ import annotations
 
 import sqlite3
 
+import purrcept_engine.domain.execution.models as execution_models
 from purrcept_engine.errors import StorageError
-from purrcept_engine.execution.protocol import JsonObject, JsonValue
-
-from . import activities, execution, subject
+from purrcept_engine.storage import activities, execution, subject
+from purrcept_engine.values import JsonObject, JsonValue
 
 
 def runtime(connection: sqlite3.Connection) -> JsonObject:
@@ -77,7 +77,7 @@ def runtime(connection: sqlite3.Connection) -> JsonObject:
     }
 
 
-def action_projection(action: execution.ActionRecord) -> JsonObject:
+def action_projection(action: execution_models.ActionRecord) -> JsonObject:
     """用逐次真实状态表达部分结果，长正文只给明确截断的有限预览。"""
     return {
         "action_id": action.action_id,

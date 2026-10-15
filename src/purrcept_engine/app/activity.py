@@ -7,8 +7,8 @@ resume/end 只交付只读核对，收到材料后的新行动才可明确决定
 
 from pydantic import BaseModel, ConfigDict
 
+from purrcept_engine.domain.activities.models import CommandKind
 from purrcept_engine.execution.catalog import CapabilityDeclaration
-from purrcept_engine.execution.protocol import decode_object, encode_json
 from purrcept_engine.execution.providers import (
     CallContext,
     CallOutcome,
@@ -16,9 +16,9 @@ from purrcept_engine.execution.providers import (
     CapabilityInputError,
     FunctionCapability,
 )
-from purrcept_engine.storage.activities import CommandKind
-from purrcept_engine.storage.model_requests import public_value
+from purrcept_engine.serialization import public_value
 from purrcept_engine.subject.activities import ActivityError, ActivityRecovery, ActivityService
+from purrcept_engine.values import decode_object, encode_json
 
 
 class _ActivityParameters(BaseModel):

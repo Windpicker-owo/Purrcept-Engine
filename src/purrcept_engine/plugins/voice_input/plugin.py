@@ -18,18 +18,17 @@ from purrcept_engine.execution.providers import (
     CapabilityInputError,
     FunctionCapability,
 )
-from purrcept_engine.plugins.base import (
+from purrcept_engine.plugin_system.contracts import (
     PluginBlueprint,
     PluginFactory,
     PluginPorts,
     PluginRuntime,
     typed_factory,
 )
-from purrcept_engine.plugins.panels import DevicePanel, PanelControl
-
-from .asr import FunASRTranscriber
-from .capture import SoundDeviceCapture
-from .models import (
+from purrcept_engine.plugin_system.panels import DevicePanel, PanelControl
+from purrcept_engine.plugins.voice_input.asr import FunASRTranscriber
+from purrcept_engine.plugins.voice_input.capture import SoundDeviceCapture
+from purrcept_engine.plugins.voice_input.models import (
     CaptureDriver,
     InputMode,
     StreamingTranscriber,
@@ -37,8 +36,8 @@ from .models import (
     VoiceInputError,
     VoiceInputSettings,
 )
-from .runtime import VoiceInputRuntime
-from .vad import SileroVad
+from purrcept_engine.plugins.voice_input.runtime import VoiceInputRuntime
+from purrcept_engine.plugins.voice_input.vad import SileroVad
 
 
 class _Empty(BaseModel):

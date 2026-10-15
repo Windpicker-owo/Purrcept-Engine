@@ -7,22 +7,24 @@ Store 的唯一数据库线程调用这里的短事务函数；模块不打开�
 
 from __future__ import annotations
 
-import json
 import math
 import sqlite3
 import time
-from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, replace
-from typing import Literal, cast
+from collections.abc import Sequence
+from dataclasses import replace
 
+from purrcept_engine.domain.execution.models import (
+    ActionOutcome,
+    ActionRecord,
+    CallOutcome,
+    CallRecord,
+    CallResultRecord,
+)
+from purrcept_engine.domain.execution.record_validation import (
+    validate_json,
+)
+from purrcept_engine.domain.inputs.models import MediaReference
 from purrcept_engine.errors import StorageError
-
-from .models import MediaReference
-
-CallOutcome = Literal["confirmed", "failed", "unknown", "not_started"]
-CallState = Literal["prepared", "started", "confirmed", "failed", "unknown", "not_started"]
-ActionOutcome = Literal["completed", "failed", "timed_out", "cancelled"]
-ActionState = Literal["running", "completed", "failed", "timed_out", "cancelled"]
 
 SCHEMA = (
     "CREATE TABLE actions (action_id TEXT PRIMARY KEY, catalog_version TEXT NOT NULL, "
@@ -61,120 +63,6 @@ _ACTION_COLUMNS = (
     "action_id, catalog_version, source, state, created_at, finished_at, output, "
     "result_json, error, input_id"
 )
-
-
-@dataclass(frozen=True, slots=True)
-class CallResultRecord:
-    """一次不可变效果结论；版本身份也是可靠交接的确认范围。
-
-    首次结论为版本 1。未知升级为确认或失败生成新版本，原未知事实不删除。
-    finished_at 为存储提交时的 UTC Unix 时间，不替代平台提供的实际发生时间。
-    """
-
-    call_id: str
-    revision: int
-    state: CallOutcome
-    finished_at: float
-    result_json: str | None
-    error_type: str | None
-    error: str | None
-    media: tuple[MediaReference, ...] = ()
-
-
-@dataclass(frozen=True, slots=True)
-class CallRecord:
-    """派发意图与某个回执版本的快照，历史包含到该版本的全部结论。
-
-    started_at 记录进入 Provider 前的持久门槛，并非外界操作已发生的证据。
-    实时查询使用最新版本；待交接查询返回对应历史版本，不让新回执覆盖未交接
-    的旧未知结论。参数 JSON 保留调用方原表示，查询不执行或重新投递调用。
-    """
-
-    call_id: str
-    action_id: str
-    sequence: int
-    path: str
-    target_id: str
-    arguments_json: str
-    state: CallState
-    prepared_at: float
-    started_at: float | None
-    finished_at: float | None
-    receipt_revision: int
-    result_json: str | None
-    error_type: str | None
-    error: str | None
-    history: tuple[CallResultRecord, ...]
-    media: tuple[MediaReference, ...] = ()
-
-
-@dataclass(frozen=True, slots=True)
-class ActionRecord:
-    """行动代码、目录版本和整体结果，逐次能力回执拥有独立提交寿命。
-
-    running 只表示行动意图已接管，不证明 Worker 已运行。行动失败、超时或取消
-    不撤销调用回执；迟到真实结果仍可澄清原调用，而不会重写行动的原结束结果。
-    """
-
-    action_id: str
-    catalog_version: str
-    source: str
-    state: ActionState
-    created_at: float
-    finished_at: float | None
-    output: str
-    result_json: str | None
-    error: str | None
-    calls: tuple[CallRecord, ...]
-    input_id: str | None = None
-
-
-def payload_bytes(*values: str | None) -> int:
-    """在异步提交边界核验 UTF-8 文本，并计入控制队列实际载荷。"""
-    total = 0
-    for value in values:
-        if value is None:
-            continue
-        if not isinstance(value, str):
-            raise ValueError("执行记录字段必须是字符串或 None。")
-        try:
-            total += len(value.encode("utf-8"))
-        except UnicodeEncodeError as error:
-            raise ValueError("执行记录不能表示为 UTF-8。") from error
-    return total
-
-
-def validate_json(value: str | None, *, arguments: bool = False) -> None:
-    """只校验真实 JSON 边界；参数要求对象，结果允许任意标准 JSON 值。"""
-    if value is None:
-        if arguments:
-            raise ValueError("调用参数 JSON 不能缺失。")
-        return
-    if not isinstance(value, str):
-        raise ValueError("执行记录 JSON 必须是字符串。")
-    try:
-        parsed: object = json.loads(value, parse_constant=_reject_constant)
-        _finite_json(parsed)
-    except (ValueError, TypeError, RecursionError) as error:
-        raise ValueError("执行记录不是标准有限 JSON。") from error
-    if arguments and not isinstance(parsed, Mapping):
-        raise ValueError("调用参数 JSON 必须表示对象。")
-
-
-def _reject_constant(value: str) -> object:
-    raise ValueError(f"非标准 JSON 常量：{value}")
-
-
-def _finite_json(value: object) -> None:
-    """拒绝解析为无穷大的合法数字文本，不只拦截 NaN/Infinity 扩展词。"""
-    if isinstance(value, float) and not math.isfinite(value):
-        raise ValueError("JSON 数字必须有限。")
-    if isinstance(value, Mapping):
-        for item in cast(Mapping[str, object], value).values():
-            _finite_json(item)
-    elif isinstance(value, list):
-        for item in cast(list[object], value):
-            _finite_json(item)
 
 
 def _text(value: object) -> str:

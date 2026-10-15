@@ -12,13 +12,18 @@ from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from purrcept_engine.domain.time.models import Minutes
 from purrcept_engine.errors import ConfigError
 from purrcept_engine.execution.catalog import CapabilityDeclaration, ObjectDeclaration
-from purrcept_engine.execution.protocol import JsonObject
 from purrcept_engine.execution.providers import CallContext, CallOutcome, FunctionCapability
-from purrcept_engine.storage.time import Minutes
-
-from .base import PluginBlueprint, PluginFactory, PluginPorts, PluginRuntime, typed_factory
+from purrcept_engine.plugin_system.contracts import (
+    PluginBlueprint,
+    PluginFactory,
+    PluginPorts,
+    PluginRuntime,
+    typed_factory,
+)
+from purrcept_engine.values import JsonObject
 
 
 class BedSettings(BaseModel):

@@ -15,7 +15,7 @@ from purrcept_engine.app.config import PluginSettings
 from purrcept_engine.errors import ConfigError
 from purrcept_engine.execution.catalog import CapabilityDeclaration, Catalog, ObjectDeclaration
 from purrcept_engine.execution.providers import CallContext, CallOutcome, FunctionCapability
-from purrcept_engine.plugins.base import (
+from purrcept_engine.plugin_system.contracts import (
     PluginBlueprint,
     PluginFactory,
     PluginPorts,

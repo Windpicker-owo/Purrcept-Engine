@@ -16,14 +16,14 @@ from purrcept_core.models import (
 from purrcept_core.models.tools import ToolResult
 
 from purrcept_engine.context.capacity import CapacityAssessment, GenerationCapacity, check_capacity
-from purrcept_engine.execution.protocol import JsonObject
-from purrcept_engine.storage.knowledge import EvidencePage, EvidenceSnapshot
-from purrcept_engine.storage.model_requests import encode
+from purrcept_engine.domain.knowledge.models import EvidencePage, EvidenceSnapshot
+from purrcept_engine.serialization import encode
 from purrcept_engine.subject.delivery import (
     ToolDelivery,
     ToolDeliveryGate,
     presented_evidence_calls,
 )
+from purrcept_engine.values import JsonObject
 
 
 @pytest.mark.parametrize("large", [False, True])

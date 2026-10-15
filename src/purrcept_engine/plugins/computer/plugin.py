@@ -22,18 +22,17 @@ from purrcept_engine.execution.providers import (
     CapabilityInputError,
     FunctionCapability,
 )
-from purrcept_engine.plugins.base import (
+from purrcept_engine.plugin_system.contracts import (
     PluginBlueprint,
     PluginFactory,
     PluginPorts,
     PluginRuntime,
     typed_factory,
 )
-from purrcept_engine.plugins.panels import DevicePanel, PanelControl, PreviewFrame
-
-from .driver import ComputerDriver, ProcessDriver
-from .models import ComputerError, Target
-from .runtime import ComputerRuntime, load_policy
+from purrcept_engine.plugin_system.panels import DevicePanel, PanelControl, PreviewFrame
+from purrcept_engine.plugins.computer.driver import ComputerDriver, ProcessDriver
+from purrcept_engine.plugins.computer.models import ComputerError, Target
+from purrcept_engine.plugins.computer.runtime import ComputerRuntime, load_policy
 
 
 class ComputerSettings(BaseModel):

@@ -8,10 +8,15 @@ from purrcept_core.models import ImageBlock, ImageBytes, MessageRole, TextBlock
 
 from purrcept_engine.context.materials import input_message
 from purrcept_engine.context.presentation import render_host_state, render_input, render_material
-from purrcept_engine.execution.protocol import JsonObject
-from purrcept_engine.storage.model_requests import encode
-from purrcept_engine.storage.models import InputContext, InputRecord, InputSource, MediaReference
+from purrcept_engine.domain.inputs.models import (
+    InputContext,
+    InputRecord,
+    InputSource,
+    MediaReference,
+)
+from purrcept_engine.serialization import encode
 from purrcept_engine.subject.session import DynamicReminder, DynamicState
+from purrcept_engine.values import JsonObject
 
 
 def input_record() -> InputRecord:

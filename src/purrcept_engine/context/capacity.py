@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from typing import Protocol, cast
 
 from purrcept_engine.errors import EngineError
-from purrcept_engine.storage.model_requests import encode
+from purrcept_engine.serialization import encode
 
 
 @dataclass(frozen=True, slots=True)

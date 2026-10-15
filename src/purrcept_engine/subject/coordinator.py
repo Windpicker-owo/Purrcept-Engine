@@ -41,13 +41,10 @@ from purrcept_core.models import (
 from purrcept_engine.context.capacity import CapacityError
 from purrcept_engine.context.materials import MediaStore, UnsupportedMaterial, input_message
 from purrcept_engine.context.presentation import render_material
-from purrcept_engine.errors import HostStateError, StorageError
-from purrcept_engine.execution.catalog import Catalog
-from purrcept_engine.execution.protocol import ActionProtocolError, JsonObject, decode_object
-from purrcept_engine.storage.execution import ActionRecord
-from purrcept_engine.storage.model_requests import RequestRecord, RequestScope, encode
-from purrcept_engine.storage.models import InputRecord, MediaReference
-from purrcept_engine.storage.subject import (
+from purrcept_engine.domain.execution.models import ActionRecord
+from purrcept_engine.domain.inputs.models import InputRecord, MediaReference
+from purrcept_engine.domain.model_requests.models import RequestRecord, RequestScope
+from purrcept_engine.domain.subject.models import (
     AttentionLevel,
     InputProcessing,
     InputStage,
@@ -55,20 +52,29 @@ from purrcept_engine.storage.subject import (
     SessionScope,
     TurnRecord,
 )
-
-from .attention import AttentionModel, NativeMedia, attention_request
-from .delivery import ToolDeliveryGate
-from .foreground import ForegroundTools
-from .knowledge import KnowledgeService, KnowledgeStore
-from .model_requests import (
+from purrcept_engine.errors import HostStateError, StorageError
+from purrcept_engine.execution.catalog import Catalog
+from purrcept_engine.serialization import encode
+from purrcept_engine.subject.attention import AttentionModel, NativeMedia, attention_request
+from purrcept_engine.subject.delivery import ToolDeliveryGate
+from purrcept_engine.subject.foreground import ForegroundTools
+from purrcept_engine.subject.knowledge import KnowledgeService, KnowledgeStore
+from purrcept_engine.subject.model_requests import (
     ModelDecisionBackend,
     ModelGenerationBackend,
     RequestBudget,
     RequestEvidenceSink,
     RetryPolicy,
 )
-from .semantic import EmbeddingProtocolError
-from .session import CapacityCheck, ContinuousSession, PrepareHistory, RefreshState, SessionStore
+from purrcept_engine.subject.semantic import EmbeddingProtocolError
+from purrcept_engine.subject.session import (
+    CapacityCheck,
+    ContinuousSession,
+    PrepareHistory,
+    RefreshState,
+    SessionStore,
+)
+from purrcept_engine.values import ActionProtocolError, JsonObject, decode_object
 
 
 class CoordinatorStore(SessionStore, RequestEvidenceSink, MediaStore, Protocol):

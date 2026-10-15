@@ -9,7 +9,7 @@ from urllib.parse import urlparse
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from purrcept_engine.execution.protocol import JsonValue
+from purrcept_engine.values import JsonValue
 
 QQId = Annotated[str, Field(pattern=r"^[1-9][0-9]*$")]
 MessageId = Annotated[str, Field(pattern=r"^-?[1-9][0-9]*$")]

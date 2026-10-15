@@ -15,20 +15,24 @@ from pydantic import BaseModel, ConfigDict
 from purrcept_engine.errors import ConfigError
 from purrcept_engine.execution.catalog import CapabilityDeclaration, ObjectDeclaration
 from purrcept_engine.execution.providers import CallContext, CallOutcome, FunctionCapability
-from purrcept_engine.plugins.base import (
+from purrcept_engine.plugin_system.contracts import (
     PluginBlueprint,
     PluginFactory,
     PluginPorts,
     PluginRuntime,
     typed_factory,
 )
-from purrcept_engine.plugins.panels import DevicePanel, PanelControl
-
-from .dsp import check_program
-from .models import AudioError, AudioSettings, RecordParameters, SpeechParameters
-from .player import AudioPlayer, FFplayPlayer
-from .runtime import AudioRuntime
-from .tts import FishSource, SpeechSource
+from purrcept_engine.plugin_system.panels import DevicePanel, PanelControl
+from purrcept_engine.plugins.audio.dsp import check_program
+from purrcept_engine.plugins.audio.models import (
+    AudioError,
+    AudioSettings,
+    RecordParameters,
+    SpeechParameters,
+)
+from purrcept_engine.plugins.audio.player import AudioPlayer, FFplayPlayer
+from purrcept_engine.plugins.audio.runtime import AudioRuntime
+from purrcept_engine.plugins.audio.tts import FishSource, SpeechSource
 
 
 class _Empty(BaseModel):

@@ -40,7 +40,7 @@ from purrcept_engine.context.checkpoints import (
     restore_checkpoint,
 )
 from purrcept_engine.errors import StorageError
-from purrcept_engine.storage.model_requests import encode
+from purrcept_engine.serialization import encode
 
 
 def checkpoint() -> ConversationCheckpoint:

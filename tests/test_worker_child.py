@@ -17,14 +17,9 @@ from pathlib import Path
 
 import pytest
 
-from purrcept_engine.execution.protocol import (
-    ActionProtocolError,
-    FrameChannel,
-    JsonObject,
-    JsonValue,
-    encode_json,
-)
+from purrcept_engine.execution.protocol import FrameChannel
 from purrcept_engine.execution.windows import WindowsProcess
+from purrcept_engine.values import ActionProtocolError, JsonObject, JsonValue, encode_json
 
 _FRAME_BYTES = 2 * 1024 * 1024
 _ACTION_ID = "fixture-action"

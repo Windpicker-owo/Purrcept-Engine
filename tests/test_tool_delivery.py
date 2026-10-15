@@ -37,21 +37,20 @@ from purrcept_engine.context.capacity import (
     GenerationCapacity,
     check_capacity,
 )
-from purrcept_engine.errors import StorageError
-from purrcept_engine.execution.protocol import JsonObject, JsonValue, decode_object
-from purrcept_engine.storage import InputContext, InputSource, InputSubmission, MediaAsset
-from purrcept_engine.storage.execution import ActionRecord, CallOutcome
-from purrcept_engine.storage.knowledge import (
+from purrcept_engine.domain.execution.models import ActionRecord, CallOutcome
+from purrcept_engine.domain.inputs.models import MediaReference
+from purrcept_engine.domain.knowledge.models import (
     EvidenceSnapshot,
     KnowledgeInputError,
     MemoryPatch,
     SupervisionRecord,
     WakeupPlan,
 )
-from purrcept_engine.storage.model_requests import encode
-from purrcept_engine.storage.models import MediaReference
+from purrcept_engine.domain.subject.models import SessionScope
+from purrcept_engine.errors import StorageError
+from purrcept_engine.serialization import encode
+from purrcept_engine.storage import InputContext, InputSource, InputSubmission, MediaAsset
 from purrcept_engine.storage.store import Store
-from purrcept_engine.storage.subject import SessionScope
 from purrcept_engine.subject.delivery import ToolDeliveryGate
 from purrcept_engine.subject.foreground import ForegroundTools
 from purrcept_engine.subject.knowledge import KnowledgeService
@@ -65,6 +64,7 @@ from purrcept_engine.subject.session import (
     RefreshState,
     SessionResult,
 )
+from purrcept_engine.values import JsonObject, JsonValue, decode_object
 
 
 @pytest_asyncio.fixture

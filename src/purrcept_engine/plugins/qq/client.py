@@ -17,15 +17,8 @@ from dataclasses import dataclass
 from typing import Literal
 from uuid import uuid4
 
-from purrcept_engine.execution.protocol import (
-    ActionProtocolError,
-    JsonObject,
-    decode_object,
-    encode_json,
-)
 from purrcept_engine.execution.providers import CallContext
-
-from .ports import (
+from purrcept_engine.plugins.qq.ports import (
     Connection,
     ConnectionRejected,
     ConnectionUnavailable,
@@ -34,7 +27,8 @@ from .ports import (
     QQCallError,
     Reply,
 )
-from .settings import QQSettings
+from purrcept_engine.plugins.qq.settings import QQSettings
+from purrcept_engine.values import ActionProtocolError, JsonObject, decode_object, encode_json
 
 EventHandler = Callable[[JsonObject, int], Awaitable[None]]
 GapHandler = Callable[[JsonObject, str], None]

@@ -22,16 +22,16 @@ from purrcept_core.models import ImageBlock, ImageBytes
 from purrcept_engine.app.config import ExecutionSettings
 from purrcept_engine.app.evidence import EvidenceAccess
 from purrcept_engine.context.materials import media_blocks
+from purrcept_engine.domain.inputs.models import Admission, InputRecord, InputSubmission, MediaAsset
+from purrcept_engine.domain.knowledge.models import EvidenceSnapshot
+from purrcept_engine.domain.subject.models import InputProcessing
 from purrcept_engine.errors import ConfigError, StorageError
 from purrcept_engine.execution.catalog import Catalog, ObjectDeclaration
 from purrcept_engine.execution.providers import CallContext, CapabilityInputError
 from purrcept_engine.execution.service import ExecutionService
+from purrcept_engine.plugin_system.contracts import PluginPorts, PluginRuntime
 from purrcept_engine.plugins import images
-from purrcept_engine.plugins.base import PluginPorts, PluginRuntime
-from purrcept_engine.storage.knowledge import EvidenceSnapshot
-from purrcept_engine.storage.models import Admission, InputRecord, InputSubmission, MediaAsset
 from purrcept_engine.storage.store import Store
-from purrcept_engine.storage.subject import InputProcessing
 
 
 def pixels(format: str = "PNG") -> bytes:

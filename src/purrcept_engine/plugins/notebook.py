@@ -33,13 +33,11 @@ from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from purrcept_engine.domain.knowledge.models import EvidencePage, EvidenceSnapshot
 from purrcept_engine.errors import EngineError, HostStateError
 from purrcept_engine.execution.catalog import CapabilityDeclaration, ObjectDeclaration
-from purrcept_engine.execution.protocol import JsonObject, JsonValue, decode_object, encode_json
 from purrcept_engine.execution.providers import CallContext, CallOutcome, FunctionCapability
-from purrcept_engine.storage.knowledge import EvidencePage, EvidenceSnapshot
-
-from .base import (
+from purrcept_engine.plugin_system.contracts import (
     EvidencePort,
     PluginBlueprint,
     PluginFactory,
@@ -47,7 +45,8 @@ from .base import (
     PluginRuntime,
     typed_factory,
 )
-from .skills import ParsedNote, parse_note
+from purrcept_engine.plugins.skills import ParsedNote, parse_note
+from purrcept_engine.values import JsonObject, JsonValue, decode_object, encode_json
 
 _SUFFIXES = frozenset({".md", ".markdown"})
 _INVALID_SEGMENT = re.compile(r'[\x00-\x1f<>:"|?*]')

@@ -1,8 +1,8 @@
 """向插件借出原文与共享分页，隔开主体认识权限和权威队列内部实现。"""
 
-from purrcept_engine.storage.knowledge import EvidencePage, EvidenceSnapshot
+from purrcept_engine.domain.inputs.models import MediaAsset
+from purrcept_engine.domain.knowledge.models import EvidencePage, EvidenceSnapshot
 from purrcept_engine.storage.knowledge_port import KnowledgeLedger
-from purrcept_engine.storage.models import MediaAsset
 
 
 class EvidenceAccess:

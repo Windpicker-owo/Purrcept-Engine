@@ -17,8 +17,8 @@ import time
 from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import Protocol
 
-from .dsp import check_program
-from .models import AudioError, PlaybackResult
+from purrcept_engine.plugins.audio.dsp import check_program
+from purrcept_engine.plugins.audio.models import AudioError, PlaybackResult
 
 _CLOCK = re.compile(rb"^\s*(-?\d+(?:\.\d+)?)\s+[AM]-[AV]:")
 _TERMINAL_CONTROL = re.compile(rb"\x1b\[[0-?]*[ -/]*[@-~]")

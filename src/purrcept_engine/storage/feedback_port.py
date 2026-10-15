@@ -10,10 +10,11 @@ import sqlite3
 from collections.abc import Awaitable, Callable
 from typing import Protocol
 
-from . import feedback as sql
-from .knowledge import EvidencePage, SupervisionRecord
-from .model_requests import encode
-from .time import AdmitInput
+import purrcept_engine.domain.subject.feedback_models as subject_feedback_models
+from purrcept_engine.domain.knowledge.models import EvidencePage, SupervisionRecord
+from purrcept_engine.serialization import encode
+from purrcept_engine.storage import feedback as sql
+from purrcept_engine.storage.time import AdmitInput
 
 
 def _nonnegative(value: int) -> None:
@@ -53,14 +54,16 @@ class FeedbackLedger:
         self._submit = submit
         self._admit = admit
 
-    async def bridge(self, *, now: float, limit: int = 16) -> sql.FeedbackBridge:
+    async def bridge(
+        self, *, now: float, limit: int = 16
+    ) -> subject_feedback_models.FeedbackBridge:
         """桥接实际回执、活动双消费者、前台失败及到期计划和有效监管。"""
         _limit(limit)
         if isinstance(now, bool) or not math.isfinite(now):
             raise ValueError("反馈观察时刻必须是有限时间。")
         work = await self._submit(lambda connection: sql.prepare(connection, now=now, limit=limit))
         if not work.available:
-            return sql.FeedbackBridge()
+            return subject_feedback_models.FeedbackBridge()
         return await self._submit(
             lambda connection: sql.bridge(connection, self._admit, work, now=now, limit=limit),
             logical_bytes=len(
@@ -80,7 +83,7 @@ class FeedbackLedger:
 
     async def dispatch_supervision(
         self, record: SupervisionRecord, *, observed_generation: int
-    ) -> sql.FeedbackBridge:
+    ) -> subject_feedback_models.FeedbackBridge:
         """即时交接提交前已观察代次的新意见，迟到扫描不能重绑当前代次。"""
         _nonnegative(observed_generation)
         return await self._submit(
@@ -92,13 +95,13 @@ class FeedbackLedger:
             writing=True,
         )
 
-    async def reflection_state(self) -> sql.ReflectionState:
+    async def reflection_state(self) -> subject_feedback_models.ReflectionState:
         """读取独立来源和真正成功轮数，不改变复核资格。"""
         return await self._submit(sql.reflection_state)
 
     async def reflection_sources(
         self, *, epoch: int, limit: int = 32, after: int = 0
-    ) -> tuple[sql.ReflectionSource, ...]:
+    ) -> tuple[subject_feedback_models.ReflectionSource, ...]:
         """分页读取具体版本；已耗尽的相同覆盖不会反复排到第一批。"""
         _limit(limit)
         _nonnegative(epoch)

@@ -16,7 +16,7 @@ import sqlite3
 from dataclasses import dataclass
 
 from purrcept_engine.errors import StorageError
-from purrcept_engine.execution.protocol import ActionProtocolError, decode_object
+from purrcept_engine.values import ActionProtocolError, decode_object
 
 SCHEMA = (
     "CREATE TABLE model_attempt_diagnostics ("

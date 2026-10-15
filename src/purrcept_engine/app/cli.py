@@ -18,15 +18,14 @@ from importlib.resources import files
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from purrcept_engine.app.config import load_config
+from purrcept_engine.app.host import EngineHost, HostSnapshot
+from purrcept_engine.app.logging import CliLogging
+from purrcept_engine.app.stdin import ConsoleIngress, WindowsLineReader
 from purrcept_engine.errors import ConfigError, EngineError
 
-from .config import load_config
-from .host import EngineHost, HostSnapshot
-from .logging import CliLogging
-from .stdin import ConsoleIngress, WindowsLineReader
-
 if TYPE_CHECKING:
-    from .web import WebServer
+    from purrcept_engine.app.web import WebServer
 
 
 def main() -> int:
@@ -104,7 +103,7 @@ async def _run(config_path: Path) -> None:
                 "宿主已就绪。", extra={"host_instance": host.query().instance_id}
             )
         if config.web.enabled:
-            from .web import WebServer
+            from purrcept_engine.app.web import WebServer
 
             web = WebServer(host, port=config.web.port)
             await web.start()

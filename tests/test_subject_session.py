@@ -24,7 +24,6 @@ from purrcept_core.models import (
 
 from purrcept_engine.app.config import RetrySettings
 from purrcept_engine.context.capacity import GenerationCapacity, check_capacity
-from purrcept_engine.execution.protocol import JsonObject
 from purrcept_engine.storage import (
     InputContext,
     InputSource,
@@ -33,6 +32,7 @@ from purrcept_engine.storage import (
 from purrcept_engine.storage.store import Store
 from purrcept_engine.subject.model_requests import RequestBudget
 from purrcept_engine.subject.session import ContinuousSession, DynamicState
+from purrcept_engine.values import JsonObject
 
 
 @pytest_asyncio.fixture

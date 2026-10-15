@@ -14,6 +14,7 @@ from typing import cast
 
 import pytest
 
+import purrcept_engine.domain.execution.models as execution_models
 from purrcept_engine.errors import StorageError
 from purrcept_engine.storage import execution as execution_storage
 from purrcept_engine.storage.store import Store
@@ -31,7 +32,7 @@ async def _prepare(store: Store, call_id: str, *, sequence: int = 0) -> None:
     )
 
 
-async def _result(store: Store, call_id: str, state: execution_storage.CallOutcome) -> None:
+async def _result(store: Store, call_id: str, state: execution_models.CallOutcome) -> None:
     """保存合成结论，不通过 Worker 自报或任何外部服务取得效果。"""
     await store.record_call_result(
         call_id,

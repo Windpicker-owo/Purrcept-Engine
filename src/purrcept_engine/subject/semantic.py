@@ -13,15 +13,14 @@ import math
 from collections.abc import Awaitable, Callable
 from typing import Protocol
 
-from purrcept_engine.errors import HostStateError
-from purrcept_engine.storage.knowledge import (
+from purrcept_engine.domain.knowledge.models import (
     EvidenceSnapshot,
     IndexJob,
     KnowledgeReference,
     MemoryRecord,
 )
-
-from .knowledge import KnowledgeStore
+from purrcept_engine.errors import HostStateError
+from purrcept_engine.subject.knowledge import KnowledgeStore
 
 
 class EmbeddingProtocolError(ValueError):

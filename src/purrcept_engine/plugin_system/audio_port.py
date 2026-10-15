@@ -6,9 +6,9 @@ app 在全部 build 后绑定 BodyPort，然后启动输出运行时。VAD/面�
 
 from typing import Protocol
 
-from purrcept_engine.execution.protocol import JsonObject
 from purrcept_engine.execution.providers import CallContext, CallOutcome
-from purrcept_engine.plugins.live2d.ports import BodyPort
+from purrcept_engine.plugin_system.body_port import BodyPort
+from purrcept_engine.values import JsonObject
 
 
 class AudioOutputPort(Protocol):

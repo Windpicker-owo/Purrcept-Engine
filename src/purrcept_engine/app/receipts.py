@@ -6,11 +6,11 @@
 本门面不创建连接或脱离所有者的后台任务。
 """
 
+from purrcept_engine.domain.execution.models import CallRecord
 from purrcept_engine.errors import StorageError
-from purrcept_engine.execution.protocol import encode_json
 from purrcept_engine.execution.providers import CallContext, CallOutcome, CapabilityInputError
-from purrcept_engine.storage.execution import CallRecord
 from purrcept_engine.storage.store import Store
+from purrcept_engine.values import encode_json
 
 
 class LateCallResults:

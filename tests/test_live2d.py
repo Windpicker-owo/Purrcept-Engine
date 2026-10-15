@@ -16,9 +16,10 @@ import pytest
 from pydantic import ValidationError
 
 from purrcept_engine.execution.providers import CallContext
+from purrcept_engine.plugin_system.body import BodyIntent
 from purrcept_engine.plugins.live2d import analyzer as analyzer_module
 from purrcept_engine.plugins.live2d.analyzer import AnalyzerProcess, VisemeFrame
-from purrcept_engine.plugins.live2d.models import BodyError, BodyIntent, ModelProfile
+from purrcept_engine.plugins.live2d.models import BodyError, ModelProfile
 from purrcept_engine.plugins.live2d.runtime import Live2DRuntime
 
 

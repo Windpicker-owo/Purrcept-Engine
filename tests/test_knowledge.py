@@ -24,9 +24,8 @@ from purrcept_core.models import (
 )
 from pydantic import ValidationError
 
-from purrcept_engine.errors import StorageError
-from purrcept_engine.storage import knowledge as ledger
-from purrcept_engine.storage.knowledge import (
+from purrcept_engine.domain.inputs.models import MediaReference
+from purrcept_engine.domain.knowledge.models import (
     Deferred,
     EvidencePage,
     EvidenceSnapshot,
@@ -39,7 +38,8 @@ from purrcept_engine.storage.knowledge import (
     SupervisionNotice,
     WakeupPlan,
 )
-from purrcept_engine.storage.models import MediaReference
+from purrcept_engine.errors import StorageError
+from purrcept_engine.storage import knowledge as ledger
 
 
 @pytest.fixture

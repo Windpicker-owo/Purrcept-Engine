@@ -18,16 +18,23 @@ from datetime import UTC, datetime
 from pathlib import Path
 from uuid import uuid4
 
+from purrcept_engine.domain.inputs.models import (
+    Admission,
+    InputContext,
+    InputSource,
+    InputSubmission,
+)
+from purrcept_engine.domain.knowledge.models import (
+    EvidencePage,
+    EvidenceSnapshot,
+    KnowledgeInputError,
+)
 from purrcept_engine.errors import HostStateError, StorageError
-from purrcept_engine.execution.protocol import JsonObject, JsonValue, decode_object, encode_json
 from purrcept_engine.execution.providers import CallContext, CallOutcome
-from purrcept_engine.storage.knowledge import EvidencePage, EvidenceSnapshot, KnowledgeInputError
-from purrcept_engine.storage.models import Admission, InputContext, InputSource, InputSubmission
-
-from ..base import EvidencePort, NativeInputPort, PluginPorts
-from .client import QQClient
-from .media import MediaBusy, MediaOwner
-from .messages import (
+from purrcept_engine.plugin_system.contracts import EvidencePort, NativeInputPort, PluginPorts
+from purrcept_engine.plugins.qq.client import QQClient
+from purrcept_engine.plugins.qq.media import MediaBusy, MediaOwner
+from purrcept_engine.plugins.qq.messages import (
     HistoryCache,
     filter_reason,
     forward_ids,
@@ -37,10 +44,11 @@ from .messages import (
     object_value,
     project_message,
 )
-from .parameters import Read
-from .ports import ConnectionRejected, Connector, QQCallError, Reply
-from .settings import QQSettings
-from .stickers import StickerLibrary
+from purrcept_engine.plugins.qq.parameters import Read
+from purrcept_engine.plugins.qq.ports import ConnectionRejected, Connector, QQCallError, Reply
+from purrcept_engine.plugins.qq.settings import QQSettings
+from purrcept_engine.plugins.qq.stickers import StickerLibrary
+from purrcept_engine.values import JsonObject, JsonValue, decode_object, encode_json
 
 
 def platform_data(reply: Reply) -> JsonValue:

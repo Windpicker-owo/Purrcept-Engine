@@ -15,12 +15,12 @@ from test_qq_plugin import config
 from test_qq_transport import Connector, Socket
 
 from purrcept_engine import EngineHost
-from purrcept_engine.execution.protocol import decode_object
 from purrcept_engine.plugins.qq.media import MediaOwner, QQMediaError
 from purrcept_engine.plugins.qq.parameters import Send
 from purrcept_engine.plugins.qq.plugin import factory_with_connector
 from purrcept_engine.plugins.qq.settings import QQSettings
 from purrcept_engine.plugins.qq.stickers import StickerLibrary
+from purrcept_engine.values import decode_object
 
 
 async def test_attachment_order_paths_and_owned_voice_cleanup(tmp_path: Path) -> None:

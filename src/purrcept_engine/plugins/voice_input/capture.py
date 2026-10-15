@@ -13,7 +13,7 @@ from collections.abc import AsyncGenerator, Callable, Iterable, Mapping
 from importlib import import_module
 from typing import Protocol, cast, overload
 
-from .models import InputDevice, VoiceInputError
+from purrcept_engine.plugins.voice_input.models import InputDevice, VoiceInputError
 
 
 class _Status(Protocol):

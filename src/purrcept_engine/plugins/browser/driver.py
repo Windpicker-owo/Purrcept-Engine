@@ -13,9 +13,8 @@ from types import MappingProxyType
 from typing import Protocol
 
 from purrcept_engine.errors import EngineError
-from purrcept_engine.execution.protocol import JsonObject
-
-from .navigation import NavigationPolicy
+from purrcept_engine.plugins.browser.navigation import NavigationPolicy
+from purrcept_engine.values import JsonObject
 
 
 class BrowserError(EngineError):

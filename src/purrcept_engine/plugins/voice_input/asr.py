@@ -14,9 +14,12 @@ from uuid import uuid4
 
 from websockets.asyncio.client import ClientConnection, connect
 
-from purrcept_engine.execution.protocol import JsonObject, decode_object, encode_json
-
-from .models import TranscriptUpdate, VoiceInputError, VoiceInputSettings
+from purrcept_engine.plugins.voice_input.models import (
+    TranscriptUpdate,
+    VoiceInputError,
+    VoiceInputSettings,
+)
+from purrcept_engine.values import JsonObject, decode_object, encode_json
 
 
 class ASRSocket(Protocol):

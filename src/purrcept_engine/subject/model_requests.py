@@ -40,7 +40,7 @@ from purrcept_core.models import (
     ToolCallDelta,
 )
 
-from purrcept_engine.storage.model_requests import (
+from purrcept_engine.domain.model_requests.models import (
     AttemptEvidence,
     AttemptStart,
     FailureEvidence,
@@ -48,8 +48,8 @@ from purrcept_engine.storage.model_requests import (
     RequestKind,
     RequestOutcome,
     RequestScope,
-    encode,
 )
+from purrcept_engine.serialization import encode
 
 
 class RetryPolicy(Protocol):

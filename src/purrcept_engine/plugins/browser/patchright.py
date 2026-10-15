@@ -12,9 +12,7 @@ import logging
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Protocol, cast
 
-from purrcept_engine.execution.protocol import JsonObject
-
-from .driver import (
+from purrcept_engine.plugins.browser.driver import (
     BrowserActionError,
     BrowserError,
     BrowserInputError,
@@ -22,8 +20,9 @@ from .driver import (
     PageView,
     SnapshotResult,
 )
-from .navigation import NavigationPolicy
-from .settings import BrowserSettings
+from purrcept_engine.plugins.browser.navigation import NavigationPolicy
+from purrcept_engine.plugins.browser.settings import BrowserSettings
+from purrcept_engine.values import JsonObject
 
 if TYPE_CHECKING:
     from patchright.async_api import Browser, BrowserContext, Locator, Page, Playwright, Route
@@ -82,7 +81,7 @@ class PatchrightDriver:
         """原有CDP或持久上下文选择，失败不自动重发另一会话。"""
         from patchright.async_api import async_playwright
 
-        from .locate import resolve_launch
+        from purrcept_engine.plugins.browser.locate import resolve_launch
 
         if self._close_task is not None:
             raise BrowserError("浏览器资源已开始关闭。")

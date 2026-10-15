@@ -14,14 +14,8 @@ from pathlib import Path
 from typing import Protocol
 from uuid import uuid4
 
-from purrcept_engine.execution.protocol import (
-    ActionProtocolError,
-    JsonObject,
-    decode_object,
-    encode_json,
-)
-
-from .models import BodyError, BodyUnavailable, ModelProfile
+from purrcept_engine.plugins.live2d.models import BodyError, BodyUnavailable, ModelProfile
+from purrcept_engine.values import ActionProtocolError, JsonObject, decode_object, encode_json
 
 
 class BodyDriver(Protocol):

@@ -39,7 +39,8 @@ from purrcept_core.models import (
 )
 
 from purrcept_engine.errors import StorageError
-from purrcept_engine.storage.model_requests import encode, intern_core_media, restore_core_media
+from purrcept_engine.serialization import encode
+from purrcept_engine.storage.model_requests import intern_core_media, restore_core_media
 
 
 class CheckpointError(StorageError):

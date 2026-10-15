@@ -22,12 +22,12 @@ from purrcept_engine.app.knowledge_resources import (
     KnowledgeResources,
     OpenAIEmbeddingResource,
 )
-from purrcept_engine.errors import HostStateError
-from purrcept_engine.storage.knowledge import (
+from purrcept_engine.domain.knowledge.models import (
     EvidenceSnapshot,
     KnowledgeCandidate,
     KnowledgeReference,
 )
+from purrcept_engine.errors import HostStateError
 from purrcept_engine.storage.store import Store
 from purrcept_engine.subject.knowledge import KnowledgeService, recall_payload
 from purrcept_engine.subject.semantic import KnowledgeIndexWorker, VectorRetriever

@@ -23,7 +23,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         import uvicorn
 
-        from .server import create_studio
+        from purrcept_engine.app.studio.server import create_studio
     except ModuleNotFoundError as error:
         if error.name not in {"uvicorn", "starlette"}:
             raise

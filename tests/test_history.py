@@ -40,7 +40,6 @@ from purrcept_engine.app.config import RetrySettings
 from purrcept_engine.context.capacity import GenerationCapacity, assess_capacity, check_capacity
 from purrcept_engine.context.checkpoints import decode_checkpoint, encode_checkpoint
 from purrcept_engine.context.maintenance import SummaryError, SummarySource, freeze_summary_source
-from purrcept_engine.execution.protocol import JsonObject
 from purrcept_engine.storage import (
     InputSource,
     InputSubmission,
@@ -48,6 +47,7 @@ from purrcept_engine.storage import (
 from purrcept_engine.storage.store import Store
 from purrcept_engine.subject.history import HistoryMaintenance, summary_request
 from purrcept_engine.subject.model_requests import RequestBudgetExceeded, compile_materials
+from purrcept_engine.values import JsonObject
 
 
 @pytest_asyncio.fixture

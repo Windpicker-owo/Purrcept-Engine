@@ -17,10 +17,15 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Protocol, cast
 
-from purrcept_engine.execution.protocol import ActionProtocolError, FrameChannel, encode_json
+from purrcept_engine.execution.protocol import FrameChannel
 from purrcept_engine.execution.windows import WindowsProcess
-
-from .models import ComputerError, ComputerFrame, ForegroundInfo, ObservationPolicy
+from purrcept_engine.plugins.computer.models import (
+    ComputerError,
+    ComputerFrame,
+    ForegroundInfo,
+    ObservationPolicy,
+)
+from purrcept_engine.values import ActionProtocolError, encode_json
 
 _MAX_FRAME = 12 * 1024 * 1024
 

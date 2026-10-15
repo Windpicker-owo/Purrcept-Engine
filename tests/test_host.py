@@ -21,10 +21,15 @@ from purrcept_engine import (
 from purrcept_engine.app.locking import InstanceLock
 from purrcept_engine.app.models import OpenAIGenerationResource
 from purrcept_engine.context.capacity import CapacityDeclaration, CapacityEstimate
-from purrcept_engine.execution.protocol import JsonObject
-from purrcept_engine.plugins.base import PluginBlueprint, PluginFactory, PluginPorts, PluginRuntime
-from purrcept_engine.plugins.panels import DevicePanel
+from purrcept_engine.plugin_system.contracts import (
+    PluginBlueprint,
+    PluginFactory,
+    PluginPorts,
+    PluginRuntime,
+)
+from purrcept_engine.plugin_system.panels import DevicePanel
 from purrcept_engine.storage.store import Store
+from purrcept_engine.values import JsonObject
 
 
 def _config(directory: Path, *, close_seconds: float = 30.0) -> EngineConfig:

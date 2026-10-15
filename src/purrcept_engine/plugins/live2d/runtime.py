@@ -16,12 +16,12 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 from purrcept_engine.errors import HostStateError
-from purrcept_engine.execution.protocol import JsonObject
 from purrcept_engine.execution.providers import CallContext, CallOutcome
-
-from .analyzer import VisemeAnalyzer, VisemeFrame
-from .models import VISEMES, BodyError, BodyIntent, BodyStyle, BodyUnavailable
-from .vts import BodyDriver
+from purrcept_engine.plugin_system.body import BodyIntent
+from purrcept_engine.plugins.live2d.analyzer import VisemeAnalyzer, VisemeFrame
+from purrcept_engine.plugins.live2d.models import VISEMES, BodyError, BodyStyle, BodyUnavailable
+from purrcept_engine.plugins.live2d.vts import BodyDriver
+from purrcept_engine.values import JsonObject
 
 _LOG = logging.getLogger(__name__)
 

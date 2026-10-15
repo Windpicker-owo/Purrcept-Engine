@@ -12,8 +12,9 @@ from collections.abc import Awaitable, Callable
 from datetime import datetime
 from typing import Protocol
 
-from . import time as sql
-from .model_requests import encode
+import purrcept_engine.domain.time.models as time_models
+from purrcept_engine.serialization import encode
+from purrcept_engine.storage import time as sql
 
 
 class _Submit(Protocol):
@@ -39,15 +40,15 @@ class TimePort(Protocol):
     事务。业务TimeError可纠正，权威SQLite和内部异常原样传出。
     """
 
-    async def alarms(self, clock_id: str) -> tuple[sql.Alarm, ...]:
+    async def alarms(self, clock_id: str) -> tuple[time_models.Alarm, ...]:
         """读取当前最多32条待响定义。"""
         ...
 
-    async def set_alarm(self, alarm: sql.Alarm, now: datetime) -> sql.Alarm:
+    async def set_alarm(self, alarm: time_models.Alarm, now: datetime) -> time_models.Alarm:
         """保存一个未来正式闹铃及持久发生身份。"""
         ...
 
-    async def cancel_alarm(self, clock_id: str, alarm_id: str) -> sql.Alarm:
+    async def cancel_alarm(self, clock_id: str, alarm_id: str) -> time_models.Alarm:
         """取消当前尚未消耗的定义，不删除发生历史。"""
         ...
 
@@ -57,19 +58,21 @@ class TimePort(Protocol):
 
     async def fire_alarm(
         self, clock_id: str, alarm_id: str, occurrence_id: str, now: datetime
-    ) -> sql.AlarmFiring | None:
+    ) -> time_models.AlarmFiring | None:
         """同事务接管一次到期原文并消耗/推进定义，过期候选返回None。"""
         ...
 
-    async def get_rest(self) -> sql.RestState | None:
+    async def get_rest(self) -> time_models.RestState | None:
         """读取明确休息状态，到预计期限不自动醒来。"""
         ...
 
-    async def rest(self, bed_id: str, minutes: int, now: datetime, call_id: str) -> sql.RestChange:
+    async def rest(
+        self, bed_id: str, minutes: int, now: datetime, call_id: str
+    ) -> time_models.RestChange:
         """以实际调用身份提交休息开始或打算时长更新。"""
         ...
 
-    async def leave(self, now: datetime, call_id: str) -> sql.RestChange:
+    async def leave(self, now: datetime, call_id: str) -> time_models.RestChange:
         """明确结束休息；醒着不创建新的状态变化。"""
         ...
 
@@ -81,14 +84,14 @@ class TimeLedger:
         """借用唯一队列与原文接管，不能自行创建SQLite连接。"""
         self._submit, self._admit = submit, admit
 
-    async def alarms(self, clock_id: str) -> tuple[sql.Alarm, ...]:
+    async def alarms(self, clock_id: str) -> tuple[time_models.Alarm, ...]:
         """只读正式定义，查询不产生新输入。"""
         return await self._submit(
             lambda connection: sql.alarms(connection, clock_id),
             logical_bytes=len(clock_id.encode()),
         )
 
-    async def set_alarm(self, alarm: sql.Alarm, now: datetime) -> sql.Alarm:
+    async def set_alarm(self, alarm: time_models.Alarm, now: datetime) -> time_models.Alarm:
         """实际提交后返回，完整定义UTF8计入同一控制提交额度。"""
         return await self._submit(
             lambda connection: sql.set_alarm(connection, alarm, now),
@@ -97,7 +100,7 @@ class TimeLedger:
             writing=True,
         )
 
-    async def cancel_alarm(self, clock_id: str, alarm_id: str) -> sql.Alarm:
+    async def cancel_alarm(self, clock_id: str, alarm_id: str) -> time_models.Alarm:
         """保存明确取消，不从模型文字推断闹铃已响。"""
         return await self._submit(
             lambda connection: sql.cancel_alarm(connection, clock_id, alarm_id),
@@ -117,7 +120,7 @@ class TimeLedger:
 
     async def fire_alarm(
         self, clock_id: str, alarm_id: str, occurrence_id: str, now: datetime
-    ) -> sql.AlarmFiring | None:
+    ) -> time_models.AlarmFiring | None:
         """接管输入/消耗和回执共享同一事务，输入全局额度仍由admit核验。"""
         return await self._submit(
             lambda connection: sql.fire_alarm(
@@ -130,11 +133,13 @@ class TimeLedger:
             writing=True,
         )
 
-    async def get_rest(self) -> sql.RestState | None:
+    async def get_rest(self) -> time_models.RestState | None:
         """读取唯一主体状态，不复制第二份可写实体组件。"""
         return await self._submit(sql.get_rest)
 
-    async def rest(self, bed_id: str, minutes: int, now: datetime, call_id: str) -> sql.RestChange:
+    async def rest(
+        self, bed_id: str, minutes: int, now: datetime, call_id: str
+    ) -> time_models.RestChange:
         """保存开始或更新及独立实际回执，已休息的开始时间保持。"""
         return await self._submit(
             lambda connection: sql.rest(connection, bed_id, minutes, now, call_id),
@@ -143,7 +148,7 @@ class TimeLedger:
             writing=True,
         )
 
-    async def leave(self, now: datetime, call_id: str) -> sql.RestChange:
+    async def leave(self, now: datetime, call_id: str) -> time_models.RestChange:
         """明确起身或实际无副作用结果。"""
         return await self._submit(
             lambda connection: sql.leave(connection, now, call_id),

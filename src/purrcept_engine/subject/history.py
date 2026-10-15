@@ -43,19 +43,17 @@ from purrcept_engine.context.maintenance import (
     candidate_checkpoint,
     shorten_summary_source,
 )
-from purrcept_engine.errors import HostStateError
-from purrcept_engine.execution.protocol import JsonObject, decode_object
-from purrcept_engine.storage.maintenance import summary_message
-from purrcept_engine.storage.model_requests import (
+from purrcept_engine.domain.model_requests.models import (
     AttemptEvidence,
     AttemptStart,
     RequestEvidence,
     RequestOutcome,
     RequestScope,
-    encode,
 )
-
-from .model_requests import (
+from purrcept_engine.errors import HostStateError
+from purrcept_engine.serialization import encode
+from purrcept_engine.storage.maintenance import summary_message
+from purrcept_engine.subject.model_requests import (
     ModelGenerationBackend,
     RequestBudget,
     RequestEvidenceSink,
@@ -63,6 +61,7 @@ from .model_requests import (
     compile_materials,
     prepare_off_loop,
 )
+from purrcept_engine.values import JsonObject, decode_object
 
 type CapacityCheck = Callable[[JsonObject], CapacityAssessment]
 type SourceLayout = Callable[[ConversationCheckpoint], ModelRequest]

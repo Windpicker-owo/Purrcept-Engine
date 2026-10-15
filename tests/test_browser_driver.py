@@ -15,7 +15,6 @@ import pytest
 from patchright import async_api
 from patchright.async_api import Error, Route
 
-from purrcept_engine.execution.protocol import JsonObject
 from purrcept_engine.plugins.browser.driver import (
     BrowserActionError,
     BrowserError,
@@ -23,6 +22,7 @@ from purrcept_engine.plugins.browser.driver import (
 )
 from purrcept_engine.plugins.browser.patchright import PatchrightDriver
 from purrcept_engine.plugins.browser.settings import BrowserSettings
+from purrcept_engine.values import JsonObject
 
 
 class DocumentSession:

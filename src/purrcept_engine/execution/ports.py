@@ -8,10 +8,14 @@
 from collections.abc import Awaitable, Callable
 from typing import Protocol
 
-from purrcept_engine.storage.execution import ActionOutcome, ActionRecord, CallOutcome, CallRecord
-from purrcept_engine.storage.models import MediaReference
-
-from .protocol import JsonObject
+from purrcept_engine.domain.execution.models import (
+    ActionOutcome,
+    ActionRecord,
+    CallOutcome,
+    CallRecord,
+)
+from purrcept_engine.domain.inputs.models import MediaReference
+from purrcept_engine.values import JsonObject
 
 
 class ExecutionJournal(Protocol):

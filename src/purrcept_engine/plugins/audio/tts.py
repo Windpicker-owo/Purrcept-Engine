@@ -15,9 +15,14 @@ from urllib.parse import quote
 
 import httpx
 
-from purrcept_engine.execution.protocol import ActionProtocolError, JsonObject, decode_object
-
-from .models import AudioError, AudioSettings, RecordParameters, SpeechAudio, SpeechParameters
+from purrcept_engine.plugins.audio.models import (
+    AudioError,
+    AudioSettings,
+    RecordParameters,
+    SpeechAudio,
+    SpeechParameters,
+)
+from purrcept_engine.values import ActionProtocolError, JsonObject, decode_object
 
 MAX_AUDIO_BYTES = 8 * 1024 * 1024
 

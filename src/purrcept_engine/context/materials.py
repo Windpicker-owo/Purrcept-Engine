@@ -20,8 +20,8 @@ from purrcept_core.models import (
 )
 
 from purrcept_engine.context.presentation import render_input
+from purrcept_engine.domain.inputs.models import InputRecord, MediaReference
 from purrcept_engine.errors import EngineError, StorageError
-from purrcept_engine.storage.models import InputRecord, MediaReference
 
 
 class MediaStore(Protocol):

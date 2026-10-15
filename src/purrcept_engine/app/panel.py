@@ -13,16 +13,17 @@ from typing import Protocol, cast
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from purrcept_engine.domain.controls.models import ControlError, ControlRecord
+from purrcept_engine.domain.execution.models import ActionRecord
 from purrcept_engine.errors import HostStateError
 from purrcept_engine.execution.catalog import Catalog
-from purrcept_engine.execution.protocol import JsonObject, JsonValue, encode_json
 from purrcept_engine.execution.providers import CapabilityInputError
 from purrcept_engine.execution.service import ExecutionBusy, ExecutionLimitError
-from purrcept_engine.plugins.base import PluginRuntime
-from purrcept_engine.plugins.panels import PanelControl, PreviewFrame
-from purrcept_engine.storage.controls import ControlError, ControlLedger, ControlRecord
-from purrcept_engine.storage.execution import ActionRecord
+from purrcept_engine.plugin_system.contracts import PluginRuntime
+from purrcept_engine.plugin_system.panels import PanelControl, PreviewFrame
+from purrcept_engine.storage.controls import ControlLedger
 from purrcept_engine.subject.activities import ActivityError, ActivityService
+from purrcept_engine.values import JsonObject, JsonValue, encode_json
 
 
 class ControlRequest(BaseModel):

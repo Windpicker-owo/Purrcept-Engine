@@ -9,9 +9,8 @@ from dataclasses import dataclass
 from typing import Literal, Protocol
 
 from purrcept_engine.errors import EngineError
-from purrcept_engine.execution.protocol import JsonObject
-
-from .settings import QQSettings
+from purrcept_engine.plugins.qq.settings import QQSettings
+from purrcept_engine.values import JsonObject
 
 
 @dataclass(frozen=True, slots=True)

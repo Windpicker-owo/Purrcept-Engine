@@ -27,46 +27,29 @@ from pathlib import Path
 from typing import Literal, Protocol
 from uuid import uuid4
 
+import purrcept_engine.domain.controls.models as controls_models
+import purrcept_engine.domain.execution.record_validation as record_validation
+import purrcept_engine.domain.knowledge.models as knowledge_models
+import purrcept_engine.domain.time.models as time_models
+import purrcept_engine.serialization as serialization
 from purrcept_engine.context.maintenance import (
     Reservation,
     SummaryError,
     SummaryProposal,
     SummarySource,
 )
-from purrcept_engine.errors import StorageError
-from purrcept_engine.execution.protocol import (
-    ActionProtocolError,
-    JsonObject,
-    JsonValue,
-    decode_object,
+from purrcept_engine.domain.activities.models import (
+    ActivityCommand,
+    ActivityFeedback,
+    ActivityRecord,
 )
-
-from . import activities as activity_storage
-from . import audio as audio_storage
-from . import controls as control_storage
-from . import execution as execution_storage
-from . import feedback as feedback_storage
-from . import knowledge as knowledge_storage
-from . import maintenance as maintenance_storage
-from . import model_requests as model_storage
-from . import projections as projection_storage
-from . import retention as retention_storage
-from . import subject as subject_storage
-from . import time as time_storage
-from .activities import ActivityCommand, ActivityFeedback, ActivityRecord
-from .audio_port import AudioLedger
-from .controls import ControlLedger
-from .execution import ActionOutcome, ActionRecord, CallOutcome, CallRecord
-from .feedback_port import FeedbackLedger
-from .knowledge_port import KnowledgeLedger
-from .model_requests import (
-    AttemptEvidence,
-    AttemptStart,
-    RequestEvidence,
-    RequestOutcome,
-    RequestRecord,
+from purrcept_engine.domain.execution.models import (
+    ActionOutcome,
+    ActionRecord,
+    CallOutcome,
+    CallRecord,
 )
-from .models import (
+from purrcept_engine.domain.inputs.models import (
     Admission,
     InputContext,
     InputRecord,
@@ -74,7 +57,14 @@ from .models import (
     InputSubmission,
     MediaReference,
 )
-from .subject import (
+from purrcept_engine.domain.model_requests.models import (
+    AttemptEvidence,
+    AttemptStart,
+    RequestEvidence,
+    RequestOutcome,
+    RequestRecord,
+)
+from purrcept_engine.domain.subject.models import (
     AttentionLevel,
     InputProcessing,
     InputStage,
@@ -84,7 +74,25 @@ from .subject import (
     TurnOutcome,
     TurnRecord,
 )
-from .time_port import TimeLedger
+from purrcept_engine.errors import StorageError
+from purrcept_engine.storage import activities as activity_storage
+from purrcept_engine.storage import audio as audio_storage
+from purrcept_engine.storage import controls as control_storage
+from purrcept_engine.storage import execution as execution_storage
+from purrcept_engine.storage import feedback as feedback_storage
+from purrcept_engine.storage import knowledge as knowledge_storage
+from purrcept_engine.storage import maintenance as maintenance_storage
+from purrcept_engine.storage import model_requests as model_storage
+from purrcept_engine.storage import projections as projection_storage
+from purrcept_engine.storage import retention as retention_storage
+from purrcept_engine.storage import subject as subject_storage
+from purrcept_engine.storage import time as time_storage
+from purrcept_engine.storage.audio_port import AudioLedger
+from purrcept_engine.storage.controls import ControlLedger
+from purrcept_engine.storage.feedback_port import FeedbackLedger
+from purrcept_engine.storage.knowledge_port import KnowledgeLedger
+from purrcept_engine.storage.time_port import TimeLedger
+from purrcept_engine.values import ActionProtocolError, JsonObject, JsonValue, decode_object
 
 _FORMAT_VERSION = 13
 _logger = logging.getLogger(__name__)
@@ -229,7 +237,7 @@ def _positive(value: int, field: str) -> None:
 
 def _active_supervision(
     connection: sqlite3.Connection,
-) -> Iterator[knowledge_storage.SupervisionRecord]:
+) -> Iterator[knowledge_models.SupervisionRecord]:
     """分块扫描全部未回应意见，逐项核验来源、期限及活动版本。
 
     32 只是数据库读取块大小，不是主体当前材料的选择上限。此迭代在一个
@@ -249,7 +257,7 @@ def _active_supervision(
 
 def _action_snapshot(
     connection: sqlite3.Connection,
-    snapshot: knowledge_storage.EvidenceSnapshot,
+    snapshot: knowledge_models.EvidenceSnapshot,
     *,
     current: ActionRecord | None = None,
 ) -> ActionRecord:
@@ -303,7 +311,7 @@ def _action_snapshot(
         )
     candidate = replace(action, calls=tuple(frozen))
     if (
-        snapshot.text != model_storage.encode(candidate)
+        snapshot.text != serialization.encode(candidate)
         or snapshot.occurred_at != action.finished_at
         or snapshot.media
         != tuple(dict.fromkeys(reference for call in candidate.calls for reference in call.media))
@@ -378,7 +386,7 @@ def _call_receipt_ref(
             "action_id": action.action_id,
             "receipt_revision": call.receipt_revision,
         }
-        expected_text = model_storage.encode(
+        expected_text = serialization.encode(
             {
                 "source": "actual_call_receipt",
                 "call": feedback_storage.call_material(call),
@@ -387,7 +395,7 @@ def _call_receipt_ref(
         )
         if (
             snapshot.version != 1
-            or snapshot.source_json != model_storage.encode(expected_source)
+            or snapshot.source_json != serialization.encode(expected_source)
             or snapshot.text != expected_text
             or snapshot.occurred_at != call.finished_at
             or snapshot.media != call.media
@@ -540,7 +548,7 @@ def admit_in_transaction(
     facts = (
         source_facts,
         submission.text,
-        model_storage.encode(submission.context),
+        serialization.encode(submission.context),
         _timestamp(submission.occurred_at),
         tuple(
             (media_id, asset.media_type, asset.name)
@@ -577,7 +585,7 @@ def admit_in_transaction(
             _timestamp(submission.occurred_at),
             _timestamp(submission.received_at),
             logical_bytes,
-            model_storage.encode(submission.context),
+            serialization.encode(submission.context),
             dedup_key,
             fingerprint,
         ),
@@ -604,12 +612,12 @@ def admit_in_transaction(
     )
     knowledge_storage.put_evidence_in_transaction(
         connection,
-        knowledge_storage.EvidenceSnapshot(
+        knowledge_models.EvidenceSnapshot(
             evidence_id=input_id,
             version=1,
             kind="input",
             text=submission.text,
-            source_json=model_storage.encode({"source": source, "context": submission.context}),
+            source_json=serialization.encode({"source": source, "context": submission.context}),
             occurred_at=submission.occurred_at.timestamp(),
             media=tuple(
                 MediaReference(media_id, asset.media_type, len(asset.content), asset.name)
@@ -925,7 +933,7 @@ class Store:
             lambda connection: subject_storage.decide_inputs(
                 connection, expected, level, reason, request_id=request_id, defer_until=defer_until
             ),
-            logical_bytes=len(model_storage.encode((expected, reason)).encode("utf-8")),
+            logical_bytes=len(serialization.encode((expected, reason)).encode("utf-8")),
             control=True,
             writing=True,
         )
@@ -1104,7 +1112,7 @@ class Store:
         """在无工具摘要请求前原子保留同覆盖尝试，失败不会自动重新计预算。"""
         return await self._submit(
             lambda connection: maintenance_storage.reserve_summary(connection, source),
-            logical_bytes=len(model_storage.encode(source).encode("utf-8")),
+            logical_bytes=len(serialization.encode(source).encode("utf-8")),
             control=True,
             writing=True,
         )
@@ -1113,7 +1121,7 @@ class Store:
         """idle/版本仍匹配才归档旧原文并安装候选，失败保留原会话和媒体。"""
         return await self._submit(
             lambda connection: maintenance_storage.install_summary(connection, proposal),
-            logical_bytes=len(model_storage.encode(proposal).encode("utf-8")),
+            logical_bytes=len(serialization.encode(proposal).encode("utf-8")),
             control=True,
             writing=True,
         )
@@ -1131,7 +1139,7 @@ class Store:
             lambda connection: subject_storage.begin_turn(
                 connection, turn_id, scope, expected_version, generation, input_ids
             ),
-            logical_bytes=len(model_storage.encode(input_ids).encode("utf-8")),
+            logical_bytes=len(serialization.encode(input_ids).encode("utf-8")),
             control=True,
             writing=True,
         )
@@ -1183,7 +1191,7 @@ class Store:
         self._validate_id(catalog_version)
         if not isinstance(source, str):
             raise ValueError("行动源码必须是字符串。")
-        size = execution_storage.payload_bytes(action_id, catalog_version, source, input_id)
+        size = record_validation.payload_bytes(action_id, catalog_version, source, input_id)
         await self._submit(
             lambda connection: execution_storage.begin_action(
                 connection, action_id, catalog_version, source, input_id
@@ -1211,7 +1219,7 @@ class Store:
         """原子保存编译材料与同库 BLOB 引用，确认前不允许模型派发。"""
         await self._submit(
             lambda connection: model_storage.begin_request(connection, request),
-            logical_bytes=len(model_storage.encode(request).encode("utf-8")),
+            logical_bytes=len(serialization.encode(request).encode("utf-8")),
             control=True,
             writing=True,
         )
@@ -1228,7 +1236,7 @@ class Store:
         """保存本次真实尝试身份，模型所有者在等待后重验资格和截止。"""
         await self._submit(
             lambda connection: model_storage.begin_attempt(connection, start),
-            logical_bytes=len(model_storage.encode(start).encode("utf-8")),
+            logical_bytes=len(serialization.encode(start).encode("utf-8")),
             control=True,
             writing=True,
         )
@@ -1237,7 +1245,7 @@ class Store:
         """提交权威响应/原参数，再独立保存有限诊断，不覆盖另一次尝试。"""
         await self._submit(
             lambda connection: model_storage.finish_attempt(connection, result),
-            logical_bytes=len(model_storage.encode(result).encode("utf-8")),
+            logical_bytes=len(serialization.encode(result).encode("utf-8")),
             control=True,
             writing=True,
         )
@@ -1323,7 +1331,7 @@ class Store:
         feedback: ActivityFeedback | None = None,
     ) -> None:
         """CAS 提交当前状态、控制或反馈及可靠交接，事务不等待专业驱动。"""
-        size = len(model_storage.encode((record, command, feedback)).encode("utf-8"))
+        size = len(serialization.encode((record, command, feedback)).encode("utf-8"))
         await self._submit(
             lambda connection: activity_storage.commit_activity(
                 connection,
@@ -1395,8 +1403,8 @@ class Store:
             self._validate_id(identity)
         if isinstance(sequence, bool) or not isinstance(sequence, int) or sequence < 0:
             raise ValueError("调用顺序必须是非负整数。")
-        size = execution_storage.payload_bytes(call_id, action_id, path, target_id, arguments_json)
-        execution_storage.validate_json(arguments_json, arguments=True)
+        size = record_validation.payload_bytes(call_id, action_id, path, target_id, arguments_json)
+        record_validation.validate_json(arguments_json, arguments=True)
         await self._submit(
             lambda connection: execution_storage.begin_call(
                 connection, call_id, action_id, sequence, path, target_id, arguments_json
@@ -1412,7 +1420,7 @@ class Store:
         等待取消不撤销已提交门槛；不得把再次调用此方法当作执行许可或重发。
         """
         self._validate_id(call_id)
-        size = execution_storage.payload_bytes(call_id)
+        size = record_validation.payload_bytes(call_id)
         await self._submit(
             lambda connection: execution_storage.mark_call_started(connection, call_id),
             control=True,
@@ -1438,9 +1446,9 @@ class Store:
         self._validate_id(call_id)
         if state not in ("confirmed", "failed", "unknown", "not_started"):
             raise ValueError("调用结果状态无效。")
-        size = execution_storage.payload_bytes(call_id, result_json, error_type, error)
-        size += len(model_storage.encode(media).encode())
-        execution_storage.validate_json(result_json)
+        size = record_validation.payload_bytes(call_id, result_json, error_type, error)
+        size += len(serialization.encode(media).encode())
+        record_validation.validate_json(result_json)
         record = await self._submit(
             lambda connection: execution_storage.record_call_result(
                 connection, call_id, state, result_json, error_type, error, media
@@ -1477,8 +1485,8 @@ class Store:
             raise ValueError("行动结果状态无效。")
         if not isinstance(output, str):
             raise ValueError("行动输出必须是字符串。")
-        size = execution_storage.payload_bytes(action_id, result_json, output, error)
-        execution_storage.validate_json(result_json)
+        size = record_validation.payload_bytes(action_id, result_json, output, error)
+        record_validation.validate_json(result_json)
         await self._submit(
             lambda connection: execution_storage.finish_action(
                 connection, action_id, state, result_json, output, error
@@ -1508,7 +1516,7 @@ class Store:
             rows: list[tuple[object, ...]] = connection.execute(
                 "SELECT action_id FROM actions WHERE input_id IN (SELECT value FROM json_each(?)) "
                 "ORDER BY created_at,action_id",
-                (model_storage.encode(input_ids),),
+                (serialization.encode(input_ids),),
             ).fetchall()
             result: list[ActionRecord] = []
             for row in rows:
@@ -1519,7 +1527,7 @@ class Store:
             return tuple(result)
 
         return await self._submit(
-            read, logical_bytes=len(model_storage.encode(input_ids).encode("utf-8"))
+            read, logical_bytes=len(serialization.encode(input_ids).encode("utf-8"))
         )
 
     async def pending_call_receipts(self, *, limit: int = 16) -> tuple[CallRecord, ...]:
@@ -1657,11 +1665,11 @@ class Store:
                 if error.code in {"invalid_record", "unsupported_format"}:
                     self._latch_failure(error)
                 error_to_send = error
-            except knowledge_storage.KnowledgeInputError as error:
+            except knowledge_models.KnowledgeInputError as error:
                 # 来源/批次/版本冲突可在原预算内纠正，不是数据库或程序故障。
                 # 该显式业务分类仍原样交回，其他未识别异常继续停止派发。
                 error_to_send = error
-            except (SummaryError, time_storage.TimeError, control_storage.ControlError) as error:
+            except (SummaryError, time_models.TimeError, controls_models.ControlError) as error:
                 error_to_send = error
             except sqlite3.Error as error:
                 failure = self._storage_failure(error)

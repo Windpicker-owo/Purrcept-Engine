@@ -9,9 +9,9 @@
 
 from datetime import UTC, datetime
 
-from purrcept_engine.execution.protocol import JsonObject, JsonValue, decode_object
-from purrcept_engine.storage.model_requests import encode
-from purrcept_engine.storage.models import InputRecord
+from purrcept_engine.domain.inputs.models import InputRecord
+from purrcept_engine.serialization import encode
+from purrcept_engine.values import JsonObject, JsonValue, decode_object
 
 
 def _lines(value: JsonValue, *, depth: int) -> list[str]:

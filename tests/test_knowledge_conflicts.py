@@ -29,10 +29,9 @@ from purrcept_core.models import (
 )
 from purrcept_core.models.tools import InvokeTool, ToolResult, ToolSet
 
-from purrcept_engine.execution.protocol import JsonObject, JsonValue, decode_object, encode_json
-from purrcept_engine.storage import knowledge as ledger
-from purrcept_engine.storage.execution import ActionRecord
-from purrcept_engine.storage.knowledge import (
+from purrcept_engine.domain.execution.models import ActionRecord
+from purrcept_engine.domain.inputs.models import MediaReference
+from purrcept_engine.domain.knowledge.models import (
     EvidencePage,
     EvidenceSnapshot,
     MemoryConflictTarget,
@@ -40,12 +39,13 @@ from purrcept_engine.storage.knowledge import (
     MemoryRecord,
     SupervisionRecord,
 )
-from purrcept_engine.storage.models import MediaReference
+from purrcept_engine.storage import knowledge as ledger
 from purrcept_engine.storage.store import Store
 from purrcept_engine.subject.delivery import evidence_fallback
 from purrcept_engine.subject.foreground import ForegroundTools
 from purrcept_engine.subject.knowledge import KnowledgeService
 from purrcept_engine.subject.reflection import ReflectionTools
+from purrcept_engine.values import JsonObject, JsonValue, decode_object, encode_json
 
 
 @pytest_asyncio.fixture

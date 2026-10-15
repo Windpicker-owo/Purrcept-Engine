@@ -26,11 +26,10 @@ from purrcept_core.models.tools import ToolResult
 
 from purrcept_engine.context.capacity import CapacityAssessment, CapacityError
 from purrcept_engine.context.presentation import render_host_state
-from purrcept_engine.execution.protocol import JsonObject, JsonValue, decode_object
-from purrcept_engine.storage.knowledge import EvidencePage
-from purrcept_engine.storage.model_requests import encode
-
-from .model_requests import compile_materials
+from purrcept_engine.domain.knowledge.models import EvidencePage
+from purrcept_engine.serialization import encode
+from purrcept_engine.subject.model_requests import compile_materials
+from purrcept_engine.values import JsonObject, JsonValue, decode_object
 
 type CapacityCheck = Callable[[JsonObject], CapacityAssessment]
 type DeliveryMode = Literal["full_tool_message", "reference_only"]

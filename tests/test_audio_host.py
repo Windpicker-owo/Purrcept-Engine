@@ -14,7 +14,6 @@ from pathlib import Path
 import pytest
 
 from purrcept_engine import EngineConfig, EngineHost
-from purrcept_engine.execution.protocol import decode_object
 from purrcept_engine.plugins.audio.models import (
     AudioSettings,
     PlaybackResult,
@@ -26,6 +25,7 @@ from purrcept_engine.plugins.audio.plugin import make_factory as audio_factory
 from purrcept_engine.plugins.live2d.models import ModelProfile
 from purrcept_engine.plugins.live2d.plugin import Live2DSettings
 from purrcept_engine.plugins.live2d.plugin import make_factory as body_factory
+from purrcept_engine.values import decode_object
 
 
 class Source:

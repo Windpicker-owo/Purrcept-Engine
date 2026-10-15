@@ -14,8 +14,8 @@ from urllib.parse import urlsplit
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, model_validator
 
 from purrcept_engine.errors import EngineError
-from purrcept_engine.execution.protocol import JsonObject
-from purrcept_engine.plugins.live2d.models import BodyIntent
+from purrcept_engine.plugin_system.body import BodyIntent
+from purrcept_engine.values import JsonObject
 
 
 class AudioError(EngineError):

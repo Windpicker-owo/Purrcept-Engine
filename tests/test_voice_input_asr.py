@@ -13,9 +13,9 @@ from contextlib import asynccontextmanager
 import pytest
 from pydantic import SecretStr
 
-from purrcept_engine.execution.protocol import JsonObject, decode_object, encode_json
 from purrcept_engine.plugins.voice_input.asr import ASRSocket, FunASRTranscriber
 from purrcept_engine.plugins.voice_input.models import VoiceInputError, VoiceInputSettings
+from purrcept_engine.values import JsonObject, decode_object, encode_json
 
 
 class Socket:

@@ -16,9 +16,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
-from purrcept_engine.execution.protocol import decode_object, encode_json
-
-from .models import VISEMES, BodyError
+from purrcept_engine.plugins.live2d.models import VISEMES, BodyError
+from purrcept_engine.values import decode_object, encode_json
 
 
 @dataclass(frozen=True, slots=True)
