@@ -45,6 +45,7 @@ describe("agentView", () => {
     const base = host();
     expect(agentView({ ...base, foreground: { ...base.foreground!, busy: true } }, true, []).state).toBe("reasoning");
     expect(agentView({ ...base, pending_inputs: [{ stage: "attention", count: 2, logical_bytes: 10 }] }, true, []).state).toBe("perceiving");
+    expect(agentView({ ...base, pending_inputs: [{ stage: "submitted", count: 2, logical_bytes: 10 }] }, true, []).state).toBe("idle");
     expect(agentView(base, true, []).state).toBe("idle");
   });
   it("只有需要用户本人处理的事项才进入等你确认", () => {

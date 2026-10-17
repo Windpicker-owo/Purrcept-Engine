@@ -41,8 +41,10 @@ from purrcept_engine.domain.execution.providers import (
     FunctionCapability,
 )
 from purrcept_engine.domain.execution.settings import ExecutionSettings
+from purrcept_engine.domain.inputs.content import InputMediaIndex, InputPresentation
 from purrcept_engine.domain.inputs.models import (
     Admission,
+    InputBlock,
     InputContext,
     InputRecord,
     InputSource,
@@ -123,8 +125,11 @@ __all__ = [
     "ExecutionSettings",
     "FeedbackKind",
     "FunctionCapability",
+    "InputBlock",
     "InputContext",
+    "InputMediaIndex",
     "InputPort",
+    "InputPresentation",
     "InputProcessing",
     "InputRecord",
     "InputSource",

@@ -13,11 +13,19 @@ type SessionScope = Literal["foreground", "reflection"]
 
 
 type InputStage = Literal[
-    "attention", "deferred", "foreground", "processing", "processed", "failed"
+    "attention",
+    "priority",
+    "assessing",
+    "submitted",
+    "foreground",
+    "claimed",
+    "processing",
+    "processed",
+    "failed",
 ]
 
 
-type AttentionLevel = Literal["observe", "defer", "wake", "urgent"]
+type AttentionLevel = Literal["observe", "wake", "urgent"]
 
 
 type TurnOutcome = Literal["running", "succeeded", "failed", "cancelled", "interrupted"]
@@ -33,12 +41,15 @@ class InputProcessing:
         stage: 输入当前或待查询的处理阶段。
         reason: 供后续核对的明确处置原因。
         attention_request_id: 做出本次注意选择的真实逻辑模型请求身份。
-        due_at: 明确延后的到期时刻；None 表示无延期。
-        handed_off: 是否已经按原输入身份完成前台交接。
         admitted_at: 权威接管此工作的 Unix 时间戳（秒）。
 
     Note:
         实例字段在构造后不可重新赋值；嵌套值的冻结范围由字段所属契约决定。
+
+        attention/priority 是尚未提交的普通/高价值缓存。assessing 是已经提交
+        但尚未完成判断的输入；submitted 已被判断为仅提交，foreground 保存唤醒
+        请求。一次唤醒将这些收件箱输入原子改为 claimed，begin_turn 后才进入
+        processing。processed/failed 是终态，不自动重新投递。
     """
 
     input_id: str
@@ -46,8 +57,6 @@ class InputProcessing:
     stage: InputStage
     reason: str
     attention_request_id: str | None
-    due_at: float | None
-    handed_off: bool
     admitted_at: float
 
 
@@ -56,22 +65,22 @@ class MinimumWakeAssessment:
     """直接唤起后的一次紧急升级资格，绑定创建它的宿主与旧生成代次。
 
     Attributes:
-        input_id: 正式接管返回的输入身份，用于关联原文与后续处理。
+        batch_id: 协调者提交本批时冻结的唯一身份。
+        expected: 本批提交后的输入版本，整个批次一起核验。
         owner_id: 发起本次工作并持有提交资格的所有者身份。
         observed_generation: 接管或判断开始时观察到的前台生成代次。
-        input_version: 输入处置在登记升级判断时的确切版本。
 
     Note:
         实例字段在构造后不可重新赋值；嵌套值的冻结范围由字段所属契约决定。
 
-        记录不另建前台待办。input_version 冻结仍在 foreground 的处置身份；
+        记录不另建前台待办。expected 冻结已提交的整批处置身份；
         一旦被前台接管或宿主重启，旧结果只能留下判断事实，不能抢占新轮次。
     """
 
-    input_id: str
+    batch_id: str
+    expected: tuple[InputProcessing, ...]
     owner_id: str
     observed_generation: int
-    input_version: int
 
 
 @dataclass(frozen=True, slots=True)

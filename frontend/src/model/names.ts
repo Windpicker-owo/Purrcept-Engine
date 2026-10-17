@@ -15,7 +15,7 @@ const NAMESPACES: Readonly<Record<string, string>> = {
   activities: "活动", qzone: "QQ 空间", phone: "手机", view_image: "看图", rest: "休息", leave: "结束休息",
 };
 const STAGES: Readonly<Record<string, string>> = {
-  attention: "正在判断要不要回应", deferred: "稍后再看", foreground: "等待回应", processing: "正在处理",
+  attention: "等待判断", priority: "等待提交", assessing: "正在判断", submitted: "已收下，等待后续思考", claimed: "正在准备处理", foreground: "等待回应", processing: "正在处理",
   processed: "已处理", failed: "处理失败",
 };
 

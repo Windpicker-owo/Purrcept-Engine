@@ -87,11 +87,28 @@ class InputDevice:
     name: str
 
 
+@dataclass(frozen=True, slots=True)
+class CaptureGap:
+    """标记前后 PCM 不连续，由运行时作废当前发言并重新建立 VAD 状态。
+
+    Attributes:
+        reason: 可向用户展示的丢样原因，不包含音频或设备凭据。
+
+    Note:
+        标记之后的字节属于新的连续片段；此前已完整结束的发言仍可正常接管。
+        驱动不能把缺样静默补零，也不能跨此边界复用重采样器的残余状态。
+    """
+
+    reason: str
+
+
 class CaptureDriver(Protocol):
     """运行时每次开始收音创建的设备所有者，内置实现为 SoundDeviceCapture。
 
-    frames 按顺序交付完整 512 样本帧；队列满或设备溢出必须失败而非继续
-    拼接缺口。取消迭代器释放输入流，调用方不借用回调缓冲区。
+    frames 按顺序交付完整 512 样本帧及 CaptureGap。孤立原生丢样可标记
+    新连续片段；持续故障、队列满或断开必须失败。取消迭代器释放输入流，
+    调用方不借用回调缓冲区，也不能跨缺口拼接发言。
+    迭代器结束不自动证明归还；resources_released 必须反映实际设备释放结果。
     """
 
     async def devices(self) -> tuple[InputDevice, ...]:
@@ -102,14 +119,23 @@ class CaptureDriver(Protocol):
         """
         ...
 
-    def frames(self, device: int | None) -> AsyncGenerator[bytes]:
+    def frames(self, device: int | None) -> AsyncGenerator[bytes | CaptureGap]:
         """打开一次输入流，取消或失败归还原生资源。
 
         Args:
             device: 显式选定的输入设备序号；None 交由设备适配器解析。
 
         Returns:
-            按原始采集、解码或播放顺序逐块交付的完整字节流。
+            按采集顺序交付完整帧与显式缺口；缺口后的帧不能与之前的残句拼接。
+        """
+        ...
+
+    def resources_released(self) -> bool:
+        """供运行时在帧流关闭后核验实际输入设备归还。
+
+        Returns:
+            尚未取得设备或全部设备已成功释放时为 True；清理失败必须为 False，
+            不能仅根据异步迭代器已结束推断。
         """
         ...
 

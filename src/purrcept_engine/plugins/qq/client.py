@@ -6,6 +6,7 @@ direct 恢复仅重复建连，不重发 API；reverse 维持监听等待外部�
 
 stop_inputs 停止新业务与恢复/握手，既有收包和迟到回执仍存活；close 在执行器
 收尾后关闭传输并等待后台提交。内部故障保持原型，不伪装成可以自动恢复的离线。
+真实传输和后台任务已归还时另给宿主明确证明，历史业务故障不会撤销该事实。
 """
 
 from __future__ import annotations
@@ -110,6 +111,16 @@ class QQClient:
         self._adopting = False
         self._stopping = False
         self._closing: asyncio.Task[None] | None = None
+        self._resources_released = False
+        self._transport_close_failure: BaseException | None = None
+
+    def resources_released(self) -> bool:
+        """返回关闭所有者确认的传输与后台任务归还事实。
+
+        Returns:
+            仅当真实传输关闭成功且全部借用结束时为 True；历史业务故障仍单独报告。
+        """
+        return self._resources_released
 
     @property
     def generation(self) -> int:
@@ -273,7 +284,7 @@ class QQClient:
     async def _adopt(self, connection: Connection) -> asyncio.Task[None] | None:
         """只让仍有恢复资格的连接成为当前代次，旧连接响应保留原归属。"""
         if self._stopping or self._adopting:
-            await connection.close()
+            await self._close_transport(connection)
             return None
         self._adopting = True
         adopted = False
@@ -281,7 +292,7 @@ class QQClient:
             previous = self._connection
             if previous is not None:
                 self._fail_generation(self._generation, "QQ 连接被新代次替换。")
-                await previous.close()
+                await self._close_transport(previous)
             if self._stopping:
                 return None
             self._generation += 1
@@ -299,7 +310,7 @@ class QQClient:
         finally:
             self._adopting = False
             if not adopted:
-                await connection.close()
+                await self._close_transport(connection)
 
     def _reader_done(self, task: asyncio.Task[None]) -> None:
         self._readers.discard(task)
@@ -346,7 +357,7 @@ class QQClient:
                     await self._set_state(
                         "waiting" if self.settings.mode == "reverse" else "recovering"
                     )
-            await connection.close()
+            await self._close_transport(connection)
 
     def _own_late(self, operation: Awaitable[None]) -> None:
         """一项超时 echo 最多建立一个迟到提交，数量受原 pending_calls 界约束。"""
@@ -566,6 +577,16 @@ class QQClient:
             self._gap_handler(payload, "ingress_stopped")
             self._events.task_done()
 
+    async def _close_transport(self, resource: Connection | Listener) -> None:
+        """记录真实传输归还失败，不能用收包任务结束冒充连接已经关闭。"""
+        try:
+            await resource.close()
+        except BaseException as error:
+            # Lifecycle: 连接可能已退出路由代次，但失败的 close 仍不能给出
+            # 完整归还明证。保守锁存，不依赖后续任务从集合移除来推断释放。
+            self._transport_close_failure = self._transport_close_failure or error
+            raise
+
     async def close(self) -> None:
         """资源关闭只执行一次。
 
@@ -587,7 +608,7 @@ class QQClient:
         for resource in (self._connection, self._listener):
             if resource is not None:
                 try:
-                    await resource.close()
+                    await self._close_transport(resource)
                 except BaseException as error:
                     errors.append(error)
         if self._readers:
@@ -600,6 +621,20 @@ class QQClient:
         if self._late:
             results = await asyncio.gather(*tuple(self._late), return_exceptions=True)
             errors.extend(result for result in results if isinstance(result, BaseException))
+        # stop_inputs 可能在重报已结束的输入异常。归还明证只依赖传输关闭与
+        # 实际任务结束，不能把历史错误当作仍有 Socket，也不能用任务结束
+        # 掩盖真实 close 失败或仍在进行的连接交接。
+        tasks = (self._recovery, self._consumer, self._processing, *self._readers, *self._late)
+        self._resources_released = (
+            self._transport_close_failure is None
+            and not self._adopting
+            and not self._pending
+            and all(task is None or task.done() for task in tasks)
+        )
+        if self._transport_close_failure is not None and all(
+            error is not self._transport_close_failure for error in errors
+        ):
+            errors.append(self._transport_close_failure)
         if self._failure is not None and self._failure not in errors:
             errors.append(self._failure)
         if errors:

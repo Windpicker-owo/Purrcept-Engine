@@ -1,7 +1,7 @@
 # Purrcept Engine 零可选插件配置模板。默认看图由宿主装配，校验不读取图像或连接端点。
 # 以下模型名、窗口和凭据为占位值，使用前应替换为已核对的实际配置。
 # 生成请求使用 LiteLLM 本地 token 估计，专用判断保留文本字节参考。
-# Gemini 3 原声输入可配置 media_rule = "gemini-3-inline-v1" 和 supports_audio = true。
+# Gemini 3 原声输入可配置 media_rule = "gemini-3-inline-v1"，并在下面声明 audio。
 # 该媒体规则覆盖内联单帧图片与 WAV/MP3；不是其他模型或远端媒体的通用公式。
 console = false
 plugins = []
@@ -32,6 +32,7 @@ context_window = 32000
 max_output_tokens = 4096
 capacity_rule = "litellm-token-counter-v1"
 media_rule = "unsupported"
+supports_contents = ["text"] # 可按实际支持情况添加 image、audio、video。
 
 [models.attention]
 # OpenRouter Jev 可使用 openrouter/typesafe/jev-1.13，api_base 为
@@ -43,6 +44,7 @@ api_key = "replace-with-explicit-decision-key"
 input_limit = 8192
 capacity_rule = "reference-text-only-v1"
 media_rule = "unsupported"
+supports_contents = ["text"] # decision 协议当前最多交付 text、image。
 
 [subject]
 foreground = "foreground"
@@ -51,7 +53,6 @@ summary = "foreground"
 attention = "attention"
 attention_batch_seconds = 0.1
 attention_batch_size = 8
-attention_defer_seconds = 30.0
 reflection_batch_seconds = 60.0
 reflection_batch_turns = 8
 

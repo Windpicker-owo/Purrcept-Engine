@@ -13,6 +13,7 @@ from purrcept_core.models import (
     ModelBackend,
 )
 
+from purrcept_engine.domain.model_requests.contents import ContentKind, validate_supported_contents
 from purrcept_engine.domain.model_requests.ports import MaterialCompiler, RetryPolicy
 from purrcept_engine.domain.subject.session import (
     CapacityCheck,
@@ -21,7 +22,7 @@ from purrcept_engine.domain.subject.session import (
 
 @dataclass(frozen=True, slots=True)
 class SubjectModel:
-    """app 选择的前台资源和预算依据，模型内容不能修改这些参数。
+    """app 选择的会话模型资源、内容声明和预算依据，模型内容不能修改这些参数。
 
     Attributes:
         backend: 显式注入的模型后端，资源取得和关闭归装配层。
@@ -30,6 +31,7 @@ class SubjectModel:
         capacity: 对完整实际请求执行容量核验的函数。
         retry: 唯一传输重试策略，不额外叠加 SDK 隐式重试。
         compiler: 按实际 SDK 布局冻结完整请求材料的纯编译器。
+        supports_contents: 刺激允许交付的内容类型；默认仅 text，其他媒体原位转为文字引用。
 
     Note:
         实例字段在构造后不可重新赋值；嵌套值的冻结范围由字段所属契约决定。
@@ -41,6 +43,11 @@ class SubjectModel:
     capacity: CapacityCheck
     retry: RetryPolicy
     compiler: MaterialCompiler
+    supports_contents: tuple[ContentKind, ...] = ("text",)
+
+    def __post_init__(self) -> None:
+        """程序式装配与配置加载共用相同内容声明约束。"""
+        validate_supported_contents(self.supports_contents)
 
 
 @dataclass(frozen=True, slots=True)
@@ -51,7 +58,6 @@ class CoordinatorSettings:
         diagnostic_bytes: 单次尝试允许保留的流诊断字节数，不裁剪原参数或完整响应。
         coalesce_seconds: 普通输入合批等待的秒数。
         attention_batch: 一次注意判断允许取得的输入数量上限。
-        defer_seconds: 明确延后普通输入的默认秒数，不创建新的输入身份。
         max_requests: 本轮逻辑模型请求总上限，传输重试不重复占名额。
         turn_seconds: 本轮连续处理的总秒数预算，包含工具等待和重试退避。
 
@@ -66,7 +72,6 @@ class CoordinatorSettings:
     diagnostic_bytes: int
     coalesce_seconds: float = 0.1
     attention_batch: int = 8
-    defer_seconds: float = 30.0
     max_requests: int = 8
     turn_seconds: float = 600.0
 
@@ -81,8 +86,8 @@ class CoordinatorSettings:
             or self.diagnostic_bytes < 0
         ):
             raise ValueError("诊断字节额度必须是非负整数。")
-        for value in (self.coalesce_seconds, self.defer_seconds, self.turn_seconds):
+        for value in (self.coalesce_seconds, self.turn_seconds):
             if isinstance(value, bool) or not math.isfinite(value) or value < 0:
                 raise ValueError("调度时间必须是有限非负数。")
-        if self.defer_seconds == 0 or self.turn_seconds == 0:
-            raise ValueError("延期和整轮期限必须为正数。")
+        if self.turn_seconds == 0:
+            raise ValueError("整轮期限必须为正数。")

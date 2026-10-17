@@ -116,7 +116,7 @@ class EngineAssembly:
             # 原声，否则收音成功后每一段都会在真正派发模型前失败。
             native_audio_enabled = (
                 isinstance(foreground_model, GenerationModelSettings)
-                and foreground_model.supports_audio
+                and "audio" in foreground_model.supports_contents
                 and foreground_model.media_rule != "unsupported"
                 and foreground_model.capacity_rule != "reference-text-only-v1"
                 and foreground_model.capacity_rule in self.state.capacity_rules

@@ -25,74 +25,27 @@ def submission(native_id: str, *, wake: bool = False, text: str = "原始材料"
 
 
 @pytest.mark.asyncio
-async def test_open_pool_pull_claims_all_and_stale_turn_closes_added_sources(
-    tmp_path: Path,
-) -> None:
-    path = tmp_path / "state.sqlite3"
-    store = await Store.open(path)
+async def test_wake_snapshot_never_takes_unsubmitted_or_later_inputs(tmp_path: Path) -> None:
+    store = await Store.open(tmp_path / "state.sqlite3")
     try:
-        deferred = await store.admit(submission("deferred"))
-        state = await store.input_processing(deferred.input_id)
-        assert state is not None
-        await store.decide_inputs((state,), "defer", "以后复查", defer_until=9999999999)
-        ordinary = await store.admit(submission("ordinary"))
-        old_assessment = await store.input_processing(ordinary.input_id)
-        assert old_assessment is not None
-        assert await store.take_foreground_inputs() == ()
+        cached = await store.admit(submission("cached"))
         high = await store.admit(submission("high", wake=True))
-        initial = await store.take_foreground_inputs()
-        assert tuple(record.input_id for record in initial) == (ordinary.input_id, high.input_id)
-        assert not await store.decide_inputs((old_assessment,), "observe", "过期判断")
-        turn = await store.begin_turn(
-            "turn", "foreground", 0, 1, tuple(record.input_id for record in initial)
-        )
-        added = await store.admit(submission("added"))
-        claimed = await store.take_foreground_inputs(turn.turn_id)
-        assert tuple(record.input_id for record in claimed) == (added.input_id,)
-        assert not await store.take_foreground_inputs(turn.turn_id)
-        later = await store.admit(submission("after-pull"))
-
-        # 模拟调用方在拉取事务已提交后取消：它只持有旧 TurnRecord。失败结案
-        # 仍须覆盖实际追加的来源，不能漏到 processing 或误消耗随后到达的输入。
+        priority = await store.input_processing(high.input_id)
+        assert priority is not None
+        await store.submit_inputs((priority,), minimum_wake=True)
+        records = await store.take_foreground_inputs()
+        assert tuple(record.input_id for record in records) == (high.input_id,)
+        assert not await store.take_foreground_inputs()
+        turn = await store.begin_turn("turn", "foreground", 0, 1, (high.input_id,))
+        later = await store.admit(submission("later"))
         await store.finish_turn(turn, "cancelled", error_json='{"error_type":"CancelledError"}')
-        failed = await store.failed_turns("foreground")
-        assert failed[0].input_ids == (ordinary.input_id, high.input_id, added.input_id)
-        for identity in failed[0].input_ids:
-            current = await store.input_processing(identity)
-            assert current is not None and current.stage == "failed"
-        remaining = {record.input_id for record in await store.pending()}
-        assert remaining == {deferred.input_id, later.input_id}
+        assert (await store.failed_turns("foreground"))[0].input_ids == (high.input_id,)
+        assert {record.input_id for record in await store.pending()} == {
+            cached.input_id,
+            later.input_id,
+        }
     finally:
         await store.close()
-
-    reopened = await Store.open(path)
-    try:
-        assert (await reopened.failed_turns("foreground"))[0].input_ids == failed[0].input_ids
-    finally:
-        await reopened.close()
-
-
-@pytest.mark.asyncio
-async def test_defer_persists_and_delivers_once_without_attention_reentry(tmp_path: Path) -> None:
-    path = tmp_path / "engine.sqlite3"
-    store = await Store.open(path)
-    admitted = await store.admit(submission("one"))
-    pending = await store.input_processing(admitted.input_id)
-    assert pending is not None
-    assert await store.decide_inputs((pending,), "defer", "暂待复查", defer_until=100.0)
-    assert not await store.decide_inputs((pending,), "observe", "迟到结果")
-    assert await store.deliver_due_inputs(99.0) == ()
-    await store.close()
-
-    store = await Store.open(path)
-    assert await store.next_deferred_input() == 100.0
-    assert await store.deliver_due_inputs(101.0) == (admitted.input_id,)
-    assert await store.deliver_due_inputs(102.0) == ()
-    assert await store.staged_inputs("attention") == ()
-    processing = await store.input_processing(admitted.input_id)
-    assert processing is not None and processing.stage == "foreground" and processing.handed_off
-    assert processing.due_at == 100.0
-    await store.close()
 
 
 @pytest.mark.asyncio

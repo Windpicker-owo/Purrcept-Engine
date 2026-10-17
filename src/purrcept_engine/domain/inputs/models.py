@@ -4,14 +4,24 @@
 本模块只约束不可变数据，不调度注意、不回复或控制播放。
 """
 
-from dataclasses import dataclass
+from collections.abc import Sequence
+from dataclasses import dataclass, replace
 from datetime import datetime
 from typing import Literal
 
+from purrcept_core.models import AudioBlock, AudioBytes, ImageBlock, ImageBytes, TextBlock
+
+from purrcept_engine.domain.inputs.content import (
+    PRESENTATION_KEY,
+    InputMediaIndex,
+    InputPresentation,
+)
 from purrcept_engine.values import decode_object, encode_json
 
+type InputBlock = TextBlock | ImageBlock | AudioBlock
 
-def _nonempty(value: str, field: str) -> None:
+
+def _nonempty(value: object, field: str) -> None:
     if not isinstance(value, str) or not value.strip():
         raise ValueError(f"{field} 必须是非空字符串。")
 
@@ -112,6 +122,10 @@ class InputContext:
         唤起只要求前台处理；interrupt_generation 请求核对当前代次后抢占，
         speech_started 表示已达到配置阈值的 VAD 信号，并另外要求音频停播。
         语音转写接续沿用来源关联，不能再次伪造 speech_started。
+
+        InputSubmission.with_content 将提供方的来源与有序内容布局保存在现有 JSON
+        扩展的保留键中；媒体字节仍进入同次提交的 media，不重复编码到 JSON。
+        布局随原文一起接管、计量和重放，不改变存储信封格式。
     """
 
     details_json: str = "{}"
@@ -134,7 +148,21 @@ class InputContext:
             raise ValueError("missing_materials 必须是不可变缺口说明元组。")
         for reason in self.missing_materials:
             _nonempty(reason, "missing_materials")
+        if PRESENTATION_KEY in details:
+            InputPresentation.from_json(details[PRESENTATION_KEY])
         object.__setattr__(self, "details_json", encode_json(details).decode("utf-8"))
+
+    @property
+    def presentation(self) -> InputPresentation | None:
+        """取得提供方已冻结的来源和顺序布局；未声明时返回 None。
+
+        Note:
+            只读已校验的保留键，不根据正文形状或插件身份猜测展示格式。
+        """
+        details = decode_object(self.details_json.encode("utf-8"))
+        if PRESENTATION_KEY not in details:
+            return None
+        return InputPresentation.from_json(details[PRESENTATION_KEY])
 
 
 @dataclass(frozen=True, slots=True)
@@ -177,6 +205,75 @@ class InputSubmission:
             not isinstance(asset, MediaAsset) for asset in self.media
         ):
             raise ValueError("media 必须是 MediaAsset 元组。")
+        presentation = self.context.presentation
+        if presentation is not None:
+            indices = {
+                block.index for block in presentation.blocks if isinstance(block, InputMediaIndex)
+            }
+            if indices != set(range(len(self.media))):
+                raise ValueError("输入展示必须准确引用本次提交的全部附件。")
+
+    def with_content(self, source: str, blocks: Sequence[InputBlock]) -> "InputSubmission":
+        """冻结提供方已渲染的有序 Core 内容块，保留文字与媒体的交错位置。
+
+        Args:
+            source: 用于分组和追踪的非空单行来源，例如 me.phone.qq 或 microphone。
+            blocks: 按原始语义排列的 TextBlock、ImageBlock、AudioBlock 序列；图片/音频
+                必须携带不可变原生字节，不能用 URL 代替已取得媒体。
+
+        Returns:
+            原文、来源和可信信号保持原值的新提交；媒体字节进入 media，有序布局只保存
+            文字、附件索引和原始 alt_text。已有相同媒体复用，名称不会因布局而丢失。
+
+        Raises:
+            ValueError: 来源、块种类或媒体源无效，或有已接管附件未出现在新布局中。
+
+        Note:
+            在正式接管前调用；序列立即冻结，之后修改调用方的列表不影响提交。
+            宿主只增加来源、输入身份和缺口 TextBlock，不重写这些块的正文或顺序。
+            原生字节不进入 JSON，重复引用同一附件的位置仍保留；重放沿用第一次布局。
+        """
+        if not isinstance(blocks, (tuple, list)) or not blocks:
+            raise ValueError("输入内容必须是非空的块序列。")
+        assets = list(self.media)
+        layout: list[TextBlock | InputMediaIndex] = []
+        used: set[int] = set()
+        for block in blocks:
+            if isinstance(block, TextBlock):
+                layout.append(block)
+                continue
+            if not isinstance(block, (ImageBlock, AudioBlock)) or not isinstance(
+                block.source, (ImageBytes, AudioBytes)
+            ):
+                raise ValueError("输入只接受文字与已取得原生字节的图片/音频块。")
+            native = block.source
+            if isinstance(block, ImageBlock) and native.media_type not in (
+                "image/png",
+                "image/jpeg",
+                "image/webp",
+                "image/gif",
+            ):
+                raise ValueError("图片输入必须使用可原生交付的图片媒体类型。")
+            matches = [
+                index
+                for index, asset in enumerate(assets)
+                if asset.content == native.data and asset.media_type == native.media_type
+            ]
+            unused = [index for index in matches if index not in used]
+            if unused:
+                index = unused[0]
+            elif matches:
+                index = matches[0]
+            else:
+                index = len(assets)
+                assets.append(MediaAsset(native.data, native.media_type))
+            used.add(index)
+            layout.append(InputMediaIndex(index, block.alt_text))
+        presentation = InputPresentation(source, tuple(layout))
+        details = decode_object(self.context.details_json.encode("utf-8"))
+        details[PRESENTATION_KEY] = presentation.to_json()
+        context = replace(self.context, details_json=encode_json(details).decode("utf-8"))
+        return replace(self, media=tuple(assets), context=context)
 
 
 # 维护者属性契约（此 dataclass 也被嵌入 Pydantic schema，保留类说明）。

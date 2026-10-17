@@ -249,7 +249,7 @@ async def test_actual_request_contains_all_open_notices_and_plans_then_refreshes
         attention = await assembled.service.attention_context()
         assert len(array(attention["plans"])) == 32
         assert "supervision" not in attention and "calls" not in attention
-        assert "first_32" in str(attention["coverage"])
+        assert "至多32项" in str(attention["coverage"])
     finally:
         await assembled.service.close()
         await assembled.background.close()

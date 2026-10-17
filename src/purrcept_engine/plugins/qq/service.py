@@ -18,6 +18,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from uuid import uuid4
 
+from purrcept_core.models import TextBlock
+
 from purrcept_engine.errors import HostStateError, StorageError
 from purrcept_engine.plugin_system import (
     Admission,
@@ -47,6 +49,7 @@ from purrcept_engine.plugins.qq.messages import (
 )
 from purrcept_engine.plugins.qq.parameters import Read
 from purrcept_engine.plugins.qq.ports import ConnectionRejected, Connector, QQCallError, Reply
+from purrcept_engine.plugins.qq.presentation import render_qq_input
 from purrcept_engine.plugins.qq.settings import QQSettings
 from purrcept_engine.plugins.qq.stickers import StickerLibrary
 from purrcept_engine.values import JsonObject, JsonValue, decode_object, encode_json
@@ -287,6 +290,22 @@ class QQService:
             "media_acquired_count": 0,
             "media_expected_count": len(image_references(payload.get("message"))),
         }
+        # 在正式接管前冻结展示，重放直接借用第一次上下文；模型请求期间不再
+        # 按变化的昵称缓存重绘事件，也不把整个原生帧重复交给注意与前台。
+        readable_text = render_qq_input(
+            payload,
+            message,
+            occurred,
+            known_messages=self.cache.read(account, chat, target, 100),
+        )
+        # 已通过入站过滤的私聊消息与直接 @ 同级，保证主脑取得处理机会。
+        # 这里只授予最低 WAKE；通知不继承私聊消息规则，也不直接抢占或强制回复。
+        input_context = InputContext(
+            encode_json(details).decode(),
+            minimum_wake=message["mentioned_self"] is True
+            or (kind == "qq.message.received" and chat == "private"),
+            missing_materials=tuple(missing),
+        )
         submission = InputSubmission(
             InputSource(
                 self.instance_id,
@@ -301,11 +320,9 @@ class QQService:
             occurred,
             received,
             (),
-            InputContext(
-                encode_json(details).decode(),
-                minimum_wake=message["mentioned_self"] is True,
-                missing_materials=tuple(missing),
-            ),
+            input_context,
+        ).with_content(
+            f"me.{self.settings.phone_id}.{self.settings.segment}", (TextBlock(readable_text),)
         )
         if await self._submit_input(submission, payload) is not None and post_type == "message":
             self.cache.remember(account, message)
@@ -926,6 +943,14 @@ class QQService:
             "level": page.level,
         }
         return CallOutcome("confirmed", value, media=snapshot.media)
+
+    def resources_released(self) -> bool:
+        """汇总传输与媒体各自的实际释放明证，供宿主关闭权威库前核验。
+
+        Returns:
+            两个所有者均确认归还时为 True，不能用历史异常或连接状态推断。
+        """
+        return self.client.resources_released() and self.media.resources_released()
 
     async def close(self) -> None:
         """先结束 echo/迟到提交，再收文件。

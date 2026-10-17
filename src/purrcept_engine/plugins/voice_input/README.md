@@ -6,14 +6,14 @@
 `me.microphone.interrupt`。
 
 ASR 使用配置中的百炼 Fun-ASR WebSocket 地址、模型和显式密钥。原生音频模式
-要求生成模型显式声明 `supports_audio`、配置非 `unsupported` 的 `media_rule`，
+要求生成模型的 `supports_contents` 包含 `audio`、配置非 `unsupported` 的 `media_rule`，
 以及适用的容量规则；仅声明模型支持音频不能启用原声。Host 已内置注册
 `litellm-token-counter-v1`，CLI 与嵌入宿主都可直接使用。Gemini 3 配置示例：
 
 ```toml
 capacity_rule = "litellm-token-counter-v1"
 media_rule = "gemini-3-inline-v1"
-supports_audio = true
+supports_contents = ["text", "image", "audio"]
 ```
 
 完整请求的 JSON 文字及工具定义使用 LiteLLM 内置 cl100k tokenizer 参考值，
@@ -47,13 +47,37 @@ interrupt_ms = 2000
 运行时先明确枚举 `me.voice_input.devices()`，再调用
 `me.voice_input.start(mode="asr", device=设备编号)`，或使用面板同名控制。
 省略设备编号采用当前默认输入。切换模式前先停止当前收音；`audio` 模式除了
-`supports_audio = true`，还必须配置适用的媒体计量规则，文本参考规则不能使用。
+`supports_contents` 包含 `audio`，还必须配置适用的媒体计量规则，文本参考规则不能使用。
 
 持续人声达到 `interrupt_ms` 才接管 `speech_started`；宿主在接管后停止当前与
 已有候播并取消旧生成。最终转写或原生音频沿用同一发言关系，不能再次抢占。
 起音前缓存有界，连续发言最长 60 秒，原生附件每段最长 20 秒。识别名额、
 上传帧队列或采集队列过载时暂停并记录缺口，不拼接丢样发言，不重传付费请求。
 取消只结束观察和未接管缓存，已经接管的事实仍由原 `input_id` 查询。
+
+原生采集使用 `blocksize=0`，由设备后端选择回调大小，再连续重采样并组装为
+512 样本的 VAD 帧；声卡不需要每 10 ms 向 Python 回调。
+[sounddevice 的流契约](https://python-sounddevice.readthedocs.io/en/0.5.3/api/streams.html)
+说明固定回调块在部分后端和高负载下更容易失稳。连续历史的恢复、编码与请求
+准备在工作线程执行，避免阻塞同一事件循环中的采集消费。
+
+“麦克风输入溢出”来自 PortAudio 的原生丢样标志，与“麦克风缓存已满”及
+“识别上传缓存已满”分别表示不同边界。孤立丢样记录缺口，作废跨越缺口的
+未完成发言，重建重采样器及 VAD 状态后继续同一收音会话；已正常结束的前句
+仍可等待 ASR 入账，已接管的起音事实仍保留。不会拼接缺口、重传旧录音或
+重新打开声卡。受影响的那句话需要重新说，后续完整发言可正常提交。
+
+固定容错窗口为五秒内最多三个原生缺口，第四次暂停；稳定运行超过窗口后
+不累积旧故障次数。队列满、设备断开等仍明确暂停，需要重新开始。
+扩展 CaptureDriver 可在有序帧流中返回 `CaptureGap`，缺口两侧必须独立分段；
+驱动若无法确定新的连续片段，应抛 `VoiceInputError`。
+扩展驱动必须提供 `resources_released()`，只在设备已实际归还时返回 True；
+异步帧流结束不能替代原生 close 的成功证明。输入历史故障可以继续报告，
+但设备与识别/接管等待均已结束时，宿主会继续释放数据库和目录锁。
+运行日志记录选定设备、采样率、
+`queued_blocks` 和 `consumer_delay_ms`，后者是最近一次 PCM 交付到观察故障的
+间隔，不是声卡延迟；`recovery=gap/paused` 区分继续收音和持续故障暂停。
+断点暂停、系统调度或设备问题仍可能导致真实丢样。
 
 安装 `voice-input` extra 后，明确执行以下命令取得固定版本的本机 VAD 模型：
 
@@ -63,7 +87,7 @@ python -m purrcept_engine.plugins.voice_input.setup --output .purrcept/voice-inp
 
 该命令会下载公开模型并核对固定校验和。插件导入和正常启动不自动下载模型或
 依赖；模型文件缺失时开始收音明确失败。设备使用自己的原生采样率，连续转换
-成 16 kHz mono S16 后做 VAD；输入溢出会停止会话并释放同一输入流。
+成 16 kHz mono S16 后做 VAD；持续溢出或其他致命采集错误会释放同一输入流。
 
 下载命令使用直连，不读取环境代理。无法直连时可先从 `setup.py` 的固定官方
 地址取得文件，用 SHA-256 `2623a2953f6ff3d2c1e61740c6cdb7168133479b267dfef114a4a3cc5bdd788f`

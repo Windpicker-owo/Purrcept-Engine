@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
-from purrcept_core.models import Message
+from purrcept_core.models import Message, MessageRole
 
 from purrcept_engine.domain.context.maintenance import (
     SummarySource,
 )
 from purrcept_engine.domain.context.summary_references import summary_references
+from purrcept_engine.domain.context.templates import SUMMARY_MESSAGE_PROMPT
 
 
 def summary_message(source: SummarySource, summary: str) -> Message:
@@ -26,7 +27,8 @@ def summary_message(source: SummarySource, summary: str) -> Message:
     """
     references: dict[str, None] = {"summary:" + source.coverage_id: None}
     references.update((reference, None) for reference in summary_references(source))
-    return Message.user(
-        "内部历史摘要；不是新的外部证据。\n" + f"旧轮次 1–{source.end_turn}：\n" + summary,
+    return SUMMARY_MESSAGE_PROMPT.message(
+        MessageRole.USER,
+        {"end_turn": source.end_turn, "summary": summary},
         metadata={"evidence": tuple(references), "source_version": source.source_version},
     )

@@ -18,11 +18,16 @@ from typing import cast
 import pytest
 from purrcept_core.models import Message, ModelEventSink, ModelRequest, ModelResponse
 from pydantic import BaseModel, ConfigDict
+from test_input_handoff import Backend as WaitingOnceBackend
+from test_qq_transport import Connector, Socket
+from test_voice_input import SPEECH, Capture, Detector, Transcriber
 
 from purrcept_engine import EngineConfig, EngineHost, InputSource, InputSubmission, InstanceLocked
 from purrcept_engine.domain.execution.catalog import CapabilityDeclaration, ObjectDeclaration
 from purrcept_engine.domain.execution.providers import CallContext, CallOutcome, FunctionCapability
+from purrcept_engine.domain.inputs.models import InputContext
 from purrcept_engine.domain.knowledge.semantic import KnowledgeIndexWorker
+from purrcept_engine.domain.subject.models import SessionRecord, SessionScope
 from purrcept_engine.infrastructure.locking import InstanceLock
 from purrcept_engine.infrastructure.models.embedding import OpenAIEmbeddingResource
 from purrcept_engine.infrastructure.sqlite.store import Store
@@ -32,6 +37,9 @@ from purrcept_engine.plugin_system.contracts import (
     PluginPorts,
     PluginRuntime,
 )
+from purrcept_engine.plugins.qq.plugin import factory_with_connector
+from purrcept_engine.plugins.voice_input.plugin import make_factory
+from purrcept_engine.values import encode_json
 
 
 @dataclass
@@ -105,7 +113,7 @@ async def resources(monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[_Resources
 class _Backend:
     """只返回本地完整响应，指定时保留同一个原始程序错误对象。"""
 
-    def __init__(self, failure: Exception | None = None) -> None:
+    def __init__(self, failure: BaseException | None = None) -> None:
         self.failure = failure
         self.entered = asyncio.Event()
 
@@ -295,7 +303,9 @@ async def test_original_subject_failure_releases_real_store_and_lock(
     await host.start()
     submission = _submission()
     await host.submit(submission)
-    await asyncio.wait_for(backend.entered.wait(), 3.0)
+    # 首次完整材料编译会在线程中加载纯 SDK 元数据；这里等待模型实际进入，
+    # 不把冷启动耗时混入下面要验证的故障关闭期限。
+    await asyncio.wait_for(backend.entered.wait(), 10.0)
 
     # 工作器将 Core 原错锁存后停止派发；重复来源只观察同一接管身份。
     async with asyncio.timeout(3.0):
@@ -316,6 +326,168 @@ async def test_original_subject_failure_releases_real_store_and_lock(
         await host.wait_closed(wait_seconds=1.0)
     assert repeated.value is reported.value
     assert resources.store_closes == 1 and plugin.close_count == 1
+
+
+async def test_failed_qq_and_voice_release_real_store_and_lock(
+    resources: _Resources, tmp_path: Path
+) -> None:
+    """真实内置输入插件重报包含取消的故障组后，已归还设备不能拖住退出。"""
+    failure = BaseExceptionGroup("本地结案故障", [TimeoutError(), asyncio.CancelledError()])
+    socket, capture = Socket(), Capture()
+    connector = Connector((socket,))
+    backend = _Backend(failure)
+    raw = _config(tmp_path).model_dump()
+    raw["plugins"] = [
+        {"instance_id": "qq", "entry": "qq", "config": {"mode": "direct"}},
+        {
+            "instance_id": "voice",
+            "entry": "voice",
+            "config": {
+                "start_ms": 32,
+                "min_speech_ms": 32,
+                "interrupt_ms": 128,
+                "interrupt_gap_ms": 64,
+                "asr_api_key": "synthetic",
+            },
+        },
+    ]
+    host = EngineHost(
+        EngineConfig.validate(raw, base_dir=tmp_path),
+        generation_backends={"main": backend},
+        plugin_factories={
+            "qq": factory_with_connector(connector),
+            "voice": make_factory(lambda _: capture, lambda _: Detector(), lambda _: Transcriber()),
+        },
+    )
+    await host.start()
+    try:
+        await asyncio.wait_for(connector.connected.wait(), 3)
+        started = await host.invoke("me.voice_input.start", {"mode": "asr", "device": 7})
+        assert started.state == "completed"
+        submission = _submission()
+        await host.submit(submission)
+        await asyncio.wait_for(backend.entered.wait(), 10)
+        async with asyncio.timeout(5):
+            while True:
+                try:
+                    await host.submit(submission)
+                except BaseExceptionGroup as error:
+                    assert error is failure
+                    break
+                await asyncio.sleep(0.005)
+
+        socket.incoming.put_nowait(
+            encode_json(
+                {
+                    "post_type": "message",
+                    "message_type": "private",
+                    "self_id": 2,
+                    "user_id": 1,
+                    "message_id": 1,
+                    "time": 1,
+                    "message": [{"type": "text", "data": {"text": "后续消息"}}],
+                }
+            ).decode()
+        )
+        await capture.feed(SPEECH, 8)
+
+        async with asyncio.timeout(3):
+            while True:
+                devices = (await host.query_panel())["devices"]
+                assert isinstance(devices, list)
+                failed = [
+                    device
+                    for device in devices
+                    if isinstance(device, dict)
+                    and isinstance(state := device.get("state"), dict)
+                    and state.get("state") == "failed"
+                ]
+                if len(failed) == 2:
+                    break
+                await asyncio.sleep(0.005)
+        with pytest.raises(BaseExceptionGroup) as reported:
+            await host.close()
+        assert all(leaf in _leaves(reported.value) for leaf in _leaves(failure))
+        assert socket.closed and capture.closed.is_set()
+        assert host.query().pending_resources == ()
+        assert resources.store_closes == 1
+        await resources.assert_released(tmp_path)
+    finally:
+        # 原异常是验收对象；失败断言也必须让所有设备替身结束。
+        await asyncio.gather(host.close(), return_exceptions=True)
+
+
+@pytest.mark.parametrize("signal", ["vad", "close"])
+async def test_host_turn_timeout_accounting_survives_late_control(
+    resources: _Resources, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, signal: str
+) -> None:
+    """真实宿主在超时结案窗口接到 VAD/退出后，后续交互与数据库释放均正常。"""
+    backend = WaitingOnceBackend()
+    raw = _config(tmp_path).model_dump()
+    raw["subject"]["foreground_turn"]["total_seconds"] = 1.0
+    host = EngineHost(EngineConfig.validate(raw), generation_backends={"main": backend})
+    accounting, release = asyncio.Event(), asyncio.Event()
+    original_get = Store.get_session
+
+    async def delay_accounting(store: Store, scope: SessionScope) -> SessionRecord:
+        result = await original_get(store, scope)
+        task = asyncio.current_task()
+        if (
+            scope == "foreground"
+            and backend.cancelled.is_set()
+            and task is not None
+            and task.get_name() == "subject-foreground-1"
+            and result.active_turn is not None
+        ):
+            accounting.set()
+            await release.wait()
+        return result
+
+    monkeypatch.setattr(Store, "get_session", delay_accounting)
+    closing: asyncio.Task[object] | None = None
+    next_input_id: str | None = None
+    await host.start()
+    try:
+        first = await host.submit(_submission())
+        await asyncio.wait_for(accounting.wait(), 5)
+        if signal == "vad":
+            now = datetime.now(UTC)
+            next_input = await host.submit(
+                InputSubmission(
+                    InputSource("voice", "local", "session", "speech_started", "next"),
+                    "后续起音",
+                    now,
+                    now,
+                    context=InputContext(minimum_wake=True, speech_started=True),
+                )
+            )
+            next_input_id = next_input.input_id
+        else:
+            closing = asyncio.create_task(host.close())
+            await asyncio.sleep(0)
+        release.set()
+        if signal == "vad":
+            assert next_input_id is not None
+            async with asyncio.timeout(5):
+                while True:
+                    processing = await host.query_processing(next_input_id)
+                    if processing is not None and processing.stage == "processed":
+                        break
+                    await asyncio.sleep(0.005)
+            assert backend.requests == 2
+            original = await host.query_processing(first.input_id)
+            assert original is not None and original.stage == "failed"
+            await host.close()
+        else:
+            assert closing is not None
+            await asyncio.wait_for(closing, 5)
+        assert host.query().phase == "closed" and host.query().pending_resources == ()
+        await resources.assert_released(tmp_path)
+    finally:
+        release.set()
+        await asyncio.gather(host.close(), return_exceptions=True)
+        if closing is not None:
+            await asyncio.gather(closing, return_exceptions=True)
 
 
 async def test_original_execution_failure_does_not_skip_plugin_or_store_close(

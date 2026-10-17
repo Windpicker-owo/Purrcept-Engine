@@ -96,7 +96,11 @@ async def test_native_audio_admission_requires_registered_media_capacity(
         return CapacityEstimate(1, "test-audio", "synthetic", "synthetic")
 
     raw = _config(tmp_path).model_dump()
-    raw["models"]["test"].update(supports_audio=supports, capacity_rule=rule, media_rule=media)
+    raw["models"]["test"].update(
+        supports_contents=["text", "audio"] if supports else ["text"],
+        capacity_rule=rule,
+        media_rule=media,
+    )
     raw["plugins"] = [{"instance_id": "probe", "entry": "probe"}]
     host = EngineHost(
         EngineConfig.validate(raw, base_dir=tmp_path),

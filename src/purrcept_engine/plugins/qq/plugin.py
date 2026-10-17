@@ -875,6 +875,7 @@ def _declare(
             start=service.client.start,
             stop_inputs=service.client.stop_inputs,
             close=service.close,
+            resources_released=service.resources_released,
             snapshot=service.snapshot,
             prepare_request=service.prepare_request,
             panel=DevicePanel(

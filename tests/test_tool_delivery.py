@@ -476,6 +476,17 @@ async def test_action_capacity_receipt_preserves_each_actual_effect_and_saved_or
     action = await store.get_action("actual-action")
     assert action is not None and original is not None and original.text == encode(action)
     assert action.source == "return 1" and action.calls[1].state == "unknown"
+    assert action.finished_at is not None
+    timing = obj(receipt["timing"])
+    assert timing["finished_at"] == datetime.fromtimestamp(action.finished_at, UTC).isoformat()
+    times = timing["calls"]
+    assert isinstance(times, list) and len(times) == 2
+    for actual, projected in zip(action.calls, times, strict=True):
+        assert actual.finished_at is not None
+        assert (
+            obj(projected)["finished_at"]
+            == datetime.fromtimestamp(actual.finished_at, UTC).isoformat()
+        )
 
 
 async def test_internal_media_failure_is_not_a_correctable_capacity_receipt(store: Store) -> None:
@@ -846,7 +857,7 @@ async def test_current_tail_does_not_duplicate_or_bypass_frozen_action_delivery(
     assert '"result_json"' not in resumed_calls
     assert resumed_calls.count(f'"mode": > {expected_mode}') == 3
 
-    await store.record_call_result(
+    late_result = await store.record_call_result(
         "unknown-send",
         state="confirmed",
         result_json='{"message_id":"platform-late-99","status":"confirmed"}',
@@ -873,6 +884,8 @@ async def test_current_tail_does_not_duplicate_or_bypass_frozen_action_delivery(
     assert late_calls.count('"result_delivery":') == 2
     assert "platform-late-99" in encode(late_transport.payloads[0]["messages"])
     assert ports.actions == 1
+    assert late_result.finished_at is not None
+    assert datetime.fromtimestamp(late_result.finished_at, UTC).isoformat() in late_calls
 
     if not full_delivery:
         # 真实 bridge 之后才有最新调用原文；旧 action_result 仍固定在未知版。

@@ -26,6 +26,7 @@ from purrcept_engine.app.config import RetrySettings
 from purrcept_engine.domain.context.capacity import GenerationCapacity, check_capacity
 from purrcept_engine.domain.inputs.models import InputContext, InputSource, InputSubmission
 from purrcept_engine.domain.model_requests.service import RequestBudget
+from purrcept_engine.domain.subject.models import SessionRecord, SessionScope
 from purrcept_engine.domain.subject.session import ContinuousSession, DynamicState
 from purrcept_engine.infrastructure.models.compiler import compile_materials
 from purrcept_engine.infrastructure.sqlite.store import Store
@@ -224,3 +225,86 @@ async def test_actual_whole_turn_deadline_has_distinct_budget_evidence(
     assert failed is not None and failed.error_json is not None
     assert '"category":"budget_exhausted"' in failed.error_json
     assert (await store.get_session("foreground")).version == 0
+
+
+@pytest.mark.parametrize("signal", ["vad", "close"])
+@pytest.mark.parametrize("failure_kind", ["deadline", "backend"])
+async def test_finished_generation_cannot_be_cancelled_during_failure_accounting(
+    session_storage: tuple[Store, ContinuousSession],
+    monkeypatch: pytest.MonkeyPatch,
+    signal: str,
+    failure_kind: str,
+) -> None:
+    """整轮结束后的 VAD/关闭不能中断失败入账，下一轮仍能串行处理。"""
+    store, session = session_storage
+    accounting, release = asyncio.Event(), asyncio.Event()
+    original_get = store.get_session
+    reads = 0
+
+    async def delayed_get(scope: SessionScope) -> SessionRecord:
+        nonlocal reads
+        reads += 1
+        if reads == 2:
+            accounting.set()
+            await release.wait()
+        return await original_get(scope)
+
+    class FailedBackend:
+        async def generate(
+            self, request: ModelRequest, *, model: str, emit: ModelEventSink | None = None
+        ) -> ModelResponse:
+            if failure_kind == "deadline":
+                await asyncio.Event().wait()
+            raise ArithmeticError("本地模型故障")
+
+    input_id = await admitted(store, "failed", "输入")
+    monkeypatch.setattr(store, "get_session", delayed_get)
+
+    async def run(backend: ScriptedBackend | FailedBackend, turn_id: str, identity: str):
+        return await session.run(
+            Message.user("输入"),
+            turn_id=turn_id,
+            input_ids=(identity,),
+            backend=backend,
+            evidence=store,
+            model="openai/test",
+            instructions=(),
+            tools=ToolSet(),
+            output_tokens=1000,
+            max_requests=8,
+            turn_seconds=0.5 if failure_kind == "deadline" else 3,
+            retry=RetrySettings(),
+            diagnostic_bytes=4096,
+            refresh=refresh,
+            capacity=capacity,
+        )
+
+    task = asyncio.create_task(run(FailedBackend(), "failed", input_id))
+    closing: asyncio.Task[None] | None = None
+    try:
+        await asyncio.wait_for(accounting.wait(), 3)
+        if signal == "vad":
+            assert not session.interrupt(session.generation)
+        else:
+            closing = asyncio.create_task(session.close())
+            await asyncio.sleep(0)
+        release.set()
+        with pytest.raises(TimeoutError if failure_kind == "deadline" else ArithmeticError):
+            await task
+        failed = await store.get_turn("failed")
+        assert failed is not None and failed.state == "failed"
+        assert (await original_get("foreground")).active_turn is None
+        if signal == "vad":
+            following = await admitted(store, "next", "下一句")
+            result = await run(
+                ScriptedBackend((ModelResponse(Message.assistant("接续")),)), "next", following
+            )
+            assert result.session.version == 1
+        else:
+            assert closing is not None
+            await asyncio.wait_for(closing, 3)
+    finally:
+        release.set()
+        await asyncio.gather(task, return_exceptions=True)
+        if closing is not None:
+            await closing

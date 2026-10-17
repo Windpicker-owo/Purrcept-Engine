@@ -13,8 +13,9 @@ from purrcept_engine.infrastructure.sqlite import maintenance as maintenance_sto
 from purrcept_engine.infrastructure.sqlite import model_requests as model_storage
 from purrcept_engine.infrastructure.sqlite import subject as subject_storage
 from purrcept_engine.infrastructure.sqlite import time as time_storage
+from purrcept_engine.values import encode_json
 
-_FORMAT_VERSION = 13
+_FORMAT_VERSION = 14
 
 
 _APPLICATION_ID = 0x50555245
@@ -48,24 +49,75 @@ _SCHEMA = (
 )
 
 
-def _upgrade_minimum_wake(connection: sqlite3.Connection) -> None:
-    """在格式12上原子增加升级判断表，不改写原文、关系或业务记录。
+# 已知旧格式只用于一次性原子迁移，不为运行期保留旧调度接口。
+_INPUT_PROCESSING_V13 = (
+    "CREATE TABLE input_processing (input_id TEXT PRIMARY KEY REFERENCES inputs(input_id), "
+    "version INTEGER NOT NULL, stage TEXT NOT NULL, reason TEXT NOT NULL, "
+    "attention_request_id TEXT, due_at REAL, handed_off INTEGER NOT NULL DEFAULT 0, "
+    "admitted_at REAL NOT NULL)"
+)
+_MINIMUM_WAKE_V13 = (
+    "CREATE TABLE minimum_wake_assessments (input_id TEXT PRIMARY KEY REFERENCES inputs(input_id), "
+    "owner_id TEXT NOT NULL, observed_generation INTEGER NOT NULL, input_version INTEGER NOT NULL, "
+    "state TEXT NOT NULL, level TEXT, reason TEXT, request_id TEXT)",
+    "CREATE INDEX minimum_wake_pending ON minimum_wake_assessments(owner_id,state)",
+)
 
-    格式12的DDL已冻结。先核对全部原有对象和完整性，再在同一短事务创建
-    表及索引。Store在全部初始化通过后推进版本并提交；任何拒绝或SQLite
-    失败均留下原版本与原数据。不能用IF NOT EXISTS接受名称冲突。
+
+def _upgrade_stimulus_inbox(connection: sqlite3.Connection, version: int) -> None:
+    """核验冻结旧结构，再原子改为提交/唤醒分离的格式14。
+
+    原始输入、媒体、真实回执、历史和模型请求保持原值。旧 defer 尚未执行，
+    转为一次保底唤醒；截止时间写入迁移原因保留。已经结案的 observe 不重放。
+    旧升级观察原样归档，不借用新进程恰好相同的生成数字。
     """
     rows: list[tuple[object, ...]] = connection.execute(
         "SELECT sql FROM sqlite_master WHERE sql IS NOT NULL"
     ).fetchall()
     existing_sql = {_text(row[0]) for row in rows}
+    expected_schema: list[str] = []
     for statement in _SCHEMA:
         if statement in subject_storage.MINIMUM_WAKE_SCHEMA:
             continue
-        if statement not in existing_sql:
-            raise StorageError("格式12的数据库结构不完整或已被修改。", code="invalid_record")
+        if statement == subject_storage.SCHEMA[0]:
+            statement = _INPUT_PROCESSING_V13
+        expected_schema.append(statement)
+    if version == 13:
+        expected_schema.extend(_MINIMUM_WAKE_V13)
+    if any(statement not in existing_sql for statement in expected_schema):
+        raise StorageError(f"格式{version}的数据库结构不完整或已被修改。", code="invalid_record")
+
+    if version == 13:
+        # 保存旧判断的全部字段，作为历史表而非运行期兼容路径。
+        connection.execute(
+            "ALTER TABLE minimum_wake_assessments RENAME TO minimum_wake_assessments_v13"
+        )
+        connection.execute("DROP INDEX minimum_wake_pending")
     for statement in subject_storage.MINIMUM_WAKE_SCHEMA:
         connection.execute(statement)
+
+    deferred: list[tuple[object, ...]] = connection.execute(
+        "SELECT input_id,reason,due_at,handed_off FROM input_processing "
+        "WHERE due_at IS NOT NULL OR handed_off<>0"
+    ).fetchall()
+    for row in deferred:
+        reason = encode_json(
+            {
+                "migration": "stimulus_inbox_v14",
+                "previous_reason": _text(row[1]),
+                "previous_due_at": row[2],
+                "previous_handed_off": row[3],
+            }
+        ).decode()
+        connection.execute(
+            "UPDATE input_processing SET reason=? WHERE input_id=?", (reason, row[0])
+        )
+    connection.execute(
+        "UPDATE input_processing SET version=version+1,stage='foreground' WHERE stage='deferred'"
+    )
+    # 旧 foreground 已经具有明确 WAKE，不能重新过滤；普通 attention 仍重新合批。
+    connection.execute("ALTER TABLE input_processing DROP COLUMN due_at")
+    connection.execute("ALTER TABLE input_processing DROP COLUMN handed_off")
 
 
 def _text(value: object) -> str:
@@ -75,7 +127,7 @@ def _text(value: object) -> str:
 
 
 def initialize(connection: sqlite3.Connection) -> None:
-    """初始化空库或升级已知格式12。
+    """初始化空库或原子升级已知格式12/13。
 
     Args:
         connection: 仅在 Store 专属线程当前短事务中借用的连接，不在回调中等待设备或模型。
@@ -102,8 +154,8 @@ def initialize(connection: sqlite3.Connection) -> None:
             for statement in _SCHEMA:
                 connection.execute(statement)
             connection.execute(f"PRAGMA application_id = {_APPLICATION_ID}")
-        elif version == 12 and identity == _APPLICATION_ID:
-            _upgrade_minimum_wake(connection)
+        elif version in (12, 13) and identity == _APPLICATION_ID:
+            _upgrade_stimulus_inbox(connection, version)
         elif version != _FORMAT_VERSION or identity != _APPLICATION_ID:
             raise StorageError("数据库不是支持的 Engine 格式。", code="unsupported_format")
 

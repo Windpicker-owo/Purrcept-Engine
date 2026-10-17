@@ -4,6 +4,7 @@ import asyncio
 import signal
 from collections.abc import Iterator
 from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -54,12 +55,14 @@ def signal_owner() -> Iterator[object]:
 
 @pytest.mark.parametrize("pending", [(), ("plugin:browser", "storage", "data_directory_lock")])
 @pytest.mark.parametrize("delayed", [False, True])
+@pytest.mark.parametrize("cancelled_group", [False, True])
 def test_close_failure_preserves_force_exit_only_while_resources_remain(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
     pending: tuple[str, ...],
     delayed: bool,
+    cancelled_group: bool,
     signal_owner: object,
 ) -> None:
     """资源未归还时仍接受第二次信号；已释放的原始错误则正常向外报告。"""
@@ -67,7 +70,12 @@ def test_close_failure_preserves_force_exit_only_while_resources_remain(
     config_path = tmp_path / "purrcept.toml"
     config_path.write_bytes(template.read_bytes())
     host = EngineHost(load_config(config_path))
-    failure = RuntimeError("synthetic browser close failure")
+    original = RuntimeError("synthetic browser close failure")
+    failure = (
+        BaseExceptionGroup("failed accounting", [original, asyncio.CancelledError()])
+        if cancelled_group
+        else original
+    )
     close_calls = 0
     handlers: list[object] = []
 
@@ -127,11 +135,12 @@ def test_close_failure_preserves_force_exit_only_while_resources_remain(
         assert "关闭失败，仍占用" in output.out and "storage" in output.out
         assert "synthetic browser close failure" in output.err
     else:
-        with pytest.raises(RuntimeError if delayed else ExceptionGroup) as raised:
+        with pytest.raises(BaseException) as raised:
             main()
-        if isinstance(raised.value, ExceptionGroup):
-            assert raised.value.exceptions == (failure,)
-        else:
+        if delayed:
             assert raised.value is failure
+        else:
+            group = cast(BaseExceptionGroup[BaseException], raised.value)
+            assert group.exceptions == (failure,)
     assert close_calls == 1
     assert signal.getsignal(signal.SIGINT) is signal_owner

@@ -118,6 +118,52 @@ async def online(*, pending_calls: int = 16) -> tuple[QQClient, Socket, Connecto
     return client, socket, connector
 
 
+async def test_listener_close_failure_cannot_prove_resources_released() -> None:
+    """监听 close 失败时，即使全部消费者已结束，也不能解除宿主资源所有权。"""
+    failure = OSError("本地监听关闭故障")
+
+    class BrokenListener(Connector):
+        async def close(self) -> None:
+            raise failure
+
+    connector = BrokenListener()
+    client = QQClient(QQSettings(mode="reverse"), connector, ignore_event, ignore_gap)
+    await client.start()
+    with pytest.raises(OSError) as raised:
+        await client.close()
+    assert raised.value is failure
+    assert connector.stopped and not client.resources_released()
+
+
+@pytest.mark.parametrize("recoverable_type", [False, True])
+async def test_retired_connection_close_failure_cannot_prove_resources_released(
+    recoverable_type: bool,
+) -> None:
+    """收包任务已退出路由代次时，其关闭失败也不能被任务集合移除掩盖。"""
+    failure = (
+        ConnectionUnavailable("本地连接关闭故障")
+        if recoverable_type
+        else OSError("本地连接关闭故障")
+    )
+
+    class BrokenSocket(Socket):
+        async def close(self) -> None:
+            raise failure
+
+    socket = BrokenSocket()
+    connector = Connector((socket,))
+    client = QQClient(QQSettings(mode="direct"), connector, ignore_event, ignore_gap)
+    await client.start()
+    await client.wait_state("online")
+    socket.incoming.put_nowait(ConnectionUnavailable("样例断线"))
+    await client.wait_state("recovering" if recoverable_type else "failed")
+    # 断线与 close 使用相同网络异常类型时，也不能把关闭失败当作普通失联丢弃。
+    with pytest.raises(type(failure)) as raised:
+        await client.close()
+    assert raised.value is failure
+    assert not client.resources_released()
+
+
 def test_finite_recovery_and_explicit_restart() -> None:
     async def run() -> None:
         sleeps: list[float] = []

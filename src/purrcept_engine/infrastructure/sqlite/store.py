@@ -861,29 +861,37 @@ class Store:
 
         return await self._submit(read)
 
-    async def take_foreground_inputs(self, turn_id: str | None = None) -> tuple[InputRecord, ...]:
-        """原子拉取当前全部新刺激。
+    async def submit_inputs(
+        self, expected: tuple[InputProcessing, ...], *, minimum_wake: bool
+    ) -> bool:
+        """CAS 提交缓存批次，最低唤起同时保存唤醒意图。
 
         Args:
-            turn_id: 连续会话中本轮处理的身份。 None 表示只取前台缓冲，不关联已有活动轮次。
+            expected: 当前缓存批次的完整版本。
+            minimum_wake: 是否包含可信高价值输入。
 
         Returns:
-            条目集合：首次接管的完整输入原文、来源与媒体引用。
-
-        Note:
-            上限由接管额度限定，不用分页遗留旧输入。
-
-            空闲启动要求存在已唤起输入；提供 turn_id 时直接关联到活动轮次。
-            存储线程串行完成取批和原文读取，晚到的注意判断只能 CAS 失败。
+            是否整批提交；版本冲突不部分采用。
         """
-        if turn_id is not None:
-            self._validate_id(turn_id)
+        return await self._submit(
+            lambda connection: subject_storage.submit_inputs(
+                connection, expected, minimum_wake=minimum_wake
+            ),
+            control=True,
+            writing=True,
+        )
+
+    async def take_foreground_inputs(self) -> tuple[InputRecord, ...]:
+        """原子消耗持久唤醒意图并取尽已提交收件箱。
+
+        Returns:
+            本轮独占的完整输入快照；无唤醒意图时为空。
+        """
 
         def take(connection: sqlite3.Connection) -> tuple[InputRecord, ...]:
-            """在当前事务内取得全部新前台输入，并恢复原始接管事实。"""
-            ids = subject_storage.take_foreground_inputs(connection, turn_id)
+            """同一存储操作恢复原文，取批之后的新输入不进入本轮。"""
             records: list[InputRecord] = []
-            for input_id in ids:
+            for input_id in subject_storage.take_foreground_inputs(connection):
                 record = self._get_input(connection, input_id)
                 if record is None:
                     raise StorageError("处理队列引用不存在的原文。", code="invalid_record")
@@ -892,6 +900,29 @@ class Store:
 
         return await self._submit(take, control=True, writing=True)
 
+    async def buffered_inputs(self) -> tuple[InputRecord, ...]:
+        """按接管顺序读取全部尚未提交的缓存输入。
+
+        Returns:
+            attention/priority 原文快照；容量由接管额度限制，查询不取得提交资格。
+        """
+
+        def read(connection: sqlite3.Connection) -> tuple[InputRecord, ...]:
+            """跨阶段仍按 pending 序号排序，避免高价值批次改变来源顺序。"""
+            rows: list[tuple[str]] = connection.execute(
+                "SELECT p.input_id FROM pending_inputs p JOIN input_processing s USING(input_id) "
+                "WHERE s.stage IN ('attention','priority') ORDER BY p.sequence"
+            ).fetchall()
+            records: list[InputRecord] = []
+            for (input_id,) in rows:
+                record = self._get_input(connection, input_id)
+                if record is None:
+                    raise StorageError("缓存引用不存在的原文。", code="invalid_record")
+                records.append(record)
+            return tuple(records)
+
+        return await self._submit(read)
+
     async def decide_inputs(
         self,
         expected: tuple[InputProcessing, ...],
@@ -899,46 +930,29 @@ class Store:
         reason: str,
         *,
         request_id: str | None = None,
-        defer_until: float | None = None,
     ) -> bool:
-        """整批判断与 pending/defer 交接原子提交。
+        """CAS 采用已提交批次的判断，observe 只保留待处理输入。
 
         Args:
-            expected: 此次比较或提交必须仍匹配的原始观察值。
-            level: 本批明确的注意处置等级。
-            reason: 供后续核对的明确处置原因。
-            request_id: 逻辑请求的稳定身份，用于查询或关联同一次受理。
-            defer_until: 保留原输入身份的延期到期时间；非延期决策不需要此值。
+            expected: 已提交批次的原版本。
+            level: observe、wake 或 urgent。
+            reason: 实际处置原因。
+            request_id: 实际请求证据，程序处置为 None。
 
-        Note:
-            版本过期明确不采用。
+        Returns:
+            是否整批采用；迟到结果不覆盖已取走输入。
         """
         return await self._submit(
             lambda connection: subject_storage.decide_inputs(
-                connection, expected, level, reason, request_id=request_id, defer_until=defer_until
+                connection, expected, level, reason, request_id=request_id
             ),
             logical_bytes=len(serialization.encode((expected, reason)).encode("utf-8")),
             control=True,
             writing=True,
         )
 
-    async def deliver_due_inputs(self, now: float) -> tuple[str, ...]:
-        """到期直接交前台一次。
-
-        Args:
-            now: 本次规则计算采用的时刻，便于同一操作保持一致。
-
-        Note:
-            不重新启动筛选或刷新延后期限。
-        """
-        return await self._submit(
-            lambda connection: subject_storage.deliver_due(connection, now),
-            control=True,
-            writing=True,
-        )
-
     async def register_minimum_wake_assessment(
-        self, expected: InputProcessing, *, owner_id: str, observed_generation: int
+        self, expected: tuple[InputProcessing, ...], *, owner_id: str, observed_generation: int
     ) -> bool:
         """保存最低唤起的一次旧代次升级资格，不创建第二份前台待办。
 
@@ -998,10 +1012,6 @@ class Store:
             control=True,
             writing=True,
         )
-
-    async def next_deferred_input(self) -> float | None:
-        """读取最早延后期限以设置单个调度定时器。"""
-        return await self._submit(subject_storage.next_deferred)
 
     async def get_session(self, scope: SessionScope) -> SessionRecord:
         """还原完整已提交检查点媒体，不返回丢失内容的空历史。

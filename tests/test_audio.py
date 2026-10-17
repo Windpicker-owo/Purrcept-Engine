@@ -282,6 +282,93 @@ async def test_actual_partial_playback_is_saved_and_stop_confirmed(
     await owner.close()
 
 
+@pytest.mark.parametrize("decode", [False, True])
+async def test_real_player_interrupt_releases_blocked_stream_and_allows_next_speech(
+    store: Store, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, decode: bool
+) -> None:
+    """VAD 停音必须收回仍在等待上游的 PCM 消费者，随后同一队列能再次发声。"""
+    executable = shutil.which("ffmpeg") if decode else sys.executable
+    if executable is None:
+        pytest.skip("本地 FFmpeg 未安装。")
+    blocked, released, started = asyncio.Event(), asyncio.Event(), asyncio.Event()
+
+    class StreamingSource(Source):
+        async def stream(
+            self, parameters: SpeechParameters, identity: str
+        ) -> AsyncGenerator[bytes, None]:
+            del identity
+            self.calls.append(parameters.text)
+            try:
+                yield encode_wav(bytes(128000), 32000) if decode else bytes(1280)
+                if len(self.calls) == 1:
+                    blocked.set()
+                    await asyncio.Event().wait()
+            finally:
+                released.set()
+
+    class StartedBody(Body):
+        def playback_started(
+            self, playback_id: str, intent: BodyIntent | None, deadline: float
+        ) -> JsonObject:
+            result = super().playback_started(playback_id, intent, deadline)
+            started.set()
+            return result
+
+    processes: list[asyncio.subprocess.Process] = []
+
+    async def launch(*arguments: str) -> asyncio.subprocess.Process:
+        del arguments
+        process = await asyncio.create_subprocess_exec(
+            sys.executable,
+            "-c",
+            "import sys; sys.stderr.write('0.02 M-A: 0.000 fd=0\\r'); "
+            "sys.stderr.flush(); sys.stdin.buffer.read()",
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.PIPE,
+            creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
+        )
+        processes.append(process)
+        return process
+
+    monkeypatch.setattr(player_module, "launch", launch)
+    source = StreamingSource()
+    owner = AudioRuntime(
+        "audio",
+        AudioSettings(playback_backend="streaming", processing_executable=executable),
+        source,
+        FFplayPlayer(sys.executable),
+        store.audio,
+        tmp_path,
+        None,
+        decode=decode,
+    )
+    owner.bind_body(StartedBody())
+    await owner.start()
+    first = asyncio.create_task(owner.speak(SpeechParameters(text="旧声音"), context("old")))
+    try:
+        await asyncio.wait_for(blocked.wait(), 3)
+        await asyncio.wait_for(started.wait(), 3)
+        control = await owner.interrupt(context("vad", 0.5))
+        assert control.state == "confirmed"
+        value = payload(await asyncio.wait_for(first, 1))
+        assert value["status"] == "interrupted" and value["partial_playback_possible"] is True
+        assert released.is_set()
+        identity = value["playback_id"]
+        assert isinstance(identity, str)
+        assert (await store.audio.facts("audio", identity))[-1].fact == "finished"
+        assert (await store.audio.facts("audio", "vad"))[-1].fact == "control_confirmed"
+        new = await asyncio.wait_for(
+            owner.speak(SpeechParameters(text="新声音"), context("new")), 3
+        )
+        assert payload(new)["completed"] is True
+        assert source.calls == ["旧声音", "新声音"]
+    finally:
+        await owner.close()
+        await asyncio.gather(first, return_exceptions=True)
+    assert all(process.returncode is not None for process in processes)
+
+
 async def test_queued_deadline_finishes_without_waiting_for_active_synthesis(
     store: Store, tmp_path: Path
 ) -> None:

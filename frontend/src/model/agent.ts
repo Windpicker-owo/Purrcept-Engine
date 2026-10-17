@@ -57,7 +57,7 @@ export function agentView(snapshot: Snapshot | null, online: boolean, attention:
   if (snapshot.foreground === null) return { state: "warning", headline: "主体状态未提供", detail: "宿主没有给出前台会话的状态。", focus: null };
   if (snapshot.foreground.busy) return { state: "reasoning", headline: "正在想怎么回应", detail: "她在组织下一步。", focus: null };
   const listening = snapshot.devices.some((device) => device.kind === "voice_input" && device.state.state === "listening");
-  const waiting = snapshot.pending_inputs.filter((item) => item.stage !== "processed" && item.stage !== "failed").reduce((sum, item) => sum + item.count, 0);
+  const waiting = snapshot.pending_inputs.filter((item) => item.stage !== "processed" && item.stage !== "failed" && item.stage !== "submitted").reduce((sum, item) => sum + item.count, 0);
   if (waiting > 0) return { state: "perceiving", headline: `收到 ${waiting} 条新消息`, detail: "正在判断要不要回应。", focus: null };
   if (listening) return { state: "perceiving", headline: "正在听", detail: "收音已开启。", focus: null };
   if (snapshot.reflection?.busy) return { state: "reasoning", headline: "正在回顾和整理记忆", detail: "这是独立的反思，不影响她回应新消息。", focus: null };

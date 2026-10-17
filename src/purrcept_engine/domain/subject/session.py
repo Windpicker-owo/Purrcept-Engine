@@ -1,12 +1,13 @@
 """串行借用 Core 连续会话，冻结整轮预算并在权威提交后采用新历史。
 
 每轮创建一个借用相同模型资源的新 facade，恢复唯一已提交检查点；Core 仍
-独占工具循环和完整轮次边界。前台可在响应和请求边界拉取追加输入，先关联
-权威轮次再放入 Core 临时历史，整轮预算不重置。失败或取消丢弃临时 facade，真实行动和
+独占工具循环和完整轮次边界。前台只读取唤醒时冻结的输入快照，运行中不接管
+新刺激，整轮预算不重置。失败或取消丢弃临时 facade，真实行动和
 模型尝试已经独立入账。动态尾部由同步 ReminderSource 投影内存值，在实际
 请求边界异步刷新后重投影一次；同一逻辑请求的重试不再次刷新。
 Engine 工具原文在完整下一请求首发前经过交付 Gate；之后请求和最终检查点
 保留同一实际交付，不能把容量回执重新展开为未经呈现的正文。
+生成结束后先封存代次，再结案和归还借用；结案仍占用会话，但不再接受抢占取消。
 """
 
 from __future__ import annotations
@@ -17,8 +18,6 @@ from dataclasses import dataclass, field, replace
 from typing import Protocol
 
 from purrcept_core import AgentDriver, InlineExecutor
-from purrcept_core.context import ExecutionContext
-from purrcept_core.effect import Effect
 from purrcept_core.models import (
     ConversationCheckpoint,
     Message,
@@ -34,7 +33,6 @@ from purrcept_core.models import (
     ReminderResolutionContext,
     SystemInstruction,
     SystemReminder,
-    TextBlock,
     ToolLoopLimitError,
     ToolSet,
 )
@@ -43,6 +41,7 @@ from purrcept_engine.domain.context.capacity import CapacityAssessment
 from purrcept_engine.domain.context.checkpoints import decode_checkpoint, encode_checkpoint
 from purrcept_engine.domain.context.delivery import ToolDeliveryGate
 from purrcept_engine.domain.context.presentation import render_host_state
+from purrcept_engine.domain.context.templates import DYNAMIC_STATE_PROMPT
 from purrcept_engine.domain.model_requests.models import RequestScope
 from purrcept_engine.domain.model_requests.ports import (
     MaterialCompiler,
@@ -136,8 +135,8 @@ class DynamicReminder:
         """
         payload = self.state.host_payload
         text = self.state.text if payload is None else render_host_state(payload)
-        return SystemReminder(
-            (TextBlock(text),), key=self.source_id, placement=ReminderPlacement.TAIL
+        return DYNAMIC_STATE_PROMPT.reminder(
+            {"state": text}, key=self.source_id, placement=ReminderPlacement.TAIL
         )
 
     def resolve(self, context: ReminderResolutionContext) -> Iterable[SystemReminder]:
@@ -159,28 +158,6 @@ type CapacityCheck = Callable[[JsonObject], CapacityAssessment]
 type RefreshState = Callable[[RequestBudget], Awaitable[DynamicState]]
 type PresentedGate = Callable[[ModelRequest], Awaitable[None]]
 type TurnInput = Message | Callable[[], Awaitable[Message]]
-type ReceiveInputs = Callable[[TurnRecord], Awaitable[Message | None]]
-
-
-@dataclass(frozen=True)
-class _ReceiveInputs(Effect[tuple[Message, ...]]):
-    """把宿主原子拉取接入 Core 请求/响应边界，不启动独立消费任务。"""
-
-    poll: Callable[[], Awaitable[tuple[Message, ...]]]
-
-    async def execute(self, context: ExecutionContext[object]) -> tuple[Message, ...]:
-        """串行借用本轮拉取器。
-
-        Args:
-            context: 宿主或 Core 注入的可信调用上下文，不由模型自行填写。
-
-        Returns:
-            条目集合：供后续 Core 请求使用的完整消息。
-
-        Note:
-            取消和权威错误按原异常返回 Core。
-        """
-        return await self.poll()
 
 
 class PrepareHistory(Protocol):
@@ -387,6 +364,7 @@ class ContinuousSession:
         self.can_start = can_start
         self._generation = 0
         self._interrupted_generation = 0
+        self._settling_generation = 0
         self._active: asyncio.Task[SessionResult] | None = None
         self._budgets: set[RequestBudget] = set()
         self._backends: set[ModelGenerationBackend] = set()
@@ -431,6 +409,7 @@ class ContinuousSession:
             and self.busy
             and generation == self._generation
             and generation != self._interrupted_generation
+            and generation != self._settling_generation
             and any(asyncio.get_running_loop().time() < budget.deadline for budget in self._budgets)
         )
 
@@ -478,7 +457,6 @@ class ContinuousSession:
         delivery: ToolDeliveryGate | None = None,
         accepted_failures: tuple[str, ...] = (),
         prepare_history: PrepareHistory | None = None,
-        receive_inputs: ReceiveInputs | None = None,
     ) -> SessionResult:
         """从主动处理起计预算，成功提交后返回。
 
@@ -502,8 +480,6 @@ class ContinuousSession:
             delivery: 本轮工具原文交付门槛；None 不执行候选交付替换。
             accepted_failures: 当前成功交互明确承接的先前失败轮次身份。 默认不附加此类条目。
             prepare_history: 会话空闲时维护已提交历史的入口；None 不维护。
-            receive_inputs: 在 Core 请求边界接管本轮新增输入的回调。 None
-                表示本轮不接入新增输入。
 
         Returns:
             权威历史已提交的内部轮次结果；最终文字不会自动对外发送。
@@ -514,9 +490,7 @@ class ContinuousSession:
         Note:
             重叠调用明确拒绝。
 
-            receive_inputs 由前台调度者提供，在 Core 响应/请求边界串行调用。
-            它须先把取得的输入关联到传入轮次，再返回完整 user 材料；没有输入
-            时立即返回 None。反思不安装该入口，追加输入不扩充本轮请求/时间额度。
+            输入身份由调用方在唤醒时冻结，轮内工具调用不会拉取后续刺激。
         """
         if self._closing or self.busy:
             raise HostStateError("会话正在处理或收尾。")
@@ -548,7 +522,6 @@ class ContinuousSession:
                 delivery=delivery,
                 accepted_failures=accepted_failures,
                 prepare_history=prepare_history,
-                receive_inputs=receive_inputs,
             ),
             name=f"subject-{self.scope}-{generation}",
         )
@@ -576,7 +549,6 @@ class ContinuousSession:
         delivery: ToolDeliveryGate | None,
         accepted_failures: tuple[str, ...],
         prepare_history: PrepareHistory | None,
-        receive_inputs: ReceiveInputs | None,
     ) -> SessionResult:
         """只采用当前权威版本；Core 临时成功不是 Engine 安装历史的提交点。"""
         wrapped: ModelGenerationBackend | None = None
@@ -636,36 +608,16 @@ class ContinuousSession:
                 continuation_policy="client_managed",
                 request_budget=None,
             )
-            if previous.checkpoint_json is not None:
-                conversation.restore(decode_checkpoint(previous.checkpoint_json))
-            active_turn = turn
-            active_backend = wrapped
-
-            async def poll() -> tuple[Message, ...]:
-                """接管与原文进入历史使用同一预算，后续请求记录扩展后的来源。"""
-                nonlocal active_turn, turn
+            previous_checkpoint = previous.checkpoint_json
+            if previous_checkpoint is not None:
+                # 只在线程中转换冻结材料；Conversation 的恢复仍由本轮唯一所有者执行。
+                restored = await prepare_off_loop(lambda: decode_checkpoint(previous_checkpoint))
                 budget.check()
-                self.can_start()
-                if receive_inputs is None:
-                    return ()
-                incoming = await receive_inputs(active_turn)
-                if incoming is None:
-                    return ()
-                latest = await self.store.get_turn(active_turn.turn_id)
-                if latest is None:
-                    raise HostStateError("拉取输入后缺少权威轮次。")
-                active_turn = turn = latest
-                active_backend.scope = replace(active_backend.scope, input_ids=latest.input_ids)
-                budget.check()
-                return (incoming,)
-
+                conversation.restore(restored)
             turn_timeout = asyncio.timeout_at(budget.deadline)
             async with turn_timeout:
                 result = await AgentDriver[None](InlineExecutor()).run(
-                    conversation.ask(
-                        prepared_message,
-                        input_poll=_ReceiveInputs(poll) if receive_inputs is not None else None,
-                    ),
+                    conversation.ask(prepared_message),
                     host=None,
                 )
             budget.check()
@@ -680,16 +632,27 @@ class ContinuousSession:
                         messages=delivery.project(checkpoint.history.messages),
                     ),
                 )
+            # 历史随原声轮次增长，编码及完整校验不能占住实时采集所在的事件循环。
+            # 取消仍等待纯计算归还，只有当前预算继续有效时才允许提交检查点。
+            checkpoint_json = await prepare_off_loop(lambda: encode_checkpoint(checkpoint))
+            budget.check()
+            # Ordering: 进入权威提交后只剩结案，迟到 VAD/关闭不能把已提交成功
+            # 改写为取消，也不能再次取消下面的失败记账或后端资源归还。
+            self._settling_generation = generation
             committed = await self._commit(
                 self.store.finish_turn(
                     turn,
                     "succeeded",
-                    checkpoint_json=encode_checkpoint(checkpoint),
+                    checkpoint_json=checkpoint_json,
                     accepted_failures=accepted_failures,
                 )
             )
             return SessionResult(turn, committed, checkpoint, result.response.message.text)
         except BaseException as error:
+            # 超时会消耗自身的取消计数；不能据 Task.cancelling() 判断是否仍可
+            # 抢占。先同步封存生成资格，再 await 失败记账，避免第二次取消把
+            # 可正常结案的超时升级为权威故障并传染全部输入入口。
+            self._settling_generation = generation
             # Core、取消和内部故障都保留本来的异常；仅在权威账本仍可提交时
             # 记录本轮失败。失败提交也失败时保留两条错误，不制造成功状态。
             if turn is None:
@@ -734,6 +697,7 @@ class ContinuousSession:
                 ) from None
             raise
         finally:
+            self._settling_generation = generation
             budget.revoke()
             self._budgets.discard(budget)
             if wrapped is not None:
@@ -759,11 +723,13 @@ class ContinuousSession:
             generation: 当前会话或设备的代次，用于拒绝迟到结果更新新状态。
 
         Returns:
-            是否实际撤销了仍匹配的生成代次；旧判断不会抢占新轮次。
+            是否实际撤销了仍匹配的生成代次；旧判断不会抢占新轮次，
+            已进入成功提交、失败结案或资源归还的代次也返回 False。
         """
         if (
             generation != self._generation
             or generation == self._interrupted_generation
+            or generation == self._settling_generation
             or not self.busy
         ):
             return False

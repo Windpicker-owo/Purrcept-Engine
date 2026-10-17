@@ -1,9 +1,10 @@
-"""AttentionService 的固定工作流程；共享协调事实只借用同一领域运行时。"""
+"""按调用方给出的完整批次评估注意级别，保存实际模型请求而不改变输入状态。"""
 
 from __future__ import annotations
 
 import asyncio
-import time
+from collections.abc import Callable
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, cast
 from uuid import uuid4
 
@@ -27,250 +28,117 @@ from purrcept_engine.domain.model_requests.service import (
     ModelDecisionBackend,
     ModelGenerationBackend,
     RequestBudget,
+    RequestBudgetExceeded,
 )
 from purrcept_engine.domain.subject.attention import attention_request
 from purrcept_engine.domain.subject.models import (
     AttentionLevel,
-    InputProcessing,
-    MinimumWakeAssessment,
 )
-from purrcept_engine.errors import HostStateError, StorageError
+from purrcept_engine.errors import StorageError
 from purrcept_engine.serialization import encode
-from purrcept_engine.values import ActionProtocolError, decode_object
+from purrcept_engine.values import ActionProtocolError, JsonObject, decode_object
 
 if TYPE_CHECKING:
     from purrcept_engine.domain.subject.service import SubjectService
 
 
+@dataclass(frozen=True, slots=True)
+class AttentionResult:
+    """被调用方返回的整批判断；是否采用、唤醒或抢占由协调者决定。
+
+    Attributes:
+        level: observe、wake 或 urgent；模型暂时失败时明确保底 wake。
+        reason: 实际判断原因或未完成的完整证据说明。
+        request_id: 已保存的逻辑请求身份，未发起请求时为 None。
+    """
+
+    level: AttentionLevel
+    reason: str
+    request_id: str | None = None
+
+
 class AttentionService:
-    """合批取得待判断输入，按原版本采用注意选择和紧急升级。
+    """被刺激协调者串行调用的无状态批次评估器，不拥有定时或前台控制。
 
     Note:
-        SubjectService 在同一事件循环创建并持有该协作者；固定工作器的启动、
-        取消和故障汇总归主体。判断期间不占用状态提交事务，迟到结果须 CAS。
+        模型资源借用和请求证据仍由主体汇总；一次调用只有一个逻辑请求预算。
+        输入交接、结果采用和旧生成抢占都留在调用方。
     """
 
     def __init__(self, runtime: SubjectService) -> None:
-        """借用同一协调状态，不复制会话、生成资格或失败事实。
+        """借用请求记账与模型声明，不启动工作器。
 
         Args:
-            runtime: 创建此协作者的领域或执行运行实例，不跨实例共享状态。
+            runtime: 创建评估器的唯一主体资源所有者。
         """
         self.runtime = runtime
-        self.task: asyncio.Task[None] | None = None
 
-    def start(self) -> asyncio.Task[None]:
-        """创建唯一固定任务并交给运行时汇总关闭。
-
-        Returns:
-            当前所有者持有的工作观察入口，等待取消不等于实际资源已归还。
-
-        Raises:
-            HostStateError: 领域工作器已经启动。
-
-        Note:
-            重复启动明确拒绝。
-        """
-        if self.task is not None:
-            raise HostStateError("领域工作器已经启动。")
-        self.task = asyncio.create_task(self.attention(), name="subject-attention")
-        return self.task
-
-    async def attention(self) -> None:
-        """空闲时判断普通输入。
-
-        Note:
-            主脑活动期间保持缓冲开放，由请求边界取尽。
-        """
-        while True:
-            self.runtime.check()
-            revision = self.runtime.store.change_revision
-            upgrades = await self.runtime.store.minimum_wake_assessments(
-                self.runtime.attention_owner, limit=1
-            )
-            if upgrades:
-                await self.upgrade_minimum_wake(upgrades[0])
-                continue
-            if self.runtime.session.busy:
-                # 已有主脑交互时，新刺激不再被后台 observe/defer 提前取走。
-                await self.runtime.wait_foreground(revision)
-                continue
-            if await self.runtime.store.staged_inputs("foreground", limit=1):
-                await self.runtime.wait(revision)
-                continue
-            records = await self.runtime.store.staged_inputs(
-                "attention", limit=self.runtime.settings.attention_batch
-            )
-            if not records:
-                await self.runtime.wait(revision)
-                continue
-            expected = await self.runtime.processing(records)
-            first = min(item.admitted_at for item in expected)
-            remaining = min(
-                self.runtime.settings.coalesce_seconds,
-                max(0.0, first + self.runtime.settings.coalesce_seconds - time.time()),
-            )
-            deadline = asyncio.get_running_loop().time() + remaining
-            upgrade_ready = False
-            while len(records) < self.runtime.settings.attention_batch and remaining > 0:
-                await self.runtime.wait(revision, seconds=remaining)
-                self.runtime.check()
-                revision = self.runtime.store.change_revision
-                if await self.runtime.store.minimum_wake_assessments(
-                    self.runtime.attention_owner, limit=1
-                ):
-                    upgrade_ready = True
-                    break
-                records = await self.runtime.store.staged_inputs(
-                    "attention", limit=self.runtime.settings.attention_batch
-                )
-                if not records:
-                    break
-                remaining = deadline - asyncio.get_running_loop().time()
-            if upgrade_ready:
-                continue
-            if not records:
-                continue
-            if self.runtime.session.busy or await self.runtime.store.staged_inputs(
-                "foreground", limit=1
-            ):
-                continue
-            expected = await self.runtime.processing(records)
-            if any(item.stage != "attention" for item in expected):
-                continue
-            if self.runtime.attention is None:
-                await self.runtime.commit(
-                    self.runtime.store.decide_inputs(expected, "wake", "attention.not_configured")
-                )
-                continue
-            observed = self.runtime.session.generation
-            background = await self.runtime.attention_context()
-            while records:
-                try:
-                    request = await attention_request(
-                        records,
-                        background=background,
-                        media=self.runtime.media,
-                        model=self.runtime.attention,
-                        defer_seconds=self.runtime.settings.defer_seconds,
-                    )
-                except (CapacityError, UnsupportedMaterial) as error:
-                    if len(records) > 1:
-                        records = records[:-1]
-                        expected = expected[:-1]
-                        continue
-                    reason = encode(
-                        {
-                            "attention": "not_completed",
-                            "error_type": type(error).__name__,
-                            "reason": str(error),
-                            "code": error.code if isinstance(error, CapacityError) else None,
-                        }
-                    )
-                    await self.runtime.commit(
-                        self.runtime.store.decide_inputs(expected, "wake", reason)
-                    )
-                    break
-                await self.assess(records, expected, request, observed)
-                break
-
-    async def upgrade_minimum_wake(self, assessment: MinimumWakeAssessment) -> None:
-        """仅评估仍在旧生成后排队的直接唤起，失效观察结案而不换代续做。
+    async def evaluate(
+        self,
+        records: tuple[InputRecord, ...],
+        *,
+        background: JsonObject,
+        eligible: Callable[[], bool] | None = None,
+    ) -> AttentionResult:
+        """评估完整批次，返回判断及实际请求证据。
 
         Args:
-            assessment: 已取得并需按原版本核验的判断结果。
+            records: 调用方已经提交并冻结的完整刺激批次。
+            background: 本次观察的有限工作状态，不读取连续前台历史。
+            eligible: 最低唤起升级的旧代次资格；普通批次为 None。
+
+        Returns:
+            整批判断。容量、材料缺口和模型暂时失败明确返回未完成并保底 wake。
 
         Raises:
-            StorageError: 最低唤起升级引用缺少原文或处置身份。
-            RuntimeError: 最低唤起升级缺少装配的注意模型。
+            StorageError: 请求证据缺失或权威记录故障。
+
+        Note:
+            不裁剪正文或拆换批次。内部故障保持原异常；取消仍归还实际后端借用。
         """
-        record = await self.runtime.store.get_input(assessment.input_id)
-        processing = await self.runtime.store.input_processing(assessment.input_id)
-        if record is None or processing is None:
-            raise StorageError("最低唤起升级引用缺少原文或处置身份。", code="invalid_record")
-        if (
-            processing.stage != "foreground"
-            or processing.version != assessment.input_version
-            or not self.runtime.session.eligible(assessment.observed_generation)
-        ):
-            await self.runtime.commit(
-                self.runtime.store.finish_minimum_wake_assessment(
-                    assessment, "wake", "attention.minimum_wake_observation_expired"
-                )
-            )
-            return
         if self.runtime.attention is None:
-            raise RuntimeError("最低唤起升级缺少装配的注意模型。")
-        background = await self.runtime.attention_context()
+            return AttentionResult("wake", "attention.not_configured")
         try:
             request = await attention_request(
-                (record,),
+                records,
                 background=background,
                 media=self.runtime.media,
                 model=self.runtime.attention,
-                defer_seconds=self.runtime.settings.defer_seconds,
             )
         except (CapacityError, UnsupportedMaterial) as error:
-            await self.runtime.commit(
-                self.runtime.store.finish_minimum_wake_assessment(
-                    assessment,
-                    "wake",
-                    encode(
-                        {
-                            "attention": "not_completed",
-                            "minimum_level": "wake",
-                            "error_type": type(error).__name__,
-                            "reason": str(error),
-                            "code": error.code if isinstance(error, CapacityError) else None,
-                        }
-                    ),
-                )
+            return AttentionResult(
+                "wake",
+                encode(
+                    {
+                        "attention": "not_completed",
+                        "error_type": type(error).__name__,
+                        "reason": str(error),
+                        "code": error.code if isinstance(error, CapacityError) else None,
+                    }
+                ),
             )
-            return
-        # 材料组装也可能等待存储。正式请求仍只针对原观察，不因为生成已经
-        # 前进而借新代次继续评估；第一次逻辑请求前无需伪造失败模型证据。
-        current = await self.runtime.store.input_processing(assessment.input_id)
-        if current != processing or not self.runtime.session.eligible(
-            assessment.observed_generation
-        ):
-            await self.runtime.commit(
-                self.runtime.store.finish_minimum_wake_assessment(
-                    assessment, "wake", "attention.minimum_wake_observation_expired"
-                )
-            )
-            return
-        await self.assess(
-            (record,),
-            (processing,),
-            request,
-            assessment.observed_generation,
-            minimum_wake=assessment,
-        )
+        return await self.assess(records, request, eligible=eligible)
 
     async def assess(
         self,
         records: tuple[InputRecord, ...],
-        expected: tuple[InputProcessing, ...],
         request: DecisionRequest | ModelRequest,
-        observed_generation: int,
         *,
-        minimum_wake: MinimumWakeAssessment | None = None,
-    ) -> None:
-        """判断证据独立入账，处置 CAS 后才抢占，有限服务失败交前台一次。
+        eligible: Callable[[], bool] | None = None,
+    ) -> AttentionResult:
+        """在原预算内执行一次逻辑判断，保留所有真实尝试。
 
         Args:
-            records: 按接管顺序取得的完整输入记录。
-            expected: 此次比较或提交必须仍匹配的原始观察值。
-            request: 已按 Core 协议组装的完整判断或生成请求。
-            observed_generation: 接管或判断开始时观察到的前台生成代次。
-            minimum_wake: 直接唤起所建立的最低 WAKE 事实或对应升级判断资格。
+            records: 请求对应的冻结输入批次。
+            request: 已完整组装并预检的实际模型请求。
+            eligible: 可选的原生成资格检查，重试前重新核对。
+
+        Returns:
+            判断及权威请求身份。
 
         Raises:
-            RuntimeError: 注意工作器缺少装配的模型。
-            TypeError: 专用判断必须使用专用请求；生成注意必须使用生成请求。
-            DecisionResponseError: 典型拒绝原因：注意判断明确拒答；注意判断未返回声明的选择；
-                无工具注意响应不能包含工具调用；生成注意没有返回完整 JSON 对象。
-            StorageError: 注意判断缺少唯一逻辑请求证据。
+            StorageError: 缺少唯一请求证据。
+            RuntimeError: 未装配注意模型。
         """
         if self.runtime.attention is None:
             raise RuntimeError("注意工作器缺少装配的模型。")
@@ -283,9 +151,7 @@ class AttentionService:
         def can_assess() -> None:
             """复核当前注意判断仍拥有所观察前台代次的升级资格。"""
             self.runtime.check()
-            if minimum_wake is not None and not self.runtime.session.eligible(observed_generation):
-                # 旧生成结束后不重试升级请求。已启动尝试仍按原证据/借用机制
-                # 收尾，不能把迟到的 urgent 采用到正在处理该输入的新轮次。
+            if eligible is not None and not eligible():
                 budget.revoke()
                 budget.check()
 
@@ -316,6 +182,7 @@ class AttentionService:
         level: AttentionLevel = "wake"
         reason = "typesafe.batch_judgment"
         failed = False
+        budget_stopped = False
         try:
             try:
                 if isinstance(backend, ModelDecisionBackend):
@@ -328,7 +195,6 @@ class AttentionService:
                         raise DecisionResponseError("注意判断明确拒答。")
                     if not isinstance(answer, ChoiceAnswer) or answer.choice not in (
                         "observe",
-                        "defer",
                         "wake",
                         "urgent",
                     ):
@@ -347,7 +213,6 @@ class AttentionService:
                     choice = parsed.get("attention")
                     if not isinstance(choice, str) or choice not in (
                         "observe",
-                        "defer",
                         "wake",
                         "urgent",
                     ):
@@ -358,8 +223,22 @@ class AttentionService:
                     level, reason = choice, value
             except (ModelError, TimeoutError) as error:
                 failed = True
+                budget_stopped = isinstance(error, RequestBudgetExceeded)
                 reason = encode({"attention": "not_completed", "error_type": type(error).__name__})
             requests = await self.runtime.store.requests_for_turn("attention", identity)
+            if not requests and budget_stopped:
+                # 资格可能在本地编译或背景准备期间到期，此时包装器尚未接管
+                # 逻辑请求。没有实际请求不是证据损坏，也不能伪造请求成功记录。
+                return AttentionResult(
+                    "wake",
+                    encode(
+                        {
+                            "attention": "not_completed",
+                            "request_state": "not_started",
+                            "cause": reason,
+                        }
+                    ),
+                )
             if len(requests) != 1:
                 raise StorageError("注意判断缺少唯一逻辑请求证据。", code="invalid_record")
             if failed:
@@ -375,37 +254,7 @@ class AttentionService:
                         ),
                     }
                 )
-            if minimum_wake is None:
-                applied = await self.runtime.commit(
-                    self.runtime.store.decide_inputs(
-                        expected,
-                        level,
-                        reason,
-                        request_id=requests[0].request.request_id,
-                        defer_until=time.time() + self.runtime.settings.defer_seconds
-                        if level == "defer"
-                        else None,
-                    )
-                )
-            else:
-                applied = await self.runtime.commit(
-                    self.runtime.store.finish_minimum_wake_assessment(
-                        minimum_wake,
-                        level,
-                        encode(
-                            {
-                                "attention": "minimum_wake_assessment",
-                                "minimum_level": "wake",
-                                "assessed_level": level,
-                                "reason": reason,
-                                "observed_generation": observed_generation,
-                            }
-                        ),
-                        request_id=requests[0].request.request_id,
-                    )
-                )
-            if applied and level == "urgent":
-                self.runtime.session.interrupt(observed_generation)
+            return AttentionResult(level, reason, requests[0].request.request_id)
         except Exception as error:
             # 内部/权威故障必须先锁存再异步归还后端；关闭取消可能发生在
             # finally 的清理等待中，不能用那次取消覆盖已经发生的原始故障。

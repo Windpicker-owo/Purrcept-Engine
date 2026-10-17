@@ -44,6 +44,11 @@ class InputPort(Protocol):
 
     外部适配器提交不可变原文后保存 input_id；取消等待不会撤销已接管事务。
     重连按原生事件身份重投或查询，不能以通知丢失推断此前未接管。
+    适配器了解来源语义，应在接管前用 InputSubmission.with_content 冻结来源和
+    已渲染的有序 TextBlock/ImageBlock/AudioBlock，原生帧另存 details_json。
+    框架按来源分组并增加标题、证据和缺口文字，不能改写文字或移动媒体位置；
+    按目标模型 supports_contents 将不支持的媒体在原位置投影为明确文字引用。
+    不得借展示省略发言正文或宣称已经读取平台媒体。
     """
 
     async def submit(self, submission: InputSubmission) -> Admission:

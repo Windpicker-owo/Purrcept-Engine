@@ -169,6 +169,8 @@ async def test_two_real_hosts_replay_first_native_record_without_reply_cache(
         assert restored is not None and restored.input_id == first.input_id
         assert restored.context == first.context and restored.occurred_at == first.occurred_at
         assert restored.text == first.text and restored.source == first.source
+        assert first.context.presentation is not None
+        assert restored.context.presentation == first.context.presentation
         assert socket.sent.empty()
     finally:
         await second_host.close()

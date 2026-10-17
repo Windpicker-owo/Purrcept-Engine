@@ -70,7 +70,7 @@ class CoordinatorStore(SessionStore, RequestEvidenceSink, MediaStore, Protocol):
         ...
 
     async def staged_inputs(self, stage: InputStage, *, limit: int = 8) -> tuple[InputRecord, ...]:
-        """按接管顺序加载有限批次，不在内存建立全积压副本。
+        """查询指定阶段的待处理输入。
 
         Args:
             stage: 输入当前或待查询的处理阶段。
@@ -81,17 +81,36 @@ class CoordinatorStore(SessionStore, RequestEvidenceSink, MediaStore, Protocol):
         """
         ...
 
-    async def take_foreground_inputs(self, turn_id: str | None = None) -> tuple[InputRecord, ...]:
-        """取尽截至本事务的新刺激，活动轮次同时持久接管。
+    async def submit_inputs(
+        self, expected: tuple[InputProcessing, ...], *, minimum_wake: bool
+    ) -> bool:
+        """按原版本原子提交整批输入；minimum_wake 同时登记持久唤醒意图。
 
         Args:
-            turn_id: 连续会话中本轮处理的身份。 None 表示只取前台缓冲，不关联已有活动轮次。
+            expected: 尚未交接的 attention/priority 批次快照。
+            minimum_wake: 必须与本批是否包含可信 priority 输入一致。
 
         Returns:
-            条目集合：首次接管的完整输入原文、来源与媒体引用。
+            是否采用整批；冲突时不产生部分提交。
+        """
+        ...
+
+    async def take_foreground_inputs(self) -> tuple[InputRecord, ...]:
+        """有持久唤醒请求时原子取尽已提交收件箱，后来输入留到下一轮。
+
+        Returns:
+            本轮独占的输入快照；未提交的缓存输入不在其中。
+        """
+        ...
+
+    async def buffered_inputs(self) -> tuple[InputRecord, ...]:
+        """读取当前全部未提交缓存，供高价值输入一次性合批。
+
+        Returns:
+            attention/priority 输入的接管顺序快照，上限由正式接管额度限定。
 
         Note:
-            不包含明确延期。
+            查询不接管输入；提交时仍须核对整批版本。
         """
         ...
 
@@ -102,52 +121,46 @@ class CoordinatorStore(SessionStore, RequestEvidenceSink, MediaStore, Protocol):
         reason: str,
         *,
         request_id: str | None = None,
-        defer_until: float | None = None,
     ) -> bool:
-        """同事务采用整批结果与延期。
+        """按原批次版本采用注意结果；observe 保留输入但不唤醒。
 
         Args:
-            expected: 此次比较或提交必须仍匹配的原始观察值。
-            level: 本批明确的注意处置等级。
-            reason: 供后续核对的明确处置原因。
-            request_id: 逻辑请求的稳定身份，用于查询或关联同一次受理。
-            defer_until: 保留原输入身份的延期到期时间；非延期决策不需要此值。
+            expected: 已提交的整批版本。
+            level: observe、wake 或 urgent。
+            reason: 实际处置原因。
+            request_id: 实际请求证据，程序处置为 None。
 
-        Note:
-            过时版本返回 False 而不重新投递。
+        Returns:
+            是否整批采用；迟到结果不更改已取走输入。
         """
         ...
 
     async def register_minimum_wake_assessment(
-        self,
-        expected: InputProcessing,
-        *,
-        owner_id: str,
-        observed_generation: int,
+        self, expected: tuple[InputProcessing, ...], *, owner_id: str, observed_generation: int
     ) -> bool:
-        """CAS 登记直接唤起的旧代次观察。
+        """给已保底唤醒的整批输入绑定一次旧生成升级观察。
 
         Args:
-            expected: 此次比较或提交必须仍匹配的原始观察值。
-            owner_id: 发起本次工作并持有提交资格的所有者身份。
-            observed_generation: 接管或判断开始时观察到的前台生成代次。
+            expected: 本批提交后的完整 foreground 版本。
+            owner_id: 当前宿主实例身份。
+            observed_generation: 本批提交时正在处理的旧生成。
 
-        Note:
-            同一输入只取得一次升级资格。
+        Returns:
+            是否首次登记；不会增加第二份主脑待办。
         """
         ...
 
     async def minimum_wake_assessments(
         self, owner_id: str, *, limit: int = 8
     ) -> tuple[MinimumWakeAssessment, ...]:
-        """查询本宿主的有限升级待办，不重建前台投递或猜测重启前代次。
+        """查询本宿主的有限批次升级待办。
 
         Args:
-            owner_id: 发起本次工作并持有提交资格的所有者身份。
-            limit: 本次读取或更新的最大条目数。 默认 8。
+            owner_id: 当前宿主实例身份。
+            limit: 最大批次数，默认八批。
 
         Returns:
-            属于当前宿主的有限紧急升级判断待办。
+            冻结的批次及原代次；重启不继承旧资格。
         """
         ...
 
@@ -159,25 +172,16 @@ class CoordinatorStore(SessionStore, RequestEvidenceSink, MediaStore, Protocol):
         *,
         request_id: str | None = None,
     ) -> bool:
-        """结案判断并核对原前台版本，任何结果都不能撤销最低 WAKE。
+        """结案判断并核对整批版本，任何结果都不能撤销最低唤醒。
 
         Args:
-            assessment: 已取得并需按原版本核验的判断结果。
-            level: 本批明确的注意处置等级。
-            reason: 供后续核对的明确处置原因。
-            request_id: 逻辑请求的稳定身份，用于查询或关联同一次受理。
-        """
-        ...
+            assessment: 原批次和原生成观察。
+            level: 模型实际选择。
+            reason: 判断原因或过期说明。
+            request_id: 实际请求证据，未调用时为 None。
 
-    async def next_deferred_input(self) -> float | None:
-        """返回最早未交接期限，单一定时等待服务全部延后身份。"""
-        ...
-
-    async def deliver_due_inputs(self, now: float) -> tuple[str, ...]:
-        """原身份到期直投一次，不重新进入注意模型。
-
-        Args:
-            now: 本次规则计算采用的时刻，便于同一操作保持一致。
+        Returns:
+            是否仍可采用到原收件箱批次，供协调者判断抢占资格。
         """
         ...
 

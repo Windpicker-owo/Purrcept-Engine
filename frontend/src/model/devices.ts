@@ -47,7 +47,8 @@ export function deviceSummary(device: Device): string[] {
       const latest = s.latest_input;
       if (typeof latest === "object" && latest !== null && !Array.isArray(latest)) {
         const stages: Readonly<Record<string, string>> = {
-          attention: "最近一句已收到，等待判断", deferred: "最近一句已收到，暂缓处理",
+          attention: "最近一句已收到，等待判断", priority: "最近一句已收到，等待处理",
+          assessing: "正在判断最近一句", submitted: "最近一句已收下，等待后续思考", claimed: "正在准备处理最近一句",
           foreground: "最近一句正在等待处理", processing: "正在处理最近一句",
           processed: "最近一句已处理；是否发声以语音输出状态为准",
           failed: "最近一句处理失败，不能视为已经回应",

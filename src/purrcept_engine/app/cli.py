@@ -153,12 +153,14 @@ async def _run(config_path: Path) -> None:
                 if snapshot.phase != "closed":
                     print(f"关闭未完成：{', '.join(snapshot.pending_resources)}。", flush=True)
                     await host.wait_closed()
-            except Exception as failure:
+            except (Exception, BaseExceptionGroup) as failure:
                 pending = host.query().pending_resources
                 if pending:
                     # Lifecycle: 失败不证明数据库线程或插件已经释放。此时退回
                     # 解释器退出会卡在非 daemon 线程，且撤掉二次信号处理器。
                     # 保留原异常和宿主所有权，只接受明确强退，不重做失败清理。
+                    # 包含 CancelledError 的故障组也是收尾结果，不能漏过它后
+                    # 提前恢复信号处理器并卡在仍存活的数据库线程上。
                     traceback.print_exception(failure)
                     print(
                         f"关闭失败，仍占用：{', '.join(pending)}。"

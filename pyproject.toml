@@ -75,6 +75,8 @@ ignore = ["RUF001", "RUF002", "RUF003"]
 docstring-code-format = true
 
 [tool.pyright]
+venvPath = "."
+venv = ".venv"
 include = ["src", "tests", "examples"]
 extraPaths = ["src", "../purrcept_core/src", "../purrcept_litellm/src"]
 pythonVersion = "3.12"

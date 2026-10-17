@@ -119,8 +119,8 @@ def test_host_signatures_and_root_exports_match_before_refactor() -> None:
     assert purrcept_engine.__all__ == original["root_exports"]
 
 
-async def test_existing_baseline_schema_opens_without_format_change(tmp_path: Path) -> None:
-    """先用旧 DDL 创建真实库，再经新提交器打开，核对原结构、版本和身份。"""
+async def test_existing_baseline_schema_upgrades_only_subject_scheduling(tmp_path: Path) -> None:
+    """冻结基线经真实迁移打开，调度表以外的 DDL 和应用身份保持原值。"""
     original = baseline()
     raw = original["statements"]
     assert isinstance(raw, list)
@@ -145,8 +145,17 @@ async def test_existing_baseline_schema_opens_without_format_change(tmp_path: Pa
         actual: list[tuple[str]] = connection.execute(
             "SELECT sql FROM sqlite_master WHERE sql IS NOT NULL AND name NOT LIKE 'sqlite_%'"
         ).fetchall()
-        assert sorted(row[0] for row in actual) == sorted(row[0] for row in before)
-        assert connection.execute("PRAGMA user_version").fetchone() == (version,)
+        scheduling = ("input_processing", "minimum_wake_assessments", "minimum_wake_pending")
+        assert sorted(
+            row[0] for row in actual if not any(name in row[0] for name in scheduling)
+        ) == (sorted(row[0] for row in before if not any(name in row[0] for name in scheduling)))
+        assert connection.execute("PRAGMA user_version").fetchone() == (14,)
+        columns = {row[1] for row in connection.execute("PRAGMA table_info(input_processing)")}
+        assert "due_at" not in columns and "handed_off" not in columns
+        columns = {
+            row[1] for row in connection.execute("PRAGMA table_info(minimum_wake_assessments)")
+        }
+        assert {"batch_id", "expected_json", "observed_generation"} <= columns
         assert connection.execute("PRAGMA application_id").fetchone() == (identity,)
 
 

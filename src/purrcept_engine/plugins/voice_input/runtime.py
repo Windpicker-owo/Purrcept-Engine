@@ -2,7 +2,9 @@
 
 起音只取得缓存名额，持续人声正式入账后才由宿主停音和抢占；最终文字或
 原生音频使用同一发言关系，不再次抢占。未接管 PCM 随取消释放，已接管
-事务不撤销。开始/停止由明确能力控制，页面刷新和断线不改变资源寿命。
+事务不撤销。孤立采集缺口作废残句并重建 VAD，后续发言继续使用同一声卡
+会话。开始/停止由明确能力控制，页面刷新和断线不改变资源寿命。
+收尾等待捕获驱动的归还明证与全部有限任务结束，再向宿主区分历史错误和未释放设备。
 """
 
 from __future__ import annotations
@@ -17,6 +19,7 @@ from datetime import UTC, datetime
 from typing import Literal
 from uuid import uuid4
 
+from purrcept_core.models import AudioBlock, AudioBytes, TextBlock
 from websockets.exceptions import WebSocketException
 
 from purrcept_engine.errors import StorageError
@@ -31,6 +34,7 @@ from purrcept_engine.plugin_system import (
 )
 from purrcept_engine.plugins.voice_input.models import (
     CaptureDriver,
+    CaptureGap,
     InputDevice,
     InputMode,
     StreamingTranscriber,
@@ -40,6 +44,7 @@ from purrcept_engine.plugins.voice_input.models import (
     VoiceInputSettings,
 )
 from purrcept_engine.plugins.voice_input.vad import Segmenter
+from purrcept_engine.serialization import render_yaml
 from purrcept_engine.values import JsonObject, encode_json
 
 
@@ -69,7 +74,8 @@ class VoiceInputRuntime:
 
     control 串行开始/停止，delivery 固定发言入账顺序。最多保留配置数量
     的未结束识别；没有每帧任务或无限候选。过载暂停整场采集，未完成发言
-    标为缺口，已经入账的 speech_started 或最终输入仍可查询。
+    标为缺口。可恢复的 CaptureGap 只作废当前残句，已结束的前句和已入账
+    speech_started 仍保留；新检测器使用独立状态，不跨缺口继承循环记忆。
     """
 
     def __init__(
@@ -121,10 +127,21 @@ class VoiceInputRuntime:
         self.gaps: deque[JsonObject] = deque(maxlen=32)
         self.next_sequence = self.deliver_sequence = 0
         self.driver: asyncio.Task[None] | None = None
+        self._capture_released = True
         self.ready = asyncio.Event()
         self.control = asyncio.Lock()
         self.delivery = asyncio.Lock()
         self.device_cache: tuple[InputDevice, ...] | None = None
+
+    def resources_released(self) -> bool:
+        """仅在已禁止开始、捕获及全部识别/接管等待实际结束后证明归还。
+
+        Returns:
+            历史接管异常可以保留；设备清理失败或任务仍在运行时返回 False。
+        """
+        return (
+            self.closed and self._capture_released and (self.driver is None or self.driver.done())
+        )
 
     def snapshot(self) -> JsonObject:
         """读取实际阶段和来源，识别完成不冒充主体已处理或已经回应。
@@ -365,9 +382,27 @@ class VoiceInputRuntime:
                 utterance.occurred_at,
                 datetime.now(UTC),
                 context=self._context(utterance, started=True),
+            ).with_content(
+                f"me.{self.settings.voice_input_id}",
+                (
+                    TextBlock(
+                        render_yaml(
+                            {
+                                "type": "speech_started",
+                                "speaker": self.settings.source_name,
+                                "time": utterance.occurred_at.astimezone().strftime("%H:%M"),
+                                "text": "麦克风确认持续人声。",
+                            }
+                        )
+                    ),
+                ),
             )
         )
         utterance.started_input_id = admitted.input_id
+        # 缺口可先于入库确认出现；迟到起音事实仍须补回同一缺口的审计关联。
+        for gap in self.gaps:
+            if gap["utterance_id"] == utterance.identity and gap["session_id"] == utterance.session:
+                gap["already_admitted_input_id"] = admitted.input_id
 
     def _gap(self, utterance: _Utterance | None, message: str) -> None:
         self.gaps.append(
@@ -385,16 +420,34 @@ class VoiceInputRuntime:
         detector = self.vad_factory()
         segmenter = Segmenter(self.settings)
         frames = capture.frames(self.device)
+        self._capture_released = False
+        capture_error: BaseException | None = None
         try:
             async for frame in frames:
-                if len(frame) != 1024:
-                    raise VoiceInputError("输入设备返回了不完整 VAD 帧，当前发言已释放。")
                 for value in tuple(self.utterances.values()):
                     for task in (value.task, value.start_task):
                         if task is not None and task.done() and not task.cancelled():
                             error = task.exception()
                             if error is not None:
                                 raise error
+                if isinstance(frame, CaptureGap):
+                    utterance, self.current = self.current, None
+                    self._gap(utterance, frame.reason)
+                    if utterance is not None:
+                        utterance.result = None
+                        utterance.failure = frame.reason
+                        utterance.task = asyncio.create_task(
+                            self._discard(utterance, utterance.task), name="voice-gap-discard"
+                        )
+                    self.level, self.partial = 0.0, ""
+                    segmenter = Segmenter(self.settings)
+                    # 检测器的循环状态不能横跨缺样。工厂只构造新的私有推理状态，
+                    # 不重开声卡；纯构造在线程完成，取消后的返回值也不会被新会话采用。
+                    detector = await asyncio.to_thread(self.vad_factory)
+                    self.revision += 1
+                    continue
+                if len(frame) != 1024:
+                    raise VoiceInputError("输入设备返回了不完整 VAD 帧，当前发言已释放。")
                 if self.state == "starting":
                     self.state = "listening"
                     self.ready.set()
@@ -454,11 +507,18 @@ class VoiceInputRuntime:
                 # 让识别消费者排空队列；不能把自身占满循环误判为上传过载。
                 await asyncio.sleep(0)
         except (VoiceInputError, StorageError, OSError, TimeoutError, WebSocketException) as error:
+            capture_error = error
             self.state, self.error = "paused", str(error)
             self._gap(self.current, str(error))
         finally:
             # 先关闭输入流，再收回识别；取消后绝不刷新未完成录音尾部。
-            await frames.aclose()
+            cleanup_errors: list[BaseException] = []
+            try:
+                await frames.aclose()
+            except BaseException as error:
+                # Lifecycle: 声卡归还失败也要继续收回识别与入账等待，不能让
+                # 它们成为失主任务；原始关闭错误保留到资源汇总结束。
+                cleanup_errors.append(error)
             jobs = tuple(value.task for value in self.utterances.values() if value.task is not None)
             starts = tuple(
                 value.start_task
@@ -475,15 +535,34 @@ class VoiceInputRuntime:
             self.current = None
             self.utterances.clear()
             self.level, self.partial = 0.0, ""
+            # 帧流可能已在自身 finally 中失败，后续 aclose 此时只是空操作。
+            # 必须问设备所有者的实际归还事实，不能只看生成器结束。
+            self._capture_released = not cleanup_errors and capture.resources_released()
+            if not self._capture_released:
+                if capture_error is not None:
+                    cleanup_errors.append(capture_error)
+                elif not cleanup_errors:
+                    cleanup_errors.append(RuntimeError("捕获驱动结束后未确认输入设备归还。"))
             for result in results:
-                if isinstance(result, Exception) and not isinstance(
+                if isinstance(result, BaseException) and not isinstance(
                     result,
-                    (VoiceInputError, StorageError, OSError, TimeoutError, WebSocketException),
+                    (
+                        asyncio.CancelledError,
+                        VoiceInputError,
+                        StorageError,
+                        OSError,
+                        TimeoutError,
+                        WebSocketException,
+                    ),
                 ):
-                    raise result
+                    cleanup_errors.append(result)
+            if len(cleanup_errors) == 1:
+                raise cleanup_errors[0]
+            if cleanup_errors:
+                raise BaseExceptionGroup("收音资源归还及接管收尾失败。", cleanup_errors)
 
     async def _discard(self, utterance: _Utterance, recognition: asyncio.Task[None] | None) -> None:
-        """短噪声仍按序释放名额，但不让采样等待前一句的入库或识别收尾。"""
+        """短噪声和缺口作废残句并按序释放名额，采样不等待识别或入库收尾。"""
         if recognition is not None:
             recognition.cancel()
             await asyncio.gather(recognition, return_exceptions=True)
@@ -565,6 +644,26 @@ class VoiceInputRuntime:
                             datetime.now(UTC),
                             media,
                             self._context(utterance, started=False),
+                        ).with_content(
+                            f"me.{self.settings.voice_input_id}",
+                            (
+                                TextBlock(
+                                    render_yaml(
+                                        {
+                                            "type": "audio" if media else "transcript",
+                                            "speaker": self.settings.source_name,
+                                            "time": utterance.occurred_at.astimezone().strftime(
+                                                "%H:%M"
+                                            ),
+                                            "text": text,
+                                        }
+                                    )
+                                ),
+                                *(
+                                    AudioBlock(AudioBytes(asset.content, asset.media_type))
+                                    for asset in media
+                                ),
+                            ),
                         )
                     )
                     utterance.final_input_id = admitted.input_id

@@ -1,0 +1,41 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Engine：启动宿主",
+            "type": "debugpy",
+            "request": "launch",
+            "python": "${workspaceFolder}/.venv/Scripts/python.exe",
+            "module": "purrcept_engine",
+            "args": ["--config", "${workspaceFolder}/purrcept.toml", "run"],
+            "cwd": "${workspaceFolder}",
+            "console": "integratedTerminal",
+            "justMyCode": false,
+            "subProcess": false,
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}/src",
+                "LITELLM_LOCAL_MODEL_COST_MAP": "True"
+            }
+        },
+        {
+            "name": "Engine：离线调试 decision 到前台",
+            "type": "debugpy",
+            "request": "launch",
+            "python": "${workspaceFolder}/.venv/Scripts/python.exe",
+            "module": "pytest",
+            "args": [
+                "tests/test_subject_coordinator.py::test_real_core_uses_fixed_directory_six_tools_and_internal_final",
+                "-q",
+                "-s"
+            ],
+            "cwd": "${workspaceFolder}",
+            "console": "integratedTerminal",
+            "justMyCode": false,
+            "subProcess": false,
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}/src",
+                "LITELLM_LOCAL_MODEL_COST_MAP": "True"
+            }
+        }
+    ]
+}

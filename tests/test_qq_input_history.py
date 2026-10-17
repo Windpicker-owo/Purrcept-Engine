@@ -32,7 +32,7 @@ from purrcept_engine.plugins.qq.parameters import Read
 from purrcept_engine.plugins.qq.ports import ConnectionRejected
 from purrcept_engine.plugins.qq.service import QQService
 from purrcept_engine.plugins.qq.settings import QQSettings
-from purrcept_engine.values import JsonObject, decode_object, encode_json
+from purrcept_engine.values import JsonObject, JsonValue, decode_object, encode_json
 
 PNG = base64.b64decode(
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII="
@@ -193,6 +193,56 @@ async def test_sent_echo_is_cache_only_and_notices_have_no_fake_event_id(rig: Ri
     assert rig.inputs.admitted[0].input_id != rig.inputs.admitted[1].input_id
     first = await rig.store.get_input(rig.inputs.admitted[0].input_id)
     assert first is not None and first.source.native_event_id is None
+
+
+@pytest.mark.parametrize(
+    "chat,body,expected",
+    [
+        ("private", "睡了嘛", True),
+        ("private", [{"type": "text", "data": {"text": "*偷看"}}], True),
+        ("private", [{"type": "image", "data": {"url": "https://example.invalid/p.png"}}], True),
+        ("group", [{"type": "text", "data": {"text": "群聊闲聊"}}], False),
+        ("group", [{"type": "at", "data": {"qq": "100"}}], True),
+    ],
+)
+async def test_private_messages_and_direct_mentions_have_same_minimum_wake(
+    rig: Rig, chat: str, body: JsonValue, expected: bool
+) -> None:
+    """最低唤起来自私聊路由或直接 @；图片和字符串正文也不能被普通筛选吃掉。"""
+    payload = message()
+    payload["message_type"], payload["message"] = chat, body
+    if chat == "private":
+        payload.pop("group_id")
+    await rig.service.event(payload, 1)
+    record = await rig.store.get_input(rig.inputs.admitted[0].input_id)
+    assert record is not None and record.context.minimum_wake is expected
+    state = await rig.store.input_processing(record.input_id)
+    assert state is not None and state.stage == ("priority" if expected else "attention")
+    assert not record.context.interrupt_generation and not record.context.speech_started
+    await rig.service.event(payload, 2)
+    assert rig.inputs.admitted[-1].duplicate
+    assert await rig.store.get_input(record.input_id) == record
+
+
+async def test_private_notice_does_not_inherit_message_minimum_wake(rig: Rig) -> None:
+    """私聊消息规则不扩大到戳一戳等通知，也不能绕过发送者过滤。"""
+    notice: JsonObject = {
+        "post_type": "notice",
+        "notice_type": "notify",
+        "sub_type": "poke",
+        "self_id": 100,
+        "user_id": 456,
+        "target_id": 100,
+        "time": 1700000000,
+    }
+    await rig.service.event(notice, 1)
+    record = await rig.store.get_input(rig.inputs.admitted[0].input_id)
+    assert record is not None and not record.context.minimum_wake
+    excluded = message(user_id=999)
+    excluded.pop("group_id")
+    excluded["message_type"] = "private"
+    await rig.service.event(excluded, 1)
+    assert len(rig.inputs.admitted) == 1
 
 
 async def test_history_cursor_keeps_same_snapshot_and_does_not_refetch(rig: Rig) -> None:

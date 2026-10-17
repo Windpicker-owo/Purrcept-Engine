@@ -8,6 +8,7 @@
 import asyncio
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from datetime import datetime
 
 from purrcept_core.models import ContentBlock, DecisionBackend, ModelBackend
 
@@ -30,7 +31,10 @@ from purrcept_engine.domain.model_requests.service import RequestBudget
 from purrcept_engine.domain.subject.attention import AttentionModel
 from purrcept_engine.domain.subject.background import BackgroundService
 from purrcept_engine.domain.subject.background_ports import BackgroundSettings
-from purrcept_engine.domain.subject.foreground_tools import foreground_instructions
+from purrcept_engine.domain.subject.foreground_tools import (
+    foreground_instructions,
+    format_character_card,
+)
 from purrcept_engine.domain.subject.ports import ActionCallback
 from purrcept_engine.domain.subject.reflection_tools import reflection_instructions
 from purrcept_engine.domain.subject.service import SubjectService
@@ -204,7 +208,7 @@ def build_subject(
         activities = await store.activity_records()
         # 相关工作背景有明确范围，不能把当前原文不存在的关系补成已知内容。
         return {
-            "coverage": "current_foreground_identity; pending_plans_first_32; active_activities",
+            "coverage": "当前前台输入、至多32项待办计划与活动；不含完整前台历史。",
             "current_turn": None
             if turn is None
             else {
@@ -238,9 +242,19 @@ def build_subject(
                 # 已完成材料，同一次传输重试不会再次扫文件或改变请求。
                 materials[name] = await runtime.prepare_request()
         budget.check()
+        # Ordering: 插件准备可能等待 I/O；时钟取在等待结束后。每次逻辑请求刷新，
+        # 同一请求的传输重试仍使用已冻结材料，不把旧状态冒充实时采样。
+        now = datetime.now().astimezone()
         return DynamicState.from_payload(
             {
                 "material_kind": "engine_committed_state",
+                "request_time": {
+                    "current_time": now.isoformat(),
+                    "unix_seconds": now.timestamp(),
+                    "meaning": "本次逻辑模型请求组装时的宿主时间，含本地时区偏移；"
+                    "不是模型完成或外部效果发生时刻。同一请求重试保留此时间。"
+                    "后续刺激留到下一批，历史消息位置不保证实际发生顺序。",
+                },
                 "work": work,
                 "request_materials": materials,
                 "budget": {
@@ -257,6 +271,8 @@ def build_subject(
     attention_name = config.subject.attention
     if attention_name is not None:
         settings = config.models[attention_name]
+        # 与前台使用同一角色配置和 Core 角色卡模板；不从聊天正文或平台昵称猜身份。
+        attention_profile = format_character_card(config.subject.character.record())
         if isinstance(settings, DecisionModelSettings):
             attention = AttentionModel(
                 decisions[attention_name],
@@ -265,6 +281,8 @@ def build_subject(
                 config.subject.attention_retry,
                 kind="decision",
                 compiler=compile_materials,
+                profile=attention_profile,
+                supports_contents=settings.supports_contents,
             )
         else:
             attention = AttentionModel(
@@ -275,6 +293,8 @@ def build_subject(
                 kind="generation",
                 output_tokens=min(256, settings.max_output_tokens),
                 compiler=compile_materials,
+                profile=attention_profile,
+                supports_contents=settings.supports_contents,
             )
     subject = SubjectService(
         store,
@@ -288,13 +308,13 @@ def build_subject(
             capacity_for(foreground_settings, enforce=True),
             config.subject.foreground_retry,
             compiler=compile_materials,
+            supports_contents=foreground_settings.supports_contents,
         ),
         attention=attention,
         settings=CoordinatorSettings(
             diagnostic_bytes,
             config.subject.attention_batch_seconds,
             config.subject.attention_batch_size,
-            config.subject.attention_defer_seconds,
             config.subject.foreground_turn.max_requests,
             config.subject.foreground_turn.total_seconds,
         ),
@@ -319,6 +339,7 @@ def build_subject(
             capacity_for(reflection_settings, enforce=True),
             config.subject.reflection_retry,
             compiler=compile_materials,
+            supports_contents=reflection_settings.supports_contents,
         ),
         instructions=reflection_instructions(),
         settings=BackgroundSettings(

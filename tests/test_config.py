@@ -71,6 +71,7 @@ def test_configuration_resolves_and_freezes_startup_snapshot(tmp_path: Path) -> 
     assert config.activities.initial_seconds == 3600
     assert config.context.page_chars == 8000
     assert config.models["local"].media_rule == "unsupported"
+    assert config.models["local"].supports_contents == ("text",)
     assert isinstance(config.models, MappingProxyType)
 
 
@@ -179,6 +180,69 @@ def test_decision_configuration_rejects_generation_budget() -> None:
                 "input_limit": 8192,
                 "capacity_rule": "fixture-v1",
                 "max_output_tokens": 4096,
+            }
+        )
+
+
+@pytest.mark.parametrize("kind", ["generation", "decision"])
+def test_models_share_immutable_supported_content_declaration(kind: str) -> None:
+    values: dict[str, object] = {
+        "kind": kind,
+        "model": "fixture",
+        "api_base": "http://127.0.0.1:4000/v1",
+        "api_key": "fixture-secret",
+        "capacity_rule": "fixture-v1",
+    }
+    if kind == "generation":
+        values.update(context_window=32000, max_output_tokens=4096)
+        settings = GenerationModelSettings
+    else:
+        values["input_limit"] = 8192
+        settings = DecisionModelSettings
+    assert settings.model_validate(values).supports_contents == ("text",)
+    declared = ["text", "image", "audio", "video"]
+    values["supports_contents"] = declared
+    config = settings.model_validate(values)
+    declared.clear()
+    assert config.supports_contents == ("text", "image", "audio", "video")
+    assert config.model_dump(mode="json")["supports_contents"] == [
+        "text",
+        "image",
+        "audio",
+        "video",
+    ]
+
+
+@pytest.mark.parametrize(
+    "value", [[], ["audio"], ["text", "text"], ["text", "pdf"], ["text", 1], "text", True]
+)
+def test_supported_content_declaration_rejects_invalid_values(value: object) -> None:
+    with pytest.raises(ValidationError):
+        DecisionModelSettings.model_validate(
+            {
+                "kind": "decision",
+                "model": "fixture",
+                "api_base": "http://127.0.0.1:4000/v1",
+                "api_key": "fixture-secret",
+                "capacity_rule": "fixture-v1",
+                "input_limit": 8192,
+                "supports_contents": value,
+            }
+        )
+
+
+def test_removed_audio_flag_is_rejected_instead_of_silently_ignored() -> None:
+    with pytest.raises(ValidationError, match="supports_audio"):
+        GenerationModelSettings.model_validate(
+            {
+                "kind": "generation",
+                "model": "fixture",
+                "api_base": "http://127.0.0.1:4000/v1",
+                "api_key": "fixture-secret",
+                "capacity_rule": "fixture-v1",
+                "context_window": 32000,
+                "max_output_tokens": 4096,
+                "supports_audio": True,
             }
         )
 

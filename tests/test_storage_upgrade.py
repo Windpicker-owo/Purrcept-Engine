@@ -1,4 +1,4 @@
-"""验证格式12到13的局部迁移原子保留旧事实，失败保持原版本和实际数据。
+"""验证格式12/13到14的显式迁移原子保留旧事实，失败保持原版本和实际数据。
 
 基准库由当前 Store 在临时目录生成，关闭后去掉新增表并标为冻结格式12。
 比较覆盖全部原表、FTS影子表、SQLite序号和原始JSON/BLOB；基准样本先结案，
@@ -86,6 +86,43 @@ async def refused_open(path: Path) -> StorageError:
         if opened is not None:
             await opened.close()
     return failed.value
+
+
+# 冻结的旧表定义独立于当前 DDL，避免升级测试无意中使用新版表形状。
+_PROCESSING_V13 = (
+    "CREATE TABLE input_processing (input_id TEXT PRIMARY KEY REFERENCES inputs(input_id), "
+    "version INTEGER NOT NULL, stage TEXT NOT NULL, reason TEXT NOT NULL, "
+    "attention_request_id TEXT, due_at REAL, handed_off INTEGER NOT NULL DEFAULT 0, "
+    "admitted_at REAL NOT NULL)"
+)
+_ASSESSMENT_V13 = (
+    "CREATE TABLE minimum_wake_assessments (input_id TEXT PRIMARY KEY REFERENCES inputs(input_id), "
+    "owner_id TEXT NOT NULL, observed_generation INTEGER NOT NULL, input_version INTEGER NOT NULL, "
+    "state TEXT NOT NULL, level TEXT, reason TEXT, request_id TEXT)"
+)
+
+
+def restore_old_subject_schema(connection: sqlite3.Connection, *, version: int = 12) -> None:
+    """仅在关闭后的隔离样本恢复冻结旧表，真实原文和其余账本保持原值。"""
+    rows = connection.execute(
+        "SELECT input_id,version,stage,reason,attention_request_id,admitted_at "
+        "FROM input_processing"
+    ).fetchall()
+    connection.execute("DROP TABLE minimum_wake_assessments")
+    connection.execute("DROP TABLE input_processing")
+    connection.execute(_PROCESSING_V13)
+    connection.executemany(
+        "INSERT INTO input_processing(input_id,version,stage,reason,"
+        "attention_request_id,admitted_at) "
+        "VALUES(?,?,?,?,?,?)",
+        rows,
+    )
+    if version == 13:
+        connection.execute(_ASSESSMENT_V13)
+        connection.execute(
+            "CREATE INDEX minimum_wake_pending ON minimum_wake_assessments(owner_id,state)"
+        )
+    connection.execute(f"PRAGMA user_version={version}")
 
 
 @pytest.fixture
@@ -189,7 +226,7 @@ async def old_database(tmp_path: Path) -> AsyncIterator[Path]:
         await store.close()
 
     with closing(sqlite3.connect(path)) as connection, connection:
-        connection.execute("DROP TABLE minimum_wake_assessments")
+        restore_old_subject_schema(connection)
         # 格式12已有关系表，但修订信封还没有 conflicts 字段。恢复历史形状
         # 可以同时核对新增模型字段的默认值不会改写已有JSON或隐藏旧关系。
         connection.execute(
@@ -227,8 +264,15 @@ async def test_known_format12_upgrade_preserves_all_old_rows_and_reopens_once(
     finally:
         await store.close()
     after = snapshot(old_database)
-    assert after.version == 13 and after.application_id == before.application_id
-    assert {name: after.rows[name] for name in before.rows} == before.rows
+    assert after.version == 14 and after.application_id == before.application_id
+    assert {name: after.rows[name] for name in before.rows if name != "input_processing"} == {
+        name: rows for name, rows in before.rows.items() if name != "input_processing"
+    }
+    expected_processing = tuple(
+        tuple(cell for index, cell in enumerate(row) if index not in (5, 6))
+        for row in before.rows["input_processing"]
+    )
+    assert after.rows["input_processing"] == expected_processing
     assert set(after.rows) - set(before.rows) == {"minimum_wake_assessments"}
     assert after.rows["minimum_wake_assessments"] == ()
     added_schema = set(after.schema) - set(before.schema)
@@ -236,8 +280,9 @@ async def test_known_format12_upgrade_preserves_all_old_rows_and_reopens_once(
         "minimum_wake_assessments",
         "minimum_wake_pending",
         "sqlite_autoindex_minimum_wake_assessments_1",
+        "input_processing",
     }
-    assert all(row[2] == "minimum_wake_assessments" for row in added_schema)
+    assert all(row[2] in ("minimum_wake_assessments", "input_processing") for row in added_schema)
     reopened = await Store.open(old_database)
     await reopened.close()
     assert snapshot(old_database) == after
@@ -439,7 +484,7 @@ async def test_second_ddl_failure_rolls_back_created_table_and_version(
     assert before.version == 12 and "minimum_wake_assessments" not in before.rows
 
 
-@pytest.mark.parametrize("version", (0, 11, 14, 999))
+@pytest.mark.parametrize("version", (0, 11, 15, 999))
 async def test_unknown_database_version_is_not_changed(old_database: Path, version: int) -> None:
     """只有明确格式12获得局部升级，已有数据的未知版本不能按空库初始化。"""
     with closing(sqlite3.connect(old_database)) as connection, connection:
@@ -448,3 +493,63 @@ async def test_unknown_database_version_is_not_changed(old_database: Path, versi
     failed = await refused_open(old_database)
     assert failed.code == "unsupported_format"
     assert snapshot(old_database) == before
+
+
+async def test_format13_pending_defer_migrates_once_and_assessment_history_is_retained(
+    tmp_path: Path,
+) -> None:
+    """未执行延期升级为保底唤醒，旧 observe 终态不重放，原升级证据逐字保留。"""
+    from purrcept_engine.domain.inputs.models import InputContext
+
+    path = tmp_path / "format13.sqlite3"
+    store = await Store.open(path)
+    now = datetime.now(UTC)
+    delayed = await store.admit(
+        InputSubmission(InputSource("test", "a", "r", "m", "delay"), "延期原文", now, now)
+    )
+    observed = await store.admit(
+        InputSubmission(InputSource("test", "a", "r", "m", "observed"), "旧记录", now, now)
+    )
+    direct = await store.admit(
+        InputSubmission(
+            InputSource("test", "a", "r", "m", "high"),
+            "已保底输入",
+            now,
+            now,
+            context=InputContext(minimum_wake=True),
+        )
+    )
+    await store.complete_input(observed.input_id)
+    await store.close()
+    with closing(sqlite3.connect(path)) as connection, connection:
+        restore_old_subject_schema(connection, version=13)
+        connection.execute(
+            "UPDATE input_processing SET stage='deferred',due_at=9999999999,reason='old.defer' "
+            "WHERE input_id=?",
+            (delayed.input_id,),
+        )
+        connection.execute(
+            "UPDATE input_processing SET stage='foreground' WHERE input_id=?", (direct.input_id,)
+        )
+        connection.execute(
+            "INSERT INTO minimum_wake_assessments "
+            "VALUES(?, 'old-owner', 7, 1, 'pending', NULL, '原始升级观察', NULL)",
+            (direct.input_id,),
+        )
+    before = snapshot(path)
+    store = await Store.open(path)
+    try:
+        assert not await store.minimum_wake_assessments("old-owner")
+        records = await store.take_foreground_inputs()
+        assert tuple(record.input_id for record in records) == (delayed.input_id, direct.input_id)
+        assert not await store.take_foreground_inputs()
+        state = await store.input_processing(delayed.input_id)
+        assert state is not None and "9999999999" in state.reason
+        state = await store.input_processing(observed.input_id)
+        assert state is not None and state.stage == "processed"
+    finally:
+        await store.close()
+    after = snapshot(path)
+    assert after.version == 14
+    assert after.rows["minimum_wake_assessments_v13"] == before.rows["minimum_wake_assessments"]
+    assert after.rows["inputs"] == before.rows["inputs"]

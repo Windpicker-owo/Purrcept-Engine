@@ -62,7 +62,8 @@ def make_factory(
 
     Args:
         capture_factory: 为当前插件实例创建独立捕获驱动的工厂。
-        vad_factory: 创建当前输入实例 VAD 检测器的工厂。
+        vad_factory: 为会话及采集缺口创建独立 VAD 状态的工厂；缺口恢复可在线程调用，
+            不得复用有状态实例或打开声卡、网络资源。
         transcriber_factory: 按当前收音配置创建流式转写客户端的工厂。
         required_modules: 显式启用插件时必须安装的可选模块名，不自动安装。 默认不附加此类条目。
 
@@ -164,6 +165,7 @@ def make_factory(
                 ),
                 stop_inputs=runtime.stop_inputs,
                 close=runtime.close,
+                resources_released=runtime.resources_released,
                 snapshot=runtime.snapshot,
                 prepare_request=runtime.prepare_request,
                 panel=DevicePanel(

@@ -30,6 +30,7 @@ from pydantic import (
 
 from purrcept_engine.domain.execution.settings import ExecutionSettings
 from purrcept_engine.domain.knowledge.settings import EmbeddingSettings
+from purrcept_engine.domain.model_requests.contents import ContentKind, validate_supported_contents
 from purrcept_engine.errors import ConfigError
 from purrcept_engine.values import JsonObject, decode_object, encode_json
 
@@ -123,13 +124,31 @@ class LoggingSettings(_Settings):
 
 
 class _ModelSettings(_Settings):
-    """显式选择端点、凭据及计量依据；实际传输来源由适配验证。"""
+    """显式选择端点、内容类型及计量依据；实际传输来源由适配验证。
+
+    supports_contents 默认仅 text，刺激渲染时按此声明投影媒体，原件不变。
+    媒体能力声明不替代传输实现，也不绕过 media_rule 的容量核验。
+    """
 
     model: NonEmptyString
     api_base: NonEmptyString
     api_key: SecretStr
     capacity_rule: NonEmptyString
     media_rule: NonEmptyString = "unsupported"
+    supports_contents: tuple[ContentKind, ...] = ("text",)
+
+    @field_validator("supports_contents", mode="before")
+    @classmethod
+    def _contents_from_toml(cls, value: object) -> object:
+        """TOML 数组冻结为元组，其元素仍由 Literal 严格校验。"""
+        return tuple(value) if _is_list(value) else value
+
+    @field_validator("supports_contents")
+    @classmethod
+    def _supported_contents(cls, value: tuple[ContentKind, ...]) -> tuple[ContentKind, ...]:
+        """拒绝缺少文字载体或重复声明，不按模型名称推断能力。"""
+        validate_supported_contents(value)
+        return value
 
     @field_validator("api_key")
     @classmethod
@@ -169,7 +188,6 @@ class GenerationModelSettings(_ModelSettings):
     context_window: PositiveInt
     max_output_tokens: PositiveInt
     input_limit: PositiveInt | None = None
-    supports_audio: bool = False
 
     @model_validator(mode="after")
     def _output_fits_window(self) -> Self:
@@ -210,7 +228,6 @@ class SubjectSettings(_Settings):
     character: CharacterSettings = Field(default_factory=lambda: CharacterSettings())
     attention_batch_seconds: Annotated[float, Field(ge=0, allow_inf_nan=False)] = 0.1
     attention_batch_size: PositiveInt = 8
-    attention_defer_seconds: PositiveSeconds = 30.0
     reflection_batch_seconds: PositiveSeconds = 60.0
     reflection_batch_turns: PositiveInt = 8
 

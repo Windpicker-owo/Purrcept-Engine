@@ -17,7 +17,7 @@ src/purrcept_engine/
 │   └── host_state.py       EngineState：当前实例的部分启动与资源事实
 ├── domain/
 │   ├── inputs/             输入原文、来源、媒体与接管记录
-│   ├── subject/            注意、前台、延期、反馈、反思与连续会话
+│   ├── subject/            刺激协调、被调用注意/前台、反馈、反思与连续会话
 │   ├── context/            动态材料、历史维护、工具交付和公开材料呈现
 │   ├── model_requests/     请求预算、唯一重试规则与证据记录
 │   ├── execution/          目录、能力契约、执行端口与纯源码校验
@@ -59,6 +59,43 @@ docstring 生成模型描述；Pydantic 类及嵌套 dataclass 的说明参与�
 示例中的假定异常复制成承诺。局部闭包用精炼说明解释交接和顺序，不复制外层
 已有的完整契约；构建后的面板 JavaScript 由源码生成，不手工补写产物注释。
 
+固定提示词统一由 Core `PromptTemplate` 定义和渲染：主体文字位于
+`domain/subject/prompts.py`，上下文与摘要布局位于 `domain/context/templates.py`，
+能力目录条目位于 `domain/execution/catalog.py`。调用方先准备显式字段，再使用
+`instruction/message/reminder` 进入 Core 协议；不额外创建全局 Prompt 管理器或
+第二套字段替换器。模板绑定为局部值，正文中的花括号不会再次求值。
+角色卡默认值和可选行在主体模板中声明，纯空白及尾部换行通过显式 RenderPolicy
+原样保留。Core 默认 optional 的空白抑制仅用于已经选择过的可选完整行。
+结构化数据仍由 `serialization.render_yaml/render_field_tree` 编码，业务字段选择
+归材料投影，围栏长度和原生媒体位置归各自材料边界；它们不属于模板字段插值。
+
+前台固定正文已按用户提供的虚拟生命体版本替换，`{profile}` 仍由 Core 绑定角色卡。
+时钟由 app/subject 的每请求刷新入口采样，发生在插件材料等待结束后；当前请求时间、
+工作快照观察时间和执行回执记录时间分别展示。`context/materials` 为每条刺激补齐
+信封的完整发生/接收时间；`context/presentation` 只将已知执行时间派生为 UTC，
+不猜测平台送达时间。时间线同时进入完整行动工具结果、容量引用和当前调用动态尾部。
+固定 system 前缀不含实时时钟；传输重试复用原材料，逻辑请求之间刷新。
+
+应用装配注意模型时使用前台同源角色配置，经同一个角色卡模板渲染为固定 profile。
+`attention_request` 通过 Core `ATTENTION_IDENTITY_PROMPT` 绑定角色卡与通用规则：
+decision 写入 ChoiceQuestion.instructions，生成式注意写入 system 指令；动态刺激
+和工作背景仍留在输入层。普通判断和最低唤起升级共用此入口，不按姓名字符串在
+接入层强制唤起。完整角色卡参与 SDK 编译、容量预检和请求证据记录，不静默截断。
+
+刺激提供方通过 `InputSubmission.with_content(source, blocks)` 冻结来源和有序的
+TextBlock/ImageBlock/AudioBlock。QQ 的 `plugins/qq/presentation.py` 只选择消息身份、
+类型、参与者、目标、时间、正文及必要引用，生成 YAML；麦克风自行提供发言说明
+与原生 AudioBlock。内核不解释平台字段，也不解析提供方的 YAML。
+`domain/inputs/content.py` 保存文字与媒体索引布局，媒体字节仍进入原有同库 BLOB。
+布局通过现有 JSON 扩展入账，纳入容量额度、指纹和原生重放，不重复编码媒体字节。
+`context/materials.py` 的 `input_blocks` 按来源首次出现分组，同组保持接管顺序，
+新增标题、证据和缺口 TextBlock，不支持的媒体原位替换为文字引用；每条输入内部
+的文字/媒体位置顺序不改变。
+注意和前台共用此入口。未声明布局时使用原文加附件的固定默认布局，平台原帧
+留在权威库，不自动倾倒入模型。注意工作背景单独呈现精简 YAML。
+完整回执仍由通用 `render_material` 呈现。详见[输入材料契约](input-materials.md)。
+结构化存储和工具协议保持原状；新请求按实际渲染结果计量，既有会话消息不重写。
+
 ## 路径一：启动与装配
 
 从 [EngineHost](../src/purrcept_engine/app/host.py) 开始。构造准备纯声明，
@@ -82,21 +119,31 @@ CLI 仍负责进程信号、日志入口及 Web 服务，不把进程职责放�
 EngineHost.submit / admit_input
   → InputAdmissionService：输入原文、媒体和待处理状态同事务接管
   → SubjectService.input_admitted：成功接管后交接可信抢占信号
-  → AttentionService：普通合批、最低唤起与迟到判断检查
-  → ForegroundService：开放缓冲取批、轮内接入与前台推进
+  → StimulusCoordinator：合批、提交收件箱、采用判断、唤醒与抢占
+  → AttentionService：接受完整批次与工作背景，返回判断和请求证据
+  → ForegroundService：接受唤醒快照并推进一轮前台
   → ContinuousSession：借用 Core Conversation 和工具循环
   → play_action → EngineHost.execute → ExecutionService
   → WorkerSession ↔ 隔离 Worker → CallDispatcher → 能力实现
   → 真实调用回执入账 → 前台 / 反馈 / 活动
 ```
 
-[SubjectService](../src/purrcept_engine/domain/subject/service.py) 展示三个固定工作器，
-它们借用同一资格和提交状态。注意判断结果必须核对事务版本；过期判断不能
-覆盖已经拉取的输入。延期由 DeferredInputService 到期交接，不另建输入状态。
+[SubjectService](../src/purrcept_engine/domain/subject/service.py) 持有唯一会话和资源；
+[StimulusCoordinator](../src/purrcept_engine/domain/subject/coordinator.py) 是唯一刺激
+调度循环，最多同时持有一个注意调用和一个前台调用。注意等待不阻塞高价值
+批次提交。输入依次经过 attention/priority 缓存、assessing/submitted/foreground
+收件箱、claimed 唤醒快照和 processing 轮次；foreground 是持久唤醒意图，
+observe 只留下 submitted，不自动重启主脑。前台完成后由协调者检查下一次唤醒。
+版本 CAS 拒绝已取走批次的迟到判断；旧生成代次检查拒绝抢占新轮次。
 VAD 停音和生成抢占通过正式接管关联，正文关键词本身不提供控制权限。
 
+QQ 插件把已通过过滤的私聊消息与直接 @ 一同标为最低 WAKE；普通群聊继续
+进入注意缓冲。空闲时直接交前台，忙碌时由同一最低唤起升级通道判断是否
+需要 urgent，observe 不能撤销已有 WAKE。私聊戳一戳等通知不继承
+消息规则；自发消息回显只进入缓存。框架只采用可信标记，不解析 QQ 私聊字段。
+
 [ForegroundService](../src/purrcept_engine/domain/subject/foreground_service.py)
-负责轮次编排；[ContinuousSession](../src/purrcept_engine/domain/subject/session.py)
+只处理唤醒时原子取出的全部已提交输入，运行中不再接管新刺激；[ContinuousSession](../src/purrcept_engine/domain/subject/session.py)
 串行推进连续会话，Core 拥有模型工具循环和整轮事务。前台最终文字仍是内部结果，
 只有真实能力调用产生外部输出。抢占撤销生成资格，不撤销已开始的行动。
 
@@ -104,6 +151,12 @@ VAD 停音和生成抢占通过正式接管关联，正文关键词本身不提�
 [请求服务](../src/purrcept_engine/domain/model_requests/service.py) 记录证据、控制
 预算和重试。应用注入 `MaterialCompiler`，SDK 编译位于 infrastructure/models。
 不要在传输层另加重试，也不要因辅助服务拆分而重置会话或请求预算。
+
+刺激布局与模型能力分别归提供方和应用配置。`input_blocks` 保留提供方块顺序，
+按每个模型的 `supports_contents` 交付原生内容或在原位置插入文字引用；默认仅 text。
+原件保留在权威库，支持媒体的存储/计量故障仍显式失败。decision 另受 Core 的
+文字/图片协议限制，video 声明不代表当前已有原生视频传输。详见
+[输入材料契约](input-materials.md)。
 
 [ExecutionService](../src/purrcept_engine/infrastructure/execution/service.py)
 拥有行动资源；WorkerSession 拥有进程和帧，CallDispatcher 拥有能力队列与回执。

@@ -243,7 +243,7 @@ async def test_one_admitted_frame_and_replaceable_candidate_wait_for_real_proces
         assert len(await store.pending()) == 1 and runtime.snapshot()["candidate"]
         assert runtime.snapshot()["input_id"] == original.input_id
         processing = await store.input_processing(original.input_id)
-        assert processing is not None and processing.stage == "foreground"
+        assert processing is not None and processing.stage == "priority"
         assert original.context.minimum_wake and not original.context.interrupt_generation
         await store.complete_input(original.input_id)
         await runtime.step()
@@ -268,7 +268,7 @@ async def test_pending_waits_and_real_failed_turn_pauses_without_new_input(
         await runtime.step()
         original = (await store.pending())[0]
         processing = await store.input_processing(original.input_id)
-        assert processing is not None and processing.stage == "foreground"
+        assert processing is not None and processing.stage == "priority"
         clock[0], driver.value = 50.0, frame(200)
         await runtime.step()
         assert (
@@ -474,7 +474,7 @@ async def test_late_failed_processing_cannot_pause_new_observation_generation(
         await runtime.step()
         input_id = (await store.pending())[0].input_id
         stage = await store.input_processing(input_id)
-        assert stage is not None and stage.stage == "foreground"
+        assert stage is not None and stage.stage == "priority"
         turn = await store.begin_turn("failure", "foreground", 0, 1, (input_id,))
         await store.finish_turn(turn, "failed", error_json='{"error_type":"OfflineFailure"}')
         entered, release = asyncio.Event(), asyncio.Event()

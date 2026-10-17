@@ -1,6 +1,6 @@
 """在同一权威连接保存注意处置、前台批次和连续会话版本。
 
-接管原文与处理状态分别记账。普通输入只筛选一次，defer 到期直接交前台；
+接管、提交与唤醒分别记账。observe 留在收件箱，后续唤醒原子取尽已提交批次；
 成功会话、输入处理结束和检查点同事务提交。失败批次保留错误与来源，不能
 以 Core 丢弃临时历史为由抹掉已经发生的行动。这里不推进模型或等待设备。
 所有 SQL 函数由 Store 专属线程调用，事务内仅访问本连接。
@@ -30,11 +30,12 @@ from purrcept_engine.infrastructure.sqlite.model_requests import (
     intern_core_media,
     restore_core_media,
 )
+from purrcept_engine.serialization import encode
 from purrcept_engine.values import decode_object, encode_json
 
 MINIMUM_WAKE_SCHEMA = (
-    "CREATE TABLE minimum_wake_assessments (input_id TEXT PRIMARY KEY REFERENCES inputs(input_id), "
-    "owner_id TEXT NOT NULL, observed_generation INTEGER NOT NULL, input_version INTEGER NOT NULL, "
+    "CREATE TABLE minimum_wake_assessments (batch_id TEXT PRIMARY KEY, "
+    "expected_json TEXT NOT NULL, owner_id TEXT NOT NULL, observed_generation INTEGER NOT NULL, "
     "state TEXT NOT NULL, level TEXT, reason TEXT, request_id TEXT)",
     "CREATE INDEX minimum_wake_pending ON minimum_wake_assessments(owner_id,state)",
 )
@@ -42,7 +43,7 @@ MINIMUM_WAKE_SCHEMA = (
 SCHEMA = (
     "CREATE TABLE input_processing (input_id TEXT PRIMARY KEY REFERENCES inputs(input_id), "
     "version INTEGER NOT NULL, stage TEXT NOT NULL, reason TEXT NOT NULL, "
-    "attention_request_id TEXT, due_at REAL, handed_off INTEGER NOT NULL DEFAULT 0, "
+    "attention_request_id TEXT, "
     "admitted_at REAL NOT NULL)",
     *MINIMUM_WAKE_SCHEMA,
     "CREATE TABLE subject_sessions (scope TEXT PRIMARY KEY, version INTEGER NOT NULL, "
@@ -72,7 +73,7 @@ def register_input(connection: sqlite3.Connection, input_id: str, *, minimum_wak
         "INSERT INTO input_processing(input_id,version,stage,reason,admitted_at) VALUES(?,1,?,?,?)",
         (
             input_id,
-            "foreground" if minimum_wake else "attention",
+            "priority" if minimum_wake else "attention",
             "trusted.minimum_wake" if minimum_wake else "admitted",
             time.time(),
         ),
@@ -80,7 +81,7 @@ def register_input(connection: sqlite3.Connection, input_id: str, *, minimum_wak
 
 
 def processing(connection: sqlite3.Connection, input_id: str) -> InputProcessing | None:
-    """读取实际处置状态，查询不会交接延后输入。
+    """读取实际处置状态，查询不提交输入或请求唤醒。
 
     Args:
         connection: 仅在 Store 专属线程当前短事务中借用的连接，不在回调中等待设备或模型。
@@ -93,14 +94,24 @@ def processing(connection: sqlite3.Connection, input_id: str) -> InputProcessing
         StorageError: 输入处置状态无效。
     """
     row: tuple[object, ...] | None = connection.execute(
-        "SELECT version,stage,reason,attention_request_id,due_at,handed_off,admitted_at "
+        "SELECT version,stage,reason,attention_request_id,admitted_at "
         "FROM input_processing WHERE input_id=?",
         (input_id,),
     ).fetchone()
     if row is None:
         return None
     stage = _string(row[1])
-    if stage not in ("attention", "deferred", "foreground", "processing", "processed", "failed"):
+    if stage not in (
+        "attention",
+        "priority",
+        "assessing",
+        "submitted",
+        "foreground",
+        "claimed",
+        "processing",
+        "processed",
+        "failed",
+    ):
         raise StorageError("输入处置状态无效。", code="invalid_record")
     return InputProcessing(
         input_id,
@@ -108,9 +119,7 @@ def processing(connection: sqlite3.Connection, input_id: str) -> InputProcessing
         stage,
         _string(row[2]),
         _optional_text(row[3]),
-        _optional_number(row[4]),
-        bool(_integer(row[5])),
-        _number(row[6]),
+        _number(row[4]),
     )
 
 
@@ -130,54 +139,69 @@ def pending_ids(connection: sqlite3.Connection, stage: InputStage, limit: int) -
     return tuple(_string(row[0]) for row in rows)
 
 
-def take_foreground_inputs(connection: sqlite3.Connection, turn_id: str | None) -> tuple[str, ...]:
-    """在一次事务内取尽开放缓冲池。
+def submit_inputs(
+    connection: sqlite3.Connection,
+    expected: tuple[InputProcessing, ...],
+    *,
+    minimum_wake: bool,
+) -> bool:
+    """原子提交一批缓存输入，最低唤起同时保存持久唤醒意图。
 
     Args:
-        connection: 仅在 Store 专属线程当前短事务中借用的连接，不在回调中等待设备或模型。
-        turn_id: 连续会话中本轮处理的身份。
+        connection: Store 专属线程借用的权威连接。
+        expected: 尚未提交的 attention/priority 版本快照。
+        minimum_wake: 本批是否包含可信高价值输入。
 
-    Raises:
-        StorageError: 新输入已失去活动前台轮次。
+    Returns:
+        全部版本匹配才返回 True；冲突不产生部分提交。
+    """
+    if not expected or any(item.stage not in ("attention", "priority") for item in expected):
+        raise ValueError("提交需要尚未交接的非空输入批次。")
+    if minimum_wake != any(item.stage == "priority" for item in expected):
+        raise ValueError("最低唤起必须由本批可信高价值输入建立。")
+    with connection:
+        connection.execute("BEGIN IMMEDIATE")
+        if any(processing(connection, item.input_id) != item for item in expected):
+            return False
+        for item in expected:
+            connection.execute(
+                "UPDATE input_processing SET version=version+1,stage=?,reason=? WHERE input_id=?",
+                (
+                    "foreground" if minimum_wake else "assessing",
+                    "trusted.batch_wake" if minimum_wake else "attention.pending",
+                    item.input_id,
+                ),
+            )
+    return True
+
+
+def take_foreground_inputs(connection: sqlite3.Connection) -> tuple[str, ...]:
+    """唤醒时原子取尽已提交输入并消耗唤醒意图。
+
+    Args:
+        connection: Store 专属线程借用的权威连接。
+
+    Returns:
+        按接管顺序冻结的本轮输入；没有 foreground 唤醒请求时为空。
 
     Note:
-        活动轮次同时接管来源身份。
-
-        空闲时至少有一个已唤起输入才启动，随后连同尚在缓冲/判断中的普通输入
-        一起取走。活动轮次的每次拉取不再等待各输入窗口。延期和已处理输入不
-        属于缓冲池。版本递增使在途注意结果失效，事务后的新接管留到下一次。
+        claimed 在 begin_turn 前已离开收件箱；其后的输入只能进入下一轮。
+        未提交的 attention/priority 不属于主脑状态，由协调者先完成交接。
     """
     with connection:
         connection.execute("BEGIN IMMEDIATE")
-        turn = None if turn_id is None else get_turn(connection, turn_id)
-        if turn_id is not None:
-            if (
-                turn is None
-                or turn.scope != "foreground"
-                or turn.state != "running"
-                or session(connection, "foreground").active_turn != turn_id
-            ):
-                raise StorageError("新输入已失去活动前台轮次。", code="session_conflict")
-        elif not pending_ids(connection, "foreground", 1):
+        if not pending_ids(connection, "foreground", 1):
             return ()
-
         rows: list[tuple[object, ...]] = connection.execute(
             "SELECT p.input_id FROM pending_inputs p JOIN input_processing s USING(input_id) "
-            "WHERE s.stage IN ('attention','foreground') ORDER BY p.sequence"
+            "WHERE s.stage IN ('assessing','submitted','foreground') ORDER BY p.sequence"
         ).fetchall()
         ids = tuple(_string(row[0]) for row in rows)
-        ordinal = len(turn.input_ids) if turn is not None else 0
-        for offset, input_id in enumerate(ids):
+        for input_id in ids:
             connection.execute(
-                "UPDATE input_processing SET version=version+1,stage=?,"
-                "reason=CASE WHEN stage='attention' THEN 'foreground.buffer_pull' ELSE reason END "
-                "WHERE input_id=?",
-                ("processing" if turn is not None else "foreground", input_id),
+                "UPDATE input_processing SET version=version+1,stage='claimed' WHERE input_id=?",
+                (input_id,),
             )
-            if turn is not None:
-                connection.execute(
-                    "INSERT INTO turn_inputs VALUES(?,?,?)", (turn_id, ordinal + offset, input_id)
-                )
         return ids
 
 
@@ -188,79 +212,74 @@ def decide_inputs(
     reason: str,
     *,
     request_id: str | None,
-    defer_until: float | None,
 ) -> bool:
-    """整批采用同一判断，版本过期不覆盖已处理身份。
+    """按提交版本采用整批注意结果，observe 保留收件箱而不请求唤醒。
 
     Args:
-        connection: 仅在 Store 专属线程当前短事务中借用的连接，不在回调中等待设备或模型。
-        expected: 此次比较或提交必须仍匹配的原始观察值。
-        level: 本批明确的注意处置等级。
-        reason: 供后续核对的明确处置原因。
-        request_id: 逻辑请求的稳定身份，用于查询或关联同一次受理。
-        defer_until: 保留原输入身份的延期到期时间；非延期决策不需要此值。
+        connection: Store 专属线程借用的权威连接。
+        expected: 已提交且尚未被主脑取走的整批版本。
+        level: observe、wake 或 urgent。
+        reason: 实际判断或明确未完成的原因。
+        request_id: 实际模型请求身份；程序处置为 None。
 
-    Raises:
-        ValueError: 参数值或组合不满足本入口的明确约束，错误正文指出具体字段。
-
-    Note:
-        defer 仅登记一次到期。
+    Returns:
+        是否整批采用；迟到判断不更改任何输入。
     """
-    if not expected or any(item.stage != "attention" for item in expected):
-        raise ValueError("注意提交需要尚未筛选的非空输入批次。")
-    if level not in ("observe", "defer", "wake", "urgent"):
+    if not expected or any(item.stage != "assessing" for item in expected):
+        raise ValueError("注意提交需要已进入主脑收件箱的非空批次。")
+    if level not in ("observe", "wake", "urgent"):
         raise ValueError("注意级别无效。")
-    if (level == "defer") != (defer_until is not None):
-        raise ValueError("仅 defer 可携带明确到期时刻。")
     with connection:
         connection.execute("BEGIN IMMEDIATE")
         if any(processing(connection, item.input_id) != item for item in expected):
             return False
-        stage = (
-            "processed" if level == "observe" else "deferred" if level == "defer" else "foreground"
-        )
         for item in expected:
             connection.execute(
                 "UPDATE input_processing SET version=version+1,stage=?,reason=?,"
-                "attention_request_id=?,due_at=? WHERE input_id=?",
-                (stage, reason, request_id, defer_until, item.input_id),
+                "attention_request_id=? WHERE input_id=?",
+                (
+                    "submitted" if level == "observe" else "foreground",
+                    reason,
+                    request_id,
+                    item.input_id,
+                ),
             )
-            if level == "observe":
-                connection.execute("DELETE FROM pending_inputs WHERE input_id=?", (item.input_id,))
     return True
 
 
 def register_minimum_wake_assessment(
     connection: sqlite3.Connection,
-    expected: InputProcessing,
+    expected: tuple[InputProcessing, ...],
     *,
     owner_id: str,
     observed_generation: int,
 ) -> bool:
-    """同事务绑定首次升级观察。
+    """为已保底唤醒的整批冻结一次旧生成升级资格。
 
     Args:
-        connection: 仅在 Store 专属线程当前短事务中借用的连接，不在回调中等待设备或模型。
-        expected: 此次比较或提交必须仍匹配的原始观察值。
-        owner_id: 发起本次工作并持有提交资格的所有者身份。
-        observed_generation: 接管或判断开始时观察到的前台生成代次。
+        connection: Store 专属线程借用的权威连接。
+        expected: 本批交接后的完整版本；首条身份也是稳定批次身份。
+        owner_id: 当前宿主实例，重启不得继承。
+        observed_generation: 本批交接时正在处理的旧生成。
 
-    Raises:
-        ValueError: 最低唤起升级必须绑定待处理输入和有效旧生成。
-
-    Note:
-        重放或已接管输入不获得新的判断资格。
+    Returns:
+        是否首次登记；重放和版本冲突不建立新判断。
     """
-    if expected.stage != "foreground" or not owner_id or observed_generation <= 0:
-        raise ValueError("最低唤起升级必须绑定待处理输入和有效旧生成。")
+    if (
+        not expected
+        or any(item.stage != "foreground" for item in expected)
+        or not owner_id
+        or observed_generation <= 0
+    ):
+        raise ValueError("最低唤起升级必须绑定整批待处理输入和有效旧生成。")
     with connection:
         connection.execute("BEGIN IMMEDIATE")
-        if processing(connection, expected.input_id) != expected:
+        if any(processing(connection, item.input_id) != item for item in expected):
             return False
         cursor = connection.execute(
             "INSERT OR IGNORE INTO minimum_wake_assessments"
-            "(input_id,owner_id,observed_generation,input_version,state) VALUES(?,?,?,?,'pending')",
-            (expected.input_id, owner_id, observed_generation, expected.version),
+            "(batch_id,expected_json,owner_id,observed_generation,state) VALUES(?,?,?,?,'pending')",
+            (expected[0].input_id, encode({"inputs": expected}), owner_id, observed_generation),
         )
         return cursor.rowcount == 1
 
@@ -268,26 +287,44 @@ def register_minimum_wake_assessment(
 def minimum_wake_assessments(
     connection: sqlite3.Connection, owner_id: str, *, limit: int
 ) -> tuple[MinimumWakeAssessment, ...]:
-    """按接管顺序取得本宿主的有限升级身份，不建立全部积压的内存副本。
+    """有限读取本宿主的批次升级待办，版本从冻结材料恢复。
 
     Args:
-        connection: 仅在 Store 专属线程当前短事务中借用的连接，不在回调中等待设备或模型。
-        owner_id: 发起本次工作并持有提交资格的所有者身份。
-        limit: 本次读取或更新的最大条目数。
+        connection: Store 专属线程借用的权威连接。
+        owner_id: 当前宿主实例。
+        limit: 最大批次数。
 
     Returns:
-        属于当前宿主的有限紧急升级判断待办。
+        按登记顺序排列的冻结批次。
     """
     rows: list[tuple[object, ...]] = connection.execute(
-        "SELECT a.input_id,a.observed_generation,a.input_version "
-        "FROM minimum_wake_assessments a JOIN input_processing p USING(input_id) "
-        "WHERE a.owner_id=? AND a.state='pending' ORDER BY p.admitted_at,a.input_id LIMIT ?",
+        "SELECT batch_id,expected_json,observed_generation FROM minimum_wake_assessments "
+        "WHERE owner_id=? AND state='pending' ORDER BY rowid LIMIT ?",
         (owner_id, limit),
     ).fetchall()
-    return tuple(
-        MinimumWakeAssessment(_string(row[0]), owner_id, _integer(row[1]), _integer(row[2]))
-        for row in rows
-    )
+    result: list[MinimumWakeAssessment] = []
+    for row in rows:
+        decoded = decode_object(_string(row[1]).encode("utf-8")).get("inputs")
+        if not isinstance(decoded, list) or not decoded:
+            raise StorageError("升级判断批次材料损坏。", code="invalid_record")
+        expected: list[InputProcessing] = []
+        for item in decoded:
+            if not isinstance(item, dict) or item.get("stage") != "foreground":
+                raise StorageError("升级判断输入版本损坏。", code="invalid_record")
+            expected.append(
+                InputProcessing(
+                    _string(item.get("input_id")),
+                    _integer(item.get("version")),
+                    "foreground",
+                    _string(item.get("reason")),
+                    _optional_text(item.get("attention_request_id")),
+                    _number(item.get("admitted_at")),
+                )
+            )
+        result.append(
+            MinimumWakeAssessment(_string(row[0]), tuple(expected), owner_id, _integer(row[2]))
+        )
+    return tuple(result)
 
 
 def finish_minimum_wake_assessment(
@@ -298,86 +335,47 @@ def finish_minimum_wake_assessment(
     *,
     request_id: str | None,
 ) -> bool:
-    """永久结案一次判断，只有原 foreground 版本可采用。
+    """永久结案批次判断，保底唤醒不受 observe 降级。
 
     Args:
-        connection: 仅在 Store 专属线程当前短事务中借用的连接，不在回调中等待设备或模型。
-        assessment: 已取得并需按原版本核验的判断结果。
-        level: 本批明确的注意处置等级。
-        reason: 供后续核对的明确处置原因。
-        request_id: 逻辑请求的稳定身份，用于查询或关联同一次受理。
+        connection: Store 专属线程借用的权威连接。
+        assessment: 本宿主登记的原批次与旧生成。
+        level: 实际判断结果。
+        reason: 实际原因或观察过期说明。
+        request_id: 实际请求证据，未调用模型时为 None。
 
-    Raises:
-        ValueError: 注意级别无效。
-
-    Note:
-        最低 WAKE 始终保留。
-
-        observe/defer 是模型的实际回答，不能撤销已经接管的直接唤起或新设延期。
-        迟到结果仍记录在升级身份，但不覆盖 processing/终态，也不重复投递输入。
+    Returns:
+        只有原批次仍完整留在收件箱时返回 True，供协调者决定是否抢占。
     """
-    if level not in ("observe", "defer", "wake", "urgent"):
+    if level not in ("observe", "wake", "urgent"):
         raise ValueError("注意级别无效。")
     with connection:
         connection.execute("BEGIN IMMEDIATE")
         cursor = connection.execute(
             "UPDATE minimum_wake_assessments SET state='completed',level=?,reason=?,request_id=? "
-            "WHERE input_id=? AND owner_id=? AND observed_generation=? AND input_version=? "
+            "WHERE batch_id=? AND owner_id=? AND observed_generation=? AND expected_json=? "
             "AND state='pending'",
             (
                 level,
                 reason,
                 request_id,
-                assessment.input_id,
+                assessment.batch_id,
                 assessment.owner_id,
                 assessment.observed_generation,
-                assessment.input_version,
+                encode({"inputs": assessment.expected}),
             ),
         )
-        if cursor.rowcount != 1:
+        if cursor.rowcount != 1 or any(
+            processing(connection, item.input_id) != item for item in assessment.expected
+        ):
             return False
-        cursor = connection.execute(
-            "UPDATE input_processing SET version=version+1,reason=?,attention_request_id=? "
-            "WHERE input_id=? AND version=? AND stage='foreground'",
-            (reason, request_id, assessment.input_id, assessment.input_version),
-        )
-        return cursor.rowcount == 1
-
-
-def deliver_due(connection: sqlite3.Connection, now: float) -> tuple[str, ...]:
-    """延后到期与唯一前台交接同事务，恢复后不重新进入注意判断。
-
-    Args:
-        connection: 仅在 Store 专属线程当前短事务中借用的连接，不在回调中等待设备或模型。
-        now: 本次规则计算采用的时刻，便于同一操作保持一致。
-    """
-    with connection:
-        connection.execute("BEGIN IMMEDIATE")
-        rows: list[tuple[object, ...]] = connection.execute(
-            "SELECT input_id FROM input_processing WHERE stage='deferred' AND due_at<=? "
-            "AND handed_off=0 ORDER BY due_at,input_id",
-            (now,),
-        ).fetchall()
-        ids = tuple(_string(row[0]) for row in rows)
-        for input_id in ids:
+        for item in assessment.expected:
             connection.execute(
-                "UPDATE input_processing SET version=version+1,stage='foreground',"
-                "reason='attention.defer_due',handed_off=1 WHERE input_id=?",
-                (input_id,),
+                "UPDATE input_processing SET version=version+1,reason=?,attention_request_id=? "
+                "WHERE input_id=?",
+                (reason, request_id, item.input_id),
             )
-        return ids
-
-
-def next_deferred(connection: sqlite3.Connection) -> float | None:
-    """返回最早未交接期限，宿主用单一定时等待而非每输入一个任务。
-
-    Args:
-        connection: 仅在 Store 专属线程当前短事务中借用的连接，不在回调中等待设备或模型。
-    """
-    row: tuple[object, ...] = connection.execute(
-        "SELECT min(due_at) FROM input_processing WHERE stage='deferred' AND handed_off=0"
-    ).fetchone()
-    return _optional_number(row[0])
+        return True
 
 
 def session(connection: sqlite3.Connection, scope: SessionScope) -> SessionRecord:
@@ -439,7 +437,7 @@ def begin_turn(
             raise StorageError("会话版本变化或已有在途处理。", code="session_conflict")
         for input_id in input_ids:
             item = processing(connection, input_id)
-            if item is None or item.stage != "foreground":
+            if item is None or item.stage not in ("priority", "foreground", "claimed"):
                 raise StorageError("输入不再具有前台交接资格。", code="input_conflict")
         connection.execute(
             "INSERT INTO subject_sessions(scope,version,active_turn) VALUES(?,?,?) "
@@ -512,8 +510,8 @@ def finish_turn(
         current = session(connection, turn.scope)
         if current.version != turn.session_version or current.active_turn != turn.turn_id:
             raise StorageError("会话提交已失去原版本资格。", code="session_conflict")
-        # 拉取事务可能在调用方取消等待后完成。结案读取权威来源集合，不能
-        # 用最初 begin_turn 的旧快照遗漏本轮中途已经接管的输入。
+        # 结案使用 begin_turn 冻结的权威来源集合，不能让调用方构造的
+        # TurnRecord 改写输入归属；本轮运行中不再接管后续刺激。
         actual_turn = get_turn(connection, turn.turn_id)
         if actual_turn is None:
             raise StorageError("活动轮次缺少权威记录。", code="invalid_record")
@@ -651,20 +649,28 @@ def get_turn(connection: sqlite3.Connection, turn_id: str) -> TurnRecord | None:
 
 
 def initialize(connection: sqlite3.Connection) -> None:
-    """借用调用方启动事务将旧处理记为中断，不提交或自动重做输入。
+    """在启动事务中恢复未开始的唤醒，并将已开始的旧轮次记为中断。
 
     Args:
         connection: 仅在 Store 专属线程当前短事务中借用的连接，不在回调中等待设备或模型。
     """
     connection.execute("SELECT input_id,stage FROM input_processing LIMIT 0")
     connection.execute(
-        "SELECT input_id,owner_id,observed_generation,input_version,state,level,reason,request_id "
+        "SELECT batch_id,expected_json,owner_id,observed_generation,state,level,reason,request_id "
         "FROM minimum_wake_assessments LIMIT 0"
     )
     # 启动事务由 Store 持有；恢复失败不能单独提交任何子系统。
     # 重启没有旧宿主正在运行的生成身份。只撤销升级资格，原最低唤起
     # 继续留在前台；不得根据新进程恰好相同的数字 generation 重新判断。
     connection.execute("UPDATE minimum_wake_assessments SET state='expired' WHERE state='pending'")
+    # 尚未 begin_turn 的 claimed 没有执行过模型或行动，可以恢复唤醒；
+    # 普通未完成判断重新合批。observe 已完成的 submitted 不自动唤醒。
+    connection.execute(
+        "UPDATE input_processing SET version=version+1,stage='foreground' WHERE stage='claimed'"
+    )
+    connection.execute(
+        "UPDATE input_processing SET version=version+1,stage='attention' WHERE stage='assessing'"
+    )
     rows: list[tuple[object, ...]] = connection.execute(
         "SELECT turn_id FROM subject_turns WHERE state='running'"
     ).fetchall()

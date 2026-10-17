@@ -1,4 +1,9 @@
-"""ForegroundService 的固定工作流程；共享协调事实只借用同一领域运行时。"""
+"""被协调者唤醒一次就处理一份冻结快照，连接前台工具与连续会话。
+
+入口 run 只处理调用方已经取出的输入；刺激选择、合批和下一次唤醒归协调者。
+ContinuousSession 拥有连续历史和生成资格，Core 拥有轮内模型/工具循环。
+本模块不轮询新刺激，也不根据前台最终文字自动对外发送。
+"""
 
 from __future__ import annotations
 
@@ -94,7 +99,7 @@ class ForegroundBinding:
 
 
 class ForegroundService:
-    """串行推进连续前台，连接取批、轮内接入、工具与历史维护。
+    """按外部唤醒推进一次连续前台，连接固定输入、工具与历史维护。
 
     Note:
         SubjectService 创建并持有工作任务；ContinuousSession 拥有会话历史，
@@ -108,71 +113,47 @@ class ForegroundService:
             runtime: 创建此协作者的领域或执行运行实例，不跨实例共享状态。
         """
         self.runtime = runtime
-        self.task: asyncio.Task[None] | None = None
 
-    def start(self) -> asyncio.Task[None]:
-        """创建唯一固定任务并交给运行时汇总关闭。
+    async def run(self, records: tuple[InputRecord, ...]) -> None:
+        """只推进调用方唤醒时已取走的输入快照。
 
-        Returns:
-            当前所有者持有的工作观察入口，等待取消不等于实际资源已归还。
-
-        Raises:
-            HostStateError: 领域工作器已经启动。
+        Args:
+            records: 协调者原子取走的非空收件箱快照。
 
         Note:
-            重复启动明确拒绝。
+            一次调用对应一次前台轮次；Core 继续拥有轮内模型/工具循环。
+            模型暂时失败由 Session 留下失败经历，新的唤醒由外部协调者安排。
         """
-        if self.task is not None:
-            raise HostStateError("领域工作器已经启动。")
-        self.task = asyncio.create_task(self.foreground(), name="subject-foreground")
-        return self.task
-
-    async def foreground(self) -> None:
-        """唯一会话串行处理已经交接的输入。
-
-        Note:
-            最终文字仅提交内部检查点。
-        """
-        while True:
-            self.runtime.check()
-            revision = self.runtime.store.change_revision
-            # 先只读检查唤起，避免空池写事务不断通知注意工作器。真正取批在
-            # 单个事务中连同尚未到期/正在判断的普通刺激一并接管。
-            ready = await self.runtime.store.staged_inputs("foreground", limit=1)
-            records = await self.runtime.store.take_foreground_inputs() if ready else ()
-            if not records:
-                await self.runtime.wait(revision)
-                continue
-            try:
-                await self.run_foreground(records)
-            except asyncio.CancelledError:
-                task = asyncio.current_task()
-                if self.runtime.closing or task is None or task.cancelling():
-                    raise
-                # 匹配的 urgent 只取消本轮临时 Core 历史；新独立输入仍可接续。
-            except (
-                ModelError,
-                CapacityError,
-                UnsupportedMaterial,
-                ToolLoopLimitError,
-                TimeoutError,
-                httpx.HTTPError,
-                EmbeddingProtocolError,
-            ):
-                # Session 已保存失败并结案输入；没有新来源不会自动重启预算。
-                pass
+        try:
+            await self.run_foreground(records)
+        except asyncio.CancelledError:
+            task = asyncio.current_task()
+            if self.runtime.closing or task is None or task.cancelling():
+                raise
+            # urgent 取消的是 Session 的本轮任务，不能误取消协调者后续唤醒。
+        except (
+            ModelError,
+            CapacityError,
+            UnsupportedMaterial,
+            ToolLoopLimitError,
+            TimeoutError,
+            httpx.HTTPError,
+            EmbeddingProtocolError,
+        ):
+            # Session 已完成失败结案；没有独立新输入就不重新发起同轮预算。
+            pass
 
     async def foreground_message(
         self, records: tuple[InputRecord, ...], failures: tuple[TurnRecord, ...]
     ) -> Message:
-        """完整交付当前输入。
+        """按前台模型内容声明组装当前输入及尚未承接的失败经历。
 
         Args:
             records: 按接管顺序取得的完整输入记录。
             failures: 尚未由后续成功处理承接的失败轮次事实。
 
         Returns:
-            供后续 Core 请求使用的完整消息。
+            供后续 Core 请求使用的消息，保留完整正文和媒体位置，不支持的媒体为文字引用。
 
         Raises:
             StorageError: 失败经历引用缺失原文。
@@ -211,31 +192,28 @@ class ForegroundService:
                 blocks.extend(
                     (
                         await input_message(
-                            self.runtime.store, tuple(original), media_as_references=True
+                            self.runtime.store,
+                            tuple(original),
+                            media_as_references=True,
+                            supports_contents=self.runtime.subject.supports_contents,
                         )
                     ).content
                 )
-        blocks.extend((await input_message(self.runtime.store, records)).content)
+        current = await input_message(
+            self.runtime.store, records, supports_contents=self.runtime.subject.supports_contents
+        )
+        blocks.extend(current.content)
         evidence_ids.extend(record.input_id for record in records)
         processing = await self.runtime.processing(records)
         assembled_at = time.time()
         blocks.append(
             TextBlock(
                 render_material(
-                    "本批输入的处理与延期情况",
+                    "本轮唤醒时冻结的输入状态",
                     {
                         "material_kind": "input_disposition",
                         "processing": processing,
                         "assembled_at": assembled_at,
-                        "deferred_delivery": tuple(
-                            {
-                                "input_id": item.input_id,
-                                "due_at": item.due_at,
-                                "assembly_delay_seconds": max(0.0, assembled_at - item.due_at),
-                            }
-                            for item in processing
-                            if item.handed_off and item.due_at is not None
-                        ),
                     },
                 )
             )
@@ -284,7 +262,7 @@ class ForegroundService:
             records: 按接管顺序取得的完整输入记录。
 
         Note:
-            后续拉取扩充来源但不刷新代次和主动预算。
+            本轮不再查询新刺激；随后到达的输入由协调者留给下一次唤醒。
         """
         failures = await self.runtime.store.failed_turns("foreground")
         generation = self.runtime.session.generation + 1
@@ -305,14 +283,6 @@ class ForegroundService:
             delivery=delivery,
         )
 
-        async def receive_inputs(turn: TurnRecord) -> Message | None:
-            """原子关联新输入后展开原文；失败仍由当前轮次统一结案。"""
-            self.check_turn(generation)
-            incoming = await self.runtime.store.take_foreground_inputs(turn.turn_id)
-            if not incoming:
-                return None
-            return await self.foreground_message(incoming, ())
-
         await self.runtime.session.run(
             lambda: self.foreground_message(records, failures),
             turn_id=uuid4().hex,
@@ -332,5 +302,4 @@ class ForegroundService:
             capacity=self.runtime.subject.capacity,
             delivery=delivery,
             prepare_history=self.runtime.prepare_history,
-            receive_inputs=receive_inputs,
         )

@@ -16,9 +16,19 @@ from math import isfinite
 from types import MappingProxyType
 from typing import Literal
 
+from purrcept_core.models import PromptTemplate, RenderPolicy
 from pydantic import BaseModel
 
 from purrcept_engine.errors import ConfigError
+
+# 字段正文、Schema 与示例均为已经冻结的材料，不 trim 或递归展开花括号。
+_CAPABILITY_ENTRY_PROMPT = PromptTemplate(
+    "execution.capability_entry",
+    "{path}\n{description}\nusage: {usage}\nparameters: {schema}\nexample: {example}",
+    policies={
+        key: RenderPolicy(str) for key in ("path", "description", "usage", "schema", "example")
+    },
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -221,11 +231,25 @@ class Catalog:
         entries: list[str] = []
         for path, binding in self.bindings.items():
             declaration = binding.declaration
-            example = declaration.example.replace("{path}", path)
+            # 声明契约只让 {path} 插值；其余花括号可能是合法 Python 字典。
+            # 先按字面量转义，再让 Core 执行唯一命名字段的严格渲染。
+            example_text = declaration.example.replace("{", "{{").replace("}", "}}")
+            example_template = PromptTemplate(
+                "execution.capability_example", example_text.replace("{{path}}", "{path}")
+            )
+            example = example_template.render(
+                {"path": path} if "path" in example_template.fields else {}
+            )
             entries.append(
-                f"{path}\n{declaration.description}\n"
-                f"usage: {declaration.usage}\n"
-                f"parameters: {binding.schema_json}\nexample: {example}"
+                _CAPABILITY_ENTRY_PROMPT.render(
+                    {
+                        "path": path,
+                        "description": declaration.description,
+                        "usage": declaration.usage,
+                        "schema": binding.schema_json,
+                        "example": example,
+                    }
+                )
             )
         return "\n\n".join(entries)
 

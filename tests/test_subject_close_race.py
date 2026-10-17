@@ -100,7 +100,7 @@ async def _notify(store: Store) -> None:
     await store.begin_action(uuid4().hex, catalog_version="close-boundary", source="return None")
 
 
-@pytest.mark.parametrize("worker", ("attention", "foreground", "deferred", "coalesce"))
+@pytest.mark.parametrize("worker", ("idle", "coalesce"))
 async def test_close_revokes_worker_before_a_ready_store_wait_can_resume(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, worker: str
 ) -> None:
@@ -109,7 +109,7 @@ async def test_close_revokes_worker_before_a_ready_store_wait_can_resume(
     waiting = asyncio.Event()
     notified = asyncio.Event()
     resume = asyncio.Event()
-    target = f"subject-{'attention' if worker == 'coalesce' else worker}"
+    target = "stimulus-change"
     original_wait = store.wait_for_change
 
     async def wait_for_change(after_revision: int) -> int:
@@ -174,7 +174,7 @@ async def test_internal_worker_failure_keeps_its_original_identity_during_close(
 
     async def wait_for_change(after_revision: int) -> int:
         task = asyncio.current_task()
-        if task is None or task.get_name() != "subject-attention":
+        if task is None or task.get_name() != "stimulus-change":
             return await original_wait(after_revision)
         waiting.set()
         await original_wait(after_revision)
@@ -215,7 +215,7 @@ async def test_repeated_close_observation_does_not_cancel_worker_cleanup_twice(
 
     async def wait_for_change(after_revision: int) -> int:
         task = asyncio.current_task()
-        if task is None or task.get_name() != "subject-attention":
+        if task is None or task.get_name() != "stimulus-change":
             return await original_wait(after_revision)
         waiting.set()
         try:

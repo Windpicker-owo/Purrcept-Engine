@@ -1,19 +1,27 @@
 """PortAudio 输入所有者，将本机原生采样率转换为有序 VAD 帧。
 
-回调只复制到有限线程队列，重采样及 VAD 均在回调之外。队列满、原生
-溢出或输入流失活明确终止，不能把缺样后的录音冒充连续发言。插件停止
-时关闭迭代器并回收声卡，浏览器寿命不影响设备。
+回调只复制到有限线程队列，重采样及 VAD 均在回调之外。孤立原生溢出
+交付明确缺口并重建重采样状态；五秒内第四次溢出、队列满或流失活明确
+终止。插件停止时关闭迭代器并回收声卡，浏览器寿命不影响设备。
+实际 close 成功才提供资源归还明证；生成器结束或采集报错本身都不能证明释放。
 """
 
 from __future__ import annotations
 
 import asyncio
+import logging
 import queue
+import time
+from collections import deque
 from collections.abc import AsyncGenerator, Callable, Iterable, Mapping
 from importlib import import_module
 from typing import Protocol, cast, overload
 
-from purrcept_engine.plugins.voice_input.models import InputDevice, VoiceInputError
+from purrcept_engine.plugins.voice_input.models import CaptureGap, InputDevice, VoiceInputError
+
+_logger = logging.getLogger(__name__)
+_OVERFLOW_WINDOW_SECONDS = 5.0
+_MAX_OVERFLOW_GAPS = 3
 
 
 class _Status(Protocol):
@@ -209,6 +217,15 @@ class SoundDeviceCapture:
             queue_size: 有界帧队列的最大块数，过载不得无限缓存。 默认 64。
         """
         self.queue_size = queue_size
+        self._released = True
+
+    def resources_released(self) -> bool:
+        """报告本次原生流是否已通过实际 close 归还。
+
+        Returns:
+            未取得流或清理正常完成时为 True；原生归还失败时保持 False。
+        """
+        return self._released
 
     async def devices(self) -> tuple[InputDevice, ...]:
         """枚举 PortAudio 当前输入列表，不启动输入流。
@@ -237,34 +254,34 @@ class SoundDeviceCapture:
         except sd.PortAudioError as error:
             raise VoiceInputError("输入设备枚举失败，请检查本机音频设备。") from error
 
-    async def frames(self, device: int | None) -> AsyncGenerator[bytes]:
+    async def frames(self, device: int | None) -> AsyncGenerator[bytes | CaptureGap]:
         """按设备原生采样率打开输入流，连续转换到 16 kHz，不刷新取消尾帧。
 
         Args:
             device: 显式选定的输入设备序号；None 交由设备适配器解析。
 
         Yields:
-            按原始采集、解码或播放顺序逐块交付的完整字节流。
+            按采集顺序交付 512 样本帧；CaptureGap 隔开丢样前后的连续片段。
 
         Raises:
             VoiceInputError: 设备、捕获格式、VAD/ASR 协议或有界帧队列不满足收音要求。
         """
         sd = cast(_SoundDevice, import_module("sounddevice"))
         av = cast(_Av, import_module("av"))
-        chunks: queue.Queue[tuple[bytes, int]] = queue.Queue(maxsize=self.queue_size)
+        chunks: queue.Queue[tuple[bytes, int, float, bool]] = queue.Queue(maxsize=self.queue_size)
         failure: queue.Queue[str] = queue.Queue(maxsize=1)
         acquired: list[_Stream] = []
+        overflows: deque[float] = deque()
+        last_delivery = time.monotonic()
 
         def callback(raw: object, frames: int, timing: object, status: _Status) -> None:
             """将捕获线程交付的帧和溢出状态送回所属事件循环。"""
             del timing
             # 缓冲接口来自 PortAudio；复制后原生回调可立即归还输入内存。
-            if status.input_overflow:
-                if failure.empty():
-                    failure.put_nowait("麦克风输入溢出，当前发言存在缺样。")
-                raise sd.CallbackAbort
             try:
-                chunks.put_nowait((bytes(cast(_Plane, raw)), frames))
+                chunks.put_nowait(
+                    (bytes(cast(_Plane, raw)), frames, time.monotonic(), status.input_overflow)
+                )
             except queue.Full:
                 if failure.empty():
                     failure.put_nowait("麦克风缓存已满，收音已暂停，当前发言存在缺样。")
@@ -282,7 +299,9 @@ class SoundDeviceCapture:
                 samplerate=rate,
                 channels=1,
                 dtype="int16",
-                blocksize=max(1, rate // 100),
+                # VAD 的固定帧由下方重采样缓冲组装，不要求声卡每 10 ms 回调。
+                # 让 PortAudio 按设备选择块大小，避免固定小块在宿主负载下更易丢样。
+                blocksize=0,
                 device=device,
                 callback=callback,
             )
@@ -290,6 +309,7 @@ class SoundDeviceCapture:
             return stream, rate
 
         try:
+            self._released = False
             try:
                 stream, rate = await _work(open_stream)
             except sd.PortAudioError as error:
@@ -304,16 +324,51 @@ class SoundDeviceCapture:
                 raise VoiceInputError("麦克风无法开始采集，请检查设备。") from error
             while True:
                 if not failure.empty():
-                    raise VoiceInputError(failure.get_nowait())
+                    message = failure.get_nowait()
+                    # 原生回调只报告故障；日志在宿主侧记录，避免进一步拖慢实时线程。
+                    # 延迟与队列深度是现场证据，不能将原生丢样误诊为 ASR 上传积压。
+                    _logger.warning(
+                        "%s device=%s sample_rate=%d queued_blocks=%d consumer_delay_ms=%.1f",
+                        message,
+                        device,
+                        rate,
+                        chunks.qsize(),
+                        (time.monotonic() - last_delivery) * 1000,
+                    )
+                    raise VoiceInputError(message)
                 if not stream.active:
                     raise VoiceInputError("麦克风已断开，当前未完成发言已释放。")
                 try:
-                    raw, count = chunks.get_nowait()
+                    raw, count, captured_at, overflow = chunks.get_nowait()
                 except queue.Empty:
                     await asyncio.sleep(0.005)
                     continue
                 if count < 1 or len(raw) != count * 2:
                     raise VoiceInputError("设备采样帧不连续，当前发言已释放。")
+                if overflow:
+                    while overflows and captured_at - overflows[0] >= _OVERFLOW_WINDOW_SECONDS:
+                        overflows.popleft()
+                    overflows.append(captured_at)
+                    repeated = len(overflows) > _MAX_OVERFLOW_GAPS
+                    message = "麦克风输入溢出，当前发言存在缺样。"
+                    _logger.warning(
+                        "%s device=%s sample_rate=%d queued_blocks=%d consumer_delay_ms=%.1f "
+                        "recovery=%s overflow_count=%d",
+                        message,
+                        device,
+                        rate,
+                        chunks.qsize(),
+                        (time.monotonic() - last_delivery) * 1000,
+                        "paused" if repeated else "gap",
+                        len(overflows),
+                    )
+                    if repeated:
+                        raise VoiceInputError("麦克风连续输入溢出，五秒内超过三次，收音已暂停。")
+                    # blocksize=0 的原生溢出表示缺口位于本块之前。本块可作为新
+                    # 片段起点，但旧滤波状态和不足 512 样本的余量绝不能跨缺口沿用。
+                    pending.clear()
+                    resampler = av.AudioResampler(format="s16", layout="mono", rate=16000)
+                    yield CaptureGap(message)
                 frame = av.AudioFrame(format="s16", layout="mono", samples=count)
                 frame.sample_rate = rate
                 frame.planes[0].update(raw)
@@ -322,6 +377,7 @@ class SoundDeviceCapture:
                 while len(pending) >= 1024:
                     pcm = bytes(pending[:1024])
                     del pending[:1024]
+                    last_delivery = time.monotonic()
                     yield pcm
         finally:
 
@@ -335,3 +391,4 @@ class SoundDeviceCapture:
                         stream.close()
 
             await _work(release)
+            self._released = True

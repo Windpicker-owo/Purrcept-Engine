@@ -152,9 +152,11 @@ class HistoryPreparation:
             TypeError: Engine 历史来源元数据格式无效。
         """
         budget.check()
-        checkpoint = (
-            None if session.checkpoint_json is None else decode_checkpoint(session.checkpoint_json)
-        )
+        checkpoint = None
+        checkpoint_json = session.checkpoint_json
+        if checkpoint_json is not None:
+            # 原声连续历史包含完整媒体；恢复同样属于纯材料准备，不能阻塞收音。
+            checkpoint = await prepare_off_loop(lambda: decode_checkpoint(checkpoint_json))
 
         def layout(candidate: ConversationCheckpoint | None) -> ModelRequest:
             """用当前完整请求布局核验候选历史的真实交付容量。"""

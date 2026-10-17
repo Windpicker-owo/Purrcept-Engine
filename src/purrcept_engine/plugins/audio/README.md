@@ -32,6 +32,8 @@ postprocess_profile = ".purrcept/microphone/voice-profile.json"
 媒体时钟；中断、失败和超时可能已发出部分声音，不能自动重播。
 `me.microphone.interrupt()` 撤销当前及接管停止时已有候播的播放资格，之后
 新接管的 speak 仍可发声。停止收音是 `me.voice_input.stop()` 的独立操作。
+流式停音同时撤销本次 PCM 消费等待，再回收播放器及上游迭代器；即使网络或
+解码暂时没有下一块数据，也不会只终止播放进程却继续占住现场队列。
 
 `speak(body={...})` 可借用独立 Live2D 身体；身体离线不阻断声音，其结果单独
 记录。[身体校准](../live2d/README.md)不改变 TTS 或播放器的所有权。

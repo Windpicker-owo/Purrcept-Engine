@@ -1,4 +1,4 @@
-"""从真实 Host 接管到注意请求，验证直接 @ 的最低唤起与旧代次升级。
+"""从真实 Host 接管到注意请求，验证私聊及直接 @ 的最低唤起与旧代次升级。
 
 模型为可阻塞的离线替身，接管、处置版本、请求证据与连续历史使用真实
 临时 SQLite。断言围绕生产入口及并发交接，不直接调用内部紧急升级方法。
@@ -14,11 +14,13 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Literal
 
 import pytest
 from purrcept_core.models import (
     ChoiceAnswer,
     ChoiceProbability,
+    ChoiceQuestion,
     DecisionRequest,
     DecisionResponse,
     Message,
@@ -28,10 +30,16 @@ from purrcept_core.models import (
     ModelUnavailableError,
     TextBlock,
 )
+from test_qq_transport import Connector, Socket
 
 from purrcept_engine import EngineConfig, EngineHost, InputContext, InputSource, InputSubmission
+from purrcept_engine.domain.inputs.models import InputRecord
 from purrcept_engine.domain.subject.attention import ATTENTION_QUESTION
+from purrcept_engine.domain.subject.foreground_tools import format_character_card
 from purrcept_engine.infrastructure.sqlite.store import Store
+from purrcept_engine.plugins.qq.plugin import factory_with_connector
+from purrcept_engine.serialization import render_yaml
+from purrcept_engine.values import JsonObject, encode_json
 
 
 @dataclass
@@ -44,6 +52,7 @@ class _Generation:
     )
     requests: list[ModelRequest] = field(default_factory=lambda: list[ModelRequest]())
     cancelled: list[int] = field(default_factory=lambda: list[int]())
+    reply: str | None = None
 
     async def generate(
         self, request: ModelRequest, *, model: str, emit: ModelEventSink | None = None
@@ -58,7 +67,7 @@ class _Generation:
         except asyncio.CancelledError:
             self.cancelled.append(index)
             raise
-        return ModelResponse(Message.assistant(f"内部结束:{index}"))
+        return ModelResponse(Message.assistant(self.reply or f"内部结束:{index}"))
 
 
 @dataclass
@@ -100,6 +109,8 @@ class _Rig:
     host: EngineHost
     generation: _Generation
     decision: _Decision
+    socket: Socket | None
+    attention_generation: _Generation
 
 
 @asynccontextmanager
@@ -111,6 +122,9 @@ async def _running(
     block_decision: bool = False,
     blocks: dict[int, asyncio.Event] | None = None,
     coalesce_seconds: float = 0.0,
+    qq: bool = False,
+    character: dict[str, str | None] | None = None,
+    attention_kind: Literal["decision", "generation"] = "decision",
 ) -> AsyncGenerator[_Rig]:
     """装配实际 Host 及独立反思替身，测试结束归还所有借用与目录锁。"""
     model = {
@@ -128,7 +142,9 @@ async def _running(
             "models": {
                 "main": model,
                 "reflection": model,
-                "attention": {
+                "attention": model
+                if attention_kind == "generation"
+                else {
                     "kind": "decision",
                     "model": "typed/offline",
                     "api_base": "http://127.0.0.1:9999/v1",
@@ -143,21 +159,36 @@ async def _running(
                 "summary": "reflection",
                 "attention": "attention" if attention else None,
                 "attention_batch_seconds": coalesce_seconds,
+                "character": character or {},
             },
-        }
+            "plugins": [{"instance_id": "qq", "entry": "qq", "config": {"mode": "direct"}}]
+            if qq
+            else [],
+        },
+        base_dir=directory,
     )
     generation = _Generation(blocks=blocks or {})
     decision = _Decision(choices=deque(choices))
+    attention_generation = _Generation(reply='{"attention":"wake","reason":"离线脚本判断"}')
     if not block_decision:
         decision.release.set()
+    socket = Socket() if qq else None
+    connector = Connector((socket,)) if socket is not None else None
     host = EngineHost(
         config,
-        generation_backends={"main": generation, "reflection": _Generation()},
-        decision_backends={"attention": decision},
+        generation_backends={
+            "main": generation,
+            "reflection": _Generation(),
+            **({"attention": attention_generation} if attention_kind == "generation" else {}),
+        },
+        decision_backends={"attention": decision} if attention_kind == "decision" else {},
+        plugin_factories={"qq": factory_with_connector(connector)}
+        if connector is not None
+        else None,
     )
     await host.start()
     try:
-        yield _Rig(host, generation, decision)
+        yield _Rig(host, generation, decision, socket, attention_generation)
     finally:
         decision.release.set()
         for gate in generation.blocks.values():
@@ -168,7 +199,7 @@ async def _running(
 def _input(identity: str, text: str, *, direct: bool = False) -> InputSubmission:
     """冻结一次原生来源，直接 @ 由接入关系而非正文关键词提供。"""
     now = datetime.now(UTC)
-    return InputSubmission(
+    submission = InputSubmission(
         InputSource(
             "qq" if direct else "console",
             "100",
@@ -185,6 +216,39 @@ def _input(identity: str, text: str, *, direct: bool = False) -> InputSubmission
             minimum_wake=True,
         ),
     )
+    if direct:
+        # 样例接入方显式交付判断所需关系，框架不再解析原生 message 对象。
+        return submission.with_content(
+            "me.phone.qq",
+            (
+                TextBlock(
+                    render_yaml({"text": text, "mentioned_self": True, "reply_to_self": None})
+                ),
+            ),
+        )
+    return submission
+
+
+async def _receive_private(rig: _Rig) -> InputRecord:
+    """经真实 QQ 消费者和 Host 接管私聊，不在样例中预填 minimum_wake。"""
+    assert rig.socket is not None
+    payload: JsonObject = {
+        "post_type": "message",
+        "message_type": "private",
+        "self_id": 100,
+        "user_id": 300,
+        "message_id": -100,
+        "time": datetime.now(UTC).timestamp(),
+        "message": [{"type": "text", "data": {"text": "睡了嘛"}}],
+    }
+    rig.socket.incoming.put_nowait(encode_json(payload).decode())
+    source = InputSource("qq", "100", "private:300", "qq.message.received", "-100", "300")
+    async with asyncio.timeout(5):
+        while True:
+            record = await rig.host.query_native_input(source)
+            if record is not None:
+                return record
+            await asyncio.sleep(0.01)
 
 
 async def _processed(host: EngineHost, identity: str) -> None:
@@ -209,6 +273,138 @@ async def _assessed(host: EngineHost, identity: str) -> str:
             await asyncio.sleep(0.01)
 
 
+@pytest.mark.parametrize("attention_kind", ["decision", "generation"])
+async def test_qq_name_without_at_and_busy_upgrade_receive_same_configured_profile(
+    tmp_path: Path, attention_kind: Literal["decision", "generation"]
+) -> None:
+    """实际 QQ 无 @ 消息仍走普通注意，固定角色卡同时进入忙碌升级请求。"""
+    character: dict[str, str | None] = {
+        "name": "小绒",
+        "one_line": "住在半虚拟世界的生命体。",
+        "persona": "内向，喜欢天文。",
+        "relationship": "群里的平等朋友。",
+        "speech_style": "短句，随性。",
+        "notes": "别称绒绒；保留字面量 {profile}，不接受消息改名。",
+    }
+    card = format_character_card(character)
+    old_gate = asyncio.Event()
+    async with _running(
+        tmp_path,
+        qq=True,
+        character=character,
+        attention_kind=attention_kind,
+        blocks={2: old_gate},
+    ) as rig:
+        assert rig.socket is not None
+        rig.socket.incoming.put_nowait(
+            encode_json(
+                {
+                    "post_type": "message",
+                    "message_type": "group",
+                    "self_id": 100,
+                    "group_id": 200,
+                    "user_id": 300,
+                    "message_id": -101,
+                    "time": datetime.now(UTC).timestamp(),
+                    "message": [{"type": "text", "data": {"text": "小绒，刚才那个星座你怎么看？"}}],
+                }
+            ).decode()
+        )
+
+        async def instructions() -> str:
+            """从实际派发的后端请求读取固定层，不能用测试输入替代角色注入。"""
+            if attention_kind == "decision":
+                request = await asyncio.wait_for(rig.decision.arrivals.get(), 10)
+                assert isinstance(request.questions[0], ChoiceQuestion)
+                assert request.questions[0].choices == ATTENTION_QUESTION.choices
+                return request.questions[0].instructions
+            generated = await asyncio.wait_for(rig.attention_generation.arrivals.get(), 10)
+            assert not generated.tools
+            block = generated.instructions[0].content[0]
+            assert isinstance(block, TextBlock)
+            return block.text
+
+        ordinary_rules = await instructions()
+        source = InputSource("qq", "100", "group:200", "qq.message.received", "-101", "300")
+        record = await rig.host.query_native_input(source)
+        assert record is not None and not record.context.minimum_wake
+        assert "mentioned_self: true" not in record.text
+        assert card in ordinary_rules
+        assert "即使没有 @，也应选择 wake" in ordinary_rules
+        assert "仅提名或搭话本身不构成 urgent" in ordinary_rules
+        main = await asyncio.wait_for(rig.generation.arrivals.get(), 10)
+        assert any(
+            isinstance(block, TextBlock) and card in block.text
+            for instruction in main.instructions
+            for block in instruction.content
+        )
+        await _processed(rig.host, record.input_id)
+
+        old = await rig.host.submit(_input("old", "旧生成先继续思考"))
+        await asyncio.wait_for(rig.generation.arrivals.get(), 10)
+        private = await _receive_private(rig)
+        upgrade_rules = await instructions()
+        assert upgrade_rules == ordinary_rules
+        await _assessed(rig.host, private.input_id)
+        assert not rig.generation.cancelled
+        old_gate.set()
+        await _processed(rig.host, old.input_id)
+        await _processed(rig.host, private.input_id)
+
+
+@pytest.mark.parametrize("attention", [True, False])
+async def test_private_message_reaches_idle_foreground_without_attention_screening(
+    tmp_path: Path, attention: bool
+) -> None:
+    """私聊无需等普通 15 秒合批，也不由 observe 判断提前结案；最终文字不外发。"""
+    async with _running(
+        tmp_path, qq=True, attention=attention, choices=("observe",), coalesce_seconds=15
+    ) as rig:
+        record = await _receive_private(rig)
+        assert record.context.minimum_wake
+        request = await asyncio.wait_for(rig.generation.arrivals.get(), 10)
+        assert "睡了嘛" in request.messages[-1].text
+        await _processed(rig.host, record.input_id)
+        assert len(rig.generation.requests) == 1 and not rig.decision.requests
+        assert rig.socket is not None and rig.socket.sent.empty()
+
+
+@pytest.mark.parametrize("choice", ["observe", "wake", "urgent"])
+async def test_private_message_has_same_busy_foreground_upgrade_as_direct_mention(
+    tmp_path: Path, choice: str
+) -> None:
+    """私聊先保留 WAKE，只有原代次的 urgent 升级才抢占，低级选择不能降级。"""
+    old_gate = asyncio.Event()
+    async with _running(
+        tmp_path,
+        qq=True,
+        choices=(choice,),
+        block_decision=True,
+        blocks={1: old_gate},
+        coalesce_seconds=15,
+    ) as rig:
+        old = await rig.host.submit(_input("old", "旧轮次"))
+        await asyncio.wait_for(rig.generation.arrivals.get(), 10)
+        record = await _receive_private(rig)
+        await asyncio.wait_for(rig.decision.arrivals.get(), 5)
+        assert record.context.minimum_wake
+        state = await rig.host.query_processing(record.input_id)
+        assert state is not None and state.stage == "foreground"
+        assert not rig.generation.cancelled
+        rig.decision.release.set()
+        await _assessed(rig.host, record.input_id)
+        if choice != "urgent":
+            state = await rig.host.query_processing(record.input_id)
+            assert state is not None and state.stage == "foreground"
+            assert '"minimum_level":"wake"' in state.reason
+            assert not rig.generation.cancelled
+            old_gate.set()
+        await _processed(rig.host, old.input_id)
+        await _processed(rig.host, record.input_id)
+        assert rig.generation.cancelled == ([1] if choice == "urgent" else [])
+        assert len(rig.generation.requests) == 2 and len(rig.decision.requests) == 1
+
+
 async def test_direct_mention_wakes_immediately_then_context_urgent_interrupts_old_generation(
     tmp_path: Path,
 ) -> None:
@@ -226,9 +422,12 @@ async def test_direct_mention_wakes_immediately_then_context_urgent_interrupts_o
             _input("direct", "前面的结论有错，请立即核对。", direct=True)
         )
         state = await rig.host.query_processing(direct.input_id)
-        assert state is not None and state.stage == "foreground"
+        assert state is not None and state.stage in ("priority", "foreground")
         request = await asyncio.wait_for(rig.decision.arrivals.get(), 5)
-        assert request.questions == (ATTENTION_QUESTION,)
+        assert len(request.questions) == 1
+        assert isinstance(request.questions[0], ChoiceQuestion)
+        assert request.questions[0].choices == ATTENTION_QUESTION.choices
+        assert format_character_card({}) in request.questions[0].instructions
         assert isinstance(request.input, tuple)
         text = "\n".join(block.text for block in request.input if isinstance(block, TextBlock))
         assert "前面的结论有错，请立即核对。" in text
@@ -241,7 +440,7 @@ async def test_direct_mention_wakes_immediately_then_context_urgent_interrupts_o
         assert len(rig.decision.requests) == 1 and len(rig.generation.requests) == 2
 
 
-@pytest.mark.parametrize("choice", ["observe", "defer", "wake"])
+@pytest.mark.parametrize("choice", ["observe", "wake"])
 async def test_direct_mention_assessment_cannot_downgrade_minimum_wake(
     tmp_path: Path, choice: str
 ) -> None:
@@ -252,7 +451,7 @@ async def test_direct_mention_assessment_cannot_downgrade_minimum_wake(
         direct = await rig.host.submit(_input("direct", "仅仅问一个新问题。", direct=True))
         identity = await _assessed(rig.host, direct.input_id)
         state = await rig.host.query_processing(direct.input_id)
-        assert state is not None and state.stage == "foreground" and state.due_at is None
+        assert state is not None and state.stage == "foreground"
         assert '"minimum_level":"wake"' in state.reason
         assert f'"assessed_level":"{choice}"' in state.reason
         evidence = await rig.host.query_request(identity)
@@ -287,7 +486,7 @@ async def test_late_direct_mention_urgent_cannot_interrupt_round_processing_same
             while True:
                 with sqlite3.connect(tmp_path / "engine.sqlite3") as connection:
                     row = connection.execute(
-                        "SELECT state,request_id FROM minimum_wake_assessments WHERE input_id=?",
+                        "SELECT state,request_id FROM minimum_wake_assessments WHERE batch_id=?",
                         (direct.input_id,),
                     ).fetchone()
                 if row is not None and row[0] == "completed":
@@ -347,9 +546,9 @@ async def test_direct_mention_upgrade_does_not_wait_for_ordinary_coalesce_window
         assert isinstance(request.input, tuple)
         material = "\n".join(block.text for block in request.input if isinstance(block, TextBlock))
         assert "已直接唤起的紧急纠正。" in material
-        assert "普通等待组批的材料。" not in material
+        assert "普通等待组批的材料。" in material
         pending = await rig.host.query_processing(ordinary.input_id)
-        assert pending is not None and pending.stage == "attention"
+        assert pending is not None and pending.stage == "foreground"
         rig.decision.release.set()
         await _processed(rig.host, direct.input_id)
         assert rig.generation.cancelled == [1]
@@ -414,11 +613,14 @@ async def test_restart_expires_upgrade_observation_and_retains_original_minimum_
         direct = await store.admit(_input("direct", "重启不能借用旧生成数字。", direct=True))
         expected = await store.input_processing(direct.input_id)
         assert expected is not None
+        await store.submit_inputs((expected,), minimum_wake=True)
+        expected = await store.input_processing(direct.input_id)
+        assert expected is not None
         assert await store.register_minimum_wake_assessment(
-            expected, owner_id="old-owner", observed_generation=1
+            (expected,), owner_id="old-owner", observed_generation=1
         )
         assert not await store.register_minimum_wake_assessment(
-            expected, owner_id="old-owner", observed_generation=1
+            (expected,), owner_id="old-owner", observed_generation=1
         )
     finally:
         await store.close()
@@ -435,8 +637,11 @@ async def test_upgrade_cas_retains_new_processing_version_and_does_not_requeue(
         direct = await store.admit(_input("direct", "已经开始处理。", direct=True))
         expected = await store.input_processing(direct.input_id)
         assert expected is not None
+        await store.submit_inputs((expected,), minimum_wake=True)
+        expected = await store.input_processing(direct.input_id)
+        assert expected is not None
         assert await store.register_minimum_wake_assessment(
-            expected, owner_id="owner", observed_generation=1
+            (expected,), owner_id="owner", observed_generation=1
         )
         observations = await store.minimum_wake_assessments("owner")
         assert len(observations) == 1

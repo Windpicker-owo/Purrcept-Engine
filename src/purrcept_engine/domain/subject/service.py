@@ -1,7 +1,7 @@
-"""主体的统一输入编排入口，连接注意、前台、延期与独立后台。
+"""主体的统一输入编排入口，连接刺激协调者、被调用的注意和前台以及独立后台。
 
-同一实例持有唯一前台会话、共享资格和失败事实；AttentionService、
-ForegroundService 与 DeferredInputService 各自推进一条固定流程。应用在启动前
+同一实例持有唯一前台会话、共享资格和失败事实；StimulusCoordinator
+独占合批、输入提交、唤醒和抢占；注意评估器与前台只在被调用时工作。应用在启动前
 绑定 BackgroundService，反馈与反思仍拥有独立任务和会话，Host 分别等待它们
 实际关闭。输入选择以事务中的版本为准，迟到判断不能覆盖已拉取输入。
 本模块不拥有客户端、插件或数据库连接，也不复制 Core 的模型工具循环。
@@ -28,7 +28,7 @@ from purrcept_engine.domain.model_requests.service import (
 )
 from purrcept_engine.domain.subject.attention import AttentionModel, NativeMedia
 from purrcept_engine.domain.subject.attention_service import AttentionService
-from purrcept_engine.domain.subject.deferred_service import DeferredInputService
+from purrcept_engine.domain.subject.coordinator import StimulusCoordinator
 from purrcept_engine.domain.subject.foreground_service import ForegroundService
 from purrcept_engine.domain.subject.models import (
     InputProcessing,
@@ -50,7 +50,7 @@ if TYPE_CHECKING:
 class SubjectService:
     """app 创建的主体工作所有者，同一事件循环仅启动一次。
 
-    start 建立固定注意、前台和延期交接任务，输入待办始终留在权威库。模型
+    start 建立唯一刺激协调任务，输入待办始终留在权威库。模型
     暂时不可用只结束本轮并留下经历，内部/权威故障锁住新模型和行动。close
     只撤销本模块的模型借用，等已接管提交真正结束；客户端、执行器、插件
     和 Store 必须由 app 保留到本所有者实际收尾。
@@ -127,7 +127,7 @@ class SubjectService:
         self.background: BackgroundService | None = None
         self.attention_service = AttentionService(self)
         self.foreground_service = ForegroundService(self)
-        self.deferred_service = DeferredInputService(self)
+        self.coordinator = StimulusCoordinator(self)
 
     def bind_background(self, background: BackgroundService) -> None:
         """装配时绑定独立反馈/反思所有者。
@@ -166,22 +166,21 @@ class SubjectService:
         )
 
     async def start(self) -> None:
-        """启动主体的注意、前台与延期固定工作器。
+        """启动唯一刺激协调者，由它安排单次注意评估和前台唤醒。
 
         Raises:
             HostStateError: 主体工作器已经启动。
 
         Note:
-            启动固定工作器；重新 start 不重放任务或建立平行会话。
+            重新 start 不重放任务或建立平行会话。
         """
         if self.started:
             raise HostStateError("主体工作器已经启动。")
         self.check()
         self.started = True
-        for worker in (self.attention_service, self.foreground_service, self.deferred_service):
-            task = worker.start()
-            self.tasks.add(task)
-            task.add_done_callback(self.worker_done)
+        task = asyncio.create_task(self.coordinator.run(), name="stimulus-coordinator")
+        self.tasks.add(task)
+        task.add_done_callback(self.worker_done)
 
         if self.background is not None:
             await self.background.start()
@@ -199,8 +198,8 @@ class SubjectService:
         Note:
             app 在接管前读取 generation，再在成功提交后调用。输入若已经进入
             前台处理或代次已经变化，不抢占新生成；重启后不猜测旧观察身份。
-            QQ 直接 @ 已取得最低 WAKE，仍有效的旧代次可登记一次上下文升级，
-            由相同注意工作器有限判断。音频停播由音频所有者另行受理；返回值
+            高价值输入的批次升级由刺激协调者统一登记；此入口只交接可信直接抢占。
+            音频停播由音频所有者另行受理；返回值
             只表示本通知是否已经直接抢占，不预报后续模型判断的结果。
         """
         self.check()
@@ -208,25 +207,10 @@ class SubjectService:
         processing = await self.store.input_processing(input_id)
         if record is None or processing is None:
             raise StorageError("可信接管通知引用不存在的输入。", code="invalid_record")
-        if processing.stage != "foreground":
+        if processing.stage not in ("priority", "foreground", "assessing", "submitted"):
             return False
         if record.context.interrupt_generation or record.context.speech_started:
             return self.session.interrupt(observed_generation)
-        if (
-            self.attention is not None
-            and record.source.event_kind == "qq.message.received"
-            and record.context.minimum_wake
-            and self.session.eligible(observed_generation)
-        ):
-            # 最低 WAKE 已由接管事务完成。升级观察仍绑定接管前的旧代次，
-            # 使用权威有限待办交给同一个注意工作器，不逐消息创建模型任务。
-            await self.commit(
-                self.store.register_minimum_wake_assessment(
-                    processing,
-                    owner_id=self.attention_owner,
-                    observed_generation=observed_generation,
-                )
-            )
         return False
 
     def check(self) -> None:
@@ -242,7 +226,7 @@ class SubjectService:
         self.can_start()
 
     def worker_done(self, task: asyncio.Task[None]) -> None:
-        """固定工作器的原始故障锁存，不能留下其他工作器继续派发。
+        """协调任务或单轮前台的原始故障锁存，停止其他新派发。
 
         Args:
             task: 当前所有者创建并负责回收结果的任务。
@@ -254,22 +238,6 @@ class SubjectService:
             for other in self.tasks:
                 if not other.cancelling():
                     other.cancel()
-
-    async def wait(self, revision: int, *, seconds: float | None = None) -> None:
-        """先读序号再查询后等待，保留发生在查询期间的实际写入通知。
-
-        Args:
-            revision: 已观察的状态修订号。
-            seconds: 本次等待的秒数；None 表示等待显式唤醒。
-        """
-        if seconds is None:
-            await self.store.wait_for_change(revision)
-        elif seconds > 0:
-            try:
-                async with asyncio.timeout(seconds):
-                    await self.store.wait_for_change(revision)
-            except TimeoutError:
-                pass
 
     async def processing(self, records: tuple[InputRecord, ...]) -> tuple[InputProcessing, ...]:
         """读取本批版本供处置 CAS，查询本身不授予输入的处理资格。
@@ -290,31 +258,6 @@ class SubjectService:
                 raise StorageError("原文缺少处理身份。", code="invalid_record")
             result.append(item)
         return tuple(result)
-
-    async def wait_foreground(self, revision: int) -> None:
-        """等会话释放或可信控制通知。
-
-        Args:
-            revision: 已观察的状态修订号。
-
-        Note:
-            观察者取消不能传播到主脑任务。
-
-            普通刺激在忙碌时保留给主脑；独立中断判断仍可被新事务唤醒。会话
-            完成另有等待源，避免最后一次数据库通知早于 busy 清除而漏掉空闲。
-        """
-        waits = (
-            asyncio.create_task(self.store.wait_for_change(revision)),
-            asyncio.create_task(self.session.wait_idle()),
-        )
-        try:
-            done, _ = await asyncio.wait(waits, return_when=asyncio.FIRST_COMPLETED)
-            for task in done:
-                task.result()
-        finally:
-            for task in waits:
-                task.cancel()
-            await asyncio.gather(*waits, return_exceptions=True)
 
     async def commit[Result](self, operation: Awaitable[Result]) -> Result:
         """已受理调度写入由本所有者保留至真实提交，第二次取消也不遗失责任。

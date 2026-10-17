@@ -23,6 +23,7 @@ from purrcept_engine.domain.subject.models import InputProcessing
 from purrcept_engine.infrastructure.sqlite.store import Store
 from purrcept_engine.plugin_system.contracts import PluginPorts
 from purrcept_engine.plugins.voice_input.models import (
+    CaptureGap,
     InputDevice,
     TranscriptUpdate,
     VoiceInputError,
@@ -70,7 +71,7 @@ class Capture:
     """可控制帧序列的替身声卡，队列有界，关闭标记来自迭代器 finally。"""
 
     def __init__(self) -> None:
-        self.queue: asyncio.Queue[bytes] = asyncio.Queue(maxsize=128)
+        self.queue: asyncio.Queue[bytes | CaptureGap] = asyncio.Queue(maxsize=128)
         self.queue.put_nowait(SILENCE)
         self.closed = asyncio.Event()
         self.opened = 0
@@ -79,7 +80,11 @@ class Capture:
         """只列出替身设备，不开启采集。"""
         return (InputDevice(7, "生成 PCM 设备"),)
 
-    async def frames(self, device: int | None) -> AsyncGenerator[bytes]:
+    def resources_released(self) -> bool:
+        """替身只有帧流 finally 确认后才证明设备归还。"""
+        return self.opened == 0 or self.closed.is_set()
+
+    async def frames(self, device: int | None) -> AsyncGenerator[bytes | CaptureGap]:
         """交付脚本帧后等待，不用真实时间伪造设备状态。"""
         del device
         self.opened += 1
@@ -147,6 +152,139 @@ async def until(predicate: Callable[[], bool]) -> None:
             return
         await asyncio.sleep(0.005)
     raise TimeoutError("本地状态未在三秒内完成。")
+
+
+async def test_capture_close_failure_cannot_prove_resources_released(tmp_path: Path) -> None:
+    """驱动 finally 的真实归还失败必须保留，不能据任务结束提前释放权威库。"""
+    failure = OSError("本地采集关闭故障")
+
+    class BrokenCapture(Capture):
+        def resources_released(self) -> bool:
+            return False
+
+        async def frames(self, device: int | None) -> AsyncGenerator[bytes | CaptureGap]:
+            del device
+            try:
+                yield SILENCE
+                await asyncio.Event().wait()
+            finally:
+                raise failure
+
+    store = await Store.open(tmp_path / "capture-close.sqlite3")
+    runtime = VoiceInputRuntime(
+        "voice",
+        settings(),
+        Inputs(store),
+        BrokenCapture,
+        Detector,
+        Transcriber(),
+        native_audio_enabled=True,
+    )
+    try:
+        await runtime.start("audio", 7)
+        with pytest.raises(OSError) as raised:
+            await runtime.close()
+        assert raised.value is failure
+        assert not runtime.resources_released()
+    finally:
+        await asyncio.gather(runtime.close(), return_exceptions=True)
+        await store.close()
+
+
+@pytest.mark.parametrize("mode", ["asr", "audio"])
+@pytest.mark.parametrize("delayed_start", [False, True])
+async def test_capture_gap_discards_incomplete_speech_and_accepts_next_utterance(
+    tmp_path: Path, mode: str, delayed_start: bool
+) -> None:
+    """缺口保留已接管起音，取消残句，后续完整发言仍在同一收音会话中入账。"""
+    store = await Store.open(tmp_path / "gap.sqlite3")
+    inputs, capture, transcriber = Inputs(store), Capture(), Transcriber()
+    if delayed_start:
+        inputs.gate = asyncio.Event()
+    detectors: list[Detector] = []
+
+    def detector() -> Detector:
+        result = Detector()
+        detectors.append(result)
+        return result
+
+    runtime = VoiceInputRuntime(
+        "voice",
+        settings(),
+        inputs,
+        lambda: capture,
+        detector,
+        transcriber,
+        native_audio_enabled=True,
+    )
+    try:
+        await runtime.start("asr" if mode == "asr" else "audio", 7)
+        session = runtime.session
+        await capture.feed(SPEECH, 5)
+        await asyncio.wait_for(inputs.entered.wait(), 2)
+        await capture.queue.put(CaptureGap("麦克风输入溢出，当前发言存在缺样。"))
+        await until(lambda: bool(runtime.gaps) and len(detectors) == 2)
+        if inputs.gate is not None:
+            assert inputs.admissions == []
+            inputs.gate.set()
+        await until(lambda: bool(runtime.gaps) and not runtime.utterances and len(detectors) == 2)
+        old = inputs.submissions[0]
+        assert runtime.gaps[-1]["already_admitted_input_id"] == inputs.admissions[0].input_id
+        assert len(detectors) == 2
+        newer = struct.pack("<512h", *([2000] * 512))
+        await capture.feed(newer, 2)
+        await capture.feed(SILENCE, 7)
+        await until(lambda: len(inputs.admissions) == 2)
+        final = inputs.submissions[-1]
+        assert final.source.event_kind == "utterance"
+        assert final.source.native_event_id != old.source.native_event_id
+        assert not final.context.speech_started and not final.context.interrupt_generation
+        assert runtime.state == "listening" and runtime.error is None
+        assert runtime.session == session and capture.opened == 1
+        if mode == "audio":
+            with wave.open(io.BytesIO(final.media[0].content)) as recorded:
+                assert recorded.readframes(512) == newer
+        else:
+            assert transcriber.calls == 2
+            assert final.text == "完整识别文字"
+    finally:
+        if inputs.gate is not None:
+            inputs.gate.set()
+        await runtime.close()
+        await store.close()
+
+
+async def test_gap_preserves_ended_utterance_waiting_for_asr(tmp_path: Path) -> None:
+    """缺口只影响跨越它的残句，已经正常结束但 ASR 尚未返回的前句仍可接管。"""
+    store = await Store.open(tmp_path / "ended-gap.sqlite3")
+    inputs, capture, transcriber = Inputs(store), Capture(), Transcriber(block=True)
+    runtime = VoiceInputRuntime(
+        "voice",
+        settings(),
+        inputs,
+        lambda: capture,
+        Detector,
+        transcriber,
+        native_audio_enabled=False,
+    )
+    try:
+        await runtime.start("asr", 7)
+        await capture.feed(SPEECH, 2)
+        await capture.feed(SILENCE, 7)
+        await until(lambda: runtime.current is None and bool(runtime.utterances))
+        await capture.queue.put(CaptureGap("原生输入缺样。"))
+        await until(lambda: bool(runtime.gaps))
+        transcriber.release.set()
+        await until(lambda: len(inputs.admissions) == 1)
+        await capture.feed(SPEECH, 2)
+        await capture.feed(SILENCE, 7)
+        await until(lambda: len(inputs.admissions) == 2)
+        assert transcriber.calls == 2 and runtime.state == "listening"
+        assert all(value.source.event_kind == "utterance" for value in inputs.submissions)
+    finally:
+        transcriber.release.set()
+        await runtime.close()
+        await store.close()
 
 
 async def test_slow_start_admission_does_not_stop_capture(tmp_path: Path) -> None:
@@ -259,7 +397,7 @@ async def test_real_store_speech_started_then_final_does_not_interrupt_twice(
         status = await runtime.status()
         history = status["history"]
         assert isinstance(history, list) and isinstance(history[0], dict)
-        assert history[0]["processing_stage"] == "foreground"
+        assert history[0]["processing_stage"] == "priority"
         await runtime.stop()
         assert capture.closed.is_set() and runtime.snapshot()["session_id"] == ""
         assert await store.get_input(inputs.admissions[1].input_id) == record
@@ -427,7 +565,7 @@ async def test_cancel_stop_observation_keeps_original_device_owner(tmp_path: Pat
             super().__init__()
             self.closing, self.release = asyncio.Event(), asyncio.Event()
 
-        async def frames(self, device: int | None) -> AsyncGenerator[bytes]:
+        async def frames(self, device: int | None) -> AsyncGenerator[bytes | CaptureGap]:
             del device
             self.opened += 1
             try:

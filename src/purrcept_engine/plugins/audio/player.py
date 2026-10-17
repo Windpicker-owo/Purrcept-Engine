@@ -2,7 +2,8 @@
 
 设备进度来自 FFplay 报出的媒体时钟；管道写入仅表示排队，不能触发
 BodyIntent。停止先设置本次撤销标记，再杀掉当前进程；启动窗口也要
-收回已创建进程。临时网络/解码迭代器由调用方收回，不跨播放复用。
+收回已创建进程。停音同时取消本次 PCM 消费等待，避免上游停顿占住播放队列；
+临时网络/解码迭代器由调用方收回，不跨播放复用。
 """
 
 from __future__ import annotations
@@ -132,6 +133,7 @@ class FFplayPlayer:
         self._closed, self._revoked = False, False
         self._playing = False
         self._identity: str | None = None
+        self._feeding: asyncio.Task[None] | None = None
 
     def check_available(self) -> None:
         """关闭或缺失程序在任何付费合成前明确失败。
@@ -264,6 +266,7 @@ class FFplayPlayer:
                 asyncio.create_task(feed(), name="audio-player-feed"),
                 asyncio.create_task(observe(), name="audio-player-clock"),
             ]
+            self._feeding = tasks[0]
             try:
                 async with asyncio.timeout(max(0.0, deadline - self._clock())):
                     await asyncio.gather(*tasks)
@@ -319,6 +322,7 @@ class FFplayPlayer:
             self._playing = False
             if self._identity == playback_id:
                 self._identity = None
+                self._feeding = None
 
     async def interrupt(self, playback_id: str | None = None) -> None:
         """启动与进程共享撤销标记，不能让迟到启动重新发声。
@@ -329,6 +333,12 @@ class FFplayPlayer:
         if playback_id is not None and playback_id != self._identity:
             return
         self._revoked = True
+        # 杀播放器不会唤醒正在等网络或解码输出的 feed。主动取消本次消费者，
+        # 让 play 的取消分支收回全部管道并交回真实终态，释放 AudioRuntime 队列。
+        # 重复停止不能再次取消正在退出的迭代器，否则会打断其资源清理。
+        feeding = self._feeding
+        if feeding is not None and not feeding.done() and not feeding.cancelling():
+            feeding.cancel()
         process = self._process
         if process is not None:
             if process.returncode is None:

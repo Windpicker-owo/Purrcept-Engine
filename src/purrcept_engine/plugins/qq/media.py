@@ -387,6 +387,14 @@ class MediaOwner:
                 path.unlink(missing_ok=True)
                 self._temporary.remove(path)
 
+    def resources_released(self) -> bool:
+        """确认文件工作、临时文件和 HTTP 池均已实际归还。
+
+        Returns:
+            完成清理后为 True；取消观察留下的历史文件错误不撤销归还事实。
+        """
+        return self._closed
+
     async def close(self) -> None:
         """等文件工作归还后释放 HTTP 与本次临时文件，用户媒体和贴纸保留。
 

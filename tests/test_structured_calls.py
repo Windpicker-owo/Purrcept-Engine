@@ -540,13 +540,24 @@ async def test_start_commit_that_exhausts_deadline_never_enters_provider(
     rig: _Rig, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     original = rig.store.mark_call_started
+    loop = asyncio.get_running_loop()
+    original_time = loop.time
+    elapsed = 0.0
+
+    def clock() -> float:
+        return original_time() + elapsed
+
+    monkeypatch.setattr(loop, "time", clock)
 
     async def delayed_start(call_id: str) -> None:
+        nonlocal elapsed
         await original(call_id)
-        await asyncio.sleep(0.08)
+        # 只在真实开始记录已提交后耗尽预算；30 ms 墙钟在忙碌机器上可能
+        # 先于此事务耗尽，导致用例误测了普通排队超时。
+        elapsed += 10.0
 
     monkeypatch.setattr(rig.store, "mark_call_started", delayed_start)
-    result = await rig.service.invoke("me.left.call", {"label": "expired"}, timeout_seconds=0.03)
+    result = await rig.service.invoke("me.left.call", {"label": "expired"}, timeout_seconds=5.0)
     assert result.state == "timed_out" and result.calls[0].state == "not_started"
     assert result.calls[0].started_at is not None and not rig.contexts
 
