@@ -227,7 +227,7 @@ async def test_actual_whole_turn_deadline_has_distinct_budget_evidence(
     assert (await store.get_session("foreground")).version == 0
 
 
-@pytest.mark.parametrize("signal", ["vad", "close"])
+@pytest.mark.parametrize("signal", ["urgent", "close"])
 @pytest.mark.parametrize("failure_kind", ["deadline", "backend"])
 async def test_finished_generation_cannot_be_cancelled_during_failure_accounting(
     session_storage: tuple[Store, ContinuousSession],
@@ -235,7 +235,7 @@ async def test_finished_generation_cannot_be_cancelled_during_failure_accounting
     signal: str,
     failure_kind: str,
 ) -> None:
-    """整轮结束后的 VAD/关闭不能中断失败入账，下一轮仍能串行处理。"""
+    """整轮结束后的紧急抢占/关闭不能中断失败入账，下一轮仍能串行处理。"""
     store, session = session_storage
     accounting, release = asyncio.Event(), asyncio.Event()
     original_get = store.get_session
@@ -283,7 +283,7 @@ async def test_finished_generation_cannot_be_cancelled_during_failure_accounting
     closing: asyncio.Task[None] | None = None
     try:
         await asyncio.wait_for(accounting.wait(), 3)
-        if signal == "vad":
+        if signal == "urgent":
             assert not session.interrupt(session.generation)
         else:
             closing = asyncio.create_task(session.close())
@@ -294,7 +294,7 @@ async def test_finished_generation_cannot_be_cancelled_during_failure_accounting
         failed = await store.get_turn("failed")
         assert failed is not None and failed.state == "failed"
         assert (await original_get("foreground")).active_turn is None
-        if signal == "vad":
+        if signal == "urgent":
             following = await admitted(store, "next", "下一句")
             result = await run(
                 ScriptedBackend((ModelResponse(Message.assistant("接续")),)), "next", following

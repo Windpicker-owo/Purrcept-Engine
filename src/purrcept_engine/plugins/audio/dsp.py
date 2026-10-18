@@ -3,6 +3,7 @@
 完整文件与 aligned MP3 流共用 mono S16 PCM 时间线。滤镜配置在付费前
 读取一次；跨网络分片保持一个 FFmpeg 状态，取消不刷新尾音。生产 PCM
 与能量都在调音后取得，避免口型使用与现场声音不同的音轨。
+停止时终止进程并排空废弃 PCM，避免管道背压使资源收尾永久等待。
 """
 
 from __future__ import annotations
@@ -137,6 +138,41 @@ async def _diagnostics(stream: asyncio.StreamReader) -> bytes:
     return bytes(collected)
 
 
+async def _discard_output(stream: asyncio.StreamReader) -> None:
+    """分块丢弃撤销后的输出，恢复暂停的管道读取而不扩大内存占用。"""
+    while await stream.read(65536):
+        pass
+
+
+async def _reclaim_decoder(
+    process: asyncio.subprocess.Process,
+    feeder: asyncio.Task[None] | None = None,
+    diagnostics: asyncio.Task[bytes] | None = None,
+) -> None:
+    """终止独占进程、收回输入任务并排空管道，再等待资源实际归还。"""
+    if process.returncode is None:
+        process.kill()
+    operations: list[Awaitable[object]] = []
+    if feeder is not None:
+        if not feeder.done() and not feeder.cancelling():
+            feeder.cancel()
+        operations.append(feeder)
+
+    # 顺序：取消消费者之后 stdout 可能因积压而暂停读取。仅 kill + wait
+    # 仍会等待管道断开，即使子进程已经退出；因此在等 feeder（它也可能
+    # 正在关闭上游解码器）时并行排空本进程输出。废弃 PCM 不再送给播放器。
+    if process.stdout is not None:
+        operations.append(_discard_output(process.stdout))
+    if diagnostics is not None:
+        operations.append(diagnostics)
+    elif process.stderr is not None:
+        operations.append(_discard_output(process.stderr))
+    # 正常路径已显式读取输入及诊断异常；清理不让取消/被终止管道的异常
+    # 覆盖触发收尾的原故障。完成后仍须等待进程的真实退出。
+    await asyncio.gather(*operations, return_exceptions=True)
+    await process.wait()
+
+
 async def _decode_raw(
     encoded: AsyncIterator[bytes],
     *,
@@ -172,10 +208,7 @@ async def _decode_raw(
     except asyncio.CancelledError:
         # 取得资源不能随启动等待消失；迟到进程只清理，不能继续解码。
         process = await launch
-        if process.returncode is None:
-            process.kill()
-        await process.wait()
-
+        await _reclaim_decoder(process)
         raise
     stdin, stdout, stderr = process.stdin, process.stdout, process.stderr
     if stdin is None or stdout is None or stderr is None:
@@ -213,11 +246,7 @@ async def _decode_raw(
         if count == 0 or count % 2:
             raise AudioError("FFmpeg 未产生完整 PCM。")
     finally:
-        if process.returncode is None:
-            process.kill()
-        feeder.cancel()
-        await asyncio.gather(feeder, errors, return_exceptions=True)
-        await process.wait()
+        await _reclaim_decoder(process, feeder, errors)
 
 
 async def decode_pcm(
@@ -336,18 +365,7 @@ async def _filter_pcm(
     finally:
         if process is None:
             process = await launch
-        if process.returncode is None:
-            process.kill()
-        # 局部任务只在资源取得后创建；关闭迭代器不能留下输入/诊断借用。
-        operations: list[Awaitable[object]] = []
-        if feeder is not None:
-            feeder.cancel()
-            operations.append(feeder)
-        if diagnostics is not None:
-            operations.append(diagnostics)
-        if operations:
-            await asyncio.gather(*operations, return_exceptions=True)
-        await process.wait()
+        await _reclaim_decoder(process, feeder, diagnostics)
 
 
 async def process_audio(

@@ -22,10 +22,65 @@ import pytest
 
 from purrcept_engine.domain.audio.errors import AudioError
 from purrcept_engine.infrastructure.audio.wav import encode_wav
+from purrcept_engine.plugins.audio import dsp as dsp_module
 from purrcept_engine.plugins.audio import player as player_module
 from purrcept_engine.plugins.audio.dsp import VoiceProfile, decode_pcm, process_audio
 from purrcept_engine.plugins.audio.models import SpeechAudio
 from purrcept_engine.plugins.audio.player import FFplayPlayer
+
+
+@pytest.mark.parametrize("filtered", [False, True])
+async def test_real_decoder_close_reclaims_a_full_output_pipe(
+    monkeypatch: pytest.MonkeyPatch, filtered: bool
+) -> None:
+    """消费端提前退出时丢弃管道积压，停止不能等已经暂停读取的 stdout 关闭。"""
+    executable = shutil.which("ffmpeg")
+    if executable is None:
+        pytest.skip("本地 FFmpeg 未安装。")
+    create = asyncio.create_subprocess_exec
+    processes: list[asyncio.subprocess.Process] = []
+
+    async def launch(*arguments: str, **options: object) -> asyncio.subprocess.Process:
+        del options
+        process = await create(
+            *arguments,
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
+        )
+        processes.append(process)
+        return process
+
+    monkeypatch.setattr(dsp_module.asyncio, "create_subprocess_exec", launch)
+
+    async def encoded() -> AsyncGenerator[bytes, None]:
+        yield encode_wav(bytes(32000 * 2 * 20), 32000)
+
+    decoded = decode_pcm(
+        encoded(),
+        executable=executable,
+        sample_rate=32000,
+        profile=VoiceProfile(enabled=filtered),
+    )
+    assert await anext(decoded)
+    # 故意停止消费，给真实子进程填满有限管道的机会；这不涉及声音设备。
+    await asyncio.sleep(0.2)
+    closing = asyncio.create_task(decoded.aclose())
+    try:
+        done, _ = await asyncio.wait((closing,), timeout=1)
+        assert done, "解码关闭被未消费的 PCM 管道阻塞。"
+        await closing
+        assert all(process.returncode is not None for process in processes)
+    finally:
+        # 回归失败时也排空本次真实管道，避免测试留下进程或取消正在清理的所有者。
+        for process in reversed(processes):
+            if process.returncode is None:
+                process.kill()
+            if process.stdout is not None:
+                while await process.stdout.read(65536):
+                    pass
+        await closing
 
 
 async def test_ffplay_uses_reported_clock_and_reclaims_actual_local_process(

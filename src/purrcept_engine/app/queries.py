@@ -202,6 +202,7 @@ class HostQueries:
             "devices": devices,
             "foreground": None if subject is None else subject.service.session.snapshot(),
             "reflection": None if subject is None else subject.background.session.snapshot(),
+            "proactive_thinking": None if subject is None else subject.service.proactive.snapshot(),
             "knowledge": None
             if self.state.knowledge_resources is None
             else {

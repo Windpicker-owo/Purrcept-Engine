@@ -148,7 +148,8 @@ class EngineHost:
 
         Note:
             宿主在首次等待前持有完整接管任务。取消本次观察不会撤销已接管原文，
-            以及随后必要的停音和原代次抢占交接。后续处理用 query_processing 查询。
+            以及随后必要的 VAD 停音或其他显式原代次抢占交接。
+            VAD 只保底通知下一轮，不取消当前生成。后续处理用 query_processing 查询。
         """
         return await self._inputs.submit(submission)
 
@@ -439,7 +440,7 @@ class EngineHost:
             ControlError: 请求身份冲突、实例过期或目标操作不在面板允许范围内。
 
         Note:
-            提交面板允许的显式控制，共用原能力与活动状态，不经过模型。
+            提交面板允许的显式控制，共用原能力、活动或主体选项所有者，不经过模型。
         """
         self._lifecycle.check_dispatch()
         if self._state.panel is None:

@@ -47,6 +47,14 @@ class _Wait(_NativeFunction, Protocol):
     def __call__(self, handle: int, milliseconds: int) -> int: ...
 
 
+class _CreateJob(_NativeFunction, Protocol):
+    def __call__(self, attributes: object, name: str | None) -> int | None: ...
+
+
+class _IsProcessInJob(_NativeFunction, Protocol):
+    def __call__(self, process: int, job: int, result: object) -> int: ...
+
+
 class _ProbeApi(ctypes.WinDLL):
     """只读句柄数并观察已知子进程，不按 PID 杀死任何外部进程。"""
 
@@ -56,6 +64,8 @@ class _ProbeApi(ctypes.WinDLL):
     OpenProcess: _OpenProcess
     CloseHandle: _CloseHandle
     WaitForSingleObject: _Wait
+    CreateJobObjectW: _CreateJob
+    IsProcessInJob: _IsProcessInJob
 
 
 def _probe() -> _ProbeApi:
@@ -72,6 +82,10 @@ def _probe() -> _ProbeApi:
     api.CloseHandle.restype = ctypes.c_int
     api.WaitForSingleObject.argtypes = (ctypes.c_void_p, ctypes.c_uint32)
     api.WaitForSingleObject.restype = ctypes.c_uint32
+    api.CreateJobObjectW.argtypes = (ctypes.c_void_p, ctypes.c_wchar_p)
+    api.CreateJobObjectW.restype = ctypes.c_void_p
+    api.IsProcessInJob.argtypes = (ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p)
+    api.IsProcessInJob.restype = ctypes.c_int
     return api
 
 
@@ -94,7 +108,9 @@ async def _release(process: WindowsProcess) -> None:
     process.close()
 
 
-async def test_real_process_has_effective_limits_and_closes_handles() -> None:
+async def test_real_process_has_effective_limits_and_closes_handles(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Job 回读与真实退出共同证明设置成立，重复 close 不关闭别人的句柄。"""
     api = _probe()
     # 首次 CreateProcess 会建立 Windows 的长驻初始化资源。先完成一次
@@ -102,6 +118,17 @@ async def test_real_process_has_effective_limits_and_closes_handles() -> None:
     warmup = WindowsProcess.launch(_command("pass"))
     await _release(warmup)
     before = _handle_count(api)
+    created_handles: list[int] = []
+
+    def confirm(process: int, job: int, result: object) -> int:
+        created_handles.extend((process, job))
+        return api.IsProcessInJob(process, job, result)
+
+    monkeypatch.setattr(
+        "purrcept_engine.infrastructure.processes.windows._Kernel32.IsProcessInJob",
+        staticmethod(confirm),
+        raising=False,
+    )
     process = WindowsProcess.launch(_command("import time; time.sleep(0.1)"))
     try:
         assert process.pid > 0
@@ -116,7 +143,13 @@ async def test_real_process_has_effective_limits_and_closes_handles() -> None:
         await _release(process)
     process.close()
     assert process.poll() == 0
-    assert _handle_count(api) == before
+    assert len(created_handles) == 2
+    for handle in created_handles:
+        flags = ctypes.c_uint32()
+        assert not api.GetHandleInformation(handle, ctypes.byref(flags))
+        assert ctypes.get_last_error() == 6
+    # 直接核验本次归属句柄，再防止总数增长；别的测试资源被回收不属于本次泄漏。
+    assert _handle_count(api) <= before
 
 
 async def test_wait_cancellation_does_not_release_running_process() -> None:
@@ -251,7 +284,9 @@ def test_limit_setup_failure_prevents_process_creation(
     assert _handle_count(api) <= before
 
 
-def test_failed_create_process_releases_job_handles(tmp_path: Path) -> None:
+def test_failed_create_process_releases_job_handles(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """不存在的 executable 传播原生错误，之前取得的 Job 不能泄漏。"""
     api = _probe()
     # 原生错误的首次消息格式化加载系统资源。重复同一真实失败路径
@@ -259,10 +294,28 @@ def test_failed_create_process_releases_job_handles(tmp_path: Path) -> None:
     with pytest.raises(OSError):
         WindowsProcess.launch((str(tmp_path / "missing.exe"),))
     before = _handle_count(api)
+    created_jobs: list[int] = []
+
+    def create_job(attributes: object, name: str | None) -> int | None:
+        job = api.CreateJobObjectW(attributes, name)
+        if job is not None:
+            created_jobs.append(job)
+        return job
+
+    monkeypatch.setattr(
+        "purrcept_engine.infrastructure.processes.windows._Kernel32.CreateJobObjectW",
+        staticmethod(create_job),
+        raising=False,
+    )
     for _ in range(3):
         with pytest.raises(OSError):
             WindowsProcess.launch((str(tmp_path / "missing.exe"),))
-    assert _handle_count(api) == before
+    assert len(created_jobs) == 3
+    for job in created_jobs:
+        flags = ctypes.c_uint32()
+        assert not api.GetHandleInformation(job, ctypes.byref(flags))
+        assert ctypes.get_last_error() == 6
+    assert _handle_count(api) <= before
 
 
 async def test_failed_ownership_confirmation_reclaims_created_process(

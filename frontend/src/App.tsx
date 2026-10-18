@@ -81,7 +81,7 @@ function PageBody({ page, state, client, agent, attention, route, go }: { page: 
     case "timeline": return <Timeline state={state} selected={route.id} go={go} />;
     case "devices": return <Devices client={client} state={state} selected={route.id} go={go} />;
     case "activities": return <Activities client={client} state={state} selected={route.id} go={go} />;
-    case "system": return <System state={state} go={go} />;
+    case "system": return <System state={state} client={client} go={go} />;
   }
 }
 

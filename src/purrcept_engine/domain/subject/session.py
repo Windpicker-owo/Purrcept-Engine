@@ -5,6 +5,8 @@
 新刺激，整轮预算不重置。失败或取消丢弃临时 facade，真实行动和
 模型尝试已经独立入账。动态尾部由同步 ReminderSource 投影内存值，在实际
 请求边界异步刷新后重投影一次；同一逻辑请求的重试不再次刷新。
+恢复时冻结最近两轮媒体窗口，当前轮所有工具请求共用同一历史；旧媒体
+原位过期，权威原件仍由输入、请求和回执保留。新历史仅随成功轮次安装。
 Engine 工具原文在完整下一请求首发前经过交付 Gate；之后请求和最终检查点
 保留同一实际交付，不能把容量回执重新展开为未经呈现的正文。
 生成结束后先封存代次，再结案和归还借用；结案仍占用会话，但不再接受抢占取消。
@@ -40,6 +42,7 @@ from purrcept_core.models import (
 from purrcept_engine.domain.context.capacity import CapacityAssessment
 from purrcept_engine.domain.context.checkpoints import decode_checkpoint, encode_checkpoint
 from purrcept_engine.domain.context.delivery import ToolDeliveryGate
+from purrcept_engine.domain.context.media_history import expire_history_media
 from purrcept_engine.domain.context.presentation import render_host_state
 from purrcept_engine.domain.context.templates import DYNAMIC_STATE_PROMPT
 from purrcept_engine.domain.model_requests.models import RequestScope
@@ -611,7 +614,9 @@ class ContinuousSession:
             previous_checkpoint = previous.checkpoint_json
             if previous_checkpoint is not None:
                 # 只在线程中转换冻结材料；Conversation 的恢复仍由本轮唯一所有者执行。
-                restored = await prepare_off_loop(lambda: decode_checkpoint(previous_checkpoint))
+                restored = await prepare_off_loop(
+                    lambda: expire_history_media(decode_checkpoint(previous_checkpoint))
+                )
                 budget.check()
                 conversation.restore(restored)
             turn_timeout = asyncio.timeout_at(budget.deadline)
@@ -632,7 +637,7 @@ class ContinuousSession:
                         messages=delivery.project(checkpoint.history.messages),
                     ),
                 )
-            # 历史随原声轮次增长，编码及完整校验不能占住实时采集所在的事件循环。
+            # 历史编码仍包含近期原生媒体，完整校验不能占住实时采集所在的事件循环。
             # 取消仍等待纯计算归还，只有当前预算继续有效时才允许提交检查点。
             checkpoint_json = await prepare_off_loop(lambda: encode_checkpoint(checkpoint))
             budget.check()

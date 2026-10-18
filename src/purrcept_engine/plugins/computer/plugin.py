@@ -43,6 +43,7 @@ class ComputerSettings(BaseModel):
     computer_id: str = Field(default="computer", pattern=r"^[A-Za-z][A-Za-z0-9_]*$")
     label: str = Field(default="宿主实体机", min_length=1, pattern=r"\S")
     preferences: Path = Field(default=Path(".purrcept/computer.json"), strict=False)
+    screenshot_dir: Path = Field(default=Path(".purrcept/computer-screenshots"), strict=False)
 
 
 class _Parameters(BaseModel):
@@ -77,6 +78,9 @@ def make_factory(driver_factory: Callable[[], ComputerDriver]) -> PluginFactory:
         preferences = settings.preferences
         if not preferences.is_absolute():
             preferences = base_dir / preferences
+        screenshot_dir = settings.screenshot_dir
+        if not screenshot_dir.is_absolute():
+            screenshot_dir = base_dir / screenshot_dir
         object_id, path = instance_id + ":computer", "me." + settings.computer_id
         status = CapabilityDeclaration(
             instance_id + ":computer.status",
@@ -123,11 +127,13 @@ def make_factory(driver_factory: Callable[[], ComputerDriver]) -> PluginFactory:
             instance_id + ":computer.screenshot",
             object_id,
             "screenshot",
-            "取得已连接宿主实体机的当前截图，以原生图像附件交付。",
+            "取得已连接宿主实体机的当前截图，保存 JPEG 文件并交付原生图像。",
             _Screenshot,
             20.0,
             f'await {path}.screenshot(target="foreground_monitor")',
-            "target=monitor时必须提供monitor_id；单次截图保留原始分辨率。",
+            "target=monitor时必须提供monitor_id；单次截图保留原始分辨率。"
+            "回执 path 可交给 QQ send 的 images 或 files；自定义保存目录须在 QQ 媒体允许目录内。"
+            "保存失败仍保留已取得图像和 evidence_ref，但不能声称文件已保存。",
         )
         observe = CapabilityDeclaration(
             instance_id + ":computer.observe",
@@ -148,7 +154,13 @@ def make_factory(driver_factory: Callable[[], ComputerDriver]) -> PluginFactory:
                 raise ConfigError("computer插件需要宿主原文/媒体端口。")
             policy = await asyncio.to_thread(load_policy, preferences)
             computer = ComputerRuntime(
-                instance_id, driver_factory, ports.inputs, evidence, policy, preferences
+                instance_id,
+                driver_factory,
+                ports.inputs,
+                evidence,
+                policy,
+                preferences,
+                screenshot_dir=screenshot_dir,
             )
 
             async def run_status(parameters: _Empty, context: CallContext) -> CallOutcome:
@@ -176,7 +188,7 @@ def make_factory(driver_factory: Callable[[], ComputerDriver]) -> PluginFactory:
                 return CallOutcome("confirmed", result)
 
             async def run_screenshot(parameters: _Screenshot, context: CallContext) -> CallOutcome:
-                """取得真实截图，并按明确参数决定是否接管原生图像。"""
+                """取得同库截图及已完成保存的本地文件路径。"""
                 del context
                 try:
                     return await computer.screenshot(parameters.target, parameters.monitor_id)

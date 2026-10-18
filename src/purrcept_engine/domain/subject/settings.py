@@ -60,6 +60,8 @@ class CoordinatorSettings:
         attention_batch: 一次注意判断允许取得的输入数量上限。
         max_requests: 本轮逻辑模型请求总上限，传输重试不重复占名额。
         turn_seconds: 本轮连续处理的总秒数预算，包含工具等待和重试退避。
+        proactive_thinking: 主动思考的启动默认值，页面切换仅影响本次运行。
+        proactive_idle_seconds: 空闲刺激之间至少等待的无新刺激秒数。
 
     Note:
         实例字段在构造后不可重新赋值；嵌套值的冻结范围由字段所属契约决定。
@@ -74,6 +76,8 @@ class CoordinatorSettings:
     attention_batch: int = 8
     max_requests: int = 8
     turn_seconds: float = 600.0
+    proactive_thinking: bool = False
+    proactive_idle_seconds: float = 300.0
 
     def __post_init__(self) -> None:
         """校验公开构造边界，禁止布尔值或非有限时间被当作额度。"""
@@ -91,3 +95,12 @@ class CoordinatorSettings:
                 raise ValueError("调度时间必须是有限非负数。")
         if self.turn_seconds == 0:
             raise ValueError("整轮期限必须为正数。")
+        if not isinstance(self.proactive_thinking, bool):
+            raise ValueError("主动思考开关必须是布尔值。")
+        if (
+            isinstance(self.proactive_idle_seconds, bool)
+            or not isinstance(self.proactive_idle_seconds, (int, float))
+            or not math.isfinite(self.proactive_idle_seconds)
+            or self.proactive_idle_seconds <= 0
+        ):
+            raise ValueError("主动思考空闲间隔必须是有限正数。")

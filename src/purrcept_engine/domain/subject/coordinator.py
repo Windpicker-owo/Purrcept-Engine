@@ -56,6 +56,7 @@ class StimulusCoordinator:
         try:
             while True:
                 self.runtime.check()
+                self.runtime.proactive.changed.clear()
                 revision = self.runtime.store.change_revision
 
                 if self.evaluation is not None and self.evaluation.done():
@@ -77,8 +78,18 @@ class StimulusCoordinator:
                     ):
                         submitted = await self.runtime.processing(records)
                         observed = self.runtime.session.generation
-                        if self.runtime.attention is not None and self.runtime.session.eligible(
-                            observed
+                        # VAD 起音只报告停播，不能借高优先路径间接抢占生成。
+                        # 有其他高价值内容时才判断整批是否紧急；最终语音内容
+                        # 是独立输入，仍可按其实际语义触发正常升级。
+                        has_upgrade_input = any(
+                            not record.context.speech_started
+                            and (record.context.minimum_wake or record.context.interrupt_generation)
+                            for record in records
+                        )
+                        if (
+                            has_upgrade_input
+                            and self.runtime.attention is not None
+                            and self.runtime.session.eligible(observed)
                         ):
                             await self.runtime.commit(
                                 self.runtime.store.register_minimum_wake_assessment(
@@ -155,6 +166,16 @@ class StimulusCoordinator:
                                 self.launch(records, await self.runtime.processing(records))
                             continue
 
+                # 可选空闲刺激只在现有协调循环中产生；不能为忙碌前台积累定时输入。
+                idle_remaining = await self.runtime.proactive.tick(
+                    busy=self.foreground is not None or self.evaluation is not None
+                )
+                if idle_remaining == 0:
+                    continue
+                if idle_remaining is not None:
+                    remaining = (
+                        idle_remaining if remaining is None else min(remaining, idle_remaining)
+                    )
                 await self.wait(revision, seconds=remaining)
         finally:
             # 生命周期边界：取消观察不能遗失注意后端的实际清理。前台任务同时
@@ -265,15 +286,27 @@ class StimulusCoordinator:
         changed = asyncio.create_task(
             self.runtime.store.wait_for_change(revision), name="stimulus-change"
         )
+
+        def remember_failure[Result](task: asyncio.Task[Result]) -> None:
+            """等待故障发生时就锁存，不能等取消清理中的下一次 await 才记账。"""
+            if not task.cancelled() and (error := task.exception()) is not None:
+                self.runtime.failure_error = self.runtime.failure_error or error
+
+        # 关闭可取消正在归还多个等待者的协调者；回调保证已经发生的原始故障
+        # 不被这个取消覆盖。正常取消没有业务故障，不锁存为 HostStateError。
+        changed.add_done_callback(remember_failure)
+        options = asyncio.create_task(self.runtime.proactive.changed.wait(), name="subject-options")
+        options.add_done_callback(remember_failure)
         calls = [task for task in (self.foreground, self.evaluation) if task is not None]
         try:
             done, _ = await asyncio.wait(
-                [changed, *calls], timeout=seconds, return_when=asyncio.FIRST_COMPLETED
+                [changed, options, *calls], timeout=seconds, return_when=asyncio.FIRST_COMPLETED
             )
             if changed in done:
                 changed.result()
+            if options in done:
+                options.result()
         finally:
             changed.cancel()
-            await asyncio.gather(changed, return_exceptions=True)
-            if not changed.cancelled() and (error := changed.exception()) is not None:
-                self.runtime.failure_error = self.runtime.failure_error or error
+            options.cancel()
+            await asyncio.gather(changed, options, return_exceptions=True)

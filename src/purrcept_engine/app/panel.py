@@ -1,8 +1,9 @@
 """本机面板的有限控制所有者，借用真实宿主调用与同库身份账本。
 
 页面只提交显式快捷操作，不能发送 Python、聊天文本或模型参数。控制身份先
-持久接管，再交到原能力或活动入口；断开/取消等待不撤销已接受工作。实际回执
-始终由执行器和活动服务保存，面板只保存关联及观察终态。
+持久接管，再交到原能力、活动或主体选项所有者；断开/取消等待不撤销已接受工作。
+世界回执仍由执行器和活动服务保存。主体选项只改变本次运行的调度，不伪造行动回执。
+面板保存控制关联及观察终态，不拥有模型或空闲计时。
 """
 
 from __future__ import annotations
@@ -20,6 +21,7 @@ from purrcept_engine.domain.execution.catalog import Catalog
 from purrcept_engine.domain.execution.errors import ExecutionBusy, ExecutionLimitError
 from purrcept_engine.domain.execution.models import ActionRecord
 from purrcept_engine.domain.execution.providers import CapabilityInputError
+from purrcept_engine.domain.subject.proactive import ProactiveThinking
 from purrcept_engine.errors import HostStateError
 from purrcept_engine.infrastructure.sqlite.controls import ControlLedger
 from purrcept_engine.plugin_system.contracts import PluginRuntime
@@ -85,6 +87,7 @@ class PanelController:
         ledger: ControlLedger,
         invoke: _Invoke,
         activities: ActivityService,
+        proactive: ProactiveThinking,
     ) -> None:
         """绑定已构造插件及原业务端口，不另建能力表、设备连接或数据库。
 
@@ -95,14 +98,16 @@ class PanelController:
             ledger: 当前业务专用账本，不提供任意数据库操作。
             invoke: 借用共享目录与执行器调用单能力的有限入口。
             activities: 此宿主唯一的活动状态提交服务。
+            proactive: 主体拥有的空闲思考开关，不取得模型或世界能力。
 
         Raises:
             ControlError: 插件面板重复操作或借用了其他插件能力；
-                插件快捷控制参数未在能力契约中声明。
+                插件快捷控制参数未在能力契约中声明，或占用宿主主动思考控制身份。
         """
         self.instance_id, self.catalog = instance_id, catalog
         self.plugins, self.ledger = plugins, ledger
         self.invoke, self.activities = invoke, activities
+        self.proactive = proactive
         self._tasks: dict[str, tuple[str, asyncio.Task[ControlRecord]]] = {}
         self._closing = False
         paths = {item.declaration.capability_id: item for item in catalog.bindings.values()}
@@ -114,6 +119,8 @@ class PanelController:
             own = {item.declaration.capability_id for item in runtime.capabilities}
             for control in panel.controls:
                 key = (instance, control.key)
+                if key == ("subject", "set_proactive_thinking"):
+                    raise ControlError("插件快捷控制与宿主主动思考选项冲突。")
                 if key in self._controls or control.capability_id not in own:
                     raise ControlError("插件面板重复操作或借用了其他插件能力。")
                 binding = paths[control.capability_id]
@@ -222,7 +229,16 @@ class PanelController:
         try:
             if self._closing:
                 raise ControlError("宿主开始关闭，请查询已接管控制。", code="host_closing")
-            if request.target.startswith("activity:"):
+            if request.target == "subject" and request.operation == "set_proactive_thinking":
+                if set(request.arguments) != {"enabled"}:
+                    raise ControlError("主体面板只允许设置主动思考开关。", code="control_target")
+                enabled = request.arguments["enabled"]
+                if not isinstance(enabled, bool):
+                    raise ControlError("主动思考开关必须是布尔值。")
+                await self.proactive.set_enabled(
+                    enabled, expected_revision=request.expected_revision
+                )
+            elif request.target.startswith("activity:"):
                 await self._activity(request)
             else:
                 selected = self._controls.get((request.target, request.operation))

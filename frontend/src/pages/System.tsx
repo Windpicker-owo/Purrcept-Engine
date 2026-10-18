@@ -4,7 +4,9 @@
  * 预算来自会话快照时刻的值，浏览器不自行倒计时或补充额度。
  */
 import type { ReactElement } from "react";
-import type { PanelState } from "../client";
+import { Button } from "@purrcept/cel";
+import type { PanelClient, PanelState } from "../client";
+import { targetReason } from "../model/controls";
 import type { Session, Snapshot } from "../contracts";
 import { deviceMark, mark } from "../semantics";
 import type { Mark } from "../semantics";
@@ -31,11 +33,12 @@ function SessionRow({ title, description, session }: { title: string; descriptio
 /**
  * 展示宿主、预算、积压与配置工具入口。
  *
- * state 保留最近观察事实，go 只切换页面；组件不取得模型或设备资源。
+ * state 保留最近观察事实，client 接管有稳定身份的开关控制，go 只切换页面。
+ * 组件不取得模型或设备资源，不自行计时或乐观改写开关。
  *
  * @returns 仅呈现当前输入事实的 React 元素。
  */
-export function System({ state, go }: { state: PanelState; go: (route: Route) => void }): ReactElement {
+export function System({ state, client, go }: { state: PanelState; client: PanelClient; go: (route: Route) => void }): ReactElement {
   const s: Snapshot | null = state.snapshot;
   if (s === null) return <><PageHeading title="系统">Engine 的运行状况与辅助工具。</PageHeading><Unavailable>还没有取得本机服务的状态。</Unavailable></>;
   const count = s.pending_inputs.reduce((sum, item) => sum + item.count, 0);
@@ -49,6 +52,17 @@ export function System({ state, go }: { state: PanelState; go: (route: Route) =>
     </Section>
 
     <Section id="system-subject" title="她的思考">
+      {s.proactive_thinking !== null ? <div className="setting-row">
+        <div><h3>主动思考</h3><p className="muted">没有新刺激且处理空闲后，每隔 {duration(s.proactive_thinking.idle_seconds)} 唤起一次。她可以安排生活，也可以继续休息。</p>
+          <p className="muted">本次运行有效，重启后使用配置默认值。关闭不会撤回已接手的思考。</p>
+          {s.proactive_thinking.last_error !== null ? <p className="muted">输入缓存已满，本次空闲刺激未生成；等待下一个周期。</p> : null}
+        </div>
+        <div><Button variant="secondary" role="switch" aria-label="主动思考" aria-checked={s.proactive_thinking.enabled}
+          disabledReason={targetReason(state, "subject", "set_proactive_thinking")}
+          onClick={() => { const p = s.proactive_thinking; if (p !== null) void client.submit("subject", "set_proactive_thinking", p.revision, { enabled: !p.enabled }, p.enabled ? "关闭主动思考" : "开启主动思考"); }}>
+          {s.proactive_thinking.enabled ? "已开启" : "已关闭"}
+        </Button></div>
+      </div> : null}
       <SessionRow title="回应" description="处理新消息并决定怎么做。" session={s.foreground} />
       <SessionRow title="反思" description="回顾经历、整理记忆，不影响回应新消息。" session={s.reflection} />
       {s.knowledge !== null ? <div className="setting-row"><div><h3>记忆检索</h3></div><p>{s.knowledge.semantic_enabled === true ? "语义检索已启用" : "仅关键词检索"}{typeof s.knowledge.index_failure === "string" && s.knowledge.index_failure !== "" ? ` · 索引故障：${s.knowledge.index_failure}` : ""}</p></div> : null}

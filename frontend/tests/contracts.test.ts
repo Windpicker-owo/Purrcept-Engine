@@ -30,6 +30,14 @@ describe("真实 JSON 入口", () => {
   });
 });
 describe("受理与实际结束", () => {
+  it("主动思考开关使用真实布尔值和正间隔，不从缺失字段猜测关闭", () => {
+    const value = host();
+    expect(snapshot(value).proactive_thinking?.enabled).toBe(false);
+    expect(() => snapshot({ ...value, proactive_thinking: { ...value.proactive_thinking, enabled: "false" } })).toThrow(ContractError);
+    expect(() => snapshot({ ...value, proactive_thinking: { ...value.proactive_thinking, idle_seconds: 0 } })).toThrow(ContractError);
+    const { proactive_thinking, ...missing } = value;
+    expect(() => snapshot(missing)).toThrow(ContractError);
+  });
   it("finished 仍需查询运行中的关联行动", () => {
     const r = result(request());
     expect(controlMark(r).label).toContain("实际结果");

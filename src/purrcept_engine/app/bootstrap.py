@@ -227,14 +227,6 @@ class EngineAssembly:
                 embedding=self.state.embedding_provider,
                 reranker=self.state.reranker,
             )
-            self.state.panel = PanelController(
-                self.state.instance_id,
-                self.state.prepared.catalog,
-                self.state.plugins,
-                self.state.store.controls,
-                self.host.invoke,
-                self.state.activities,
-            )
             self.state.subject = build_subject(
                 self.state.config,
                 self.state.store,
@@ -247,6 +239,15 @@ class EngineAssembly:
                 rules=self.state.capacity_rules,
                 wakeup_committed=self.state.work_changed.set,
                 knowledge=self.state.knowledge_resources.knowledge,
+            )
+            self.state.panel = PanelController(
+                self.state.instance_id,
+                self.state.prepared.catalog,
+                self.state.plugins,
+                self.state.store.controls,
+                self.host.invoke,
+                self.state.activities,
+                self.state.subject.service.proactive,
             )
 
             # Ordering: 目录、实现和输入端口就绪后才放行外部 start；同步输入

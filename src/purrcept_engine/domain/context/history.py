@@ -5,6 +5,7 @@ HistoryMaintenance 借用命名模型及权威账本。先按容量选择旧完�
 ModelGenerationBackend 提供。完整候选用目标会话同一请求布局/计量分母复查，
 事务确认后才返回新版本。失败不自动
 切换来源、调小提示或再摘要，所有原历史及实际响应证据继续保留。
+摘要实际读取的材料遵守与前台相同的媒体窗口；来源冻结与归档仍保留原检查点。
 """
 
 from __future__ import annotations
@@ -42,6 +43,7 @@ from purrcept_engine.domain.context.maintenance import (
     candidate_checkpoint,
     shorten_summary_source,
 )
+from purrcept_engine.domain.context.media_history import expire_history_media
 from purrcept_engine.domain.context.summary_materials import summary_message
 from purrcept_engine.domain.context.templates import (
     SUMMARY_ATTACHMENT_PROMPT,
@@ -194,11 +196,12 @@ def summary_request(source: SummarySource, output_tokens: int) -> ModelRequest:
     """
     turns: list[dict[str, object]] = []
     media: list[ImageBlock | AudioBlock] = []
+    # 来源和归档仍是原检查点；只对摘要实际读取的视图应用媒体窗口。
+    # 否则正式请求已移除的旧媒体会在维护路径重新大量上传。
+    visible = expire_history_media(source.checkpoint).history.messages
     start = 0
     for index, end in enumerate(source.checkpoint.history.turn_boundaries[: source.end_turn]):
-        turns.append(
-            {"turn": index + 1, "messages": _public_history(source.messages[start:end], media)}
-        )
+        turns.append({"turn": index + 1, "messages": _public_history(visible[start:end], media)})
         start = end
     text = encode(
         {"archive": "summary:" + source.coverage_id, "session": source.owner_id, "turns": turns}

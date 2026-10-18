@@ -102,7 +102,7 @@ class InputAdmissionService:
                     admission.input_id,
                 )
                 # 音频控制在独立通道同步撤候播资格。它不排在普通Provider名额后
-                # 也不等声音实际退出才向主体交接原代次抢占。
+                # 也不等声音实际退出才归还输入接管；VAD 不撤销模型生成。
                 stopped = asyncio.create_task(self.state.audio_output.interrupt(context))
                 self.state.vad_tasks.add(stopped)
                 stopped.add_done_callback(self.vad_done)

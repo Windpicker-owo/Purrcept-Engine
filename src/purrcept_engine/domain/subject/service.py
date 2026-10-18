@@ -34,6 +34,7 @@ from purrcept_engine.domain.subject.models import (
     InputProcessing,
 )
 from purrcept_engine.domain.subject.ports import ActionCallback, CoordinatorStore
+from purrcept_engine.domain.subject.proactive import ProactiveThinking
 from purrcept_engine.domain.subject.session import (
     ContinuousSession,
     PrepareHistory,
@@ -128,6 +129,7 @@ class SubjectService:
         self.attention_service = AttentionService(self)
         self.foreground_service = ForegroundService(self)
         self.coordinator = StimulusCoordinator(self)
+        self.proactive = ProactiveThinking(self)
 
     def bind_background(self, background: BackgroundService) -> None:
         """装配时绑定独立反馈/反思所有者。
@@ -199,6 +201,7 @@ class SubjectService:
             app 在接管前读取 generation，再在成功提交后调用。输入若已经进入
             前台处理或代次已经变化，不抢占新生成；重启后不猜测旧观察身份。
             高价值输入的批次升级由刺激协调者统一登记；此入口只交接可信直接抢占。
+            speech_started 仅请求停音和下一轮通知，即使同时携带抢占标记也不取消生成。
             音频停播由音频所有者另行受理；返回值
             只表示本通知是否已经直接抢占，不预报后续模型判断的结果。
         """
@@ -209,7 +212,7 @@ class SubjectService:
             raise StorageError("可信接管通知引用不存在的输入。", code="invalid_record")
         if processing.stage not in ("priority", "foreground", "assessing", "submitted"):
             return False
-        if record.context.interrupt_generation or record.context.speech_started:
+        if record.context.interrupt_generation and not record.context.speech_started:
             return self.session.interrupt(observed_generation)
         return False
 

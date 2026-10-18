@@ -317,6 +317,8 @@ def build_subject(
             config.subject.attention_batch_size,
             config.subject.foreground_turn.max_requests,
             config.subject.foreground_turn.total_seconds,
+            config.subject.proactive_thinking,
+            config.subject.proactive_idle_seconds,
         ),
         instructions=foreground_instructions(config.subject.character.record(), catalog),
         execute=execute,

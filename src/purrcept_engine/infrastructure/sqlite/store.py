@@ -720,6 +720,78 @@ class Store:
             _logger.info("输入已正式接管。", extra={"input_id": admission.input_id})
         return admission
 
+    async def idle_input_state(self) -> tuple[int, bool]:
+        """取得空闲计时观察，不以高频日志、设备状态写入或重复接收重置时钟。
+
+        Returns:
+            最新 inputs rowid（空库为0）及是否有尚未完成调度的输入。
+
+        Note:
+            原始输入不删除，rowid 只作宿主内部接管游标，不作为平台时间或公开身份。
+        """
+        return await self._submit(self._idle_input_state)
+
+    @staticmethod
+    def _idle_input_state(connection: sqlite3.Connection) -> tuple[int, bool]:
+        """只把需要处理的阶段视为忙碌，observe 积累仍可由空闲刺激唤醒。"""
+        row: tuple[int, int] = connection.execute(
+            "SELECT COALESCE((SELECT MAX(rowid) FROM inputs),0), "
+            "EXISTS(SELECT 1 FROM input_processing "
+            "WHERE stage NOT IN ('submitted','processed','failed'))"
+        ).fetchone()
+        return row[0], bool(row[1])
+
+    async def admit_idle_input(
+        self, submission: InputSubmission, *, expected_sequence: int
+    ) -> Admission | None:
+        """原子复查无新输入和无待处理工作，再沿正式接管逻辑保存空闲刺激。
+
+        Args:
+            submission: 调度器的完整空闲事实，必须保底唤起且不能直接停音/抢占。
+            expected_sequence: 最近一次空闲观察的非负 inputs 接管游标。
+
+        Returns:
+            实际接管凭证；被后来刺激或待处理工作挡住时返回 None。
+
+        Raises:
+            ValueError: 游标或空闲刺激信号不满足入口约束。
+            StorageError: 接管额度不足或权威存储故障。
+
+        Note:
+            复查与原文/待办插入在同一事务，排队期间的新输入优先，不能先判断再裸 admit。
+        """
+        if (
+            isinstance(expected_sequence, bool)
+            or not isinstance(expected_sequence, int)
+            or expected_sequence < 0
+        ):
+            raise ValueError("接管游标必须是非负整数。")
+        if not isinstance(submission, InputSubmission) or (
+            not submission.context.minimum_wake
+            or submission.context.interrupt_generation
+            or submission.context.speech_started
+        ):
+            raise ValueError("空闲刺激必须保底唤起，且不能停音或直接抢占。")
+        logical_bytes = input_logical_bytes(submission)
+
+        def admit(connection: sqlite3.Connection) -> Admission | None:
+            """同一提交段只接受仍有效的空闲观察；冲突不创建输入或唤醒意图。"""
+            self._queue.check_writing()
+            with connection:
+                connection.execute("BEGIN IMMEDIATE")
+                sequence, pending = self._idle_input_state(connection)
+                if sequence != expected_sequence or pending:
+                    return None
+                return admit_in_transaction(
+                    connection,
+                    submission,
+                    max_inputs=self._max_inputs,
+                    max_input_bytes=self._max_input_bytes,
+                    logical_bytes=logical_bytes,
+                )
+
+        return await self._submit(admit, logical_bytes=logical_bytes, writing=True)
+
     async def get_input(self, input_id: str) -> InputRecord | None:
         """读取接管事实及当前处置状态，查询不会改变待办。
 

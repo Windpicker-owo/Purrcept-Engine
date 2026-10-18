@@ -10,6 +10,11 @@ export type ObjectValue = { [key: string]: Json };
 export interface Budget { max_requests: number; used_requests: number; remaining_seconds: number }
 /** 前台或反思的独立观察快照，busy 不代表外部行动已归还。 */
 export interface Session { scope: string; generation: number; busy: boolean; closing: boolean; budgets: Budget[] }
+/** 主体拥有的运行期开关；时间与状态来自宿主，页面不自行产生空闲刺激。 */
+export interface ProactiveThinking {
+  enabled: boolean; revision: string; idle_seconds: number; waiting_for_idle: boolean;
+  last_idle_at: number | null; last_error: string | null;
+}
 /** 带截断标记和原文字数的展示预览，不授予完整原文已读资格。 */
 export interface PreviewText { text: string; truncated: boolean; original_chars: number }
 /** 原能力调用的真实结果版本；unknown 保留待核对效果，不能自动重做。 */
@@ -40,6 +45,7 @@ export interface Device {
 }
 /** 一次成功校验的宿主状态；断线后可只读旧值，控制资格另行复核。 */
 export interface Snapshot {
+  proactive_thinking: ProactiveThinking | null;
   instance_id: string; host_version: number; phase: string; pending_resources: string[];
   authority_available: boolean; devices: Device[]; foreground: Session | null; reflection: Session | null;
   knowledge: ObjectValue | null; pending_limits: { count: number; logical_bytes: number };
@@ -195,6 +201,14 @@ export function snapshot(value: unknown): Snapshot {
   const v = object(value, "snapshot");
   const limits = object(v.pending_limits, "pending_limits");
   return {
+    proactive_thinking: nullable(v.proactive_thinking, "proactive_thinking", (raw, field) => {
+      const p = object(raw, field);
+      const seconds = number(p.idle_seconds, `${field}.idle_seconds`);
+      if (seconds <= 0) throw new ContractError(`${field}.idle_seconds`);
+      return { enabled: bool(p.enabled, field), revision: text(p.revision, field),
+        idle_seconds: seconds, waiting_for_idle: bool(p.waiting_for_idle, field),
+        last_idle_at: nullable(p.last_idle_at, field, number), last_error: nullable(p.last_error, field, text) };
+    }),
     instance_id: text(v.instance_id, "instance_id"), host_version: integer(v.host_version, "host_version"), phase: text(v.phase, "phase"),
     pending_resources: list(v.pending_resources, "pending_resources", text), authority_available: bool(v.authority_available, "authority_available"),
     devices: list(v.devices, "devices", device), foreground: nullable(v.foreground, "foreground", session), reflection: nullable(v.reflection, "reflection", session),

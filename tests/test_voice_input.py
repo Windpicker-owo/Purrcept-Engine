@@ -358,7 +358,7 @@ async def test_buffered_frames_allow_recognition_to_drain(tmp_path: Path) -> Non
 
 
 @pytest.mark.asyncio
-async def test_real_store_speech_started_then_final_does_not_interrupt_twice(
+async def test_real_store_speech_started_only_requests_playback_stop_and_preserves_final_link(
     tmp_path: Path,
 ) -> None:
     store = await Store.open(tmp_path / "facts.sqlite3")
@@ -381,7 +381,12 @@ async def test_real_store_speech_started_then_final_does_not_interrupt_twice(
         await capture.feed(SPEECH, 5)
         await until(lambda: len(inputs.admissions) == 1)
         started = inputs.submissions[0]
-        assert started.context.speech_started and started.context.interrupt_generation
+        assert started.context.speech_started and started.context.minimum_wake
+        assert not started.context.interrupt_generation
+        assert "当前模型生成继续" in started.text
+        assert "实际停止结果以语音输出回执为准" in started.text
+        assert started.context.presentation is not None
+        assert started.text in str(started.context.presentation)
         await capture.feed(SILENCE, 7)
         await until(lambda: len(inputs.admissions) == 2)
         final = inputs.submissions[1]
@@ -401,6 +406,105 @@ async def test_real_store_speech_started_then_final_does_not_interrupt_twice(
         await runtime.stop()
         assert capture.closed.is_set() and runtime.snapshot()["session_id"] == ""
         assert await store.get_input(inputs.admissions[1].input_id) == record
+    finally:
+        await runtime.close()
+        await store.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["asr", "audio"])
+async def test_vad_interrupt_can_toggle_without_restarting_capture(
+    tmp_path: Path, mode: str
+) -> None:
+    """配置关闭仅抑制停播通知；页面控制在同一收音中恢复，原文仍正常接管。"""
+    store = await Store.open(tmp_path / "vad-switch.sqlite3")
+    inputs, capture = Inputs(store), Capture()
+    plugin = make_factory(
+        lambda config: capture, lambda config: Detector(), lambda config: Transcriber()
+    )
+    config = settings(vad_interrupt_enabled=False)
+    blueprint = plugin.prepare("voice", config.model_dump(), tmp_path)
+    resource = await blueprint.build(PluginPorts(inputs, lambda: {}, native_audio_enabled=True))
+    implementations = {item.declaration.name: item for item in resource.capabilities}
+    context = CallContext("switch", "action", time.monotonic() + 30)
+    try:
+        assert resource.panel is not None and resource.snapshot is not None
+        control = next(c for c in resource.panel.controls if c.key == "set_vad_interrupt")
+        assert control.fields == ("enabled",)
+        assert resource.snapshot()["vad_interrupt_enabled"] is False
+        await implementations["start"].invoke({"mode": mode, "device": 7}, context)
+        session = resource.snapshot()["session_id"]
+        await capture.feed(SPEECH, 5)
+        # 确认点已跳过；启用不能补发此句的停播通知。
+        switch = implementations["set_vad_interrupt"]
+        revision = resource.snapshot()["revision"]
+        await switch.invoke({"enabled": True}, context)
+        assert resource.snapshot()["revision"] != revision
+        revision = resource.snapshot()["revision"]
+        await switch.invoke({"enabled": True}, context)
+        assert resource.snapshot()["revision"] == revision
+        await capture.feed(SPEECH, 2)
+        await capture.feed(SILENCE, 7)
+        await until(lambda: len(inputs.admissions) == 1)
+        final = inputs.submissions[0]
+        assert final.source.event_kind == "utterance" and final.context.minimum_wake
+        assert not final.context.speech_started and not final.context.interrupt_generation
+        assert bool(final.media) == (mode == "audio")
+        details = decode_object(final.context.details_json.encode())["voice"]
+        assert isinstance(details, dict) and details["speech_started_input_id"] is None
+
+        await capture.feed(SPEECH, 5)
+        await until(lambda: len(inputs.admissions) == 2)
+        assert inputs.submissions[1].context.speech_started
+        await switch.invoke({"enabled": False}, context)
+        await capture.feed(SILENCE, 7)
+        await until(lambda: len(inputs.admissions) == 3)
+        details = decode_object(inputs.submissions[2].context.details_json.encode())["voice"]
+        assert isinstance(details, dict)
+        assert details["speech_started_input_id"] == inputs.admissions[1].input_id
+        await capture.feed(SPEECH, 5)
+        await capture.feed(SILENCE, 7)
+        await until(lambda: len(inputs.admissions) == 4)
+        assert inputs.submissions[-1].source.event_kind == "utterance"
+        assert capture.opened == 1 and resource.snapshot()["session_id"] == session
+        assert config.vad_interrupt_enabled is False
+    finally:
+        if resource.close:
+            await resource.close()
+        await store.close()
+
+
+async def test_vad_switch_does_not_cancel_inflight_start_admission(tmp_path: Path) -> None:
+    """关闭开关不能取消已经开始接管的停播通知，最终发言继续关联该事实。"""
+    store = await Store.open(tmp_path / "vad-inflight.sqlite3")
+    inputs, capture = Inputs(store), Capture()
+    inputs.gate = asyncio.Event()
+    runtime = VoiceInputRuntime(
+        "voice",
+        settings(),
+        inputs,
+        lambda: capture,
+        Detector,
+        Transcriber(),
+        native_audio_enabled=False,
+    )
+    try:
+        await runtime.start("asr", 7)
+        await capture.feed(SPEECH, 5)
+        await asyncio.wait_for(inputs.entered.wait(), 2)
+        runtime.set_vad_interrupt(False)
+        inputs.gate.set()
+        await capture.feed(SILENCE, 7)
+        await until(lambda: len(inputs.admissions) == 2)
+        assert inputs.submissions[0].context.speech_started
+        details = decode_object(inputs.submissions[1].context.details_json.encode())["voice"]
+        assert isinstance(details, dict)
+        assert details["speech_started_input_id"] == inputs.admissions[0].input_id
+        await runtime.stop()
+        assert runtime.snapshot()["vad_interrupt_enabled"] is False
+        await runtime.close()
+        with pytest.raises(VoiceInputError, match="已关闭"):
+            runtime.set_vad_interrupt(True)
     finally:
         await runtime.close()
         await store.close()

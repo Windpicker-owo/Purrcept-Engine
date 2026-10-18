@@ -40,7 +40,20 @@ function VoiceControls({ client, state, device }: { client: PanelClient; state: 
   const [mode, setMode] = useState("");
   const selectedDevice = devices.find((item) => String(item.index) === input);
   const selectedMode = modes.includes(mode) ? mode : undefined;
+  const vadControl = device.controls.find((control) => control.key === "set_vad_interrupt");
+  const vadEnabled = device.state.vad_interrupt_enabled;
+  const vadReason = targetReason(state, device.instance_id, "set_vad_interrupt")
+    ?? (device.revision === null ? "插件没有提供控制版本。" : typeof vadEnabled !== "boolean" ? "自动停播状态未提供。"
+      : vadControl?.fields.length !== 1 || vadControl.fields[0] !== "enabled" ? "插件没有声明自动停播开关参数。" : undefined);
   return <>
+    {vadControl ? <div className="setting-row">
+      <div><h3>VAD 自动停播</h3><p className="muted">检测到持续人声时停止当前及已有候播的语音。关闭后仍正常收音和分段。</p>
+        <p className="muted">本次运行有效，重启后使用配置默认值。</p></div>
+      <Button variant="secondary" role="switch" aria-label="VAD 自动停播" aria-checked={vadEnabled === true}
+        disabledReason={vadReason} onClick={() => {
+          if (device.revision !== null && typeof vadEnabled === "boolean") void client.submit(device.instance_id, "set_vad_interrupt", device.revision, { enabled: !vadEnabled }, vadEnabled ? "关闭 VAD 自动停播" : "开启 VAD 自动停播");
+        }}>{typeof vadEnabled !== "boolean" ? "状态未知" : vadEnabled ? "已开启" : "已关闭"}</Button>
+    </div> : null}
     <div className="input-selection">
       <label>麦克风<select value={input} onChange={(event) => setInput(event.target.value)} disabled={devices.length === 0}><option value="">选择麦克风</option>{devices.map((item) => <option key={item.index} value={item.index}>{item.name}</option>)}</select></label>
       <label>收听方式<select value={mode} onChange={(event) => setMode(event.target.value)} disabled={modes.length === 0}><option value="">选择收听方式</option>{modes.map((item) => <option key={item} value={item}>{item === "asr" ? "识别成文字" : "直接听原声"}</option>)}</select></label>

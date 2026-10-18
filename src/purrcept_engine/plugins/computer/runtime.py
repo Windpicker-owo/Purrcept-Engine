@@ -3,6 +3,8 @@
 ComputerRuntime独占一个驱动和采样任务，正式输入/媒体归宿主端口。一个已
 接管画面等待真实processed，另一个候选可被新画面替换；failed暂停，暂缓
 不解锁。没有react、独立画面解释、自动声音或重做旧行动。查询只读缓存。
+单次截图先保存同库证据，再写入配置目录的独立 JPEG；返回路径可用于显式
+发送。连续观察不写文件，关闭不删除已交付文件，也不自行执行消息发送。
 """
 
 from __future__ import annotations
@@ -42,6 +44,26 @@ from purrcept_engine.plugins.computer.models import (
 from purrcept_engine.values import JsonObject, encode_json
 
 _LOG = logging.getLogger(__name__)
+
+
+def _write_screenshot(directory: Path, data: bytes) -> Path:
+    """以独占随机文件名保存完整 JPEG；失败删除本次残件，不覆盖现有文件。
+
+    目录只来自宿主配置，模型不能指定任意写入路径。线程归运行时持有，只有
+    完成写入、同步和关闭后才返回路径，避免后续发送读取半张图。
+    """
+    directory.mkdir(parents=True, exist_ok=True)
+    descriptor, name = tempfile.mkstemp(prefix="screenshot-", suffix=".jpg", dir=directory)
+    path = Path(name)
+    try:
+        with os.fdopen(descriptor, "wb") as output:
+            output.write(data)
+            output.flush()
+            os.fsync(output.fileno())
+    except OSError:
+        path.unlink(missing_ok=True)
+        raise
+    return path
 
 
 def load_policy(path: Path) -> ObservationPolicy:
@@ -108,6 +130,7 @@ class ComputerRuntime:
         policy: ObservationPolicy,
         preferences: Path,
         *,
+        screenshot_dir: Path,
         monotonic: Callable[[], float] = time.monotonic,
     ) -> None:
         """构造只登记所有权，不读取设备或创建后台任务。
@@ -119,11 +142,13 @@ class ComputerRuntime:
             evidence: 完整原文、媒体及不可变分页服务。
             policy: 明确的观察间隔、变化门槛与帧节流规则。
             preferences: 显式保存的观察偏好文件路径。
+            screenshot_dir: 单次截图的文件保存目录，关闭后仍保留已交付文件。
             monotonic: 本实例使用的单调时钟，不与持久化墙钟混用。
         """
         self.instance_id, self._factory = instance_id, driver_factory
         self._inputs, self._evidence = inputs, evidence
         self.policy, self._preferences = policy, preferences
+        self._screenshot_dir = screenshot_dir.absolute()
         self._clock = monotonic
         self._driver: ComputerDriver | None = None
         self._connection: str | None = None
@@ -146,7 +171,7 @@ class ComputerRuntime:
         self._error: JsonObject | None = None
 
     async def _own[Result](self, operation: Awaitable[Result]) -> Result:
-        """实际接管/偏好写入不随等待取消消失，关闭仍持有受理任务。"""
+        """实际接管/文件写入不随等待取消消失，关闭仍持有受理任务。"""
         task = asyncio.ensure_future(operation)
         owned = cast(asyncio.Future[object], task)
         self._owned.add(owned)
@@ -330,17 +355,25 @@ class ComputerRuntime:
         }
 
     async def screenshot(self, target: str | None, monitor_id: str | None) -> CallOutcome:
-        """采集一次原始图像并保存完整同库媒体。
+        """采集一次原始图像，保存同库媒体及可供显式发送的 JPEG 文件。
 
         Args:
             target: 可选的明确截图目标，具体支持范围由驱动核验。
             monitor_id: 明确选择的显示器身份；None 使用驱动的默认显示器。
 
         Returns:
-            实际确认、失败或未知结论，以及可 JSON 化的业务值和原生媒体引用。
+            图像媒体及 evidence_ref；文件保存完成时另有绝对 path、media_type、
+            sha256 和 mirror_state。文件失败返回 failed，仍交付已入库图像。
+
+        Raises:
+            ComputerError: 未连接、驱动失效或采集期间连接已撤销。
+            ValidationError: 截图目标与显示器参数不满足观察策略。
+            StorageError: 原图证据接管失败，此时不写入本地文件。
 
         Note:
-            单次原始分辨率截图先接管BLOB，再返回原生媒体引用，不另投输入。
+            单次原始分辨率截图先接管 BLOB，再保存独立文件，不另投输入。
+            已开始的保存不随调用等待取消而撤回，关闭等待文件工作实际结束；
+            文件不自动清理，避免后续发送或其他插件仍在引用时被删除。
         """
         policy = ObservationPolicy.model_validate(
             {
@@ -350,7 +383,12 @@ class ComputerRuntime:
             }
         )
         frame = await self.capture(policy, native=True)
+        # 采集已经复查连接资格；开始异步保存前固定归因，后续断开不能改写此帧来源。
         source = self._source(frame, "computer.screenshot")
+        return await self._own(self._persist_screenshot(frame, source))
+
+    async def _persist_screenshot(self, frame: ComputerFrame, source: JsonObject) -> CallOutcome:
+        """同一所有者先固定证据再写文件，取消观察不能留下无人持有的写入。"""
         snapshot = EvidenceSnapshot(
             evidence_id="computer-" + uuid4().hex,
             version=1,
@@ -364,12 +402,23 @@ class ComputerRuntime:
                 ),
             ),
         )
-        committed = await self._own(
-            self._evidence.capture(snapshot, (MediaAsset(frame.data, "image/jpeg"),))
-        )
-        return CallOutcome(
-            "confirmed", {**source, "evidence_ref": committed.evidence_id}, media=committed.media
-        )
+        committed = await self._evidence.capture(snapshot, (MediaAsset(frame.data, "image/jpeg"),))
+        value: JsonObject = {
+            **source,
+            "evidence_ref": committed.evidence_id,
+            "media_type": "image/jpeg",
+            "sha256": committed.media[0].media_id,
+        }
+        # 权威媒体先完成接管；磁盘失败不能抹掉已取得的图像或伪造可发送路径。
+        try:
+            path = await asyncio.to_thread(_write_screenshot, self._screenshot_dir, frame.data)
+        except OSError as error:
+            value["mirror_state"] = "failed"
+            return CallOutcome(
+                "failed", value, type(error).__name__, str(error), media=committed.media
+            )
+        value.update({"path": str(path), "mirror_state": "saved"})
+        return CallOutcome("confirmed", value, media=committed.media)
 
     def _pause_failure(self, error: BaseException, *, input_id: str | None = None) -> None:
         """故障是暂停资格，不伪造成功确认或丢弃已入账原文。"""

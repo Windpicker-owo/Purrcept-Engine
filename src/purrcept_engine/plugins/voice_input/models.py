@@ -25,6 +25,7 @@ class VoiceInputSettings(BaseModel):
 
     原生音频能力由装配端口按生成模型声明提供，不由模型别名猜测。
     起音确认与打断门槛分别控制缓存和可信 speech_started，不累计长停顿。
+    vad_interrupt_enabled 仅提供自动停播的启动默认值；运行时切换不改写配置或分段参数。
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True, allow_inf_nan=False)
@@ -43,6 +44,7 @@ class VoiceInputSettings(BaseModel):
     start_ms: int = Field(default=96, ge=32, le=500)
     end_ms: int = Field(default=500, ge=200, le=2000)
     min_speech_ms: int = Field(default=160, ge=32, le=1000)
+    vad_interrupt_enabled: bool = True
     interrupt_ms: int = Field(default=2000, ge=32, le=10000)
     interrupt_gap_ms: int = Field(default=96, ge=0, le=500)
     asr_timeout_seconds: float = Field(default=10.0, ge=1, le=60)

@@ -11,7 +11,7 @@ from typing import Protocol
 
 from purrcept_engine.domain.context.materials import MediaStore
 from purrcept_engine.domain.execution.models import ActionRecord
-from purrcept_engine.domain.inputs.models import InputRecord
+from purrcept_engine.domain.inputs.models import Admission, InputRecord, InputSubmission
 from purrcept_engine.domain.model_requests.models import RequestRecord
 from purrcept_engine.domain.model_requests.ports import RequestEvidenceSink
 from purrcept_engine.domain.subject.models import (
@@ -43,6 +43,32 @@ class CoordinatorStore(SessionStore, RequestEvidenceSink, MediaStore, Protocol):
 
         Args:
             after_revision: 查询待办前取得的通知序号，避免查询与等待之间漏唤醒。
+        """
+        ...
+
+    async def idle_input_state(self) -> tuple[int, bool]:
+        """读取最新接管序号及是否仍有需要先处理的输入。
+
+        Returns:
+            所有来源共享的接管序号，以及非 submitted/终态输入是否存在。observe
+            留在收件箱的 submitted 不阻止后续空闲唤醒；重复接收不增加序号。
+        """
+        ...
+
+    async def admit_idle_input(
+        self, submission: InputSubmission, *, expected_sequence: int
+    ) -> Admission | None:
+        """在同一提交段复查接管序号和待处理状态，再保存完整空闲刺激。
+
+        Args:
+            submission: 调度器生成的可信定时事实，不携带停音或抢占信号。
+            expected_sequence: 计时所观察的最新接管序号。
+
+        Returns:
+            已持久接管的身份；有新刺激或尚有待处理工作时返回 None，不留下部分记录。
+
+        Raises:
+            StorageError: 正式接管容量不足或权威存储故障。
         """
         ...
 

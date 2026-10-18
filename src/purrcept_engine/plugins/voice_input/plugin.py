@@ -1,7 +1,8 @@
 """声明本机收音的有限控制，生产与替身经过同一 factory/build 边界。
 
 默认不收音，开始才加载声卡/VAD；状态查询不采集。停止只释放输入，显式
-停止输出属于 me.microphone.interrupt。纯声明没有网络、人员权限或旧租约。
+停止输出属于 me.microphone.interrupt。自动停播开关只改变后续人声确认的策略，
+不重启收音。纯声明没有网络、人员权限或旧租约。
 """
 
 from __future__ import annotations
@@ -49,6 +50,10 @@ class _Start(_Empty):
     device: int | None = Field(
         default=None, ge=0, description="本机输入设备 ID，省略使用系统默认输入。"
     )
+
+
+class _VadInterrupt(_Empty):
+    enabled: bool = Field(description="是否在持续人声确认后自动停止语音播放。")
 
 
 def make_factory(
@@ -104,7 +109,7 @@ def make_factory(
             25.0,
             'await {path}(mode="asr")',
             "audio 模式要求生成模型显式声明支持音频；已收音时先 stop。"
-            "持续人声确认直接抢占，最终材料不重复抢占。",
+            "VAD 自动停播开启时，持续人声只停止播放并通知下一轮，不取消模型生成。",
             control=True,
         )
         stop = CapabilityDeclaration(
@@ -116,6 +121,17 @@ def make_factory(
             20.0,
             "await {path}()",
             "停止收音不停止已有输出；停音使用 me.microphone.interrupt。",
+            control=True,
+        )
+        set_vad_interrupt = CapabilityDeclaration(
+            instance_id + ":voice_input.set_vad_interrupt",
+            object_id,
+            "set_vad_interrupt",
+            "开关 VAD 自动停播，保持正常收音和分段。",
+            _VadInterrupt,
+            20.0,
+            "await {path}(enabled=False)",
+            "本次运行有效，重启恢复配置默认值；不撤回已发出的停播请求。",
             control=True,
         )
 
@@ -156,12 +172,23 @@ def make_factory(
                 del parameters, context
                 return CallOutcome("confirmed", await runtime.stop())
 
+            async def run_vad_interrupt(
+                parameters: _VadInterrupt, context: CallContext
+            ) -> CallOutcome:
+                """由同一运行时切换停播策略，不重建采集或识别资源。"""
+                del context
+                try:
+                    return CallOutcome("confirmed", runtime.set_vad_interrupt(parameters.enabled))
+                except VoiceInputError as error:
+                    raise CapabilityInputError(str(error)) from error
+
             return PluginRuntime(
                 (
                     FunctionCapability(devices, run_devices),
                     FunctionCapability(status, run_status),
                     FunctionCapability(start, run_start),
                     FunctionCapability(stop, run_stop),
+                    FunctionCapability(set_vad_interrupt, run_vad_interrupt),
                 ),
                 stop_inputs=runtime.stop_inputs,
                 close=runtime.close,
@@ -176,6 +203,12 @@ def make_factory(
                             "start", "开始收音", start.capability_id, fields=("mode", "device")
                         ),
                         PanelControl("stop", "停止收音", stop.capability_id),
+                        PanelControl(
+                            "set_vad_interrupt",
+                            "VAD 自动停播",
+                            set_vad_interrupt.capability_id,
+                            fields=("enabled",),
+                        ),
                     ),
                     lambda: str(runtime.revision),
                 ),
@@ -183,7 +216,7 @@ def make_factory(
 
         return PluginBlueprint(
             (ObjectDeclaration(object_id, settings.voice_input_id, settings.label, "subject"),),
-            (devices, status, start, stop),
+            (devices, status, start, stop, set_vad_interrupt),
             build,
             required_modules=required_modules,
         )

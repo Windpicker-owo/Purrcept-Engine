@@ -26,6 +26,7 @@ from purrcept_engine.domain.context.delivery import ToolDeliveryGate
 from purrcept_engine.domain.context.history import HistoryMaintenance
 from purrcept_engine.domain.context.history_ports import HistoryContext, HistoryStore
 from purrcept_engine.domain.context.maintenance import SummaryError, freeze_summary_source
+from purrcept_engine.domain.context.media_history import expire_history_media
 from purrcept_engine.domain.model_requests.ports import MaterialCompiler
 from purrcept_engine.domain.model_requests.service import RequestBudget, prepare_off_loop
 from purrcept_engine.domain.subject.models import SessionRecord
@@ -77,7 +78,9 @@ def preview_request(
         request_budget=None,
     )
     if checkpoint is not None:
-        conversation.restore(checkpoint)
+        # 首发预览与真实会话恢复使用同一媒体窗口，避免已经过期的媒体
+        # 仍计入容量或触发一次携带大量原生媒体的历史摘要。
+        conversation.restore(expire_history_media(checkpoint))
     flow = conversation.ask(message)
     try:
         effect = next(flow)

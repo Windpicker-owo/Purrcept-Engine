@@ -66,6 +66,8 @@ def test_configuration_resolves_and_freezes_startup_snapshot(tmp_path: Path) -> 
     assert config.subject.attention_retry.total_seconds == 8
     assert config.subject.foreground_turn.max_requests == 8
     assert config.subject.foreground_turn.total_seconds == 600
+    assert config.subject.proactive_thinking is False
+    assert config.subject.proactive_idle_seconds == 300
     assert config.execution.worker_memory_bytes == 512 * 1024 * 1024
     assert config.execution.pending_input_bytes == 256 * 1024 * 1024
     assert config.activities.initial_seconds == 3600

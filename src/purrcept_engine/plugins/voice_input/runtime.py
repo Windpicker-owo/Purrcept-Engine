@@ -1,9 +1,9 @@
 """拥有一次收音会话的设备、VAD、有限识别任务与发言接管顺序。
 
-起音只取得缓存名额，持续人声正式入账后才由宿主停音和抢占；最终文字或
-原生音频使用同一发言关系，不再次抢占。未接管 PCM 随取消释放，已接管
+起音只取得缓存名额，自动停播开启时持续人声正式入账后由宿主停音并通知下一轮主脑，
+不取消当前生成；最终文字或原生音频使用同一发言关系。未接管 PCM 随取消释放，已接管
 事务不撤销。孤立采集缺口作废残句并重建 VAD，后续发言继续使用同一声卡
-会话。开始/停止由明确能力控制，页面刷新和断线不改变资源寿命。
+会话。开始/停止及自动停播开关由明确能力控制，页面刷新和断线不改变资源寿命。
 收尾等待捕获驱动的归还明证与全部有限任务结束，再向宿主区分历史错误和未释放设备。
 """
 
@@ -19,7 +19,7 @@ from datetime import UTC, datetime
 from typing import Literal
 from uuid import uuid4
 
-from purrcept_core.models import AudioBlock, AudioBytes, TextBlock
+from purrcept_core.models import AudioBlock, AudioBytes, PromptTemplate, TextBlock
 from websockets.exceptions import WebSocketException
 
 from purrcept_engine.errors import StorageError
@@ -46,6 +46,13 @@ from purrcept_engine.plugins.voice_input.models import (
 from purrcept_engine.plugins.voice_input.vad import Segmenter
 from purrcept_engine.serialization import render_yaml
 from purrcept_engine.values import JsonObject, encode_json
+
+_SPEECH_STARTED_PROMPT = PromptTemplate(
+    "voice_input.speech_started",
+    "本机麦克风检测到持续人声，已请求停止当时正在播放及候播的语音。"
+    "当前模型生成继续；这是下一轮需要关注的停播通知。"
+    "实际停止结果以语音输出回执为准，不能把未播完的内容当作已完整送达。",
+)
 
 
 @dataclass(slots=True)
@@ -110,6 +117,7 @@ class VoiceInputRuntime:
             transcriber,
         )
         self.native_audio_enabled = native_audio_enabled
+        self.vad_interrupt_enabled = settings.vad_interrupt_enabled
         self.session = ""
         self.mode: InputMode = "asr"
         self.device: int | None = None
@@ -164,6 +172,7 @@ class VoiceInputRuntime:
             "audio_ready": self.native_audio_enabled,
             "pending_utterances": len(self.utterances),
             "interrupt_ms": self.settings.interrupt_ms,
+            "vad_interrupt_enabled": self.vad_interrupt_enabled,
             "history": [item.copy() for item in self.history],
             "gaps": [item.copy() for item in self.gaps],
             "revision": self.revision,
@@ -196,6 +205,7 @@ class VoiceInputRuntime:
                 "error",
                 "asr_ready",
                 "audio_ready",
+                "vad_interrupt_enabled",
                 "recognition_state",
                 "gaps",
             )
@@ -213,6 +223,31 @@ class VoiceInputRuntime:
                 processing = await self.inputs.query_processing(input_id)
                 item["processing_stage"] = processing.stage if processing else None
                 item["processing_reason"] = processing.reason if processing else None
+        return self.snapshot()
+
+    def set_vad_interrupt(self, enabled: bool) -> JsonObject:
+        """切换本次运行的 VAD 自动停播，收音和分段继续使用原有状态。
+
+        Args:
+            enabled: 是否在后续持续人声确认时请求停播并提交起音通知。
+
+        Returns:
+            修改后的收音快照，重复设置相同值不增加版本。
+
+        Raises:
+            VoiceInputError: 参数不是布尔值，或插件已经关闭。
+
+        Note:
+            在所属事件循环同步生效；不撤回已发出的停播请求，也不补发已跳过的
+            起音通知。重启恢复配置默认值，停止再开始收音保留本次选择。
+        """
+        if type(enabled) is not bool:
+            raise VoiceInputError("VAD 自动停播开关必须为布尔值。")
+        if self.closed:
+            raise VoiceInputError("收音插件已关闭，不能修改 VAD 自动停播。")
+        if enabled != self.vad_interrupt_enabled:
+            self.vad_interrupt_enabled = enabled
+            self.revision += 1
         return self.snapshot()
 
     async def devices(self) -> JsonObject:
@@ -343,7 +378,7 @@ class VoiceInputRuntime:
         )
 
     def _context(self, utterance: _Utterance, *, started: bool) -> InputContext:
-        """可信发言关系由设备状态生成，最终材料沿用关系但不重复授予抢占。"""
+        """起音只授予停音与保底唤醒，最终材料沿用关系而不重发停音。"""
         details: JsonObject = {
             "voice": {
                 "session_id": utterance.session,
@@ -356,7 +391,6 @@ class VoiceInputRuntime:
         return InputContext(
             encode_json(details).decode("utf-8"),
             minimum_wake=True,
-            interrupt_generation=started,
             speech_started=started,
         )
 
@@ -373,12 +407,13 @@ class VoiceInputRuntime:
         """独立等待持续人声入账；采样继续，最终材料必须等此身份确认。
 
         每个有限发言名额最多拥有一个起音任务。停止收音也等已经提交的
-        事实确认，不取消它或重新发送，避免丢失真实的抢占事件关系。
+        事实确认，不取消它或重新发送，避免丢失真实的停音事件关系。
         """
+        notice = _SPEECH_STARTED_PROMPT.render()
         admitted = await self._submit(
             InputSubmission(
                 self._source(utterance, "speech_started"),
-                "本机麦克风确认持续人声。",
+                notice,
                 utterance.occurred_at,
                 datetime.now(UTC),
                 context=self._context(utterance, started=True),
@@ -391,7 +426,7 @@ class VoiceInputRuntime:
                                 "type": "speech_started",
                                 "speaker": self.settings.source_name,
                                 "time": utterance.occurred_at.astimezone().strftime("%H:%M"),
-                                "text": "麦克风确认持续人声。",
+                                "text": notice,
                             }
                         )
                     ),
@@ -485,6 +520,10 @@ class VoiceInputRuntime:
                                 "识别上传缓存已满，收音已暂停，当前发言存在缺口。"
                             ) from error
                     elif kind == "speech_started" and self.current is not None:
+                        # 分段始终运行。只在确认点决定是否发出停播及对应通知，
+                        # 关闭后不能留下声称已请求停播的虚假高优先刺激。
+                        if not self.vad_interrupt_enabled:
+                            continue
                         utterance = self.current
                         utterance.start_task = asyncio.create_task(
                             self._admit_start(utterance), name="voice-start-admission"

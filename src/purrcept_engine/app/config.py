@@ -211,7 +211,7 @@ ModelSettings = Annotated[
 
 
 class SubjectSettings(_Settings):
-    """引用命名模型并拥有各用途预算，不在请求失败时选择替代模型。"""
+    """声明命名模型、用途预算与空闲唤醒默认值，不在失败时选择替代模型。"""
 
     foreground: NonEmptyString
     reflection: NonEmptyString
@@ -228,6 +228,8 @@ class SubjectSettings(_Settings):
     character: CharacterSettings = Field(default_factory=lambda: CharacterSettings())
     attention_batch_seconds: Annotated[float, Field(ge=0, allow_inf_nan=False)] = 0.1
     attention_batch_size: PositiveInt = 8
+    proactive_thinking: bool = False
+    proactive_idle_seconds: PositiveSeconds = 300.0
     reflection_batch_seconds: PositiveSeconds = 60.0
     reflection_batch_turns: PositiveInt = 8
 

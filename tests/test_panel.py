@@ -27,7 +27,7 @@ class _Empty(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
 
-def _host(tmp_path: Path, *, release: asyncio.Event | None = None):
+def _host(tmp_path: Path, *, release: asyncio.Event | None = None, instance_id: str = "local"):
     """测试能力只产生本地计数，保持真正的 Host/Journal/Provider 生命周期。"""
     calls: list[str] = []
     revision = ["1"]
@@ -88,7 +88,7 @@ def _host(tmp_path: Path, *, release: asyncio.Event | None = None):
                 }
             },
             "subject": {"foreground": "model", "reflection": "model", "summary": "model"},
-            "plugins": [{"instance_id": "local", "entry": "local"}],
+            "plugins": [{"instance_id": instance_id, "entry": "local"}],
         },
         base_dir=tmp_path,
     )
@@ -108,6 +108,18 @@ def _request(host: EngineHost, identity: str, *, revision: str = "1", operation:
         operation=operation,
         expected_revision=revision,
     )
+
+
+async def test_subject_named_plugin_keeps_its_original_shortcut(tmp_path: Path) -> None:
+    """宿主新增选项不能截获恰好名为 subject 的第三方插件普通快捷操作。"""
+    host, calls, _, _ = _host(tmp_path, instance_id="subject")
+    await host.start()
+    try:
+        request = _request(host, "named-plugin").model_copy(update={"target": "subject"})
+        record = await host.submit_control(request)
+        assert record.state == "finished" and record.action_id is not None and len(calls) == 1
+    finally:
+        await host.close()
 
 
 async def test_snapshot_preview_and_repeated_query_do_not_open_devices(tmp_path: Path) -> None:

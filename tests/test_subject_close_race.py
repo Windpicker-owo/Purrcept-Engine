@@ -12,6 +12,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Literal
 from uuid import uuid4
 
 import pytest
@@ -198,6 +199,54 @@ async def test_internal_worker_failure_keeps_its_original_identity_during_close(
             with pytest.raises(error_type) as captured:
                 await coordinator.close()
             assert captured.value is original_error
+        finally:
+            await store.close()
+
+
+@pytest.mark.parametrize("error_type", (RuntimeError, HostStateError))
+async def test_close_during_options_cleanup_preserves_already_failed_store_wait(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, error_type: type[Exception]
+) -> None:
+    """让新增选项等待停在清理屏障，确保关闭不能覆盖已发生的原始存储等待故障。"""
+    store = await Store.open(tmp_path / "state.sqlite3")
+    coordinator = _coordinator(store)
+    waiting, cleaning, release = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    original_wait = store.wait_for_change
+    original_error = error_type("原始等待故障，必须跨清理保留。")
+
+    class SlowOptions(asyncio.Event):
+        """延长选项观察者的归还，使主协调者可确定地停在 finally 内。"""
+
+        async def wait(self) -> Literal[True]:
+            try:
+                return await super().wait()
+            except asyncio.CancelledError:
+                cleaning.set()
+                await release.wait()
+                raise
+
+    async def failed_wait(after_revision: int) -> int:
+        waiting.set()
+        await original_wait(after_revision)
+        raise original_error
+
+    coordinator.proactive.changed = SlowOptions()
+    monkeypatch.setattr(store, "wait_for_change", failed_wait)
+    try:
+        await coordinator.start()
+        async with asyncio.timeout(5):
+            await waiting.wait()
+            await _notify(store)
+            await cleaning.wait()
+            with pytest.raises(error_type) as captured:
+                await coordinator.close()
+        assert captured.value is original_error and coordinator.failure is original_error
+        assert coordinator.pending_resources == 0
+    finally:
+        release.set()
+        try:
+            with pytest.raises(error_type):
+                await coordinator.close()
         finally:
             await store.close()
 

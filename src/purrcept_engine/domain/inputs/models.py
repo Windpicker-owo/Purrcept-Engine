@@ -112,7 +112,7 @@ class InputContext:
         details_json: 原生来源附加字段的严格 JSON 编码。
         minimum_wake: 直接唤起所建立的最低 WAKE 事实或对应升级判断资格。
         interrupt_generation: 此可信接入信号是否要求撤销观察到的旧生成代次。
-        speech_started: 是否为真实捕获产生的发言开始信号，正文不能自称触发停音。
+        speech_started: 真实捕获的停音及下一轮通知信号，不授予生成抢占资格。
         missing_materials: 本次原文或媒体尚缺的具体材料说明。
 
     Note:
@@ -120,8 +120,10 @@ class InputContext:
 
         details_json 保存平台原生的 @、回复与会话关系，不建立人员权限。最低
         唤起只要求前台处理；interrupt_generation 请求核对当前代次后抢占，
-        speech_started 表示已达到配置阈值的 VAD 信号，并另外要求音频停播。
-        语音转写接续沿用来源关联，不能再次伪造 speech_started。
+        speech_started 表示已达到配置阈值的 VAD 信号，只要求音频停播和保底
+        唤醒下一轮；它优先于同时携带的 interrupt_generation，不直接抢占，
+        也不单凭起音建立紧急升级判断。语音转写接续沿用来源关联，不能再次
+        伪造 speech_started；最终内容仍按普通高价值输入规则判断。
 
         InputSubmission.with_content 将提供方的来源与有序内容布局保存在现有 JSON
         扩展的保留键中；媒体字节仍进入同次提交的 media，不重复编码到 JSON。

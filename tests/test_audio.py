@@ -283,10 +283,11 @@ async def test_actual_partial_playback_is_saved_and_stop_confirmed(
 
 
 @pytest.mark.parametrize("decode", [False, True])
+@pytest.mark.parametrize("buffered", [False, True])
 async def test_real_player_interrupt_releases_blocked_stream_and_allows_next_speech(
-    store: Store, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, decode: bool
+    store: Store, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, decode: bool, buffered: bool
 ) -> None:
-    """VAD 停音必须收回仍在等待上游的 PCM 消费者，随后同一队列能再次发声。"""
+    """VAD 收回上游停顿或下游背压的 PCM 消费者，随后同一队列能再次发声。"""
     executable = shutil.which("ffmpeg") if decode else sys.executable
     if executable is None:
         pytest.skip("本地 FFmpeg 未安装。")
@@ -299,6 +300,11 @@ async def test_real_player_interrupt_releases_blocked_stream_and_allows_next_spe
             del identity
             self.calls.append(parameters.text)
             try:
+                if buffered and len(self.calls) == 1:
+                    blocked.set()
+                    data = bytes(32000 * 2 * 20)
+                    yield encode_wav(data, 32000) if decode else data
+                    return
                 yield encode_wav(bytes(128000), 32000) if decode else bytes(1280)
                 if len(self.calls) == 1:
                     blocked.set()
@@ -318,11 +324,18 @@ async def test_real_player_interrupt_releases_blocked_stream_and_allows_next_spe
 
     async def launch(*arguments: str) -> asyncio.subprocess.Process:
         del arguments
+        # 首项暂停消费，模拟设备消费落后于解码输出；背压须能传回解码管道。
+        # 下一项恢复正常消费，以证明停音真正释放了同一个现场队列。
+        consume = (
+            "import time; time.sleep(30)"
+            if buffered and not processes
+            else "sys.stdin.buffer.read()"
+        )
         process = await asyncio.create_subprocess_exec(
             sys.executable,
             "-c",
             "import sys; sys.stderr.write('0.02 M-A: 0.000 fd=0\\r'); "
-            "sys.stderr.flush(); sys.stdin.buffer.read()",
+            "sys.stderr.flush(); " + consume,
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.PIPE,
@@ -349,6 +362,8 @@ async def test_real_player_interrupt_releases_blocked_stream_and_allows_next_spe
     try:
         await asyncio.wait_for(blocked.wait(), 3)
         await asyncio.wait_for(started.wait(), 3)
+        if buffered:
+            await asyncio.sleep(0.2)
         control = await owner.interrupt(context("vad", 0.5))
         assert control.state == "confirmed"
         value = payload(await asyncio.wait_for(first, 1))

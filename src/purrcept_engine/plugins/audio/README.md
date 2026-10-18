@@ -34,6 +34,8 @@ postprocess_profile = ".purrcept/microphone/voice-profile.json"
 新接管的 speak 仍可发声。停止收音是 `me.voice_input.stop()` 的独立操作。
 流式停音同时撤销本次 PCM 消费等待，再回收播放器及上游迭代器；即使网络或
 解码暂时没有下一块数据，也不会只终止播放进程却继续占住现场队列。
+解码/调音停止时同时排空并丢弃管道里剩余的 PCM，再确认进程退出；仅杀进程
+不能解除已暂停读取的管道背压。被丢弃的旧声音不会继续播放或重放。
 
 `speak(body={...})` 可借用独立 Live2D 身体；身体离线不阻断声音，其结果单独
 记录。[身体校准](../live2d/README.md)不改变 TTS 或播放器的所有权。

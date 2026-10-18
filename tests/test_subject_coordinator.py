@@ -845,6 +845,46 @@ async def test_urgent_interrupts_only_observed_generation_and_preserves_failed_i
     assert "旧正在处理" in rig.generation.requests[1].messages[-1].text
 
 
+@pytest.mark.parametrize("explicit_interrupt", [False, True])
+async def test_vad_notice_waits_for_current_generation_without_an_urgent_assessment(
+    rig: _Rig, explicit_interrupt: bool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """VAD 仅保底唤醒下一轮；即使带抢占标记或混有普通缓存，也不能借此升级。"""
+    # 在启动前配置合批窗口，普通缓存不能在 VAD 到达前独立触发一次注意。
+    monkeypatch.setattr(
+        rig.coordinator, "settings", replace(rig.coordinator.settings, coalesce_seconds=60)
+    )
+    rig.generation.blocks[1] = asyncio.Event()
+    old = await _admit(rig, "qq", "QQ 私聊提问", context=InputContext(minimum_wake=True))
+    await rig.coordinator.start()
+    await rig.generation.arrivals.get()
+    observed = rig.coordinator.generation
+    ordinary = await _admit(rig, "ambient", "背景材料")
+    rig.decision.choices.append("urgent")
+    vad = await _admit(
+        rig,
+        "vad",
+        "VAD 已请求停止播放，当前模型生成继续。",
+        context=InputContext(
+            minimum_wake=True, speech_started=True, interrupt_generation=explicit_interrupt
+        ),
+    )
+    assert not await rig.coordinator.input_admitted(vad, observed_generation=observed)
+    await _stage(rig, vad, "foreground")
+    await _stage(rig, ordinary, "foreground")
+    assert not await rig.store.minimum_wake_assessments(rig.coordinator.attention_owner, limit=1)
+    assert not rig.decision.requests and not rig.generation.cancelled
+    assert len(rig.generation.requests) == 1
+
+    rig.generation.blocks[1].set()
+    await _stage(rig, old, "processed")
+    await _stage(rig, vad, "processed")
+    await _stage(rig, ordinary, "processed")
+    assert len(rig.generation.requests) == 2
+    assert "VAD 已请求停止播放" in rig.generation.requests[1].messages[-1].text
+    assert not rig.generation.cancelled and not rig.decision.requests
+
+
 async def test_late_semantic_urgent_cannot_override_inputs_already_pulled(rig: _Rig) -> None:
     first_gate = asyncio.Event()
     second_gate = asyncio.Event()

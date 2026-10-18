@@ -1,6 +1,6 @@
 /**
  * 使用真实打包产物验收 WebUI，HTTP 只返回内存中的合成宿主投影。
- * 不启动 Engine、不读取配置或凭据；任何控制写入与外网请求都使检查失败。
+ * 不启动 Engine、不读取配置或凭据；只在开关专测阶段接受内存模拟控制，其他写入和外网请求失败。
  * 先运行 frontend 的 build，再执行本文件；截图写入 ignored .validation/webui。
  * 浏览器与服务由本脚本拥有，失败也会关闭；使用 Design 已安装的 Playwright 与系统 Edge。
  */
@@ -23,7 +23,7 @@ const example = {
   ...host(),
   devices: [
     { instance_id: 'qq', kind: 'qq', revision: '1', state: { state: 'online', mode: 'forward' }, controls: [{ key: 'reconnect', title: '重新连接 QQ', fields: [] }], has_preview: false },
-    { instance_id: 'voice', kind: 'voice_input', revision: '1', state: { state: 'stopped', mode: 'asr', device: 0, devices_loaded: true, devices: [{ index: 0, name: '测试麦克风' }], available_modes: ['asr'], asr_ready: true, audio_ready: false, latest_input: { processing_stage: 'failed' } }, controls: [{ key: 'start', title: '开始收音', fields: ['device', 'mode'] }], has_preview: false },
+    { instance_id: 'voice', kind: 'voice_input', revision: '1', state: { state: 'stopped', mode: 'asr', device: 0, devices_loaded: true, devices: [{ index: 0, name: '测试麦克风' }], available_modes: ['asr'], asr_ready: true, audio_ready: false, vad_interrupt_enabled: true, latest_input: { processing_stage: 'failed' } }, controls: [{ key: 'start', title: '开始收音', fields: ['device', 'mode'] }, { key: 'set_vad_interrupt', title: 'VAD 自动停播', fields: ['enabled'] }], has_preview: false },
     { instance_id: 'computer', kind: 'computer', revision: '1', state: { connected: true, observing: false, foreground: '示例工作区' }, controls: [], has_preview: false },
   ],
   activities: [{ ...paused, goal: '整理今天的阅读笔记', remaining_seconds: 1500, progress_preview: { text: '已整理三篇文章的要点，等待继续。', truncated: false, original_chars: 21 } }],
@@ -37,6 +37,10 @@ let disconnected = false;
 // 首次快照由测试显式放行，可靠覆盖慢连接下不应闪出故障横幅的阶段。
 const firstSnapshot = Promise.withResolvers();
 const writes = [];
+let proactiveControls = false;
+const proactiveRequests = [];
+const vadRequests = [];
+const proactiveResults = new Map();
 const files = new Map([
   ['/', ['index.html', 'text/html']], ['/assets/panel.js', ['panel.js', 'text/javascript']],
   ['/assets/panel.css', ['panel.css', 'text/css']], ['/assets/purrcept.css', ['purrcept.css', 'text/css']],
@@ -46,6 +50,40 @@ const assets = new Map(await Promise.all([...files].map(async ([route, [name, ty
   body: await readFile(new URL(`../src/purrcept_engine/app/static/${name}`, import.meta.url)), type,
 }])));
 const server = createServer(async (req, res) => {
+  if (req.method === 'GET' && proactiveResults.has(req.url)) {
+    res.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify(proactiveResults.get(req.url)));
+    return;
+  }
+  if (proactiveControls && req.method === 'POST' && req.url === '/api/controls') {
+    let body = '';
+    for await (const chunk of req) body += chunk;
+    const command = JSON.parse(body);
+    assert.equal(typeof command.arguments.enabled, 'boolean');
+    if (command.target === 'subject') {
+      assert.equal(command.operation, 'set_proactive_thinking');
+      assert.equal(command.expected_revision, snapshot.proactive_thinking.revision);
+      proactiveRequests.push(command);
+      snapshot.proactive_thinking = { ...snapshot.proactive_thinking, enabled: command.arguments.enabled,
+        revision: String(Number(snapshot.proactive_thinking.revision) + 1) };
+    } else {
+      assert.equal(command.target, 'voice');
+      assert.equal(command.operation, 'set_vad_interrupt');
+      const voice = snapshot.devices.find((device) => device.instance_id === 'voice');
+      assert.equal(command.expected_revision, voice.revision);
+      vadRequests.push(command);
+      voice.state.vad_interrupt_enabled = command.arguments.enabled;
+      voice.revision = String(Number(voice.revision) + 1);
+    }
+    const result = {
+      request_id: command.request_id, instance_id: snapshot.instance_id,
+      request: { target: command.target, operation: command.operation, expected_revision: command.expected_revision, arguments: command.arguments },
+      state: 'finished', admitted_at: now, action_id: null, command_id: null, finished_at: now,
+      error_code: null, error: null, action: null, activity_command: null,
+    };
+    proactiveResults.set(`/api/controls/${command.request_id}`, result);
+    res.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify(result));
+    return;
+  }
   if (req.method !== 'GET') { writes.push(req.url); res.writeHead(405).end(); return; }
   if (req.url === '/api/session' || req.url === '/api/snapshot') {
     if (req.url === '/api/snapshot') await firstSnapshot.promise;
@@ -175,8 +213,48 @@ try {
   assert.equal(await page.getByRole('heading', { name: '安静待命中' }).isVisible(), true);
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
   assert.deepEqual(writes, [], '查看页面不能提交业务控制');
+  // 真实 React/Cel、HTTP 序列化和快照刷新共用生产路径，控制端仅在内存改变合成事实。
+  proactiveControls = true;
+  await openPage('system');
+  const proactive = page.getByRole('switch', { name: '主动思考' });
+  await proactive.waitFor();
+  assert.equal(await proactive.isChecked(), false);
+  await page.waitForFunction(() => document.querySelector('[role="switch"]')?.getAttribute('aria-disabled') !== 'true');
+  await proactive.click();
+  await page.waitForFunction(() => document.querySelector('[role="switch"]')?.getAttribute('aria-checked') === 'true');
+  assert.equal(proactiveRequests.length, 1);
+  await page.screenshot({ path: `${output}/proactive-on-1440.png`, fullPage: true });
+  await proactive.focus();
+  await page.keyboard.press('Space');
+  await page.waitForFunction(() => document.querySelector('[role="switch"]')?.getAttribute('aria-checked') === 'false');
+  assert.equal(proactiveRequests.length, 2);
+  assert.deepEqual(proactiveRequests.map((item) => item.arguments.enabled), [true, false]);
+  assert.notEqual(proactiveRequests[0].request_id, proactiveRequests[1].request_id);
+  disconnected = true;
+  await page.getByRole('button', { name: '立即重试', exact: true }).click();
+  await page.waitForFunction(() => document.querySelector('[role="switch"]')?.getAttribute('aria-disabled') === 'true');
+  await proactive.click({ force: true });
+  assert.equal(proactiveRequests.length, 2, '断线不能修改主动思考');
+  disconnected = false;
+  snapshot = structuredClone(example);
+  await openPage('devices');
+  const vad = page.getByRole('switch', { name: 'VAD 自动停播' });
+  await vad.waitFor();
+  assert.equal(await vad.isChecked(), true);
+  await vad.click();
+  await page.waitForFunction(() => document.querySelector('[aria-label="VAD 自动停播"]')?.getAttribute('aria-checked') === 'false');
+  await vad.focus();
+  await page.keyboard.press('Space');
+  await page.waitForFunction(() => document.querySelector('[aria-label="VAD 自动停播"]')?.getAttribute('aria-checked') === 'true');
+  assert.deepEqual(vadRequests.map((item) => item.arguments.enabled), [false, true]);
+  await page.screenshot({ path: `${output}/vad-switch-1440.png`, fullPage: true });
+  disconnected = true;
+  await page.getByRole('button', { name: '立即重试', exact: true }).click();
+  await page.waitForFunction(() => document.querySelector('[aria-label="VAD 自动停播"]')?.getAttribute('aria-disabled') === 'true');
+  await vad.click({ force: true });
+  assert.equal(vadRequests.length, 2, '断线不能修改 VAD 自动停播');
   assert.deepEqual(failures, [], '浏览器不应报错或访问外网');
-  console.log(`通过：28 个快速切换帧、30 个页面/视口组合、搜索、键盘过滤、部分失败详情、窄屏关闭、断线控制、当前行动、减少动效与空状态。截图：${output}`);
+  console.log(`通过：28 个快速切换帧、30 个页面/视口组合、搜索、键盘过滤、部分失败详情、窄屏关闭、断线控制、主动思考与 VAD 开关、当前行动、减少动效与空状态。截图：${output}`);
 } catch (error) {
   if (page) {
     await page.screenshot({ path: `${output}/failure.png`, fullPage: true });

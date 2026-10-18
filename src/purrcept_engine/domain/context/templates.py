@@ -47,6 +47,14 @@ MEDIA_REFERENCE_PROMPT = PromptTemplate(
     "{reason}\n{reference}",
     policies={"reason": VERBATIM, "reference": VERBATIM},
 )
+EXPIRED_AUDIO_PROMPT = PromptTemplate(
+    "context.expired_audio",
+    "历史语音输入已过期",
+)
+EXPIRED_IMAGE_PROMPT = PromptTemplate(
+    "context.expired_image",
+    "历史图片已过期",
+)
 MISSING_MATERIALS_PROMPT = PromptTemplate(
     "context.missing_materials",
     "材料缺口：\n{items}",

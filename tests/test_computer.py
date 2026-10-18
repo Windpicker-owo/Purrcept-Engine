@@ -10,6 +10,7 @@ import asyncio
 import base64
 import io
 import os
+import threading
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 from pathlib import Path
@@ -18,6 +19,7 @@ import pytest
 import pytest_asyncio
 from PIL import Image
 from pydantic import ValidationError
+from test_qq_transport import Connector, Socket
 
 from purrcept_engine import EngineConfig, EngineHost
 from purrcept_engine.app.evidence import EvidenceAccess
@@ -32,6 +34,7 @@ from purrcept_engine.errors import StorageError
 from purrcept_engine.infrastructure.sqlite.store import Store
 from purrcept_engine.plugins.computer import driver as driver_module
 from purrcept_engine.plugins.computer import plugin
+from purrcept_engine.plugins.computer import runtime as computer_runtime
 from purrcept_engine.plugins.computer.driver import ProcessDriver
 from purrcept_engine.plugins.computer.models import (
     ChangeDetector,
@@ -41,6 +44,7 @@ from purrcept_engine.plugins.computer.models import (
     ObservationPolicy,
 )
 from purrcept_engine.plugins.computer.runtime import ComputerRuntime, load_policy
+from purrcept_engine.plugins.qq.plugin import factory_with_connector
 from purrcept_engine.values import decode_object
 
 
@@ -142,6 +146,7 @@ async def controlled(
         EvidenceAccess(store.knowledge, 8000),
         ObservationPolicy(),
         tmp_path / "preferences.json",
+        screenshot_dir=tmp_path / ".purrcept" / "computer-screenshots",
         monotonic=lambda: clock[0],
     )
 
@@ -204,6 +209,12 @@ async def test_screenshot_has_full_blob_authority_and_does_not_create_pending_in
         result = await runtime.screenshot(None, None)
         assert driver.captures == [True] and len(result.media) == 1
         assert await store.get_media(result.media[0].media_id) == driver.value.data
+        assert isinstance(result.value, dict) and isinstance(result.value["path"], str)
+        path = Path(result.value["path"])
+        assert path.is_absolute() and path.suffix == ".jpg"
+        assert await asyncio.to_thread(path.read_bytes) == driver.value.data
+        assert result.value["mirror_state"] == "saved"
+        assert result.value["sha256"] == result.media[0].media_id
         assert not await store.pending()
         assert isinstance(result.value, dict)
         reference = result.value["evidence_ref"]
@@ -223,6 +234,81 @@ async def test_screenshot_has_full_blob_authority_and_does_not_create_pending_in
             await runtime.screenshot("monitor", None)
     finally:
         await runtime.close()
+    assert await asyncio.to_thread(path.read_bytes) == driver.value.data
+
+
+@pytest.mark.parametrize("failure", ["directory", "write"])
+async def test_screenshot_file_failure_keeps_original_evidence(
+    store: Store, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: str
+) -> None:
+    """目录不可用或实际落盘失败都保留图像原件，不返回假路径或残缺文件。"""
+    runtime, driver, _ = await controlled(store, tmp_path, monkeypatch)
+    directory = tmp_path / ".purrcept" / "computer-screenshots"
+    if failure == "directory":
+        directory.parent.mkdir()
+        directory.write_text("existing user file", encoding="utf-8")
+    else:
+
+        def failed_sync(descriptor: int) -> None:
+            del descriptor
+            raise OSError("offline disk failure")
+
+        monkeypatch.setattr(computer_runtime.os, "fsync", failed_sync)
+    try:
+        result = await runtime.screenshot(None, None)
+        assert result.state == "failed" and len(result.media) == 1
+        assert isinstance(result.value, dict)
+        assert result.value["mirror_state"] == "failed" and "path" not in result.value
+        assert await store.get_media(result.media[0].media_id) == driver.value.data
+        reference = result.value["evidence_ref"]
+        assert isinstance(reference, str)
+        evidence = await store.knowledge.get_evidence(reference)
+        assert evidence is not None and evidence.media == result.media
+        if failure == "directory":
+            assert directory.read_text(encoding="utf-8") == "existing user file"
+        else:
+            assert list(directory.iterdir()) == []
+    finally:
+        await runtime.close()
+
+
+async def test_screenshot_cancelled_observer_keeps_file_owner_until_close(
+    store: Store, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """取消调用观察后仍完成文件保存；关闭等待线程，不删除已经交付的截图。"""
+    runtime, driver, _ = await controlled(store, tmp_path, monkeypatch)
+    entered, release = threading.Event(), threading.Event()
+    sync = computer_runtime.os.fsync
+
+    def blocked(descriptor: int) -> None:
+        entered.set()
+        if not release.wait(5):
+            raise TimeoutError("test writer not released")
+        sync(descriptor)
+
+    monkeypatch.setattr(computer_runtime.os, "fsync", blocked)
+    observer = asyncio.create_task(runtime.screenshot(None, None))
+    closing: asyncio.Task[None] | None = None
+    try:
+        assert await asyncio.to_thread(entered.wait, 3)
+        observer.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await observer
+        closing = asyncio.create_task(runtime.close())
+        await asyncio.sleep(0.02)
+        assert not closing.done()
+        release.set()
+        await asyncio.wait_for(closing, 3)
+        directory = tmp_path / ".purrcept" / "computer-screenshots"
+        paths = list(directory.glob("*.jpg"))
+        assert len(paths) == 1
+        assert await asyncio.to_thread(paths[0].read_bytes) == driver.value.data
+    finally:
+        release.set()
+        await asyncio.gather(observer, return_exceptions=True)
+        await runtime.close()
+        if closing is not None:
+            await closing
 
 
 @pytest.mark.asyncio
@@ -235,6 +321,7 @@ async def test_one_admitted_frame_and_replaceable_candidate_wait_for_real_proces
         await runtime.step()
         pending = await store.pending()
         assert len(pending) == 1
+        assert not (tmp_path / ".purrcept" / "computer-screenshots").exists()
         original = pending[0]
         driver.value, clock[0] = frame(50), 20.0
         await runtime.step()
@@ -306,6 +393,7 @@ async def test_background_disconnect_ends_blocked_capture_and_rejects_late_previ
         EvidenceAccess(store.knowledge, 8000),
         ObservationPolicy(),
         tmp_path / "preferences.json",
+        screenshot_dir=tmp_path / ".purrcept" / "computer-screenshots",
     )
     try:
         await runtime.connect()
@@ -337,6 +425,7 @@ async def test_observation_preferences_survive_reopen_but_do_not_restore_connect
         EvidenceAccess(store.knowledge, 8000),
         restored,
         tmp_path / "preferences.json",
+        screenshot_dir=tmp_path / ".purrcept" / "computer-screenshots",
     )
     try:
         assert not unopened.snapshot()["connected"] and not unopened.snapshot()["observing"]
@@ -510,6 +599,7 @@ async def test_real_sampler_capture_failure_pauses_and_close_still_releases_driv
         EvidenceAccess(store.knowledge, 8000),
         ObservationPolicy(),
         tmp_path / "preferences.json",
+        screenshot_dir=tmp_path / ".purrcept" / "computer-screenshots",
     )
     await runtime.connect()
     await runtime.observe("start")
@@ -538,6 +628,7 @@ async def test_real_sampler_capacity_failure_pauses_until_explicit_start(
         EvidenceAccess(database.knowledge, 8000),
         ObservationPolicy(),
         tmp_path / "preferences.json",
+        screenshot_dir=tmp_path / ".purrcept" / "computer-screenshots",
     )
     rejected, received = asyncio.Event(), asyncio.Event()
     original_submit = Inputs.submit
@@ -572,11 +663,18 @@ async def test_real_sampler_capacity_failure_pauses_until_explicit_start(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("chat", ["private", "group"])
+@pytest.mark.parametrize("attachment", ["images", "files"])
 async def test_actual_host_worker_persists_native_screenshot_receipt(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, chat: str, attachment: str
 ) -> None:
+    """真实 Worker 串联截图保存与 QQ 发送，离线传输核对实际文件和媒体字节。"""
     driver = OfflineDriver()
+    socket = Socket()
+    connector = Connector((socket,))
     monkeypatch.setattr(plugin, "factory", plugin.make_factory(lambda: driver))
+    # 群聊覆盖显式自定义目录与 QQ 允许根；私聊验证开箱即用的默认路径。
+    directory = "custom-captures" if chat == "group" else ".purrcept/computer-screenshots"
     payload: dict[str, object] = {
         "host": {"data_dir": tmp_path / "data"},
         "console": False,
@@ -596,19 +694,59 @@ async def test_actual_host_worker_persists_native_screenshot_receipt(
             {
                 "instance_id": "computer",
                 "entry": "purrcept_engine.plugins.computer.plugin:factory",
-                "config": {},
-            }
+                "config": {"screenshot_dir": directory} if chat == "group" else {},
+            },
+            {
+                "instance_id": "qq",
+                "entry": "qq-fixture",
+                "config": {
+                    "mode": "direct",
+                    "typing_delay_max_seconds": 0.0,
+                    "extra_media_roots": [directory] if chat == "group" else [],
+                },
+            },
         ],
     }
-    host = EngineHost(EngineConfig.validate(payload, base_dir=tmp_path))
+    host = EngineHost(
+        EngineConfig.validate(payload, base_dir=tmp_path),
+        plugin_factories={"qq-fixture": factory_with_connector(connector)},
+    )
     await host.start()
+    sending: asyncio.Task[object] | None = None
     try:
-        action = await host.execute(
+        script = (
             "from world import me\nawait me.computer.connect()\n"
-            "await me.computer.foreground()\nreturn await me.computer.screenshot()"
+            "await me.computer.foreground()\nshot = await me.computer.screenshot()\n"
+            f'await me.phone.qq.send(chat="{chat}", target_id="123", {attachment}=[shot["path"]])\n'
+            "return shot"
         )
-        assert action.state == "completed" and len(action.calls) == 3
-        assert len(action.calls[-1].media) == 1
+        sending = asyncio.create_task(host.execute(script))
+        request = await asyncio.wait_for(socket.sent.get(), 5)
+        assert request["action"] == f"send_{chat}_msg"
+        parameters = request["params"]
+        assert isinstance(parameters, dict)
+        assert parameters["user_id" if chat == "private" else "group_id"] == 123
+        message = parameters["message"]
+        assert isinstance(message, list) and len(message) == 1
+        part = message[0]
+        assert isinstance(part, dict)
+        assert part["type"] == ("image" if attachment == "images" else "file")
+        encoded = part["data"]
+        assert isinstance(encoded, dict)
+        if attachment == "images":
+            assert encoded["file"] == "base64://" + base64.b64encode(driver.value.data).decode()
+        socket.reply(request, {"message_id": 456})
+        action = await asyncio.wait_for(sending, 5)
+        assert action.state == "completed" and len(action.calls) == 4
+        screenshot = action.calls[2]
+        assert len(screenshot.media) == 1 and screenshot.result_json is not None
+        saved = decode_object(screenshot.result_json.encode())
+        assert isinstance(saved["path"], str)
+        path = Path(saved["path"])
+        assert path.parent == tmp_path / directory
+        assert await asyncio.to_thread(path.read_bytes) == driver.value.data
+        if attachment == "files":
+            assert encoded["file"] == path.as_uri() and encoded["name"] == path.name
         assert driver.captures == [True]
         assert {path for path in host.catalog.bindings if path.startswith("me.computer.")} == {
             "me.computer.status",
@@ -619,4 +757,6 @@ async def test_actual_host_worker_persists_native_screenshot_receipt(
             "me.computer.observe",
         }
     finally:
+        if sending is not None:
+            await asyncio.gather(sending, return_exceptions=True)
         await host.close()
