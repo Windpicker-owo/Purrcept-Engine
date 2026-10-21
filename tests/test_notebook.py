@@ -66,7 +66,7 @@ def test_frontmatter_preserves_later_delimiters_and_skill_default_name() -> None
     assert folder.name == "tea" and not folder.skill
 
 
-def test_factory_is_pure_and_preserves_actual_six_model_paths(tmp_path: Path) -> None:
+def test_factory_is_pure_and_declares_notebook_and_attachment_paths(tmp_path: Path) -> None:
     blueprint = factory.prepare(
         "notes", {"notebook_dir": "notes", "seed_examples": False}, tmp_path
     )
@@ -81,6 +81,8 @@ def test_factory_is_pure_and_preserves_actual_six_model_paths(tmp_path: Path) ->
         "me.notebook.mkdir",
         "me.notebook.move",
         "me.notebook.delete",
+        "me.notebook.save_file",
+        "me.notebook.file_info",
     }
     assert '"expected_version"' in catalog.bindings["me.notebook.write"].schema_json
     with pytest.raises(ValidationError):

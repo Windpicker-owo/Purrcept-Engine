@@ -245,6 +245,32 @@ async def test_private_notice_does_not_inherit_message_minimum_wake(rig: Rig) ->
     assert len(rig.inputs.admitted) == 1
 
 
+@pytest.mark.parametrize("group", [False, True])
+async def test_file_notices_keep_identity_and_private_minimum_wake(rig: Rig, group: bool) -> None:
+    """无消息 ID 的附件通知仍正式接管，仅私聊继承直接输入唤起规则。"""
+    payload: JsonObject = {
+        "post_type": "notice",
+        "notice_type": "group_upload" if group else "offline_file",
+        "self_id": 100,
+        "user_id": 456,
+        "time": 1700000000,
+        "file": {"id": "native-file", "name": "报告.pdf", "size": 1234, "busid": 102},
+    }
+    if group:
+        payload["group_id"] = 123
+    await rig.service.event(payload, 1)
+    assert len(rig.inputs.admitted) == 1
+    record = await rig.store.get_input(rig.inputs.admitted[0].input_id)
+    assert record is not None and record.source.event_kind == "qq.file.received"
+    assert record.context.minimum_wake is (not group)
+    assert record.source.native_event_id is None
+    presentation = record.context.presentation
+    assert presentation is not None
+    material = str(presentation)
+    assert "native-file" in material and "报告.pdf" in material
+    assert record.media == () and rig.socket.sent.empty()
+
+
 async def test_history_cursor_keeps_same_snapshot_and_does_not_refetch(rig: Rig) -> None:
     context = CallContext("call", "action", asyncio.get_running_loop().time() + 5)
     task = asyncio.create_task(rig.service.read(Read(chat="private", target_id="999"), context))

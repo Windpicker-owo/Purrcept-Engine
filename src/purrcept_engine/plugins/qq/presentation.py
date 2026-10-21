@@ -171,6 +171,8 @@ def parse_qq_input(
         suffix = id_text(payload.get("suffix"))
         if suffix:
             entry["suffix"] = suffix
+    elif notice in {"group_upload", "offline_file"}:
+        entry.update({"type": "file", "text": "收到文件", "file": payload.get("file")})
     elif notice == "group_msg_emoji_like":
         entry["type"] = "reaction"
         if message_id:

@@ -35,6 +35,20 @@ class Target(Parameters):
     target_id: QQId
 
 
+class FileUrl(Target):
+    """用实际文件身份取下载链接；群文件可附上平台给出的 busid。"""
+
+    file_id: Text
+    busid: Annotated[int, Field(ge=0)] | None = None
+
+    @model_validator(mode="after")
+    def group_busid_only(self) -> Self:
+        """私聊文件协议不接受群文件业务类型。"""
+        if self.chat == "private" and self.busid is not None:
+            raise ValueError("私聊文件不使用 busid。")
+        return self
+
+
 class Send(Target):
     """按原顺序组合回复、@、语音、文字、图片和文件。"""
 

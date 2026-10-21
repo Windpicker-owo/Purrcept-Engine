@@ -10,6 +10,10 @@ ReplaceFileW 或成功后的备份清理失败时保留恢复文件和观测状�
 技能目录在 prepare_request 异步阶段重新扫描，仅交名称、适用说明与读取入口；
 正文不进入固定能力前缀。首读完整保存 EvidenceSnapshot，续读只通过宿主游标，
 没有插件分页缓存。原始读取与模型实际交付由宿主分别记录。
+
+原文件下载使用独立字节和时间预算，完整接收后才在 attachments/ 原子新建。
+附件目录只展示文件元信息，外来 Markdown 不自动成为技能。HTTP 客户端按需
+创建并由 Notebook 关闭，网络与磁盘发布共用串行所有权，二进制不进入 Worker。
 """
 
 from __future__ import annotations
@@ -31,9 +35,11 @@ from pathlib import Path
 from typing import BinaryIO, Literal, Protocol
 from uuid import uuid4
 
+import httpx
 from pydantic import BaseModel, ConfigDict, Field
 
 from purrcept_engine.errors import EngineError, HostStateError
+from purrcept_engine.infrastructure.files import DownloadError, download_file
 from purrcept_engine.plugin_system import (
     CallContext,
     CallOutcome,
@@ -286,7 +292,15 @@ class _Scan:
 class _Files:
     """同步磁盘边界，仅由 Notebook 所有的工作线程调用，不持有持久句柄。"""
 
-    def __init__(self, root: Path, *, max_bytes: int, max_entries: int, max_depth: int) -> None:
+    def __init__(
+        self,
+        root: Path,
+        *,
+        max_bytes: int,
+        max_entries: int,
+        max_depth: int,
+        file_max_bytes: int,
+    ) -> None:
         """固定文件根目录与扫描预算，不在构造时访问或修改笔记。
 
         Args:
@@ -294,9 +308,11 @@ class _Files:
             max_bytes: 此边界允许保留或接管的最大字节数。
             max_entries: 一次目录扫描允许包含的最大条目数。
             max_depth: 相对根目录允许遍历的最大深度。
+            file_max_bytes: 原始附件的独立字节上限。
         """
         self.root = root
         self.max_bytes, self.max_entries, self.max_depth = max_bytes, max_entries, max_depth
+        self.file_max_bytes = file_max_bytes
 
     def start(self, seed_examples: bool) -> None:
         """固定实际根目录，示例仅在目标不存在时发布，不覆盖外部笔记。
@@ -409,23 +425,25 @@ class _Files:
             self._final_path(api, source.fileno())
             yield source
 
-    def stable(self, target: Path, source: BinaryIO) -> bytes:
+    def stable(self, target: Path, source: BinaryIO, *, max_bytes: int | None = None) -> bytes:
         """两次有限读取须一致，stat 与当前路径仍指向同一源对象才采用正文。
 
         Args:
             target: 已通过根目录和原生句柄边界核验的实际文件路径。
             source: 当前文件操作持有的二进制文件流。
+            max_bytes: 显式覆盖正文预算，附件使用独立上限。
 
         Raises:
             NotebookError: 笔记正文超过配置字节上限；笔记在稳定读取期间发生变化，请重新读取。
         """
+        limit = self.max_bytes if max_bytes is None else max_bytes
         before = os.fstat(source.fileno())
         source.seek(0)
-        first = source.read(self.max_bytes + 1)
+        first = source.read(limit + 1)
         source.seek(0)
-        second = source.read(self.max_bytes + 1)
+        second = source.read(limit + 1)
         after = os.fstat(source.fileno())
-        if len(first) > self.max_bytes or len(second) > self.max_bytes:
+        if len(first) > limit or len(second) > limit:
             raise NotebookError("笔记正文超过配置字节上限。", code="file_too_large")
         if (
             first != second
@@ -435,6 +453,107 @@ class _Files:
         ):
             raise NotebookError("笔记在稳定读取期间发生变化，请重新读取。", code="version_conflict")
         return first
+
+    def attachment_target(self, raw: str) -> Path:
+        """核验附件专属区域，不允许下载材料经链接成为自动装载的技能。
+
+        Args:
+            raw: 必须位于 attachments/ 内的文件相对路径。
+
+        Raises:
+            NotebookError: 路径越界、链接改向或文件名缺失。
+        """
+        parts = _parts(raw)
+        if len(parts) < 2 or parts[0] != "attachments":
+            raise NotebookError("保存路径必须位于 attachments/ 目录内。", code="invalid_path")
+        area = self.root / "attachments"
+        target = self.target(raw)
+        if area.is_symlink() or area.is_junction() or not target.is_relative_to(area):
+            raise NotebookError("附件目录或链接偏离原始附件区域。", code="path_escape")
+        return target
+
+    def prepare_attachment(self, raw: str) -> None:
+        """请求网络前拒绝无效或已占用路径；不创建目录。
+
+        Args:
+            raw: attachments/ 内的明确文件路径。
+        """
+        target = self.attachment_target(raw)
+        if target.exists():
+            raise NotebookError("保存目标已经存在，不能覆盖。", code="version_conflict")
+
+    def save_attachment(self, raw: str, data: bytes) -> JsonObject:
+        """完整附件落盘后原子新建，任何已有目标均不覆盖。
+
+        Args:
+            raw: attachments/ 内的明确文件路径，父目录按需创建。
+            data: 下载边界已完整接收的原始字节。
+
+        Returns:
+            相对路径、绝对路径、字节数、SHA256 版本及新建状态。
+
+        Note:
+            只有宿主线程接触字节。暂存句柄再核边界，失败清理暂存文件；
+            Windows rename 的不覆盖语义是发布新文件的最后一道保护。
+        """
+        self.prepare_attachment(raw)
+        if len(data) > self.file_max_bytes:
+            raise NotebookError("文件超过附件字节上限。", code="file_too_large")
+        target = self.attachment_target(raw)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target = self.attachment_target(raw)
+        fd, temporary = tempfile.mkstemp(prefix=".purrcept-", suffix=".tmp", dir=target.parent)
+        staged = Path(temporary)
+        try:
+            with os.fdopen(fd, "wb") as output:
+                actual = self._final_path(_file_api(), output.fileno())
+                if not actual.is_relative_to(self.root / "attachments"):
+                    raise NotebookError("实际附件暂存位置越界。", code="path_escape")
+                output.write(data)
+                output.flush()
+                os.fsync(output.fileno())
+            target = self.attachment_target(raw)
+            try:
+                os.rename(staged, target)
+            except FileExistsError as error:
+                raise NotebookError(
+                    "保存目标已经存在，不能覆盖。", code="version_conflict"
+                ) from error
+        finally:
+            if staged.exists():
+                staged.unlink()
+        return {**self._file_metadata(target, data), "created": True, "changed": True}
+
+    def _file_metadata(self, target: Path, data: bytes) -> JsonObject:
+        return {
+            "path": self.relative(target),
+            "absolute_path": str(target),
+            "name": target.name,
+            "bytes": len(data),
+            "version": _version(data),
+        }
+
+    def file_info(self, raw: str) -> JsonObject:
+        """取得原始文件的稳定版本，不解析或交付二进制内容。
+
+        Args:
+            raw: 根目录内的精确文件相对路径，不解析技能别名。
+
+        Returns:
+            路径、名称、字节数和基于完整内容的 SHA256 版本。
+
+        Raises:
+            NotebookError: 文件不存在、不可读、超过附件上限或读取中变化。
+        """
+        target = self.target(raw)
+        if not target.is_file():
+            raise NotebookError("指定文件不存在。", code="file_missing")
+        try:
+            with self.opened(target) as source:
+                data = self.stable(target, source, max_bytes=self.file_max_bytes)
+        except OSError as error:
+            raise NotebookError("指定文件不能读取。", code="file_unreadable") from error
+        return self._file_metadata(target, data)
 
     def read_target(self, target: Path) -> ParsedNote:
         """取得同一源句柄的稳定内容与真实哈希，不把坏文件当作不存在。
@@ -530,6 +649,18 @@ class _Files:
         def file_entry(path: Path) -> JsonObject:
             """读取根目录内文件的大小与版本，保留不可读原因。"""
             rel = self.relative(path)
+            # 外来 Markdown 与其他附件只展示元信息，不能自动扩充技能目录。
+            if path.suffix.lower() not in _SUFFIXES or self.target(rel).is_relative_to(
+                self.root / "attachments"
+            ):
+                actual = self.target(rel)
+                return {
+                    "path": rel,
+                    "type": "file",
+                    "name": path.name,
+                    "bytes": actual.stat().st_size,
+                    "skill": False,
+                }
             try:
                 note = self.read_target(self.target(rel, note=True))
             except NotebookError as error:
@@ -594,7 +725,7 @@ class _Files:
                                         "entries": walk(actual, depth + 1),
                                     }
                                 )
-                        elif child.suffix.lower() in _SUFFIXES:
+                        elif child.is_file():
                             entries.append(file_entry(child))
                     except NotebookError as error:
                         issues.append({"path": child_rel, "code": error.code, "error": str(error)})
@@ -602,7 +733,7 @@ class _Files:
                 issues.append({"path": rel, "code": "directory_unreadable", "error": str(error)})
             return entries
 
-        if target.is_file() and target.suffix.lower() in _SUFFIXES:
+        if target.is_file():
             entries: list[JsonValue] = [file_entry(target)]
             kind: Literal["dir", "file"] = "file"
         elif target.is_dir():
@@ -619,7 +750,13 @@ class _Files:
 
     def _expected(self, target: Path, source: BinaryIO, expected: str | None) -> None:
         """已有文件必须以同一打开对象核正文版本；不自动合并或补造版本。"""
-        if expected is None or _version(self.stable(target, source)) != expected:
+        limit = (
+            self.max_bytes
+            if target.suffix.lower() in _SUFFIXES
+            and not target.is_relative_to(self.root / "attachments")
+            else self.file_max_bytes
+        )
+        if expected is None or _version(self.stable(target, source, max_bytes=limit)) != expected:
             raise NotebookError(
                 "文件版本已变化或未提供，须重新读取后修改。", code="version_conflict"
             )
@@ -787,7 +924,7 @@ class _Files:
                 )
             os.rename(source, target)
             kind, version = "dir", None
-        elif source.is_file() and source.suffix.lower() in _SUFFIXES:
+        elif source.is_file():
             with self.opened(source) as opened:
                 self._expected(source, opened, expected)
                 os.rename(source, target)
@@ -826,7 +963,7 @@ class _Files:
                 )
             target.rmdir()
             kind = "dir"
-        elif target.is_file() and target.suffix.lower() in _SUFFIXES:
+        elif target.is_file():
             with self.opened(target) as source:
                 self._expected(target, source, expected)
                 target.unlink()
@@ -855,6 +992,8 @@ class Notebook:
         max_depth: int = 8,
         skills_dir: str = "",
         seed_examples: bool = True,
+        file_max_bytes: int = 20 * 1024 * 1024,
+        file_timeout_seconds: float = 30.0,
     ) -> None:
         """绑定明确目录与宿主证据端口，构造不建立目录或扫描文件。
 
@@ -867,9 +1006,15 @@ class Notebook:
             max_depth: 相对根目录允许遍历的最大深度。 默认 8。
             skills_dir: 需要投影技能目录的相对目录名。 默认 ''。
             seed_examples: 是否在初始化空笔记区域时创建内置示例。 默认 True。
+            file_max_bytes: 下载和核验原始附件的独立字节上限，默认 20 MiB。
+            file_timeout_seconds: 一次完整 HTTP 下载的总秒数，默认 30 秒。
         """
         self._files = _Files(
-            root, max_bytes=max_bytes, max_entries=max_entries, max_depth=max_depth
+            root,
+            max_bytes=max_bytes,
+            max_entries=max_entries,
+            max_depth=max_depth,
+            file_max_bytes=file_max_bytes,
         )
         self._evidence = evidence
         self._instance_id = instance_id
@@ -877,37 +1022,93 @@ class Notebook:
         self._seed_examples = seed_examples
         self._lock = asyncio.Lock()
         self._closing = False
+        self._file_timeout_seconds = file_timeout_seconds
+        self._download_client: httpx.AsyncClient | None = None
+
+    async def _file_work[Result](self, operation: Callable[[], Result]) -> Result:
+        """调用方持锁，取消也等实际磁盘线程结束，防止并发发布与提前关闭。"""
+        owner = asyncio.create_task(asyncio.to_thread(operation))
+        cancelled: asyncio.CancelledError | None = None
+        while True:
+            try:
+                result = await asyncio.shield(owner)
+                break
+            except asyncio.CancelledError as error:
+                if owner.cancelled():
+                    raise
+                # 原生线程不能被 Task.cancel 撤销，重复取消仍须等真实归还。
+                cancelled = error
+        if cancelled is not None:
+            raise cancelled
+        return result
 
     async def _io[Result](self, operation: Callable[[], Result]) -> Result:
         """一个真实线程任务持有锁到结束，不把取消等待当作文件操作已撤销。"""
         async with self._lock:
             if self._closing:
                 raise HostStateError("Notebook 已开始关闭。")
-            owner = asyncio.create_task(asyncio.to_thread(operation))
-            cancelled: asyncio.CancelledError | None = None
-            while True:
-                try:
-                    result = await asyncio.shield(owner)
-                    break
-                except asyncio.CancelledError as error:
-                    if owner.cancelled():
-                        raise
-                    # 原生文件线程不能被 Task.cancel 撤销。重复观察取消也
-                    # 保持串行锁到实际结束，随后原样传播取消，不提前关闭资源。
-                    cancelled = error
-            if cancelled is not None:
-                raise cancelled
-            return result
+            return await self._file_work(operation)
 
     async def start(self) -> None:
         """创建固定根与原示例，目标存在时始终保留已有内容。"""
         await self._io(lambda: self._files.start(self._seed_examples))
 
     async def close(self) -> None:
-        """停止新的磁盘借用，实际线程结束后才返回，没有持久打开的文件句柄。"""
+        """停止新借用，等待有界下载和实际磁盘线程后关闭专属 HTTP 客户端。"""
         self._closing = True
         async with self._lock:
-            pass
+            if self._download_client is not None:
+                await self._download_client.aclose()
+
+    async def save_file(self, url: str, path: str) -> JsonObject:
+        """下载原文件到 attachments/，保留字节并返回可用于 QQ 发送的实际路径。
+
+        Args:
+            url: QQ file_url 返回或输入已经提供的 HTTP(S) 链接。
+            path: attachments/ 内的明确相对文件名，包含所需扩展名。
+
+        Returns:
+            实际路径、字节数、SHA256 版本与新建状态，不返回文件正文。
+
+        Raises:
+            NotebookError: 路径、占用、网络、大小或响应完整性核验失败。
+            HostStateError: 插件正在关闭。
+
+        Note:
+            下载与发布共用串行所有权。网络阶段取消不产生文件；发布线程开始
+            后等待其真实完成再传播取消，不承诺撤销已发布的文件。不会重试或覆盖。
+        """
+        async with self._lock:
+            if self._closing:
+                raise HostStateError("Notebook 已开始关闭。")
+            await self._file_work(lambda: self._files.prepare_attachment(path))
+            if self._download_client is None:
+                self._download_client = httpx.AsyncClient(
+                    trust_env=False,
+                    follow_redirects=False,
+                    timeout=self._file_timeout_seconds,
+                )
+            try:
+                data = await download_file(
+                    self._download_client,
+                    url,
+                    max_bytes=self._files.file_max_bytes,
+                    timeout_seconds=self._file_timeout_seconds,
+                )
+            except DownloadError as error:
+                raise NotebookError(str(error), code="download_failed") from error
+            return await self._file_work(lambda: self._files.save_attachment(path, data))
+
+    async def file_info(self, path: str) -> JsonObject:
+        """查看文件大小、路径及稳定版本，不向模型交付二进制内容。
+
+        Args:
+            path: 根目录内精确文件相对路径。
+
+        Returns:
+            文件元信息，version 可用于 move/delete 的 expected_version。
+        """
+        return await self._io(lambda: self._files.file_info(path))
 
     async def prepare_request(self) -> JsonObject:
         """每次逻辑请求前重新取得技能目录。
@@ -1090,6 +1291,8 @@ class NotebookSettings(BaseModel):
     notebook_dir: str = Field(min_length=1)
     skills_dir: str = ""
     max_bytes: int = Field(default=64 * 1024, gt=0)
+    file_max_bytes: int = Field(default=20 * 1024 * 1024, gt=0)
+    file_timeout_seconds: float = Field(default=30.0, gt=0, allow_inf_nan=False)
     max_entries: int = Field(default=500, gt=0)
     max_depth: int = Field(default=8, gt=0)
     seed_examples: bool = True
@@ -1119,6 +1322,11 @@ class _Mkdir(_Parameters):
     path: str
 
 
+class _SaveFile(_Parameters):
+    url: str = Field(min_length=1)
+    path: str = Field(min_length=1)
+
+
 class _Move(_Parameters):
     src: str
     dest: str
@@ -1143,7 +1351,13 @@ def _declare(instance_id: str, settings: NotebookSettings, base_dir: Path) -> Pl
     object_id = instance_id + ":notebook"
 
     def declaration[Parameters: BaseModel](
-        name: str, parameters: type[Parameters], description: str, example: str, usage: str = ""
+        name: str,
+        parameters: type[Parameters],
+        description: str,
+        example: str,
+        usage: str = "",
+        *,
+        timeout_seconds: float = 5.0,
     ) -> CapabilityDeclaration[Parameters]:
         """为当前插件创建包含参数模型与使用语义的能力声明。"""
         return CapabilityDeclaration(
@@ -1152,7 +1366,7 @@ def _declare(instance_id: str, settings: NotebookSettings, base_dir: Path) -> Pl
             name,
             description,
             parameters,
-            5.0,
+            timeout_seconds,
             example,
             usage,
             concurrency="target_serial",
@@ -1160,6 +1374,23 @@ def _declare(instance_id: str, settings: NotebookSettings, base_dir: Path) -> Pl
 
     tree = declaration(
         "tree", _Tree, "查看笔记目录层级、名称和技能说明，不含正文。", "await me.notebook.tree()"
+    )
+    save_file = declaration(
+        "save_file",
+        _SaveFile,
+        "从 HTTP(S) 下载原文件到笔记本 attachments/，不覆盖已有文件。",
+        'await me.notebook.save_file(url="QQ 返回的下载链接", path="attachments/qq/report.pdf")',
+        "QQ 附件先用 me.phone.qq.file_url 取得链接；保留原字节，不解析 PDF/Word/ZIP。"
+        "返回 absolute_path 可用于 QQ send(files=[...])，仍须满足 QQ 允许目录配置；"
+        "下载的 Markdown 不自动成为技能。",
+        timeout_seconds=settings.file_timeout_seconds + 5.0,
+    )
+    file_info = declaration(
+        "file_info",
+        _Mkdir,
+        "查看已保存文件的实际路径、大小和 SHA256 版本，不读取正文。",
+        'await me.notebook.file_info(path="attachments/qq/report.pdf")',
+        "返回 version 用于 move/delete 的 expected_version；普通笔记正文仍用 read。",
     )
     read = declaration(
         "read",
@@ -1184,14 +1415,14 @@ def _declare(instance_id: str, settings: NotebookSettings, base_dir: Path) -> Pl
     move = declaration(
         "move",
         _Move,
-        "重命名或移动笔记/目录，不能覆盖目标。",
+        "重命名或移动笔记、附件或目录，不能覆盖目标。",
         'await me.notebook.move(src="draft.md", dest="journal/draft.md", '
         'expected_version="读取的版本")',
     )
     delete = declaration(
         "delete",
         _Delete,
-        "删除已核版本笔记或空目录，不能删除根和非空目录。",
+        "删除已核版本笔记、附件或空目录，不能删除根和非空目录。",
         'await me.notebook.delete(path="obsolete.md", expected_version="读取的版本")',
     )
 
@@ -1209,6 +1440,8 @@ def _declare(instance_id: str, settings: NotebookSettings, base_dir: Path) -> Pl
             max_depth=settings.max_depth,
             skills_dir=settings.skills_dir,
             seed_examples=settings.seed_examples,
+            file_max_bytes=settings.file_max_bytes,
+            file_timeout_seconds=settings.file_timeout_seconds,
         )
         await notebook.start()
 
@@ -1227,6 +1460,16 @@ def _declare(instance_id: str, settings: NotebookSettings, base_dir: Path) -> Pl
             """读取受限根目录内的笔记目录树。"""
             del context
             return await outcome(notebook.tree(parameters.path))
+
+        async def run_save_file(parameters: _SaveFile, context: CallContext) -> CallOutcome:
+            """下载完整原文件并由 Notebook 的文件边界原子新建。"""
+            del context
+            return await outcome(notebook.save_file(parameters.url, parameters.path))
+
+        async def run_file_info(parameters: _Mkdir, context: CallContext) -> CallOutcome:
+            """取得可用于版本核验和 QQ 发送的文件元信息。"""
+            del context
+            return await outcome(notebook.file_info(parameters.path))
 
         async def run_read(parameters: _Read, context: CallContext) -> CallOutcome:
             """读取笔记原文，并沿已保存快照分页。"""
@@ -1272,6 +1515,8 @@ def _declare(instance_id: str, settings: NotebookSettings, base_dir: Path) -> Pl
         return PluginRuntime(
             (
                 FunctionCapability(tree, run_tree),
+                FunctionCapability(save_file, run_save_file),
+                FunctionCapability(file_info, run_file_info),
                 FunctionCapability(read, run_read),
                 FunctionCapability(write, run_write),
                 FunctionCapability(mkdir, run_mkdir),
@@ -1284,7 +1529,7 @@ def _declare(instance_id: str, settings: NotebookSettings, base_dir: Path) -> Pl
 
     return PluginBlueprint(
         (ObjectDeclaration(object_id, "notebook", "笔记本", "subject"),),
-        (tree, read, write, mkdir, move, delete),
+        (tree, read, write, mkdir, move, delete, save_file, file_info),
         build,
     )
 

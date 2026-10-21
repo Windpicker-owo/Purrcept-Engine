@@ -266,6 +266,10 @@ class QQService:
                 if sender == account:
                     return
                 kind, text = "qq.reaction.received", "收到消息回应"
+            elif notice in {"group_upload", "offline_file"}:
+                if not isinstance(payload.get("file"), dict):
+                    raise ConnectionRejected("QQ 文件通知缺少文件信息。")
+                kind, text = "qq.file.received", "收到文件"
             else:
                 return
             native_id = None  # notice 的 message_id 是目标消息，不能作为该通知的去重身份。
@@ -299,11 +303,11 @@ class QQService:
             known_messages=self.cache.read(account, chat, target, 100),
         )
         # 已通过入站过滤的私聊消息与直接 @ 同级，保证主脑取得处理机会。
-        # 这里只授予最低 WAKE；通知不继承私聊消息规则，也不直接抢占或强制回复。
+        # 这里只授予最低 WAKE；私聊附件也属于直接输入，其他通知不继承此规则。
         input_context = InputContext(
             encode_json(details).decode(),
             minimum_wake=message["mentioned_self"] is True
-            or (kind == "qq.message.received" and chat == "private"),
+            or (kind in {"qq.message.received", "qq.file.received"} and chat == "private"),
             missing_materials=tuple(missing),
         )
         submission = InputSubmission(
@@ -541,6 +545,8 @@ class QQService:
         reference = await self.raw_reply(reply)
         try:
             data = platform_data(reply)
+            # 投影也可能拒绝无效平台字段；首回包与迟到回包必须采用相同核验。
+            value = project(data)
         except QQCallError as error:
             return self.error_outcome(error, reference)
         except ConnectionRejected as error:
@@ -554,7 +560,6 @@ class QQService:
                 type(error).__name__,
                 str(error),
             )
-        value = project(data)
         value.update(
             {
                 "action": reply.action,

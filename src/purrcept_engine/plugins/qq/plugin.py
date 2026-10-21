@@ -1,6 +1,6 @@
 """完整 QQ 冻结目录与实际 Provider 绑定，连接与事实交接由 QQService 负责。
 
-prepare 只校验配置和声明 me.phone.qq 的 25 个原入口及 reconnect；build 才加载
+prepare 只校验配置和声明 me.phone.qq 的能力入口；build 才加载
 可选 websockets 实现。所有能力走 FunctionCapability 的一次 Pydantic 校验，
 写入不会通过动作别名轮试，前置查询超时也不会迟到继续执行后续写入。
 """
@@ -13,6 +13,7 @@ from pathlib import Path
 
 from pydantic import BaseModel
 
+from purrcept_engine.infrastructure.files import DownloadError, validate_download_url
 from purrcept_engine.plugin_system import (
     CallContext,
     CallOutcome,
@@ -45,6 +46,14 @@ from purrcept_engine.plugins.qq.stickers import StickerPublicationError
 from purrcept_engine.values import JsonObject, JsonValue, encode_json
 
 _SCHEMAS: tuple[tuple[str, type[BaseModel], str, str, str], ...] = (
+    (
+        "file_url",
+        p.FileUrl,
+        "获取 QQ 私聊或群文件的 HTTP(S) 下载链接，不下载文件。",
+        "file_id 从消息的 file 消息段或文件通知取得，不是 message_id。群聊填写群号；"
+        "平台提供 busid 时原样填写。取得 url 后可用 me.notebook.save_file 保存原文件。",
+        'await me.phone.qq.file_url(chat="private", target_id="123456", file_id="收到的文件标识")',
+    ),
     (
         "send",
         p.Send,
@@ -263,7 +272,17 @@ _SCHEMAS: tuple[tuple[str, type[BaseModel], str, str, str], ...] = (
 )
 
 _READS = frozenset(
-    {"read", "friends", "groups", "members", "login", "stickers", "qzone_list", "qzone_feeds"}
+    {
+        "read",
+        "friends",
+        "groups",
+        "members",
+        "login",
+        "stickers",
+        "qzone_list",
+        "qzone_feeds",
+        "file_url",
+    }
 )
 
 
@@ -317,6 +336,35 @@ class QQCapabilities:
             return CallOutcome("confirmed", await service.client.reconnect(context.call_id))
         if isinstance(parameters, p.Read):
             return await service.read(parameters, context)
+        if isinstance(parameters, p.FileUrl):
+            params: JsonObject = {"file_id": parameters.file_id}
+            if parameters.chat == "group":
+                params["group_id"] = int(parameters.target_id)
+                if parameters.busid is not None:
+                    params["busid"] = parameters.busid
+
+            def file_link(data: JsonValue) -> JsonObject:
+                """只采用平台实际返回的可下载地址，不推测本地路径或补造链接。"""
+                url = object_value(data).get("url")
+                try:
+                    if not isinstance(url, str):
+                        raise DownloadError("QQ 文件查询没有返回下载链接。")
+                    validated = validate_download_url(url)
+                except DownloadError as error:
+                    raise ConnectionRejected(str(error)) from error
+                return {
+                    "url": validated,
+                    "file_id": parameters.file_id,
+                    "chat": parameters.chat,
+                    "target_id": parameters.target_id,
+                }
+
+            return await service.rpc(
+                "get_group_file_url" if parameters.chat == "group" else "get_private_file_url",
+                params,
+                context,
+                file_link,
+            )
         if isinstance(parameters, p.Send):
             message, temporary = await service.media.io(lambda: service.media.prepare(parameters))
             pause = service.settings.typing_pause_seconds(

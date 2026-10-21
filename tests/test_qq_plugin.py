@@ -93,7 +93,7 @@ async def rig(tmp_path: Path) -> AsyncIterator[Rig]:
         await host.close()
 
 
-def test_pure_factory_preserves_twenty_six_paths_and_strict_params(tmp_path: Path) -> None:
+def test_pure_factory_declares_qq_paths_and_strict_params(tmp_path: Path) -> None:
     blueprint = factory.prepare("qq", {}, tmp_path)
     catalog = Catalog(
         (
@@ -130,6 +130,7 @@ def test_pure_factory_preserves_twenty_six_paths_and_strict_params(tmp_path: Pat
         "qzone_set_right",
         "qzone_ban",
         "reconnect",
+        "file_url",
     }
     assert set(catalog.bindings) == {"me.phone.qq." + name for name in names}
     assert blueprint.required_modules == ("websockets",)
@@ -319,12 +320,45 @@ async def test_invalid_params_and_unsupported_deep_feed_do_not_send(rig: Rig) ->
         ("send", {"chat": "private", "target_id": "123", "text": "x", "at": "456"}),
         ("read", {"cursor": "x", "chat": "private", "target_id": "123"}),
         ("qzone_post", {"content": "x", "ugc_right": 16}),
+        ("file_url", {"chat": "private", "target_id": "123", "file_id": "f", "busid": 1}),
     )
     for name, arguments in cases:
         action = await rig.host.invoke("me.phone.qq." + name, arguments)
         assert action.calls[0].state == "failed"
         assert action.calls[0].error_type == "CapabilityInputError"
     assert rig.socket.sent.empty()
+
+
+async def test_group_file_url_preserves_file_identity_and_busid(rig: Rig) -> None:
+    _, request, value = await rig.call(
+        "file_url",
+        {"chat": "group", "target_id": "123", "file_id": "group-file", "busid": 102},
+        {"url": "https://files.example/group.pdf"},
+    )
+    assert request["action"] == "get_group_file_url"
+    assert request["params"] == {"group_id": 123, "file_id": "group-file", "busid": 102}
+    assert value["url"] == "https://files.example/group.pdf"
+
+
+@pytest.mark.parametrize(
+    "data", [{}, {"url": "file:///C:/local.pdf"}, {"url": "https://user:secret@example.com/file"}]
+)
+async def test_file_url_requires_real_http_link_and_keeps_raw_response(
+    rig: Rig, data: JsonObject
+) -> None:
+    task = asyncio.create_task(
+        rig.host.invoke(
+            "me.phone.qq.file_url",
+            {"chat": "private", "target_id": "123", "file_id": "file"},
+        )
+    )
+    request = await asyncio.wait_for(rig.socket.sent.get(), 3)
+    rig.socket.reply(request, data)
+    action = await task
+    call = action.calls[0]
+    assert call.state == "unknown" and call.error_type == "ConnectionRejected"
+    assert call.result_json is not None
+    assert isinstance(decode_object(call.result_json.encode())["raw_response"], dict)
 
 
 async def test_real_worker_uses_qq_capability_and_platform_identity(rig: Rig) -> None:
@@ -349,6 +383,46 @@ async def test_real_worker_uses_qq_capability_and_platform_identity(rig: Rig) ->
     action = await task
     assert action.state == "completed" and action.result_json == '"-999"'
     assert action.calls[0].state == "confirmed" and rig.socket.sent.empty()
+
+
+async def test_late_file_url_uses_same_protocol_validation(tmp_path: Path) -> None:
+    """过期查询的迟到成功包也不能把本地路径声明成可下载链接。"""
+    socket = Socket()
+    connector = Connector((socket,))
+    host = EngineHost(
+        config(tmp_path, call_timeout=0.03),
+        plugin_factories={"qq-fixture": factory_with_connector(connector)},
+    )
+    await host.start()
+    try:
+        await connector.connected.wait()
+        task = asyncio.create_task(
+            host.invoke(
+                "me.phone.qq.file_url",
+                {
+                    "chat": "private",
+                    "target_id": "123",
+                    "file_id": "file",
+                },
+            )
+        )
+        request = await socket.sent.get()
+        initial = await task
+        assert initial.calls[0].state == "unknown"
+        socket.reply(request, {"url": "file:///C:/remote/file.zip"})
+        async with asyncio.timeout(3):
+            while True:
+                current = await host.query_action(initial.action_id)
+                if current is not None and current.calls[0].error_type == "ConnectionRejected":
+                    break
+                await asyncio.sleep(0.005)
+        assert current.calls[0].state == "unknown"
+        assert current.calls[0].result_json is not None
+        assert isinstance(
+            decode_object(current.calls[0].result_json.encode())["raw_response"], dict
+        )
+    finally:
+        await host.close()
 
 
 async def test_late_echo_appends_real_call_version_without_rewriting_action(tmp_path: Path) -> None:
