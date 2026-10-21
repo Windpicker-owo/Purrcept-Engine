@@ -177,6 +177,7 @@ def make_factory(
                     revision,
                 ),
                 audio_output=runtime,
+                caption=runtime.caption,
                 resources_released=lambda: runtime.resources_released,
             )
 

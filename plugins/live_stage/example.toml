@@ -1,0 +1,17 @@
+# 追加到 Engine purrcept.toml；不要单独替换完整配置。
+[[plugins]]
+instance_id = "live_stage"
+entry = "local/live_stage:factory"
+enabled = true
+[plugins.config]
+port = 18744
+# room_id = 1850493825
+submit_to_engine = true
+max_messages = 50
+source = "anonymous"
+
+# 官方项目已通过本机凭据录入和独立验证后，替换上面的source，不新增第二路插件：
+# source = "open_live"
+# open_live_app_id = 1783128932975
+# room_id = 1850493825
+# 密钥只能存Windows凭据管理器；配置不接受Cookie/AccessKey Secret/主播身份码。

@@ -35,6 +35,7 @@ from purrcept_engine.domain.subject.models import InputProcessing
 from purrcept_engine.domain.time.ports import TimePort
 from purrcept_engine.plugin_system.audio_port import AudioOutputPort
 from purrcept_engine.plugin_system.body_port import BodyPort
+from purrcept_engine.plugin_system.captions import SpeechCaption
 from purrcept_engine.plugin_system.panels import DevicePanel
 from purrcept_engine.values import JsonObject
 
@@ -232,6 +233,7 @@ class PluginPorts:
         audio: 同库音频阶段事实端口，不是播放器。
         native_audio_enabled: 宿主确认模型音频声明与媒体计量规则均可用于原声准入。
         native_inputs: 按原生事件身份查询首次接管事实的有限端口。
+        captions: 查询已明确发布的当前播放台词；不查询主脑文本或工具结果。
 
     Note:
         实例字段在构造后不可重新赋值；嵌套值的冻结范围由字段所属契约决定。
@@ -252,6 +254,7 @@ class PluginPorts:
     audio: AudioPort | None = None
     native_audio_enabled: bool = False
     native_inputs: NativeInputPort | None = None
+    captions: Callable[[], tuple[SpeechCaption, ...]] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -269,6 +272,7 @@ class PluginRuntime:
         audio_output: 可选的实际声音所有者借用，不转移播放器资源所有权。
         body: 可选身体端口；缺省时声音资源仍独立工作。
         resources_released: 仅在全部真实资源确认归还时返回 True 的显式证明入口。
+        caption: 可选的当前真实播放台词投影，声音结束或被撤销时返回 None。
 
     Note:
         实例字段在构造后不可重新赋值；嵌套值的冻结范围由字段所属契约决定。
@@ -300,6 +304,7 @@ class PluginRuntime:
     audio_output: AudioOutputPort | None = None
     body: BodyPort | None = None
     resources_released: Callable[[], bool] | None = None
+    caption: Callable[[], SpeechCaption | None] | None = None
 
 
 @dataclass(frozen=True, slots=True)

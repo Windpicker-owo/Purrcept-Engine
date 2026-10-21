@@ -29,6 +29,7 @@ from purrcept_engine.plugin_system import (
     LateResultPort,
     make_fact,
 )
+from purrcept_engine.plugin_system.captions import SpeechCaption
 from purrcept_engine.plugins.audio.dsp import check_program, decode_pcm, process_audio, read_profile
 from purrcept_engine.plugins.audio.models import (
     AudioSettings,
@@ -820,6 +821,27 @@ class AudioRuntime:
             if self._failure is None
             else {"error_type": type(self._failure).__name__, "message": str(self._failure)},
         }
+
+    def caption(self) -> SpeechCaption | None:
+        """返回播放器已经开始的当前台词，撤销或结束立即清除。
+
+        Returns:
+            speak 台词及真实播放身份；排队、合成、录音导出或没有播放时为 None。
+
+        Note:
+            仅读取本声音所有者；不公开主脑最终文字、思考、工具参数或候播台词。
+        """
+        active = self._active
+        if (
+            active is None
+            or not self._ready
+            or self._stopping
+            or not active.started
+            or active.stage != "playing"
+            or active.revoked is not None
+        ):
+            return None
+        return SpeechCaption(active.playback_id, active.parameters.text, active.elapsed_seconds)
 
     async def prepare_request(self) -> JsonObject:
         """保留当前播放阶段、排队身份及真实收尾回执，不暴露内部单调截止。

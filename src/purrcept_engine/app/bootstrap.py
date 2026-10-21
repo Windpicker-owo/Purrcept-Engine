@@ -32,6 +32,7 @@ from purrcept_engine.infrastructure.models.capacity import (
 )
 from purrcept_engine.infrastructure.models.clients import DecisionResource, OpenAIGenerationResource
 from purrcept_engine.infrastructure.sqlite.store import Store
+from purrcept_engine.plugin_system.captions import SpeechCaption
 from purrcept_engine.plugin_system.contracts import PluginPorts
 from purrcept_engine.values import JsonObject
 
@@ -141,6 +142,7 @@ class EngineAssembly:
                     audio=self.state.store.audio,
                     native_audio_enabled=native_audio_enabled,
                     native_inputs=self.host,
+                    captions=self.caption_snapshot,
                 )
                 runtime = await blueprint.build(ports)
                 self.state.plugins[instance_id] = runtime
@@ -298,3 +300,18 @@ class EngineAssembly:
         if outputs:
             self.state.audio_output = outputs[0]
             self.state.audio_output.bind_body(bodies[0] if bodies else None)
+
+    def caption_snapshot(self) -> tuple[SpeechCaption, ...]:
+        """读取声音所有者明确发布的当前台词，不借出其他插件资源。
+
+        Returns:
+            当前实际播放的不可变台词集合；没有播放时为空。
+
+        Note:
+            与插件同一宿主事件循环调用。显示轮询不执行能力或访问模型历史。
+        """
+        return tuple(
+            caption
+            for runtime in self.state.plugins.values()
+            if runtime.caption is not None and (caption := runtime.caption()) is not None
+        )

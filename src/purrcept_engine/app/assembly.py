@@ -7,11 +7,14 @@ Catalog 是模型目录、Worker 绑定与具体能力实现之间的唯一契�
 
 from __future__ import annotations
 
+import hashlib
 import importlib
 import importlib.util
+import sys
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
+from types import ModuleType
 
 from pydantic import ValidationError
 
@@ -100,7 +103,7 @@ def prepare_plugins(
             continue
         factory = factories.get(item.entry)
         if factory is None:
-            factory = _external_factory(item.entry)
+            factory = _external_factory(item.entry, base_dir)
         try:
             blueprint = factory.prepare(item.instance_id, item.configuration(), base_dir)
         except ValidationError as error:
@@ -129,7 +132,7 @@ def prepare_plugins(
     return PreparedPlugins(catalog, tuple(blueprints))
 
 
-def _external_factory(entry: str) -> PluginFactory:
+def _external_factory(entry: str, base_dir: Path) -> PluginFactory:
     """只解析显式包入口；错误定位入口而不输出可能包含配置秘密的异常。"""
     # 内置别名同样只在明确启用时导入纯工厂；未启用可选设备不会加载依赖。
     module_name, separator, attribute = _BUILTIN_ENTRIES.get(entry, entry).partition(":")
@@ -141,10 +144,47 @@ def _external_factory(entry: str) -> PluginFactory:
     ):
         raise ConfigError(f"插件入口未登记且不是 module:attribute：{entry}")
     try:
-        module = importlib.import_module(module_name)
+        module = (
+            _local_module(module_name.removeprefix("local/"), base_dir)
+            if module_name.startswith("local/")
+            else importlib.import_module(module_name)
+        )
         value: object = getattr(module, attribute)
     except (ImportError, AttributeError):
         raise ConfigError(f"无法加载插件纯声明入口：{entry}") from None
     if not isinstance(value, PluginFactory):
         raise ConfigError(f"插件入口必须导出 PluginFactory：{entry}")
     return value
+
+
+def _local_module(name: str, base_dir: Path) -> ModuleType:
+    """只加载显式 local/包名 对应的可信 plugins 子包，不扫描其他文件。"""
+    if not name.isidentifier() or name.startswith("_"):
+        raise ConfigError("本地插件入口必须为 local/包名:factory。")
+    root = (base_dir / "plugins").resolve()
+    package = (root / name).resolve()
+    if package.parent != root:
+        raise ConfigError("本地插件必须位于配置目录的 plugins 子目录。")
+    source = package / "__init__.py"
+    if not source.is_file():
+        raise ConfigError(f"本地插件不存在：plugins/{name}/__init__.py")
+    identity = "_purrcept_local_" + hashlib.sha256(str(package).encode()).hexdigest()[:20]
+    existing = sys.modules.get(identity)
+    if existing is not None:
+        return existing
+    spec = importlib.util.spec_from_file_location(
+        identity, source, submodule_search_locations=[str(package)]
+    )
+    if spec is None or spec.loader is None:
+        raise ConfigError(f"无法加载本地插件：{name}")
+    module: ModuleType = importlib.util.module_from_spec(spec)
+    sys.modules[identity] = module
+    try:
+        spec.loader.exec_module(module)
+    except BaseException:
+        # 导入失败清除半成品，保留原异常；不自动重试导入或装配。
+        for key in tuple(sys.modules):
+            if key == identity or key.startswith(identity + "."):
+                del sys.modules[key]
+        raise
+    return module
