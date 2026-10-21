@@ -187,22 +187,21 @@ def take_foreground_inputs(connection: sqlite3.Connection) -> tuple[str, ...]:
     Note:
         claimed 在 begin_turn 前已离开收件箱；其后的输入只能进入下一轮。
         未提交的 attention/priority 不属于主脑状态，由协调者先完成交接。
+        调用方 Store 持有 BEGIN IMMEDIATE，将睡眠门槛、取批及原文恢复同事务提交。
     """
-    with connection:
-        connection.execute("BEGIN IMMEDIATE")
-        if not pending_ids(connection, "foreground", 1):
-            return ()
-        rows: list[tuple[object, ...]] = connection.execute(
-            "SELECT p.input_id FROM pending_inputs p JOIN input_processing s USING(input_id) "
-            "WHERE s.stage IN ('assessing','submitted','foreground') ORDER BY p.sequence"
-        ).fetchall()
-        ids = tuple(_string(row[0]) for row in rows)
-        for input_id in ids:
-            connection.execute(
-                "UPDATE input_processing SET version=version+1,stage='claimed' WHERE input_id=?",
-                (input_id,),
-            )
-        return ids
+    if not pending_ids(connection, "foreground", 1):
+        return ()
+    rows: list[tuple[object, ...]] = connection.execute(
+        "SELECT p.input_id FROM pending_inputs p JOIN input_processing s USING(input_id) "
+        "WHERE s.stage IN ('assessing','submitted','foreground') ORDER BY p.sequence"
+    ).fetchall()
+    ids = tuple(_string(row[0]) for row in rows)
+    for input_id in ids:
+        connection.execute(
+            "UPDATE input_processing SET version=version+1,stage='claimed' WHERE input_id=?",
+            (input_id,),
+        )
+    return ids
 
 
 def decide_inputs(

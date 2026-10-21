@@ -41,6 +41,8 @@ class StimulusCoordinator:
         self.expected: tuple[InputProcessing, ...] = ()
         self.observed = 0
         self.minimum_wake: MinimumWakeAssessment | None = None
+        self.discard_evaluation = False
+        self.compaction: asyncio.Task[None] | None = None
         self.batch_anchor: str | None = None
         self.batch_deadline = 0.0
 
@@ -59,10 +61,27 @@ class StimulusCoordinator:
                 self.runtime.proactive.changed.clear()
                 revision = self.runtime.store.change_revision
 
+                # 休息事实与普通输入仅记历史同事务采用。先于任何迟到注意结果，
+                # 避免上床前的 wake/urgent 在睡眠期间重新唤起主脑。
+                rest = await self.runtime.commit(
+                    self.runtime.store.apply_sleep_policy(self.runtime.attention_owner)
+                )
+                sleeping = rest is not None
+                if sleeping and self.evaluation is not None:
+                    self.discard_evaluation = True
+                    if not self.evaluation.done() and not self.evaluation.cancelling():
+                        self.evaluation.cancel()
+
                 if self.evaluation is not None and self.evaluation.done():
-                    result = self.evaluation.result()
+                    if not self.evaluation.cancelled():
+                        result = self.evaluation.result()
+                        if not self.discard_evaluation:
+                            await self.adopt(result)
                     self.evaluation = None
-                    await self.adopt(result)
+                    self.discard_evaluation = False
+                if self.compaction is not None and self.compaction.done():
+                    self.compaction.result()
+                    self.compaction = None
                 if self.foreground is not None and self.foreground.done():
                     self.foreground.result()
                     self.foreground = None
@@ -73,10 +92,20 @@ class StimulusCoordinator:
                 if priority:
                     records = await self.runtime.store.buffered_inputs()
                     expected = await self.runtime.processing(records)
+                    # 接管事务也可因刚上床而结案普通输入。查询原文与读取版本之间
+                    # 可以失效，须重新取批，不能把终态作为合法缓存提交或锁存故障。
+                    if (
+                        not expected
+                        or any(item.stage not in ("attention", "priority") for item in expected)
+                        or not any(item.stage == "priority" for item in expected)
+                    ):
+                        continue
                     if await self.runtime.commit(
                         self.runtime.store.submit_inputs(expected, minimum_wake=True)
                     ):
                         submitted = await self.runtime.processing(records)
+                        if any(item.stage != "foreground" for item in submitted):
+                            continue
                         observed = self.runtime.session.generation
                         # VAD 起音只报告停播，不能借高优先路径间接抢占生成。
                         # 有其他高价值内容时才判断整批是否紧急；最终语音内容
@@ -88,6 +117,7 @@ class StimulusCoordinator:
                         )
                         if (
                             has_upgrade_input
+                            and not sleeping
                             and self.runtime.attention is not None
                             and self.runtime.session.eligible(observed)
                         ):
@@ -110,6 +140,7 @@ class StimulusCoordinator:
                         )
                         if records:
                             self.runtime.check()
+                            self.runtime.proactive.foreground_started()
                             self.foreground = asyncio.create_task(
                                 self.runtime.foreground_service.run(records),
                                 name="subject-foreground",
@@ -118,8 +149,34 @@ class StimulusCoordinator:
                             self.foreground.add_done_callback(self.runtime.worker_done)
                         continue
 
-                remaining: float | None = None
-                if self.evaluation is None:
+                # 上床所在轮次须先结案，摘要才能取得该会话的空闲版本。领取事实
+                # 持久化，更新休息时长、模型失败或重启均不重复触发同一次睡眠。
+                # 独立有限任务不阻塞高优先输入；摘要安装仍复查会话 idle/CAS。
+                if (
+                    rest is not None
+                    and not rest.history_compaction_claimed
+                    and self.foreground is None
+                    and self.compaction is None
+                    and self.runtime.compact_sleep_history is not None
+                ):
+                    if await self.runtime.commit(self.runtime.store.claim_sleep_compaction(rest)):
+                        self.compaction = asyncio.create_task(
+                            self.compact_history(), name="sleep-history-compaction"
+                        )
+                        self.runtime.tasks.add(self.compaction)
+                        self.compaction.add_done_callback(self.runtime.worker_done)
+                    continue
+
+                # 定时检查先于下一次普通注意取批，持续背景流量不能饿死主脑。
+                # 到期可越过仍在等待的注意调用；取批版本 CAS 拒绝其迟到判断。
+                remaining = await self.runtime.proactive.tick(
+                    foreground_busy=self.foreground is not None,
+                    attention_busy=self.evaluation is not None,
+                    sleeping=sleeping,
+                )
+                if remaining == 0:
+                    continue
+                if not sleeping and self.evaluation is None:
                     assessments = await self.runtime.store.minimum_wake_assessments(
                         self.runtime.attention_owner, limit=1
                     )
@@ -143,39 +200,42 @@ class StimulusCoordinator:
                     )
                     if records:
                         expected = await self.runtime.processing(records)
+                        if any(item.stage != "attention" for item in expected):
+                            continue
                         # 墙钟只在观察到新批次时换算一次，之后用单调时钟等待。
                         # 后来输入和系统时间回拨都不能刷新已建立的批次期限。
                         if self.batch_anchor != records[0].input_id:
                             self.batch_anchor = records[0].input_id
                             first = expected[0].admitted_at
-                            remaining = min(
+                            batch_remaining = min(
                                 self.runtime.settings.coalesce_seconds,
                                 max(
                                     0.0,
                                     first + self.runtime.settings.coalesce_seconds - time.time(),
                                 ),
                             )
-                            self.batch_deadline = asyncio.get_running_loop().time() + remaining
-                        remaining = max(
+                            self.batch_deadline = (
+                                asyncio.get_running_loop().time() + batch_remaining
+                            )
+                        batch_remaining = max(
                             0.0, self.batch_deadline - asyncio.get_running_loop().time()
                         )
-                        if len(records) == self.runtime.settings.attention_batch or remaining <= 0:
+                        if (
+                            len(records) == self.runtime.settings.attention_batch
+                            or batch_remaining <= 0
+                        ):
                             if await self.runtime.commit(
                                 self.runtime.store.submit_inputs(expected, minimum_wake=False)
                             ):
-                                self.launch(records, await self.runtime.processing(records))
+                                submitted = await self.runtime.processing(records)
+                                if all(item.stage == "assessing" for item in submitted):
+                                    self.launch(records, submitted)
                             continue
-
-                # 可选空闲刺激只在现有协调循环中产生；不能为忙碌前台积累定时输入。
-                idle_remaining = await self.runtime.proactive.tick(
-                    busy=self.foreground is not None or self.evaluation is not None
-                )
-                if idle_remaining == 0:
-                    continue
-                if idle_remaining is not None:
-                    remaining = (
-                        idle_remaining if remaining is None else min(remaining, idle_remaining)
-                    )
+                        remaining = (
+                            batch_remaining
+                            if remaining is None
+                            else min(remaining, batch_remaining)
+                        )
                 await self.wait(revision, seconds=remaining)
         finally:
             # 生命周期边界：取消观察不能遗失注意后端的实际清理。前台任务同时
@@ -184,6 +244,17 @@ class StimulusCoordinator:
                 if not self.evaluation.done() and not self.evaluation.cancelling():
                     self.evaluation.cancel()
                 await asyncio.gather(self.evaluation, return_exceptions=True)
+            if self.compaction is not None:
+                if not self.compaction.done() and not self.compaction.cancelling():
+                    self.compaction.cancel()
+                await asyncio.gather(self.compaction, return_exceptions=True)
+
+    async def compact_history(self) -> None:
+        """推进已领取的唯一睡眠维护，任务由主体登记并在关闭时真实收回。"""
+        compact = self.runtime.compact_sleep_history
+        if compact is None:
+            raise RuntimeError("未装配睡眠历史维护。")
+        await compact()
 
     async def records_for(self, assessment: MinimumWakeAssessment) -> tuple[InputRecord, ...]:
         """恢复完整批次原文；缺少已关联证据属于权威故障。
@@ -297,7 +368,9 @@ class StimulusCoordinator:
         changed.add_done_callback(remember_failure)
         options = asyncio.create_task(self.runtime.proactive.changed.wait(), name="subject-options")
         options.add_done_callback(remember_failure)
-        calls = [task for task in (self.foreground, self.evaluation) if task is not None]
+        calls = [
+            task for task in (self.foreground, self.evaluation, self.compaction) if task is not None
+        ]
         try:
             done, _ = await asyncio.wait(
                 [changed, options, *calls], timeout=seconds, return_when=asyncio.FIRST_COMPLETED

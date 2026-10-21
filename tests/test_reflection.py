@@ -45,7 +45,11 @@ from purrcept_engine.domain.knowledge.models import (
     SupervisionRecord,
 )
 from purrcept_engine.domain.knowledge.service import KnowledgeService
-from purrcept_engine.domain.subject.reflection_tools import EvidenceDeliveries, ReflectionTools
+from purrcept_engine.domain.subject.reflection_tools import (
+    EvidenceDeliveries,
+    ReflectionTools,
+    reflection_instructions,
+)
 from purrcept_engine.errors import StorageError
 from purrcept_engine.infrastructure.sqlite.store import Store
 from purrcept_engine.values import JsonValue, decode_object, encode_json
@@ -199,7 +203,9 @@ async def test_core_same_response_read_then_revise_waits_until_next_request(stor
             ModelResponse(Message.assistant("已完成内部复核。")),
         ),
     )
-    conversation = Model(backend, "test").conversation(tools=tools.toolset(), max_model_rounds=8)
+    conversation = Model(backend, "test").conversation(
+        instructions=reflection_instructions(), tools=tools.toolset(), max_model_rounds=8
+    )
     await AgentDriver(InlineExecutor()).run(conversation.ask(initial), host=None)
     assert len(backend.requests) == 4
     failed = [
@@ -253,6 +259,309 @@ async def test_real_tool_schema_is_typed_and_rejects_invalid_arguments(store: St
     assert extra.is_error
     empty_query = await invoke(tools, "recall", {"query": "", "start": 1.0, "end": 20.0})
     assert not empty_query.is_error
+
+
+@pytest.mark.parametrize("reference_kind", ["evidence_id", "truncated_slice"])
+async def test_failed_memory_write_requires_correction_before_no_change_finish(
+    store: Store, reference_kind: str
+) -> None:
+    """重放真实错误来源形式：失败后不能降为 no_change，修正完整引用可正常写入。"""
+    page = await source(store, "meal", "本次午餐选择塔斯汀，不能推断为长期习惯。")
+    assert page.slice is not None
+    tools, _, initial = await reflection(store, page)
+    assert isinstance(initial.content[1], TextBlock)
+    payload = decode_object(initial.content[1].text.encode())
+    assert payload["memory_sources"] == [page.slice.slice_ref]
+    await store.knowledge.mark_presented("batch", 1, tools.presented_refs(ModelRequest((initial,))))
+    wrong_ref = "meal" if reference_kind == "evidence_id" else page.slice.slice_ref[:38]
+    failed = await invoke(
+        tools,
+        "revise_memory",
+        {
+            "id": "meal-episode",
+            "kind": "episode",
+            "content": "本次午餐选择塔斯汀。",
+            "sources": [wrong_ref],
+        },
+    )
+    assert failed.is_error
+    assert isinstance(failed.content[0], TextBlock)
+    failure = decode_object(failed.content[0].text.encode())
+    recovery = failure["memory_recovery"]
+    assert isinstance(recovery, dict)
+    assert recovery["supplied_sources"] == [wrong_ref]
+    assert recovery["available_sources"] == [
+        {
+            "evidence_id": "meal",
+            "version": 1,
+            "memory_sources": [page.slice.slice_ref],
+        }
+    ]
+    refused = await invoke(
+        tools,
+        "finish_reflection",
+        {
+            "reviews": [review(page.slice.slice_ref)],
+            "deferred": [],
+            "findings": [],
+        },
+    )
+    assert refused.is_error
+    assert (await store.knowledge.get_reflection("batch", 1)).state == "running"
+    assert await store.knowledge.get_memory("meal-episode") is None
+    corrected = await invoke(
+        tools,
+        "revise_memory",
+        {
+            "id": "meal-episode",
+            "kind": "episode",
+            "content": "本次午餐选择塔斯汀。",
+            "sources": [page.slice.slice_ref],
+        },
+    )
+    assert not corrected.is_error
+    finished = await invoke(
+        tools,
+        "finish_reflection",
+        {
+            "reviews": [review(page.slice.slice_ref, decision="written")],
+            "deferred": [],
+            "findings": [],
+        },
+    )
+    assert not finished.is_error
+    memory = await store.knowledge.get_memory("meal-episode")
+    assert memory is not None and memory.patch.sources == (page.slice.slice_ref,)
+
+
+@pytest.mark.parametrize("resolution", ["defer", "abandon"])
+async def test_failed_write_may_be_explicitly_deferred_or_reconsidered(
+    store: Store, resolution: str
+) -> None:
+    """不强迫写入：无法修复可延期，重新判断不应记忆必须具名解释并留结案证据。"""
+    page = await source(store, "source")
+    assert page.slice is not None
+    tools, _, initial = await reflection(store, page)
+    await store.knowledge.mark_presented("batch", 1, tools.presented_refs(ModelRequest((initial,))))
+    assert (
+        await invoke(
+            tools,
+            "revise_memory",
+            {
+                "id": "m",
+                "content": "暂定认识",
+                "sources": ["source"],
+            },
+        )
+    ).is_error
+    unknown = await invoke(
+        tools,
+        "finish_reflection",
+        {
+            "reviews": [review(page.slice.slice_ref)],
+            "deferred": [],
+            "findings": [],
+            "abandoned_writes": [{"id": "never-attempted", "reason": "不能伪造失败处置。"}],
+        },
+    )
+    assert unknown.is_error
+    args: dict[str, JsonValue] = {"reviews": [], "deferred": [], "findings": []}
+    if resolution == "defer":
+        args["deferred"] = [{"evidence": [page.slice.slice_ref], "reason": "先保留待核对来源。"}]
+    else:
+        args["reviews"] = [review(page.slice.slice_ref)]
+        args["abandoned_writes"] = [
+            {"id": "m", "reason": "原文只是测试回执，重新判断没有生活事实。"}
+        ]
+    finished = await invoke(tools, "finish_reflection", args)
+    assert not finished.is_error
+    batch = await store.knowledge.get_reflection("batch", 1)
+    assert batch.receipt is not None and not batch.receipt.written
+    assert len(batch.receipt.submission.abandoned_writes) == (resolution == "abandon")
+    assert bool(batch.receipt.submission.deferred) == (resolution == "defer")
+    # 明确延期不会立即排入同范围自循环；范围和原因已保存在权威结案中。
+    assert not await store.knowledge.pending_reflection()
+    assert await store.knowledge.get_memory("m") is None
+
+
+async def test_core_memory_repair_uses_same_batch_and_keeps_strict_read_qualification(
+    store: Store,
+) -> None:
+    """真实 Core 工具循环看到纠正信息，先拒绝掩盖失败，再完成写入和结案。"""
+    page = await source(store, "source", "明确约定：朋友连麦时不主动插话。")
+    assert page.slice is not None
+    tools, _, initial = await reflection(store, page)
+    write: dict[str, JsonValue] = {
+        "id": "boundary",
+        "kind": "relationship",
+        "content": "朋友连麦时不主动插话。",
+        "sources": ["source"],
+    }
+    finish: dict[str, JsonValue] = {
+        "reviews": [review(page.slice.slice_ref)],
+        "deferred": [],
+        "findings": [],
+    }
+    backend = Backend(
+        store,
+        tools,
+        (
+            calls(ToolCallBlock("bad", "revise_memory", arguments=write)),
+            calls(ToolCallBlock("hidden", "finish_reflection", arguments=finish)),
+            calls(
+                ToolCallBlock(
+                    "fixed", "revise_memory", arguments={**write, "sources": [page.slice.slice_ref]}
+                )
+            ),
+            calls(
+                ToolCallBlock(
+                    "finished",
+                    "finish_reflection",
+                    arguments={
+                        **finish,
+                        "reviews": [review(page.slice.slice_ref, decision="written")],
+                    },
+                )
+            ),
+            ModelResponse(Message.assistant("内部复核结束。")),
+        ),
+    )
+    conversation = Model(backend, "test").conversation(tools=tools.toolset(), max_model_rounds=8)
+    await AgentDriver(InlineExecutor()).run(conversation.ask(initial), host=None)
+    for request, identity in ((backend.requests[1], "bad"), (backend.requests[2], "hidden")):
+        results = [
+            b
+            for m in request.messages
+            for b in m.content
+            if isinstance(b, ToolResultBlock) and b.tool_call_id == identity
+        ]
+        assert len(results) == 1 and results[0].is_error
+    memory = await store.knowledge.get_memory("boundary")
+    assert memory is not None and memory.version == 1
+    assert (await store.knowledge.get_reflection("batch", 1)).state == "completed"
+
+
+async def test_mixed_valid_and_invalid_sources_never_drop_invalid_source_silently(
+    store: Store,
+) -> None:
+    """重放四真一假的同类情况，完整提案失败后只能显式提交修正后的全部引用。"""
+    pages = (await source(store, "first"), await source(store, "second"))
+    references = tuple(page.slice.slice_ref for page in pages if page.slice is not None)
+    assert len(references) == 2
+    batch = await store.knowledge.begin_reflection("batch", references)
+    tools = ReflectionTools(store.knowledge, batch, Ports(store))
+    initial = await tools.initial_message(pages)
+    await store.knowledge.mark_presented("batch", 1, tools.presented_refs(ModelRequest((initial,))))
+    failed = await invoke(
+        tools,
+        "revise_memory",
+        {
+            "id": "m",
+            "content": "需要两份原文共同支持的认识。",
+            "sources": [references[0], references[1][:38]],
+        },
+    )
+    assert failed.is_error and await store.knowledge.get_memory("m") is None
+    assert not (
+        await invoke(
+            tools,
+            "revise_memory",
+            {
+                "id": "m",
+                "content": "两份原文共同支持的认识。",
+                "sources": list(references),
+            },
+        )
+    ).is_error
+    memory = await store.knowledge.get_memory("m")
+    assert memory is not None and memory.patch.sources == references
+
+
+async def test_unresolved_write_keeps_original_pending_across_batch_interruption_and_reopen(
+    tmp_path: Path,
+) -> None:
+    """失败门槛只归当前批次；中断后原文仍待复核，新批不借旧预算或旧已读资格。"""
+    path = tmp_path / "write-recovery.sqlite3"
+    store = await Store.open(path)
+    try:
+        page = await source(store, "source", "有据生活约定。")
+        assert page.slice is not None
+        tools, _, initial = await reflection(store, page)
+        await store.knowledge.mark_presented(
+            "batch", 1, tools.presented_refs(ModelRequest((initial,)))
+        )
+        assert (
+            await invoke(
+                tools,
+                "revise_memory",
+                {
+                    "id": "m",
+                    "content": "有据生活约定。",
+                    "sources": ["source"],
+                },
+            )
+        ).is_error
+        assert (
+            await invoke(
+                tools,
+                "finish_reflection",
+                {
+                    "reviews": [review(page.slice.slice_ref)],
+                    "deferred": [],
+                    "findings": [],
+                },
+            )
+        ).is_error
+        await store.knowledge.abandon_reflection("batch", 1, "host_closing")
+    finally:
+        await store.close()
+    reopened = await Store.open(path)
+    try:
+        pending = await reopened.knowledge.pending_reflection()
+        assert len(pending) == 1 and pending[0].evidence_id == "source"
+        page = await reopened.knowledge.read_evidence("source")
+        assert page.slice is not None
+        tools, _, initial = await reflection(reopened, page, identity="new-batch")
+        assert (
+            await invoke(
+                tools,
+                "revise_memory",
+                {
+                    "id": "m",
+                    "content": "不能借旧已读资格。",
+                    "sources": [page.slice.slice_ref],
+                },
+            )
+        ).is_error
+        await reopened.knowledge.mark_presented(
+            "new-batch", 1, tools.presented_refs(ModelRequest((initial,)))
+        )
+        assert not (
+            await invoke(
+                tools,
+                "revise_memory",
+                {
+                    "id": "m",
+                    "content": "有据生活约定。",
+                    "sources": [page.slice.slice_ref],
+                },
+            )
+        ).is_error
+        assert not (
+            await invoke(
+                tools,
+                "finish_reflection",
+                {
+                    "reviews": [review(page.slice.slice_ref, decision="written")],
+                    "deferred": [],
+                    "findings": [],
+                },
+            )
+        ).is_error
+        assert await reopened.knowledge.get_memory("m") is not None
+        assert not await reopened.knowledge.pending_reflection()
+    finally:
+        await reopened.close()
 
 
 @pytest.mark.asyncio

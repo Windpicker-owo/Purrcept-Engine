@@ -3,6 +3,8 @@
 ``Store.open`` 创建单连接所有者；宿主须先持有数据目录实例锁。接管事务同时
 检查额度并保存原文、媒体引用和待办。普通请求与处置提交使用独立有界队列，
 处置可以先于尚未开始的普通事务，不能抢占已开始的 SQLite 事务。
+睡眠普通输入在同一接管事务仅记历史并释放待办；旧睡眠积压在额度核验前收回，
+原文、媒体与反思证据保留，高优先及已取批工作仍受原有额度约束。
 
 等待取消不撤销已入队操作；原生来源可通过重投取得第一次接管身份。关闭只
 执行一次，停止新的写入后排空已受理操作；连接收回前仍可接管有限只读查询。
@@ -67,6 +69,7 @@ from purrcept_engine.domain.subject.models import (
     TurnOutcome,
     TurnRecord,
 )
+from purrcept_engine.domain.time.models import RestState
 from purrcept_engine.errors import StorageError
 from purrcept_engine.infrastructure.sqlite import activities as activity_storage
 from purrcept_engine.infrastructure.sqlite import execution as execution_storage
@@ -77,6 +80,7 @@ from purrcept_engine.infrastructure.sqlite import model_requests as model_storag
 from purrcept_engine.infrastructure.sqlite import projections as projection_storage
 from purrcept_engine.infrastructure.sqlite import retention as retention_storage
 from purrcept_engine.infrastructure.sqlite import subject as subject_storage
+from purrcept_engine.infrastructure.sqlite import time as time_storage
 from purrcept_engine.infrastructure.sqlite.audio_port import AudioLedger
 from purrcept_engine.infrastructure.sqlite.controls import ControlLedger
 from purrcept_engine.infrastructure.sqlite.feedback_port import FeedbackLedger
@@ -101,6 +105,83 @@ def _text(value: object) -> str:
 
 def _optional_text(value: object) -> str | None:
     return None if value is None else _text(value)
+
+
+def _input_context(value: object) -> InputContext:
+    """读取持久化可信信号时统一严格核验，睡眠分流不能靠宽松 JSON 真值授权。"""
+    try:
+        fields = decode_object(_text(value).encode("utf-8"))
+        if (
+            set(fields)
+            != {
+                "type",
+                "details_json",
+                "minimum_wake",
+                "interrupt_generation",
+                "speech_started",
+                "missing_materials",
+            }
+            or fields["type"] != "InputContext"
+        ):
+            raise ValueError("持久化输入关系的类型或字段不符合格式。")
+        if any(
+            type(fields[key]) is not bool
+            for key in (
+                "minimum_wake",
+                "interrupt_generation",
+                "speech_started",
+            )
+        ):
+            raise ValueError("持久化程序信号必须是 bool。")
+        missing = fields["missing_materials"]
+        if not isinstance(missing, list):
+            raise ValueError("持久化材料缺口必须是数组。")
+        return InputContext(
+            details_json=_text(fields["details_json"]),
+            minimum_wake=fields["minimum_wake"] is True,
+            interrupt_generation=fields["interrupt_generation"] is True,
+            speech_started=fields["speech_started"] is True,
+            missing_materials=tuple(_text(item) for item in missing),
+        )
+    except (ActionProtocolError, ValueError, KeyError) as error:
+        raise StorageError("输入关系和程序信号损坏。", code="invalid_record") from error
+
+
+def _sleep_record_only(adapter_id: str, context: InputContext) -> bool:
+    """睡眠时只有可信高优先外部输入保留前台资格，旧主动思考不能绕过睡眠。"""
+    return adapter_id == "subject.idle" or not (
+        context.minimum_wake or context.interrupt_generation or context.speech_started
+    )
+
+
+def _record_sleep_input(connection: sqlite3.Connection, identity: str) -> None:
+    """仅结案调度并释放待办名额；原文、媒体、证据和反思待办均不删除。
+
+    processed 在此只表示明确记录，不表示主脑或注意模型已经看过。版本递增
+    撤销睡前注意的旧观察；调用者的同一事务同时承担回滚和通知责任。
+    """
+    connection.execute(
+        "UPDATE input_processing SET version=version+1,stage='processed',"
+        "reason='subject.sleeping.recorded' WHERE input_id=?",
+        (identity,),
+    )
+    connection.execute("DELETE FROM pending_inputs WHERE input_id=?", (identity,))
+
+
+def _record_sleep_inputs(connection: sqlite3.Connection) -> RestState | None:
+    """当前事务内收回睡眠普通积压；接管额度检查、协调和取批共用同一门槛。"""
+    rest = time_storage.get_rest(connection)
+    if rest is None:
+        return None
+    rows: list[tuple[str, str, str]] = connection.execute(
+        "SELECT p.input_id,i.adapter_id,i.context_json FROM pending_inputs p "
+        "JOIN input_processing s USING(input_id) JOIN inputs i USING(input_id) "
+        "WHERE s.stage IN ('attention','assessing','submitted','foreground','priority')"
+    ).fetchall()
+    for identity, adapter_id, context_json in rows:
+        if _sleep_record_only(adapter_id, _input_context(context_json)):
+            _record_sleep_input(connection, identity)
+    return rest
 
 
 def _integer(value: object) -> int:
@@ -444,6 +525,8 @@ def admit_in_transaction(
     Note:
         Store 的外部接管及时间服务共享这一交接：闹铃消费与一次输入保存不能
         分两次提交。调用方拥有额度核验和失败回滚，去重仍按同一原生事实处理。
+        同事务采用睡眠规则，普通输入只记历史；单条大小和瞬时提交仍有界，
+        不通过无界待办或扩大高优先额度来解决睡眠积压。
     """
     source = submission.source
     media_ids = tuple(hashlib.sha256(asset.content).hexdigest() for asset in submission.media)
@@ -482,11 +565,20 @@ def admit_in_transaction(
                 raise StorageError("原生输入身份与已接管事实冲突。", code="source_conflict")
             return Admission(_text(existing[0]), duplicate=True)
 
+    # 先采用当前睡眠事实再核额度，旧版本已堆满的普通积压也不能拒绝唤醒输入。
+    # 新普通输入直接记历史，不能先占待办再等待协调者，否则仍有满队列竞争窗口。
+    rest = _record_sleep_inputs(connection)
+    record_only = rest is not None and _sleep_record_only(source.adapter_id, submission.context)
     usage: tuple[object, ...] = connection.execute(
         "SELECT count(*), coalesce(sum(i.logical_bytes), 0) "
         "FROM pending_inputs p JOIN inputs i ON i.input_id = p.input_id"
     ).fetchone()
-    if _integer(usage[0]) >= max_inputs or _integer(usage[1]) + logical_bytes > max_input_bytes:
+    if logical_bytes > max_input_bytes or (
+        not record_only
+        and (
+            _integer(usage[0]) >= max_inputs or _integer(usage[1]) + logical_bytes > max_input_bytes
+        )
+    ):
         raise StorageError("未处置输入的接管额度已满。", code="input_capacity")
 
     input_id = uuid4().hex
@@ -525,6 +617,8 @@ def admit_in_transaction(
             or submission.context.speech_started
         ),
     )
+    if record_only:
+        _record_sleep_input(connection, input_id)
     knowledge_storage.put_evidence_in_transaction(
         connection,
         knowledge_models.EvidenceSnapshot(
@@ -731,6 +825,55 @@ class Store:
         """
         return await self._submit(self._idle_input_state)
 
+    async def apply_sleep_policy(self, owner_id: str) -> RestState | None:
+        """同一事务读取休息并将普通输入仅记历史，保留原文与高优先交接。
+
+        Args:
+            owner_id: 当前注意评估所有者，不修改其他宿主的旧判断记录。
+
+        Returns:
+            明确休息事实；清醒时不修改调度状态。
+
+        Note:
+            普通缓存、未决注意、已暂存及睡前普通唤醒统一仅记历史并释放额度；
+            已有高优先意图仍可处理。定时主动思考即使刚在睡前接管也仅记录。
+            当前已 claimed/processing 的轮次不撤销，原文和反思证据保留。
+            无变化时不写行，因此不会因本查询通知自身而形成调度热循环。
+        """
+        self._validate_id(owner_id)
+
+        def apply(connection: sqlite3.Connection) -> RestState | None:
+            """只在短事务里采用当前休息事实，模型和设备等待留在事务外。"""
+            self._queue.check_writing()
+            with connection:
+                connection.execute("BEGIN IMMEDIATE")
+                rest = _record_sleep_inputs(connection)
+                if rest is None:
+                    return None
+                connection.execute(
+                    "UPDATE minimum_wake_assessments SET state='completed',level='wake',"
+                    "reason='subject.sleeping' WHERE owner_id=? AND state='pending'",
+                    (owner_id,),
+                )
+                return rest
+
+        return await self._submit(apply, control=True, writing=True)
+
+    async def claim_sleep_compaction(self, expected: RestState) -> bool:
+        """领取一次睡眠压缩，领取事实跨重启保留，不表示摘要成功。
+
+        Args:
+            expected: 本次休息的确切观察版本。
+
+        Returns:
+            是否首次领取，离床或版本冲突时为 False。
+        """
+        return await self._submit(
+            lambda connection: time_storage.claim_rest_compaction(connection, expected),
+            control=True,
+            writing=True,
+        )
+
     @staticmethod
     def _idle_input_state(connection: sqlite3.Connection) -> tuple[int, bool]:
         """只把需要处理的阶段视为忙碌，observe 积累仍可由空闲刺激唤醒。"""
@@ -742,23 +885,30 @@ class Store:
         return row[0], bool(row[1])
 
     async def admit_idle_input(
-        self, submission: InputSubmission, *, expected_sequence: int
+        self,
+        submission: InputSubmission,
+        *,
+        expected_sequence: int,
+        foreground_overdue: bool = False,
     ) -> Admission | None:
-        """原子复查无新输入和无待处理工作，再沿正式接管逻辑保存空闲刺激。
+        """原子复查静默或主脑到期条件，沿正式接管逻辑保存主动思考刺激。
 
         Args:
             submission: 调度器的完整空闲事实，必须保底唤起且不能直接停音/抢占。
             expected_sequence: 最近一次空闲观察的非负 inputs 接管游标。
+            foreground_overdue: 协调者确认主脑期限已到；允许新增普通刺激及注意
+                待办，不允许已有优先唤醒、已取批或正在处理的主脑工作。
 
         Returns:
-            实际接管凭证；被后来刺激或待处理工作挡住时返回 None。
+            实际接管凭证；所选触发条件已失效时返回 None。
 
         Raises:
-            ValueError: 游标或空闲刺激信号不满足入口约束。
+            ValueError: 游标、到期标记或空闲刺激信号不满足入口约束。
             StorageError: 接管额度不足或权威存储故障。
 
         Note:
-            复查与原文/待办插入在同一事务，排队期间的新输入优先，不能先判断再裸 admit。
+            复查与原文/待办插入在同一事务。静默分支中新输入优先；主脑到期分支
+            则允许新背景输入一并唤醒，否则连续背景流量仍会使主脑饥饿。
         """
         if (
             isinstance(expected_sequence, bool)
@@ -766,6 +916,8 @@ class Store:
             or expected_sequence < 0
         ):
             raise ValueError("接管游标必须是非负整数。")
+        if not isinstance(foreground_overdue, bool):
+            raise ValueError("主脑到期标记必须是布尔值。")
         if not isinstance(submission, InputSubmission) or (
             not submission.context.minimum_wake
             or submission.context.interrupt_generation
@@ -775,13 +927,23 @@ class Store:
         logical_bytes = input_logical_bytes(submission)
 
         def admit(connection: sqlite3.Connection) -> Admission | None:
-            """同一提交段只接受仍有效的空闲观察；冲突不创建输入或唤醒意图。"""
+            """同一提交段复查对应分支；不能用定时刺激重复已有主脑唤醒。"""
             self._queue.check_writing()
             with connection:
                 connection.execute("BEGIN IMMEDIATE")
-                sequence, pending = self._idle_input_state(connection)
-                if sequence != expected_sequence or pending:
+                if time_storage.get_rest(connection) is not None:
                     return None
+                if foreground_overdue:
+                    scheduled = connection.execute(
+                        "SELECT 1 FROM input_processing "
+                        "WHERE stage IN ('priority','foreground','claimed','processing') LIMIT 1"
+                    ).fetchone()
+                    if scheduled is not None:
+                        return None
+                else:
+                    sequence, pending = self._idle_input_state(connection)
+                    if sequence != expected_sequence or pending:
+                        return None
                 return admit_in_transaction(
                     connection,
                     submission,
@@ -961,13 +1123,16 @@ class Store:
         """
 
         def take(connection: sqlite3.Connection) -> tuple[InputRecord, ...]:
-            """同一存储操作恢复原文，取批之后的新输入不进入本轮。"""
+            """睡眠复查与取批共用事务，排队期间上床也不能被旧普通唤醒绕过。"""
             records: list[InputRecord] = []
-            for input_id in subject_storage.take_foreground_inputs(connection):
-                record = self._get_input(connection, input_id)
-                if record is None:
-                    raise StorageError("处理队列引用不存在的原文。", code="invalid_record")
-                records.append(record)
+            with connection:
+                connection.execute("BEGIN IMMEDIATE")
+                _record_sleep_inputs(connection)
+                for input_id in subject_storage.take_foreground_inputs(connection):
+                    record = self._get_input(connection, input_id)
+                    if record is None:
+                        raise StorageError("处理队列引用不存在的原文。", code="invalid_record")
+                    records.append(record)
             return tuple(records)
 
         return await self._submit(take, control=True, writing=True)
@@ -1956,40 +2121,7 @@ class Store:
             )
             for item in media_rows
         )
-        try:
-            context_fields = decode_object(_text(row[12]).encode("utf-8"))
-            if (
-                set(context_fields)
-                != {
-                    "type",
-                    "details_json",
-                    "minimum_wake",
-                    "interrupt_generation",
-                    "speech_started",
-                    "missing_materials",
-                }
-                or context_fields["type"] != "InputContext"
-            ):
-                raise ValueError("持久化输入关系的类型或字段不符合格式。")
-            signals = tuple(
-                context_fields[key]
-                for key in ("minimum_wake", "interrupt_generation", "speech_started")
-            )
-            if any(type(value) is not bool for value in signals):
-                raise ValueError("持久化程序信号必须是 bool。")
-            missing_values = context_fields["missing_materials"]
-            if not isinstance(missing_values, list):
-                raise ValueError("持久化材料缺口必须是数组。")
-            missing = tuple(_text(item) for item in missing_values)
-            context = InputContext(
-                details_json=_text(context_fields["details_json"]),
-                minimum_wake=context_fields["minimum_wake"] is True,
-                interrupt_generation=context_fields["interrupt_generation"] is True,
-                speech_started=context_fields["speech_started"] is True,
-                missing_materials=missing,
-            )
-        except (ActionProtocolError, ValueError, KeyError) as error:
-            raise StorageError("输入关系和程序信号损坏。", code="invalid_record") from error
+        context = _input_context(row[12])
         return InputRecord(
             _text(row[0]),
             source,

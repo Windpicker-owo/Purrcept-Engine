@@ -364,12 +364,22 @@ class FindingAssessment(_Record):
     reason: Annotated[str, Field(min_length=1, max_length=600)]
 
 
+class AbandonedMemoryWrite(_Record):
+    """明确撤回一次失败的记忆写入意图；不能代替成功写入或伪造原文资格。"""
+
+    id: Text = Field(description="本批失败的 revise_memory 调用中使用的记忆 id。")
+    reason: Annotated[str, Field(min_length=1, max_length=600, pattern=r"\S")] = Field(
+        description="重新判断不应写入的具体理由；来源错误本身不等于没有记忆价值。"
+    )
+
+
 class FinishSubmission(_Record):
     """五工具协议的完成输入，范围核验和真实修订关联由事务完成。"""
 
     reviews: tuple[Review, ...] = Field(strict=False)
     deferred: tuple[Deferred, ...] = Field(strict=False)
     findings: tuple[FindingAssessment, ...] = Field(strict=False)
+    abandoned_writes: tuple[AbandonedMemoryWrite, ...] = Field(default=(), strict=False)
 
 
 class ReflectionReceipt(_Record):

@@ -44,7 +44,7 @@ class _Parameters(BaseModel):
 
 
 def baseline() -> JsonObject:
-    """读取当前迁移前冻结的正文与身份字段，不随新实现重新生成。"""
+    """读取经审阅冻结的正文与身份字段，不随实现自动重新生成。"""
     return decode_object((Path(__file__).parent / "fixtures/prompt_baseline.json").read_bytes())
 
 
@@ -67,7 +67,7 @@ def test_persona_and_foreground_match_frozen_material(case: str) -> None:
         .read_text(encoding="utf-8")
         .removesuffix("\n")
     )
-    # 新版前台由用户整体替换；角色卡及其它脑区仍核验迁移前冻结材料。
+    # 前台采用用户指定正文；角色卡及其它脑区分别核验对应冻结材料。
     assert isinstance(sample["card"], str)
     assert instructions[0].content[0].text == approved.replace("{profile}", sample["card"])
     assert instructions[0].stability is PromptStability.STABLE

@@ -49,7 +49,8 @@ class InputProcessing:
         attention/priority 是尚未提交的普通/高价值缓存。assessing 是已经提交
         但尚未完成判断的输入；submitted 已被判断为仅提交，foreground 保存唤醒
         请求。一次唤醒将这些收件箱输入原子改为 claimed，begin_turn 后才进入
-        processing。processed/failed 是终态，不自动重新投递。
+        processing。processed/failed 是终态，不自动重新投递。睡眠普通输入以
+        processed 和 subject.sleeping.recorded 明确仅记历史，不表示模型已经看过。
     """
 
     input_id: str

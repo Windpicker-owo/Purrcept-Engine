@@ -1,7 +1,8 @@
 """内置床的明确休息能力，状态归TimePort的唯一主体，不创建自动唤醒任务。
 
-rest仅保存开始/更新打算时长，leave明确起身；到期时间是模型决策材料，不能
-自动清除状态或发送消息。工厂纯声明稳定me.bed路径，真实值在调用与动态请求
+rest保存明确睡眠开始/更新打算时长，leave明确起身；协调者据同库状态暂停注意
+与主动思考，并在本轮结束后尝试一次历史压缩。预计到期不能自动清除状态或
+发送消息。工厂纯声明稳定me.bed路径，真实值在调用与动态请求
 准备中从同库读取。插件不建立主人身份、周期tick或世界组件兼容层。
 """
 
@@ -62,7 +63,10 @@ def _declare(instance_id: str, settings: BedSettings, base_dir: Path) -> PluginB
         5.0,
         f"await {path}.rest(expected_duration_minutes=480)",
         "需要睡眠、小憩或长时间休整时使用。分钟数为1..20160；"
-        "再次调用只更新打算时长，不重置已开始时间。",
+        "入睡后普通刺激只记历史、不积压到醒来，不调用注意模型；"
+        "只有高优先刺激能唤醒，主动思考暂停。"
+        "当前轮结束后尝试一次历史压缩，保留近期轮次与未决事实。"
+        "再次调用只更新打算时长，不重置开始时间或重复触发睡眠压缩。",
         concurrency="target_serial",
     )
     leave = CapabilityDeclaration(
@@ -73,7 +77,8 @@ def _declare(instance_id: str, settings: BedSettings, base_dir: Path) -> PluginB
         _Empty,
         5.0,
         f"await {path}.leave()",
-        "休息充足或被唤醒后需要恢复活动时使用。醒着时没有副作用。",
+        "休息充足或被高优先刺激唤醒后需要恢复活动时使用。"
+        "起身恢复普通注意与主动思考计时；被唤醒本身不会自动起床。醒着时没有副作用。",
         concurrency="target_serial",
     )
 

@@ -61,7 +61,7 @@ class CoordinatorSettings:
         max_requests: 本轮逻辑模型请求总上限，传输重试不重复占名额。
         turn_seconds: 本轮连续处理的总秒数预算，包含工具等待和重试退避。
         proactive_thinking: 主动思考的启动默认值，页面切换仅影响本次运行。
-        proactive_idle_seconds: 空闲刺激之间至少等待的无新刺激秒数。
+        proactive_idle_seconds: 静默或主脑未激活的触发间隔，两个期限各自计时。
 
     Note:
         实例字段在构造后不可重新赋值；嵌套值的冻结范围由字段所属契约决定。

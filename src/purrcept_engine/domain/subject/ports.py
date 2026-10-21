@@ -23,6 +23,7 @@ from purrcept_engine.domain.subject.models import (
     TurnRecord,
 )
 from purrcept_engine.domain.subject.session_ports import SessionStore
+from purrcept_engine.domain.time.models import RestState
 
 
 class CoordinatorStore(SessionStore, RequestEvidenceSink, MediaStore, Protocol):
@@ -55,20 +56,57 @@ class CoordinatorStore(SessionStore, RequestEvidenceSink, MediaStore, Protocol):
         """
         ...
 
+    async def apply_sleep_policy(self, owner_id: str) -> RestState | None:
+        """原子读取休息事实，将普通未处理刺激仅记历史并释放接管额度。
+
+        Args:
+            owner_id: 当前宿主的注意判断所有者，用于结束睡前未采用的升级观察。
+
+        Returns:
+            当前明确休息事实；清醒时为 None 且不改变输入。
+
+        Note:
+            高优先输入继续保底唤醒；普通旧唤醒、未决注意和睡眠暂存仅记历史，
+            不再进入后续前台快照。原文、媒体和反思证据保留，不冒充模型判断。
+            已经 claimed/processing 的轮次不被撤销。
+        """
+        ...
+
+    async def claim_sleep_compaction(self, expected: RestState) -> bool:
+        """持久领取本次睡眠的唯一压缩机会，成功摘要仍由历史维护 CAS 决定。
+
+        Args:
+            expected: 当前观察的休息版本，更新或离床会使旧观察失效。
+
+        Returns:
+            是否首次领取；更新时长和重启不会重置已领取机会。
+        """
+        ...
+
     async def admit_idle_input(
-        self, submission: InputSubmission, *, expected_sequence: int
+        self,
+        submission: InputSubmission,
+        *,
+        expected_sequence: int,
+        foreground_overdue: bool = False,
     ) -> Admission | None:
-        """在同一提交段复查接管序号和待处理状态，再保存完整空闲刺激。
+        """原子复查定时触发条件，再保存完整主动思考刺激。
 
         Args:
             submission: 调度器生成的可信定时事实，不携带停音或抢占信号。
             expected_sequence: 计时所观察的最新接管序号。
+            foreground_overdue: 主脑未激活期限已到；允许新刺激和未完成注意判断，
+                但已有主脑唤醒意图或在处理的轮次时仍不接管。
 
         Returns:
-            已持久接管的身份；有新刺激或尚有待处理工作时返回 None，不留下部分记录。
+            已持久接管的身份；复查不满足所选条件时为 None，不留下部分记录。
 
         Raises:
             StorageError: 正式接管容量不足或权威存储故障。
+
+        Note:
+            期限由唯一协调者维护。静默触发严格比较接管游标；主脑到期触发允许
+            越过 attention/assessing/submitted，随后仍沿优先提交与原子取批处理。
         """
         ...
 
@@ -126,6 +164,10 @@ class CoordinatorStore(SessionStore, RequestEvidenceSink, MediaStore, Protocol):
 
         Returns:
             本轮独占的输入快照；未提交的缓存输入不在其中。
+
+        Note:
+            事务内复查明确休息，普通旧唤醒意图先仅记历史；只有仍有高优先
+            唤醒请求时才取批，不能借协调者排队前的清醒观察绕过睡眠规则。
         """
         ...
 

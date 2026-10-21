@@ -75,6 +75,7 @@ class SubjectService:
         wakeup_committed: Callable[[], None],
         can_start: Callable[[], None],
         prepare_history: PrepareHistory | None = None,
+        compact_sleep_history: Callable[[], Awaitable[None]] | None = None,
     ) -> None:
         """借用显式资源和纯声明，构造不联网、不推进输入或开启任务。
 
@@ -94,6 +95,7 @@ class SubjectService:
             wakeup_committed: 计划提交后唤醒调度器的回调，不直接执行计划。
             can_start: 实际派发前重新检查的资格回调，等待后仍须复核。
             prepare_history: 会话空闲时维护已提交历史的入口；None 不维护。
+            compact_sleep_history: 睡眠时强制检查一次可压缩旧历史；None 不运行摘要。
         """
         self.store = store
         self.knowledge = knowledge
@@ -110,6 +112,7 @@ class SubjectService:
         self.wakeup_committed = wakeup_committed
         self.can_start = can_start
         self.prepare_history = prepare_history
+        self.compact_sleep_history = compact_sleep_history
         self.session = ContinuousSession(
             store,
             "foreground",

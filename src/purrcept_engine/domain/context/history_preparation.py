@@ -1,4 +1,4 @@
-"""在真实请求前协调历史容量、保护范围与一次受控摘要维护。
+"""在真实请求前或明确睡眠机会协调历史容量、保护范围与一次摘要维护。
 
 借用同一会话的已提交版本及保护身份，生成布局与正式派发共用编译端口。
 这里只协调领域步骤，不取得 SQLite 连接、模型凭据或客户端；容量不足明确
@@ -136,17 +136,19 @@ class HistoryPreparation:
         settings: ModelSettings,
         dynamic: DynamicState,
         budget: RequestBudget,
+        force: bool = False,
     ) -> SessionRecord:
-        """只在超阈值且存在未受保护旧前缀时摘要，返回实际权威版本。
+        """按容量阈值或明确睡眠机会摘要旧前缀，返回实际权威版本。
 
         Args:
             session: 当前已提交会话版本及完整检查点。
-            message: 当前请求中实际存在的完整 Core 消息。
+            message: 当前请求或明确维护容量预览的 Core 消息；预览不提交新输入。
             instructions: 稳定 system 指令序列，实时状态不得混入缓存前缀。
             tools: 本会话允许使用的固定 Core 工具集合。
             settings: 当前组件已校验的配置或纯声明。
             dynamic: 当前逻辑请求实际采用的动态状态材料。
             budget: 当前连续批次共享的请求数量与单调截止预算。
+            force: 明确睡眠维护跳过占用阈值，仍保护近期轮次、未决事实和同覆盖资格。
 
         Returns:
             会话已提交版本与完整检查点，不包含尚未提交的临时历史。
@@ -194,7 +196,7 @@ class HistoryPreparation:
 
         before = await prepare_off_loop(measure)
         budget.check()
-        if not before.maintenance_due or checkpoint is None:
+        if (not force and not before.maintenance_due) or checkpoint is None:
             return session
 
         # 未决保护来自数据库中的因果关系；外界正文或工具 JSON 同名字段不能

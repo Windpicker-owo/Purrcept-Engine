@@ -405,6 +405,9 @@ def rest(
             expected_duration_minutes=minutes,
             started_at=previous.started_at if previous is not None else now.astimezone(UTC),
             version=_rest_version(connection) + 1,
+            history_compaction_claimed=previous.history_compaction_claimed
+            if previous is not None
+            else False,
         )
         change = RestChange(
             at=now, state=state, previous=previous, changed=True, updated=previous is not None
@@ -418,6 +421,35 @@ def rest(
             "INSERT INTO rest_changes VALUES(?,'rest',?)", (call_id, change.model_dump_json())
         )
     return change
+
+
+def claim_rest_compaction(connection: sqlite3.Connection, expected: RestState) -> bool:
+    """同一睡眠只领取一次压缩机会，更新时长和重启均不能重复领取。
+
+    Args:
+        connection: Store 专属线程的权威连接。
+        expected: 协调者观察的当前休息版本；已离床或版本变化时不领取。
+
+    Returns:
+        是否首次持久领取；领取不表示摘要已成功安装。
+
+    Note:
+        模型等待在事务外。失败、取消或没有可压缩旧轮次均不自动重试；新一次
+        明确起床再上床会重新取得机会，普通时长更新保留领取事实。
+    """
+    with connection:
+        connection.execute("BEGIN IMMEDIATE")
+        current = get_rest(connection)
+        if current is None or current != expected or current.history_compaction_claimed:
+            return False
+        claimed = current.model_copy(
+            update={"version": current.version + 1, "history_compaction_claimed": True}
+        )
+        connection.execute(
+            "UPDATE subject_rest SET version=?,payload_json=? WHERE id=1",
+            (claimed.version, claimed.model_dump_json()),
+        )
+    return True
 
 
 def leave(connection: sqlite3.Connection, now: datetime, call_id: str) -> RestChange:

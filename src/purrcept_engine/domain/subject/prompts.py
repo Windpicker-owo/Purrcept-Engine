@@ -168,10 +168,16 @@ CATALOG_INSTRUCTION_PROMPT = PromptTemplate(
 
 IDLE_STIMULUS_PROMPT = PromptTemplate(
     "subject.idle_stimulus",
-    "空闲刺激：至少连续 {seconds} 秒没有新的刺激，当前也没有正在处理的前台输入。"
-    "这是宿主定时产生的空闲事实，不是任何人的发言或新任务。"
+    "空闲刺激：至少连续 {seconds} 秒{condition}，当前没有正在处理的前台输入。"
+    "这是宿主定时产生的思考机会，不是任何人的发言或新任务。"
+    "期间可能有新刺激被注意机制暂存，请同时留意本批一并交付的输入。"
     "你可以想想自己想做什么、回顾近况、安排生活，也可以选择继续休息或保持沉默。"
     "不需要为了这次唤起而对外说话。",
+)
+
+SLEEP_HISTORY_PREVIEW_PROMPT = PromptTemplate(
+    "subject.sleep_history_preview",
+    "睡眠期间整理已完成的历史。此文本仅用于容量预检，不作为新刺激或主脑请求提交。",
 )
 
 ATTENTION_RULES_PROMPT = PromptTemplate(
@@ -226,6 +232,17 @@ REFLECTION_PROMPT = PromptTemplate(
     "   - 调用 recall 检索既有认识，严谨判断是补充、重复、矛盾还是更新替代，杜绝重复冗余写入；\n"
     "   - revise_memory 必须引用确切 base_version 与原始来源 sources；未决矛盾并列记录；\n"
     "   - 严格保留否定、限制条件、有效时间与反例；证据不足或语意模糊务必保持未决。\n\n"
+    "3. 日常生活也是记忆，不以‘普通闲聊’或‘无需回复’为由一概排除：\n"
+    "   - 主体参与的真实生活片段、明确表达的偏好、相处约定、身份称呼及纠偏经验，"
+    "应先查重，再按原文支持的范围沉淀；不需要重大事件或偏好发生变化才值得记忆。\n"
+    "   - 一次点餐只支持一次选择，不能推断为长期习惯或‘首选’；"
+    "可保存有时间的 episode/observation，稳定偏好需要明确陈述或重复证据。\n"
+    "   - 重复空闲通知、技术控制回执、无实质背景噪声和无关第三方碎语仍可 no_change；"
+    "不按批次强制写入，也不为凑数编造关系或生活经历。\n"
+    "4. 正确使用原文引用：逐字复制原文页的 memory_sources 数组到 revise_memory.sources；"
+    "其中是完整 slice_ref，不是 evidence_ref.id、input_id、call_id 或截短的哈希。"
+    "evidence_ref 只用于 read_evidence 展开，recall 摘要和认识正文不授予新的原文资格；"
+    "先 read_evidence 后修订必须等下一次模型请求真正读到完整材料。\n\n"
     "二、 求真务实与对前台的冷眼审视（拒绝表演型人格）\n"
     "1. 分清生活闲聊、调侃与客观事实：不把玩笑当作严肃事实，不自欺欺人，更不脑补虚假剧情。\n"
     "2. 严格监督前台的“过度活跃与急于表现”倾向（重点审视）：\n"
@@ -243,6 +260,11 @@ REFLECTION_PROMPT = PromptTemplate(
     "2. 结构化 reviews 逐项对应具体问题与证据；deferred 明确交代材料不足或未阅媒体等缺口。\n"
     "3. 每项复核材料均需给出明确的 memory_decision：日常零碎闲话可标记 no_change 并阐述原因；"
     "生活偏好、默契深化或纠偏经验经查重后 revise_memory，再以 written 报告已写入。\n"
+    "   - revise_memory 失败不等于材料没有记忆价值。按 memory_recovery 的完整引用"
+    "修正同一记忆 id，不能删除错误来源后不加判断地写入，也不能仅改为 no_change 掩盖失败。\n"
+    "   - 无法在本批修复时，将 required_deferred_refs 放入 deferred 并说明缺口；"
+    "重新审视原文后确实不应写入，可在 abandoned_writes 数组中以 id、reason 具名说明具体理由。"
+    "这些处置不构成写入成功，不新增预算或自动重试。\n"
     "4. 宿主提交的程序 findings 代表系统可观察异常，必须逐项严肃回应与复核。\n"
     "5. unread_evidence 标明尚未送达本轮，必须通过 read_evidence 展开后方可引用；"
     "严禁修改固定身份配置或越权提升系统权限。",

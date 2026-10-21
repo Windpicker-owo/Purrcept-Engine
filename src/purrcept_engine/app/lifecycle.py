@@ -431,13 +431,14 @@ class HostLifecycle:
         )
         # coordinator/background 会在资源结束后重抛锁存故障，但 session.busy
         # 只表示 Core 主动等待，不能证明 SDK 包装和提交已归还。再观察两条
-        # 会话的同一关闭任务取得明证，并独立收回两个摘要所有者。
+        # 会话的同一关闭任务取得明证，并独立收回前台、反思和睡眠摘要所有者。
         borrowers = tuple(
             await asyncio.gather(
                 subject.service.session.close(),
                 subject.background.session.close(),
                 subject.foreground_history.close(),
                 subject.reflection_history.close(),
+                subject.sleep_history.close(),
                 return_exceptions=True,
             )
         )

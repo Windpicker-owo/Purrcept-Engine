@@ -6,15 +6,25 @@
 """
 
 import asyncio
+import logging
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import datetime
 
-from purrcept_core.models import ContentBlock, DecisionBackend, ModelBackend
+from purrcept_core.models import (
+    ContentBlock,
+    DecisionBackend,
+    MessageRole,
+    ModelBackend,
+    ModelError,
+    ModelSettings,
+    ToolSet,
+)
 
 from purrcept_engine.app.config import DecisionModelSettings, EngineConfig, GenerationModelSettings
 from purrcept_engine.domain.context.capacity import (
     CapacityAssessment,
+    CapacityError,
     CapacityRule,
     DecisionCapacity,
     GenerationCapacity,
@@ -23,6 +33,7 @@ from purrcept_engine.domain.context.capacity import (
 )
 from purrcept_engine.domain.context.history import HistoryMaintenance
 from purrcept_engine.domain.context.history_preparation import HistoryPreparation
+from purrcept_engine.domain.context.maintenance import SummaryError
 from purrcept_engine.domain.context.materials import media_blocks
 from purrcept_engine.domain.execution.catalog import Catalog
 from purrcept_engine.domain.inputs.models import MediaReference
@@ -36,6 +47,7 @@ from purrcept_engine.domain.subject.foreground_tools import (
     format_character_card,
 )
 from purrcept_engine.domain.subject.ports import ActionCallback
+from purrcept_engine.domain.subject.prompts import SLEEP_HISTORY_PREVIEW_PROMPT
 from purrcept_engine.domain.subject.reflection_tools import reflection_instructions
 from purrcept_engine.domain.subject.service import SubjectService
 from purrcept_engine.domain.subject.session import DynamicState
@@ -44,6 +56,8 @@ from purrcept_engine.infrastructure.models.compiler import compile_materials
 from purrcept_engine.infrastructure.sqlite.store import Store
 from purrcept_engine.plugin_system.contracts import PluginRuntime
 from purrcept_engine.values import JsonObject
+
+_logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -56,6 +70,7 @@ class SubjectAssembly:
         knowledge: 原文展开与认识召回服务，修订仍经过反思批次契约。
         background: 同一主体的独立反馈和反思所有者。
         reflection_history: 反思已提交历史的独立维护所有者。
+        sleep_history: 睡眠期间的一次前台压缩所有者，不与正常首发预检共享在途状态。
 
     Note:
         实例字段在构造后不可重新赋值；嵌套值的冻结范围由字段所属契约决定。
@@ -66,6 +81,7 @@ class SubjectAssembly:
     knowledge: KnowledgeService
     background: BackgroundService
     reflection_history: HistoryPreparation
+    sleep_history: HistoryPreparation
 
 
 def build_subject(
@@ -154,47 +170,33 @@ def build_subject(
 
     ledger = store.knowledge
     diagnostic_bytes = config.diagnostics.max_bytes
-    maintenance = HistoryMaintenance(
-        store,
-        store,
-        generation[summary_name],
-        model=summary_settings.model,
-        summary_capacity=capacity_for(summary_settings, enforce=True),
-        retry=config.subject.summary_retry,
-        output_tokens=summary_settings.max_output_tokens,
-        diagnostic_bytes=diagnostic_bytes,
-        can_start=can_start,
-        compiler=compile_materials,
-    )
-    history = HistoryPreparation(
-        store,
-        maintenance,
-        backend=generation[foreground_name],
-        model=foreground_settings.model,
-        assess=capacity_for(foreground_settings, enforce=False),
-        context=config.context,
-        compiler=compile_materials,
-    )
-    reflection_history = HistoryPreparation(
-        store,
-        HistoryMaintenance(
+
+    def history_for(name: str, settings: GenerationModelSettings) -> HistoryPreparation:
+        """各维护用途独占在途状态，底层借用相同摘要资源与权威 CAS。"""
+        return HistoryPreparation(
             store,
-            store,
-            generation[summary_name],
-            model=summary_settings.model,
-            summary_capacity=capacity_for(summary_settings, enforce=True),
-            retry=config.subject.summary_retry,
-            output_tokens=summary_settings.max_output_tokens,
-            diagnostic_bytes=diagnostic_bytes,
-            can_start=can_start,
+            HistoryMaintenance(
+                store,
+                store,
+                generation[summary_name],
+                model=summary_settings.model,
+                summary_capacity=capacity_for(summary_settings, enforce=True),
+                retry=config.subject.summary_retry,
+                output_tokens=summary_settings.max_output_tokens,
+                diagnostic_bytes=diagnostic_bytes,
+                can_start=can_start,
+                compiler=compile_materials,
+            ),
+            backend=generation[name],
+            model=settings.model,
+            assess=capacity_for(settings, enforce=False),
+            context=config.context,
             compiler=compile_materials,
-        ),
-        backend=generation[reflection_name],
-        model=reflection_settings.model,
-        assess=capacity_for(reflection_settings, enforce=False),
-        context=config.context,
-        compiler=compile_materials,
-    )
+        )
+
+    history = history_for(foreground_name, foreground_settings)
+    reflection_history = history_for(reflection_name, reflection_settings)
+    sleep_history = history_for(foreground_name, foreground_settings)
 
     async def native(media: tuple[MediaReference, ...]) -> tuple[ContentBlock, ...]:
         """从权威媒体存储展开已接管的原生内容。"""
@@ -267,6 +269,35 @@ def build_subject(
             }
         )
 
+    async def compact_sleep_history() -> None:
+        """在主脑空闲时尝试一次旧历史摘要，实际安装仍遵守原保护与版本门槛。
+
+        此布局只用于睡眠维护前后容量比较，不提交新的主脑输入，不借行动工具。
+        下一次真实唤醒仍以完整工具目录和实际新输入再次预检，不能借此绕过容量。
+        """
+        budget = RequestBudget(
+            max_requests=1,
+            deadline=asyncio.get_running_loop().time() + config.subject.summary_retry.total_seconds,
+        )
+        try:
+            session = await store.get_session("foreground")
+            dynamic = await refresh(budget)
+            await sleep_history(
+                session,
+                SLEEP_HISTORY_PREVIEW_PROMPT.message(MessageRole.USER),
+                instructions=foreground_instructions(config.subject.character.record(), catalog),
+                tools=ToolSet(),
+                settings=ModelSettings(max_output_tokens=foreground_settings.max_output_tokens),
+                dynamic=dynamic,
+                budget=budget,
+                force=True,
+            )
+        except (CapacityError, ModelError, SummaryError) as error:
+            # 无可用容量/模型不应把睡眠变成宿主故障；记录真实失败且不赠送重试。
+            # 权威库、内部程序故障及取消不在此转换。
+            sleep_history.last_failure = type(error).__name__ + ": " + str(error)
+            _logger.warning("睡眠历史维护保留原版本：%s", sleep_history.last_failure)
+
     attention: AttentionModel | None = None
     attention_name = config.subject.attention
     if attention_name is not None:
@@ -328,6 +359,7 @@ def build_subject(
         wakeup_committed=wakeup_committed,
         can_start=can_start,
         prepare_history=history,
+        compact_sleep_history=compact_sleep_history,
     )
     background = BackgroundService(
         store,
@@ -360,4 +392,6 @@ def build_subject(
         can_start=can_start,
     )
     subject.bind_background(background)
-    return SubjectAssembly(subject, history, knowledge, background, reflection_history)
+    return SubjectAssembly(
+        subject, history, knowledge, background, reflection_history, sleep_history
+    )

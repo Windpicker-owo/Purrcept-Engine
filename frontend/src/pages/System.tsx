@@ -53,8 +53,8 @@ export function System({ state, client, go }: { state: PanelState; client: Panel
 
     <Section id="system-subject" title="她的思考">
       {s.proactive_thinking !== null ? <div className="setting-row">
-        <div><h3>主动思考</h3><p className="muted">没有新刺激且处理空闲后，每隔 {duration(s.proactive_thinking.idle_seconds)} 唤起一次。她可以安排生活，也可以继续休息。</p>
-          <p className="muted">本次运行有效，重启后使用配置默认值。关闭不会撤回已接手的思考。</p>
+        <div><h3>主动思考</h3><p className="muted">没有新刺激或没有唤醒主脑，任一状态持续 {duration(s.proactive_thinking.idle_seconds)} 就在主脑空闲后唤起一次。被注意机制暂存的消息会一起处理。她也可以继续休息。</p>
+          <p className="muted">上床休息时暂停，起床后重新计时。本次运行有效，重启后使用配置默认值。关闭不会撤回已接手的思考。</p>
           {s.proactive_thinking.last_error !== null ? <p className="muted">输入缓存已满，本次空闲刺激未生成；等待下一个周期。</p> : null}
         </div>
         <div><Button variant="secondary" role="switch" aria-label="主动思考" aria-checked={s.proactive_thinking.enabled}

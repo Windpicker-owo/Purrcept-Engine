@@ -92,6 +92,7 @@ class AlarmFiring(_Record):
 #     expected_duration_minutes: 预计休息分钟数，期限已过也不自动解除 resting。
 #     started_at: 这次明确休息实际开始的带时区时刻。
 #     version: 同一主体休息事实的已提交版本。
+#     history_compaction_claimed: 本次睡眠的压缩机会是否已领取，不代表摘要安装成功。
 class RestState(_Record):
     """主体明确休息的当前事实；elapsed按读取时刻投影，不持久化另一份时长。"""
 
@@ -99,6 +100,7 @@ class RestState(_Record):
     expected_duration_minutes: Minutes
     started_at: AwareDatetime
     version: Version
+    history_compaction_claimed: bool = False
 
     def to_json(self, now: datetime) -> JsonObject:
         """按客观UTC时差给整分钟数，下限0，到预计期限后仍resting。

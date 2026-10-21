@@ -30,6 +30,7 @@ class _Model:
         default_factory=lambda: asyncio.Queue[ModelRequest]()
     )
     release: asyncio.Event | None = None
+    response: str = "内部想法，不对外发送。"
 
     async def generate(
         self, request: ModelRequest, *, model: str, emit: ModelEventSink | None = None
@@ -37,28 +38,31 @@ class _Model:
         self.requests.put_nowait(request)
         if self.release is not None:
             await self.release.wait()
-        return ModelResponse(Message.assistant("内部想法，不对外发送。"))
+        return ModelResponse(Message.assistant(self.response))
 
 
-def _config(path: Path, *, enabled: bool = False, seconds: float = 0.15) -> EngineConfig:
+def _config(
+    path: Path, *, enabled: bool = False, seconds: float = 0.15, attention: bool = False
+) -> EngineConfig:
+    model = {
+        "kind": "generation",
+        "model": "openai/offline",
+        "api_base": "http://127.0.0.1:9999/v1",
+        "api_key": "synthetic",
+        "context_window": 100_000,
+        "max_output_tokens": 1000,
+        "capacity_rule": "reference-text-only-v1",
+    }
     return EngineConfig.validate(
         {
             "host": {"data_dir": path},
-            "models": {
-                "main": {
-                    "kind": "generation",
-                    "model": "openai/offline",
-                    "api_base": "http://127.0.0.1:9999/v1",
-                    "api_key": "synthetic",
-                    "context_window": 100_000,
-                    "max_output_tokens": 1000,
-                    "capacity_rule": "reference-text-only-v1",
-                }
-            },
+            "models": {"main": model, **({"attention": model} if attention else {})},
             "subject": {
                 "foreground": "main",
                 "reflection": "main",
                 "summary": "main",
+                "attention": "attention" if attention else None,
+                "attention_batch_seconds": 0.01,
                 "proactive_thinking": enabled,
                 "proactive_idle_seconds": seconds,
             },
@@ -189,6 +193,84 @@ async def test_new_stimulus_resets_idle_interval_after_processing(tmp_path: Path
         await host.close()
 
 
+async def test_continuous_observe_inputs_wake_since_last_foreground_activation(
+    tmp_path: Path,
+) -> None:
+    """连续背景输入只重置无刺激期限，实际主脑唤醒独立重置另一个期限。"""
+    seconds = 0.5
+    model = _Model()
+    attention = _Model(response='{"attention":"observe"}')
+    host = EngineHost(
+        _config(tmp_path, enabled=True, seconds=seconds, attention=True),
+        generation_backends={"main": model, "attention": attention},
+    )
+    await host.start()
+    producer: asyncio.Task[None] | None = None
+    stop = asyncio.Event()
+    try:
+        # 先让启动期限经过一部分，再用真实唤醒建立新起点。
+        await asyncio.sleep(seconds * 0.5)
+        await host.submit(_input("wake"))
+        await asyncio.wait_for(model.requests.get(), 5)
+        activated_at = asyncio.get_running_loop().time()
+        admitted = await host.submit(_input("observed-first", minimum=False))
+
+        async def feed() -> None:
+            """始终在静默期限内接入新刺激，避免误走原有无刺激分支。"""
+            for index in range(30):
+                if stop.is_set():
+                    return
+                await host.submit(_input(f"background-{index}", minimum=False))
+                await asyncio.sleep(seconds / 10)
+
+        producer = asyncio.create_task(feed())
+        with pytest.raises(TimeoutError):
+            await asyncio.wait_for(model.requests.get(), seconds * 0.65)
+        assert _idle_count(tmp_path) == 0
+        request = await asyncio.wait_for(model.requests.get(), seconds * 2)
+        # 主脑取批早于传输到达，允许两次材料准备耗时不同，仍不能沿启动旧期限早醒。
+        assert asyncio.get_running_loop().time() - activated_at >= seconds * 0.9
+        text = request.messages[-1].text
+        assert "没有激活主脑" in text and "没有新的刺激" not in text
+        assert admitted.input_id in text and "真实新刺激" in text
+        assert attention.requests.qsize() >= 3 and _idle_count(tmp_path) == 1
+    finally:
+        if producer is not None:
+            stop.set()
+            await asyncio.wait_for(producer, 5)
+        await host.close()
+
+
+@pytest.mark.parametrize("late_choice", ["observe", "urgent"])
+async def test_foreground_timeout_wakes_during_attention_and_late_result_is_stale(
+    tmp_path: Path, late_choice: str
+) -> None:
+    """注意调用不能阻塞到期唤醒，迟到判断也不能撤销已取走批次或抢占新轮次。"""
+    foreground_release, attention_release = asyncio.Event(), asyncio.Event()
+    model = _Model(release=foreground_release)
+    attention = _Model(release=attention_release, response='{"attention":"' + late_choice + '"}')
+    host = EngineHost(
+        _config(tmp_path, enabled=True, seconds=0.2, attention=True),
+        generation_backends={"main": model, "attention": attention},
+    )
+    await host.start()
+    try:
+        admitted = await host.submit(_input("held-by-attention", minimum=False))
+        await asyncio.wait_for(attention.requests.get(), 5)
+        request = await asyncio.wait_for(model.requests.get(), 1)
+        assert admitted.input_id in request.messages[-1].text
+        assert "没有激活主脑" in request.messages[-1].text
+        attention_release.set()
+        await asyncio.sleep(0.45)
+        assert model.requests.empty() and _idle_count(tmp_path) == 1
+        foreground = (await host.query_panel())["foreground"]
+        assert isinstance(foreground, dict) and foreground["busy"] is True
+    finally:
+        foreground_release.set()
+        attention_release.set()
+        await host.close()
+
+
 async def test_idle_admission_atomically_rejects_new_input_and_allows_observed_inbox(
     tmp_path: Path,
 ) -> None:
@@ -222,6 +304,55 @@ async def test_idle_admission_atomically_rejects_new_input_and_allows_observed_i
             accepted.input_id,
             admitted.input_id,
         }
+    finally:
+        await store.close()
+
+
+@pytest.mark.parametrize("stage", ["attention", "assessing", "submitted"])
+async def test_overdue_admission_allows_attention_but_never_duplicates_scheduled_foreground(
+    tmp_path: Path, stage: str
+) -> None:
+    """到期分支可越过新普通输入或未决注意，但优先、唤醒及已取批都原子挡住重复。"""
+    store = await Store.open(tmp_path / "overdue.sqlite3")
+    try:
+        sequence, _ = await store.idle_input_state()
+        admitted = await store.admit(_input("new-background", minimum=False))
+        if stage != "attention":
+            processing = await store.input_processing(admitted.input_id)
+            assert processing is not None
+            assert await store.submit_inputs((processing,), minimum_wake=False)
+        if stage == "submitted":
+            processing = await store.input_processing(admitted.input_id)
+            assert processing is not None
+            assert await store.decide_inputs((processing,), "observe", "背景观察")
+        idle = _input("overdue")
+        assert await store.admit_idle_input(idle, expected_sequence=sequence) is None
+        accepted = await store.admit_idle_input(
+            idle, expected_sequence=sequence, foreground_overdue=True
+        )
+        assert accepted is not None
+        another = _input("another-overdue")
+        for step in ("priority", "foreground", "claimed"):
+            if step == "foreground":
+                records = await store.buffered_inputs()
+                expected: list[InputProcessing] = []
+                for record in records:
+                    processing = await store.input_processing(record.input_id)
+                    assert processing is not None
+                    expected.append(processing)
+                assert await store.submit_inputs(tuple(expected), minimum_wake=True)
+            elif step == "claimed":
+                taken = await store.take_foreground_inputs()
+                assert {record.input_id for record in taken} == {
+                    admitted.input_id,
+                    accepted.input_id,
+                }
+            assert (
+                await store.admit_idle_input(
+                    another, expected_sequence=sequence, foreground_overdue=True
+                )
+                is None
+            )
     finally:
         await store.close()
 
