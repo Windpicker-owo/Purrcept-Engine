@@ -54,7 +54,7 @@ attention = "attention"
 attention_batch_seconds = 0.1
 attention_batch_size = 8
 proactive_thinking = false # 启动默认值；WebUI 可在本次运行中切换。
-proactive_idle_seconds = 300.0 # 无新刺激且前台空闲后，等待此间隔再触发一次。
+proactive_idle_seconds = 300.0 # 无新刺激或主脑未激活达到此间隔，主脑空闲时唤醒一次。
 reflection_batch_seconds = 60.0
 reflection_batch_turns = 8
 
@@ -113,3 +113,5 @@ checkpoint_seconds = 5.0
 # notebook_dir = "notes"
 # skills_dir = "skills"
 # seed_examples = true
+# file_max_bytes = 20971520  # 原始附件上限；Markdown 正文仍使用 max_bytes。
+# file_timeout_seconds = 30.0
