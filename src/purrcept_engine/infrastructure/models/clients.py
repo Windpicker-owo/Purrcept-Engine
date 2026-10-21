@@ -25,6 +25,7 @@ from purrcept_core.models import (
 
 from purrcept_engine.errors import ConfigError
 from purrcept_engine.infrastructure.models.connection import ModelConnection
+from purrcept_engine.infrastructure.models.decision_transport import DecisionHttp, send_decision
 
 if TYPE_CHECKING:
     from purrcept_litellm import LiteLLMBackend, LiteLLMDecisionBackend
@@ -153,9 +154,9 @@ class DecisionResource:
     模型前缀显式选择 TypeSafe 或 OpenRouter，端点与凭据来自同一配置。
     TypeSafe 使用 /systemone；OpenRouter 使用 /alpha/decisions，并保留
     上游模型的命名空间。两条路径都由 LiteLLM 编译，不回退到聊天生成。
-    依赖已冻结的 LiteLLM 本地补丁提供公开 ``http_client`` 借用接缝及
-    ``retry_connection_errors`` 开关。协议编译、Provider 映射和结果规范化
-    继续由 SDK 完成；本资源固定客户端和实际尝试数，不重新实现判断协议。
+    使用官方 LiteLLM 的固定版本编译接缝，经 DecisionHttp 借用本实例 HTTPX
+    客户端。协议编译、签名、Provider 映射和结果规范化仍由 SDK 完成；
+    本资源固定客户端和实际尝试数，不修改 SDK 或重新实现判断协议。
     应用先结束在途借用，再关闭同一个所有者，不操作 SDK 全局客户端缓存。
     """
 
@@ -173,7 +174,7 @@ class DecisionResource:
             raise ConfigError("专用判断路径需要显式 typesafe/ 或 openrouter/ 模型协议标识")
 
         self._settings = settings
-        self._handler: object | None = None
+        self._handler: DecisionHttp | None = None
         self._http: httpx.AsyncClient | None = None
         self._backend: LiteLLMDecisionBackend | None = None
         self._close_task: asyncio.Task[None] | None = None
@@ -211,27 +212,19 @@ class DecisionResource:
 
         Raises:
             ModelRequestError: 判断模型资源已开始关闭。
-            TypeError: LiteLLM 判断 handler 未提供 HTTPX AsyncClient。
         """
         if self._close_task is not None:
             raise ModelRequestError("判断模型资源已开始关闭", provider="engine")
         if self._backend is None:
             from purrcept_litellm import LiteLLMDecisionBackend
 
-            # Ownership: 此实例取得并登记 handler，不进入全局客户端缓存。
-            # 首调用前无需打开 SDK；显式 transport 则关闭环境代理来源和连接重发。
-            module = import_module("litellm.llms.custom_httpx.http_handler")
-            handler_factory = cast(Callable[..., object], module.__dict__["AsyncHTTPHandler"])
-            self._handler = handler_factory(
+            # Ownership: HTTPX 客户端归当前资源，SDK 仅借用单次 POST 接缝。
+            # 显式传输关闭环境代理及底层重试，不进入 SDK 默认 handler 的隐式重发。
+            self._http = httpx.AsyncClient(
+                trust_env=False,
                 transport=httpx.AsyncHTTPTransport(retries=0, trust_env=False),
-                retry_connection_errors=False,
             )
-            # Boundary: 此 SDK 子模块没有公开类型标记。只验证实际借用的
-            # HTTPX 资源契约，不用猜测的类型或 repr 代替真实客户端。
-            client: object = getattr(self._handler, "client", None)
-            if not isinstance(client, httpx.AsyncClient):
-                raise TypeError("LiteLLM 判断 handler 未提供 HTTPX AsyncClient")
-            self._http = client
+            self._handler = DecisionHttp(self._http)
             self._backend = LiteLLMDecisionBackend(
                 api_key=self._settings.api_key.get_secret_value(),
                 api_base=self._settings.api_base,
@@ -248,16 +241,10 @@ class DecisionResource:
 
     async def _close_http(self) -> None:
         """未使用资源只提交关闭状态，不为了清理而初始化 SDK。"""
-        if self._handler is not None and self._http is None:
-            # 初始化已取得 handler 却拒绝其客户端类型时，不能把未知资源
-            # 当作未使用状态并报告释放成功；保留失败供宿主关闭结果呈现。
-            raise TypeError("无法确认 LiteLLM 判断 handler 的 HTTP 资源所有权")
         if self._http is not None:
             await self._http.aclose()
 
     async def _decide(self, **kwargs: object) -> object:
         """用本实例 handler 调用真实 SDK，保留其协议及错误翻译。"""
         assert self._handler is not None
-        module = import_module("litellm")
-        function = cast(Callable[..., Awaitable[object]], module.__dict__["adecisions"])
-        return await function(http_client=self._handler, **kwargs)
+        return await send_decision(self._handler, kwargs)

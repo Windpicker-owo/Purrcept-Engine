@@ -57,7 +57,7 @@ Edge）。它只启动回环静态服务并提供内存合成数据，不加载 
 
 - [Linear：A calmer interface for a product in motion](https://linear.app/now/behind-the-latest-design-refresh)：
   借鉴退后的导航、稳定的顶栏位置、依靠留白建立层级。落实为墨色猫头导航轨、位置栏、
-  平面章节与对齐的时间线；本轮改为墨色导航轨与反白猫头，颜色与尺寸仍完全来自 Cel。
+  平面章节与对齐的时间线；墨色导航轨与反白猫头的颜色与尺寸均来自 Cel。
 - [LangGraph Studio](https://www.langchain.com/blog/langgraph-studio-the-first-agent-ide)：
   借鉴运行过程与所选对象详情联动。落实为可筛选的记录、固定 Inspector 与手机 Sheet，
   不引入编辑执行状态或重放行动的功能。

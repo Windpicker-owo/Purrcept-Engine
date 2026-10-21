@@ -1,8 +1,8 @@
 # Engine 代码架构与调用链
 
 本文面向第一次接手仓库的维护者。先读应用主流程，再按需要打开领域规则和资源实现。
-业务约束见 [重构契约](refactor/contract.md)，实施与验收记录只维护在
-[计划](refactor/plan.md)。本次结构迁移以 `9329231` 为基线。
+运行契约见 [主体运行行为](behavior.md)，配置入口见 [配置说明](configuration.md)。
+本文描述当前结构；已完成的迁移计划和阶段验收记录保留在 Git 历史中。
 
 ## 先建立目录地图
 
@@ -78,7 +78,7 @@ docstring 生成模型描述；Pydantic 类及嵌套 dataclass 的说明参与�
 结构化数据仍由 `serialization.render_yaml/render_field_tree` 编码，业务字段选择
 归材料投影，围栏长度和原生媒体位置归各自材料边界；它们不属于模板字段插值。
 
-前台固定正文已按用户提供的虚拟生命体版本替换，`{profile}` 仍由 Core 绑定角色卡。
+前台固定正文中的 `{profile}` 由 Core 绑定角色卡。
 时钟由 app/subject 的每请求刷新入口采样，发生在插件材料等待结束后；当前请求时间、
 工作快照观察时间和执行回执记录时间分别展示。`context/materials` 为每条刺激补齐
 信封的完整发生/接收时间；`context/presentation` 只将已知执行时间派生为 UTC，
@@ -304,31 +304,21 @@ continuation，避免隐藏服务端历史绕过实际请求中的媒体窗口�
 Store 和各账本共用 SqliteExecutor。跨输入/轮次/回执的原事务边界保留，
 不要把一次提交拆成多个 await 或独立连接。
 
-## 扩展与迁移入口
+## 扩展入口
 
 插件和替换执行器从 `purrcept_engine.plugin_system` 引用声明、生命周期、
 有限端口、能力与活动契约；协议文档拥有完整共同契约，具体插件仅说明差异。
-统一入口不提供数据库或服务定位器。公开顶层 EngineHost、EngineConfig、
-load_config、记录和错误继续直接导出，Host 参数及返回语义保持不变。
-
-| 迁移前位置 | 当前归属 |
-|---|---|
-| storage 中的记录与协议 | domain 各领域的 models / ports |
-| storage 中的 SQL、线程与连接 | infrastructure/sqlite |
-| subject、context | domain/subject、domain/context 与 domain/model_requests |
-| execution 的契约、目录、校验 | domain/execution |
-| execution 的执行器、Worker、IPC、Windows | infrastructure/execution、infrastructure/processes |
-| app 中的模型客户端、计量、锁与文件日志 | infrastructure 对应模块 |
-| plugins/base、共享音频与身体契约 | plugin_system，相关值与纯规则归 domain |
-
-旧模块路径不提供转发别名。仓库内脚本、测试和独立进程均使用新路径。
-本次迁移不修改数据库格式、运行配置、用户数据、提示、工具 schema 或能力 ID；
-原格式12到13的升级规则仍属于基线行为，不因代码搬迁新增升级。
+统一入口不提供数据库或服务定位器。顶层导出 EngineHost、EngineConfig、
+load_config、记录和错误。内置插件位于 `src/purrcept_engine/plugins`，随包分发；
+配置目录的 `plugins/` 是不入库的外部插件工作区，通过 `local/包名:factory`
+显式加载，也可使用已安装包的 `module:attribute` 入口。宿主不扫描或自动启用插件。
+第三方插件在宿主中执行，必须是可信代码；Worker 隔离的是模型行动。
+数据格式及升级规则见 [数据升级](behavior.md#数据格式与升级)。
 
 ## 怎样验证改动
 
-`tests/test_architecture.py` 检查依赖方向、顶层导出、Host 签名及旧 DDL 重开；
-固定接口和 DDL 来自 `9329231`，不从当前实现反生成。
+`tests/test_architecture.py` 检查依赖方向、顶层导出、Host 签名及历史 DDL 重开；
+接口和 DDL 使用固定回归样本，不从当前实现反生成。
 `tests/test_worker_import_boundary.py` 独立检查真实 Worker 入口的导入隔离。
 各领域测试继续覆盖合批、抢占、预算、真实回执、恢复和关闭故障。
 

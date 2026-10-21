@@ -44,16 +44,14 @@ def installed_packages() -> dict[str, str]:
         "purrcept_core": "0.6.0",
         "purrcept_litellm": "0.2.0",
         "purrcept_engine": "0.1.0",
-        "litellm": "1.105.0+purrcept.1",
+        "litellm": "1.105.0",
     }
     for module in (purrcept_core, purrcept_engine, purrcept_litellm):
         if module.__file__ is None or "site-packages" not in Path(module.__file__).parts:
             raise AssertionError(f"{module.__name__} 未从独立安装加载。")
         direct = importlib.metadata.distribution(module.__name__).read_text("direct_url.json")
-        if direct is None or json.loads(direct).get("dir_info", {}).get("editable", False):
-            raise AssertionError(
-                f"{module.__name__} 需要来自已记录 wheel，不能引用 editable 源码。"
-            )
+        if direct is not None and json.loads(direct).get("dir_info", {}).get("editable", False):
+            raise AssertionError(f"{module.__name__} 不能引用 editable 源码。")
     actual = {name: importlib.metadata.version(name) for name in expected}
     if actual != expected:
         raise AssertionError(f"安装版本不匹配：{actual}")

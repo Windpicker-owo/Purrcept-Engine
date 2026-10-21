@@ -27,7 +27,8 @@
    - 修改前必须通读 `README.md` 与 `docs/architecture.md`。
    - `domain` 模块严禁反向导入 `app`、`infrastructure`、具体插件或外部模型 SDK。
    - `EngineState` 仅在应用内部持有资源事实，严禁作为通用服务定位器传递给插件或 Worker。
-   - 进度记录仅维护 `docs/refactor/plan.md`，设计与验收边界见 `docs/refactor/contract.md`。
+   - 架构边界见 `docs/architecture.md`，运行契约见 `docs/behavior.md`，配置见 `docs/configuration.md`。
+   - 行为变更同步维护对应文档；已完成的重构计划与阶段验收记录留在 Git 历史。
 
 ---
 

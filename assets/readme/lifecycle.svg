@@ -1,0 +1,68 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="600" viewBox="0 0 1200 600" role="img" aria-labelledby="title desc">
+  <title id="title">一条刺激的生命周期</title>
+  <desc id="desc">时间线依次为五个阶段：01 接管（InputAdmissionService）、02 注意（StimulusCoordinator：observe 留存、wake 唤醒、urgent 抢占）、03 主脑（ContinuousSession）、04 行动（隔离 Worker 与 me.* 能力）、05 记忆（revise_memory），随后回到注意持续循环。</desc>
+
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0 0 L10 5 L0 10 z" fill="#61666E"/>
+    </marker>
+  </defs>
+
+  <rect x="1" y="1" width="1198" height="598" rx="20" fill="#FFFFFF" stroke="#E0E3E8" stroke-width="2"/>
+
+  <!-- 标题：墨色猫头标志 + 区域标题 -->
+  <g transform="translate(54 44) scale(1.25)">
+    <path fill="#15171A" d="M5 15V5l8 5a22 22 0 0 1 6 0l8-5v10c2 3 2 7-1 10-5 5-15 5-20 0-3-3-3-7-1-10Z"/>
+    <path d="M11 16v4m10-4v4" fill="none" stroke="#FFFFFF" stroke-width="2.5" stroke-linecap="round"/>
+  </g>
+  <text x="108" y="80" font-family="Geist, MiSans, 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', system-ui, sans-serif" font-size="40" font-weight="700" letter-spacing="-0.6" fill="#15171A">一条刺激的生命周期</text>
+
+  <!-- 时间线：线和节点承担真实顺序 -->
+  <line x1="120" y1="150" x2="120" y2="470" stroke="#CED2D9" stroke-width="2"/>
+  <!-- 持续循环：记忆之后回到注意，等待下一批刺激 -->
+  <path d="M98 470 H64 V230 H92" fill="none" stroke="#61666E" stroke-width="2" stroke-linejoin="round" marker-end="url(#arrow)"/>
+
+  <g font-family="'JetBrains Mono', SFMono-Regular, Consolas, monospace" font-size="17" font-weight="600" text-anchor="middle" fill="#15171A">
+    <circle cx="120" cy="150" r="21" fill="#FFFFFF" stroke="#15171A" stroke-width="2"/>
+    <circle cx="120" cy="230" r="21" fill="#FFFFFF" stroke="#15171A" stroke-width="2"/>
+    <circle cx="120" cy="310" r="21" fill="#FFFFFF" stroke="#15171A" stroke-width="2"/>
+    <circle cx="120" cy="390" r="21" fill="#FFFFFF" stroke="#15171A" stroke-width="2"/>
+    <circle cx="120" cy="470" r="21" fill="#FFFFFF" stroke="#15171A" stroke-width="2"/>
+    <text x="120" y="156">01</text>
+    <text x="120" y="236">02</text>
+    <text x="120" y="316">03</text>
+    <text x="120" y="396">04</text>
+    <text x="120" y="476">05</text>
+  </g>
+
+  <g font-family="Geist, MiSans, 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', system-ui, sans-serif">
+    <g font-size="26" font-weight="700" fill="#15171A">
+      <text x="166" y="159">接管</text>
+      <text x="166" y="239">注意</text>
+      <text x="166" y="319">主脑</text>
+      <text x="166" y="399">行动</text>
+      <text x="166" y="479">记忆</text>
+    </g>
+    <g font-size="21" fill="#484D55">
+      <text x="252" y="158">插件交付有序的文字、图片与音频，原文同事务入库</text>
+      <text x="252" y="238">合批评估：<tspan font-family="'JetBrains Mono', SFMono-Regular, Consolas, monospace" font-weight="600" fill="#15171A">observe</tspan> 留存 · <tspan font-family="'JetBrains Mono', SFMono-Regular, Consolas, monospace" font-weight="600" fill="#15171A">wake</tspan> 唤醒 · <tspan font-family="'JetBrains Mono', SFMono-Regular, Consolas, monospace" font-weight="600" fill="#15171A">urgent</tspan> 抢占</text>
+      <text x="252" y="318">一次取尽已提交输入，在连续会话中决定是否行动</text>
+      <text x="252" y="398">只有显式能力调用对外生效，逐次回执可追溯</text>
+      <text x="252" y="478">独立反思写入长期记忆，原文与证据保留回看</text>
+    </g>
+  </g>
+
+  <g font-family="'JetBrains Mono', SFMono-Regular, Consolas, monospace" font-size="18" fill="#61666E" text-anchor="end">
+    <text x="1144" y="157">InputAdmissionService</text>
+    <text x="1144" y="237">StimulusCoordinator</text>
+    <text x="1144" y="317">ContinuousSession</text>
+    <text x="1144" y="397">隔离 Worker · me.*</text>
+    <text x="1144" y="477">revise_memory</text>
+  </g>
+
+  <!-- 唤醒条件的两个调节器 -->
+  <line x1="56" y1="520" x2="1144" y2="520" stroke="#E0E3E8" stroke-width="2"/>
+  <text font-family="Geist, MiSans, 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', system-ui, sans-serif" font-size="20" fill="#61666E">
+    <tspan x="56" y="562"><tspan font-family="'JetBrains Mono', SFMono-Regular, Consolas, monospace" font-weight="600" fill="#15171A">me.bed.rest</tspan> 睡眠时普通刺激只记历史 · <tspan font-family="'JetBrains Mono', SFMono-Regular, Consolas, monospace" font-weight="600" fill="#15171A">subject.idle</tspan> 主动思考在空闲满间隔后保底唤起</tspan>
+  </text>
+</svg>

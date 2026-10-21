@@ -9,7 +9,7 @@ Engine 没有单独的 `--debug` 参数。调试器通过 Python 模块入口启
 2. 安装 Microsoft 的 Python（`ms-python.python`）与 Python Debugger
    （`ms-python.debugpy`）扩展。
 3. 确认开发依赖已安装，仓库中存在 `.venv/Scripts/python.exe`。首次准备环境的
-   补丁依赖步骤见根目录 README；启动配置直接使用该环境，不自动安装依赖。
+   安装步骤见根目录 README；启动配置直接使用该环境，不自动安装依赖。
 4. 打开“运行和调试”（`Ctrl+Shift+D`），选择下面的配置，按 `F5`。
 
 配置保存在 [launch.json](../.vscode/launch.json)：

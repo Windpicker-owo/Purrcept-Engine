@@ -10,7 +10,7 @@ readme = "README.md"
 requires-python = ">=3.12,<3.13"
 dependencies = [
   "httpx==0.28.1",
-  "litellm==1.105.0+purrcept.1",
+  "litellm==1.105.0",
   "openai==2.49.0",
   "pillow==12.3.0",
   "purrcept_core>=0.6.0,<0.7",
@@ -46,16 +46,25 @@ dev = [
   "ruff==0.16.0",
 ]
 
-[tool.uv.sources]
-litellm = { path = "build/litellm-patched/litellm-1.105.0+purrcept.1-cp310-abi3-win_amd64.whl" }
-purrcept_core = { path = "../purrcept_core", editable = true }
-purrcept_litellm = { path = "../purrcept_litellm", editable = true }
-
 [tool.uv]
 environments = ["sys_platform == 'win32'"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/purrcept_engine"]
+
+[tool.hatch.build]
+exclude = [
+  "/plugins",
+  "/build",
+  "/dist",
+  "/purrcept.toml",
+  "/.venv",
+  "/.validation",
+  "/.pytest_cache",
+  "/.ruff_cache",
+  "**/__pycache__",
+  "**/*.pyc",
+]
 
 [tool.pytest.ini_options]
 addopts = "--strict-config --strict-markers"
@@ -78,7 +87,7 @@ docstring-code-format = true
 venvPath = "."
 venv = ".venv"
 include = ["src", "tests", "examples"]
-extraPaths = ["src", "../purrcept_core/src", "../purrcept_litellm/src"]
+extraPaths = ["src"]
 pythonVersion = "3.12"
 typeCheckingMode = "strict"
 reportUnnecessaryTypeIgnoreComment = "error"

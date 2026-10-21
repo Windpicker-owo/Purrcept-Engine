@@ -1,0 +1,39 @@
+# 从公开索引安装依赖，防止开发机同级源码或本地插件掩盖部署问题。
+name: Engine 离线验收
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  quality:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    env:
+      LITELLM_LOCAL_MODEL_COST_MAP: "True"
+      PYTHONIOENCODING: utf-8
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          python-version: "3.12"
+      - run: uv sync --locked --all-groups --all-extras
+      - run: uv run --no-sync python -m pytest -q
+      - run: uv run --no-sync ruff check src tests examples scripts
+      - run: uv run --no-sync ruff format --check src tests examples scripts
+      - run: uv run --no-sync pyright
+      - run: uv run --no-sync python -m compileall -q src tests examples scripts
+      - run: uv build --no-sources
+      - name: 独立安装并验证真实 Worker 与持久化
+        shell: pwsh
+        run: |
+          uv venv --python 3.12 build/ci-install
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          uv pip install --python build/ci-install/Scripts/python.exe 'dist/purrcept_engine-0.1.0-py3-none-any.whl[web,qq,time,browser,voice-input,live2d]'
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          uv pip check --python build/ci-install/Scripts/python.exe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          build/ci-install/Scripts/python.exe -I -X utf8 scripts/verify_installation.py

@@ -1,7 +1,8 @@
 # Engine 维护约定
 
-Git 提交标题与正文使用中文。设计与验收边界见 `docs/refactor/contract.md`，
-进度只维护 `docs/refactor/plan.md`。旧 Runtime 是只读参考，不复制其兼容层。
+Git 提交标题与正文使用中文。架构边界见 `docs/architecture.md`，运行契约见
+`docs/behavior.md`，配置见 `docs/configuration.md`。旧 Runtime 是只读参考。
+已完成的重构计划由 Git 历史保留，不再维护独立阶段日志或授权记录。
 
 源码使用中文模块说明、公开 API 契约和必要的私有流程说明，具体格式与编写
 规范详见根目录 `CONTRIBUTING.md`。公开 API 采用 Google 风格结构化契约

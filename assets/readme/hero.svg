@@ -1,0 +1,88 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="480" viewBox="0 0 1200 480" role="img" aria-labelledby="title desc">
+  <title id="title">Purrcept Engine</title>
+  <desc id="desc">按 WebUI 首页舞台绘制的示意图：左侧是“此刻 · PURRCEPT ENGINE”、运行中状态、项目名称和一句话说明；右侧斜切色块上，白色猫头吉祥物从舞台底边探出，蓝色眼睛看向下方的当前行动路径。路径依次为“她”（已完成）、“电脑观察”（已完成）和“手机”（运行中）。</desc>
+
+  <defs>
+    <!-- 舞台上半部：只圆上角，吉祥物与色块在舞台底边被裁齐 -->
+    <clipPath id="stage">
+      <path d="M1 320 V21 A20 20 0 0 1 21 1 H1179 A20 20 0 0 1 1199 21 V320 Z"/>
+    </clipPath>
+  </defs>
+
+  <!-- 纸：白色工作面 + outline-subtle 身份边界 -->
+  <rect x="1" y="1" width="1198" height="478" rx="20" fill="#FFFFFF" stroke="#E0E3E8" stroke-width="2"/>
+
+  <g clip-path="url(#stage)">
+    <!-- 招牌形状：斜切色块，颜色是当前状态（acting）的 active container -->
+    <polygon points="764,0 1200,0 1200,320 696,320" fill="#E5EEFC"/>
+
+    <!-- 吉祥物：Cel Mascot 的同一造型，viewBox 134×96 放大 2.4 倍，底边与舞台底边重合 -->
+    <g transform="translate(798.6 89.6) scale(2.4)">
+      <g transform="rotate(7 60 104)">
+        <path d="M24 69 C15 54 12 25 17 18 C20 13 25 15 30 19 C38 25 46 33 52 40 L43 65 Z" fill="#FFFDF9"/>
+        <path d="M20 47 C20 38 21 29 24 26 C27 23 35 32 42 38 Z" fill="#E9E2D8"/>
+        <path d="M96 69 C105 54 108 25 103 18 C100 13 95 15 90 19 C82 25 74 33 68 40 L77 65 Z" fill="#FFFDF9"/>
+        <path d="M100 47 C100 38 99 29 96 26 C93 23 85 32 78 38 Z" fill="#E9E2D8"/>
+        <path d="M66 9 Q68 7 67 10 L60 21 L65 21 Q67 21 65 24 L57 34 Q55 36 56 33 L59 25 L54 25 Q52 25 54 22 Z" fill="#FFFDF9" stroke="#FFFDF9" stroke-width="2.5" stroke-linejoin="round"/>
+        <path d="M4 124 C3 108 -1 90 4 74 C9 54 28 33 60 33 C92 33 111 54 116 74 C121 90 117 108 116 124 Z" fill="#E9E2D8"/>
+        <path d="M4 124 C3 108 -1 90 4 74 C9 54 28 33 60 33 C92 33 111 54 116 74 C121 90 117 108 116 124 Z" fill="#FFFDF9" transform="matrix(0.91 0 0 0.91 1.98 4.86)"/>
+        <ellipse cx="26" cy="85" rx="8" ry="4" fill="#F3BDB3"/>
+        <ellipse cx="94" cy="85" rx="8" ry="4" fill="#F3BDB3"/>
+        <!-- 只有眼睛带状态色；视线看向左下方的行动路径 -->
+        <g transform="translate(-3.2 3)" fill="#1460CC">
+          <path transform="translate(40.5 70)" d="M0 -10.5 C4.5 -10.5 7 -5.5 7 0 C7 6 4 10 0 10 C-4 10 -7 6 -7 0 C-7 -5.5 -4.5 -10.5 0 -10.5 Z"/>
+          <path transform="translate(79.5 70)" d="M0 -10.5 C4.5 -10.5 7 -5.5 7 0 C7 6 4 10 0 10 C-4 10 -7 6 -7 0 C-7 -5.5 -4.5 -10.5 0 -10.5 Z"/>
+        </g>
+      </g>
+    </g>
+  </g>
+
+  <!-- 舞台文案：kicker + 状态点 + 名称 + 说明 -->
+  <g id="copy" font-family="Geist, MiSans, 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', system-ui, sans-serif">
+    <text x="56" y="92" font-size="20" font-weight="500" fill="#61666E">此刻 · PURRCEPT ENGINE</text>
+    <circle cx="316" cy="85" r="6" fill="#1460CC"/>
+    <text x="330" y="92" font-size="20" font-weight="600" fill="#1460CC">运行中</text>
+
+    <text x="54" y="172" font-size="66" font-weight="700" letter-spacing="-1.6" fill="#15171A">Purrcept Engine</text>
+
+    <text font-size="24" fill="#484D55">
+      <tspan x="56" y="226">持续在线的 AI 主体宿主。有新消息或到点的提醒时，</tspan>
+      <tspan x="56" y="262">她会自己开始，只通过显式能力行动，并留下回执。</tspan>
+    </text>
+  </g>
+
+  <!-- 行动路径：实体 → 设备；当前节点是唯一被上色的节点 -->
+  <line x1="2" y1="320" x2="1198" y2="320" stroke="#E0E3E8" stroke-width="2"/>
+
+  <g id="path" font-family="Geist, MiSans, 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', system-ui, sans-serif">
+    <text x="56" y="370" font-size="20" font-weight="500" fill="#61666E">当前行动</text>
+    <text x="56" y="404" font-size="23" font-weight="600" fill="#15171A">正在使用电脑观察、手机</text>
+    <text x="56" y="436" font-size="20" fill="#484D55">2 项操作，1 项已完成。</text>
+
+    <line x1="542" y1="368" x2="718" y2="368" stroke="#15171A" stroke-width="2.5"/>
+    <line x1="802" y1="368" x2="978" y2="368" stroke="#15171A" stroke-width="2.5"/>
+
+    <!-- 她 -->
+    <circle cx="500" cy="368" r="28" fill="#F2F3F5"/>
+    <circle cx="500" cy="362" r="6" fill="none" stroke="#484D55" stroke-width="2.4"/>
+    <path d="M489 380 C490 372 510 372 511 380" fill="none" stroke="#484D55" stroke-width="2.4" stroke-linecap="round"/>
+    <text x="500" y="424" text-anchor="middle" font-size="22" font-weight="600" fill="#15171A">她</text>
+    <path d="M466 448 L471 453 L480 443" fill="none" stroke="#484D55" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+    <text x="488" y="455" font-size="20" fill="#484D55">已完成</text>
+
+    <!-- 电脑观察 -->
+    <circle cx="760" cy="368" r="28" fill="#F2F3F5"/>
+    <rect x="748" y="356" width="24" height="17" rx="2.5" fill="none" stroke="#484D55" stroke-width="2.4"/>
+    <path d="M754 381 H766 M760 373 V381" fill="none" stroke="#484D55" stroke-width="2.4" stroke-linecap="round"/>
+    <text x="760" y="424" text-anchor="middle" font-size="22" font-weight="600" fill="#15171A">电脑观察</text>
+    <path d="M726 448 L731 453 L740 443" fill="none" stroke="#484D55" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+    <text x="748" y="455" font-size="20" fill="#484D55">已完成</text>
+
+    <!-- 手机：当前节点 -->
+    <circle cx="1020" cy="368" r="28" fill="#E5EEFC"/>
+    <circle cx="1020" cy="368" r="8.5" fill="none" stroke="#0E3F86" stroke-width="2.6"/>
+    <text x="1020" y="424" text-anchor="middle" font-size="22" font-weight="600" fill="#15171A">手机</text>
+    <circle cx="992" cy="448" r="6" fill="#1460CC"/>
+    <text x="1006" y="455" font-size="20" font-weight="600" fill="#1460CC">运行中</text>
+  </g>
+</svg>
