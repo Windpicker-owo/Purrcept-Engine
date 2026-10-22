@@ -84,7 +84,6 @@ async def test_host_retention_clears_old_diagnostics_and_keeps_authority_after_r
                     "api_key": "synthetic",
                     "context_window": 100000,
                     "max_output_tokens": 1000,
-                    "capacity_rule": "reference-text-only-v1",
                 }
             },
             "subject": {"foreground": "main", "reflection": "main", "summary": "main"},

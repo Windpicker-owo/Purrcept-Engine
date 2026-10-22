@@ -1,15 +1,11 @@
-"""核验完整 SDK payload 的纯文本参考容量及明确拒绝缺失媒体依据。"""
+"""核验完整请求的统一多模态 token 估算、预算与派发边界。"""
 
 from __future__ import annotations
-
-from collections.abc import Mapping
 
 import pytest
 
 from purrcept_engine.domain.context.capacity import (
-    CapacityDeclaration,
     CapacityError,
-    CapacityEstimate,
     DecisionCapacity,
     GenerationCapacity,
     assess_capacity,
@@ -45,15 +41,15 @@ def payload() -> dict[str, object]:
     }
 
 
-def test_complete_utf8_payload_and_output_reserve_define_reference_budget() -> None:
-    """一字节一参考单位覆盖整个 JSON，扣输出后的 10% 余量有明确分母。"""
+def test_complete_text_and_output_reserve_define_reference_budget() -> None:
+    """完整文字和结构开销参与粗略估算，扣输出后的 10% 余量有明确分母。"""
     request = payload()
-    declaration = GenerationCapacity(1000, 100, "reference-text-only-v1")
+    declaration = GenerationCapacity(1000, 100)
     result = check_capacity(request, declaration)
-    assert result.estimate.input_units == len(encode(request).encode("utf-8"))
+    assert 0 < result.estimate.input_units < len(encode(request).encode("utf-8"))
     assert result.input_budget == 810
-    assert result.estimate.unit == "utf8_byte_reference"
-    assert result.estimate.method == "reference-text-only-v1"
+    assert result.estimate.unit == "token_estimate"
+    assert result.estimate.method == "multimodal-heuristic-v1"
     assert result.ratio == result.estimate.input_units / 810
     extended = dict(request, tools=[{"type": "function", "description": "x" * 500}])
     assert assess_capacity(extended, declaration).estimate.input_units > result.estimate.input_units
@@ -61,24 +57,22 @@ def test_complete_utf8_payload_and_output_reserve_define_reference_budget() -> N
 
 def test_independent_input_limit_and_decision_protocol_have_no_hidden_output() -> None:
     """生成独立输入上限取较严格值，专用判断只使用自己的输入声明。"""
-    result = assess_capacity(
-        payload(), GenerationCapacity(1000, 100, "reference-text-only-v1", input_limit=700)
-    )
+    result = assess_capacity(payload(), GenerationCapacity(1000, 100, input_limit=700))
     assert result.input_budget == 700
     decision = {
         "model": "typesafe/explicit",
         "input": "证据",
         "questions": [{"name": "attend", "type": "predicate", "instructions": "criteria"}],
     }
-    result = check_capacity(decision, DecisionCapacity(1000, "reference-text-only-v1"))
+    result = check_capacity(decision, DecisionCapacity(1000))
     assert result.input_budget == 900
-    assert result.estimate.input_units == len(encode(decision).encode("utf-8"))
+    assert 0 < result.estimate.input_units < len(encode(decision).encode("utf-8"))
 
 
 def test_smaller_actual_output_uses_its_request_window_reserve() -> None:
     """借用模型的注意请求只预留实际额度，配置仍限制最大允许输出。"""
     request = payload()
-    declaration = GenerationCapacity(1000, 500, "reference-text-only-v1")
+    declaration = GenerationCapacity(1000, 500)
     assert assess_capacity(request, declaration).input_budget == 810
     request["max_completion_tokens"] = 200
     assert assess_capacity(request, declaration).input_budget == 720
@@ -88,7 +82,7 @@ def test_overflow_is_explicit_and_original_messages_are_not_trimmed() -> None:
     """超额结论能供维护观察，真正派发明确拒绝且不改原材料。"""
     request = payload()
     original = encode(request)
-    declaration = GenerationCapacity(300, 100, "reference-text-only-v1")
+    declaration = GenerationCapacity(150, 100)
     assessed = assess_capacity(request, declaration)
     assert not assessed.within_budget and assessed.maintenance_due
     with pytest.raises(CapacityError) as caught:
@@ -97,30 +91,20 @@ def test_overflow_is_explicit_and_original_messages_are_not_trimmed() -> None:
     assert encode(request) == original
 
 
-@pytest.mark.parametrize(
-    "part",
-    [
-        {"type": "image_url", "image_url": {"url": "https://never-fetch.invalid/image"}},
-        {"type": "input_audio", "input_audio": {"data": "large-base64", "format": "wav"}},
-        {"type": "future-media", "data": "unknown"},
-    ],
-)
-def test_reference_rule_never_treats_media_as_base64_text_or_zero(part: dict[str, object]) -> None:
-    """未知媒体或缺规则/元数据不套统一常数，也不按 URL 文本长度放行。"""
+def test_remote_image_has_a_fixed_planning_reserve_without_fetching() -> None:
+    """没有本地尺寸的 URL 不按短引用文字当作几 token，而使用明确的媒体额度。"""
     request = payload()
-    request["messages"] = [{"role": "user", "content": [part]}]
-    with pytest.raises(CapacityError) as caught:
-        check_capacity(request, GenerationCapacity(100000, 100, "reference-text-only-v1"))
-    assert caught.value.code == "unsupported_media" and caught.value.missing
-
-
-def test_unknown_rule_is_not_inferred_from_model_name() -> None:
-    """没有登记的计量标识不会选通用 tokenizer 或默认窗口。"""
-    with pytest.raises(CapacityError) as caught:
-        check_capacity(payload(), GenerationCapacity(1000, 100, "unknown-model-rule"))
-    assert caught.value.code == "unsupported_rule" and caught.value.missing == (
-        "unknown-model-rule",
-    )
+    request["messages"] = [
+        {
+            "role": "user",
+            "content": [
+                {"type": "image_url", "image_url": {"url": "https://never-fetch.invalid/image"}}
+            ],
+        }
+    ]
+    result = check_capacity(request, GenerationCapacity(100000, 100))
+    assert result.estimate.input_units >= 2048
+    assert result.estimate.scope == "complete_sdk_request"
 
 
 def test_schema_and_literal_media_words_are_regular_text() -> None:
@@ -130,9 +114,7 @@ def test_schema_and_literal_media_words_are_regular_text() -> None:
     request["tools"] = [
         {"type": "function", "parameters": {"properties": {"image_url": {"type": "string"}}}}
     ]
-    assert check_capacity(
-        request, GenerationCapacity(1000, 100, "reference-text-only-v1")
-    ).within_budget
+    assert check_capacity(request, GenerationCapacity(1000, 100)).within_budget
 
 
 def test_nonfinite_or_nonjson_payload_does_not_get_a_measurement() -> None:
@@ -140,11 +122,11 @@ def test_nonfinite_or_nonjson_payload_does_not_get_a_measurement() -> None:
     request = payload()
     request["unknown"] = object()
     with pytest.raises(CapacityError) as caught:
-        check_capacity(request, GenerationCapacity(1000, 100, "reference-text-only-v1"))
+        check_capacity(request, GenerationCapacity(1000, 100))
     assert caught.value.code == "invalid_payload"
     request["unknown"] = float("inf")
     with pytest.raises(CapacityError, match="有限 JSON"):
-        check_capacity(request, GenerationCapacity(1000, 100, "reference-text-only-v1"))
+        check_capacity(request, GenerationCapacity(1000, 100))
 
 
 @pytest.mark.parametrize("output", [None, 0, True, 101])
@@ -153,39 +135,21 @@ def test_actual_generation_output_limit_must_match_explicit_declaration(output: 
     request = payload()
     request["max_tokens"] = output
     with pytest.raises(CapacityError) as caught:
-        check_capacity(request, GenerationCapacity(1000, 100, "reference-text-only-v1"))
+        check_capacity(request, GenerationCapacity(1000, 100))
     assert caught.value.code == "output_limit"
 
 
-def test_explicit_registered_rule_is_called_once_and_has_observable_basis() -> None:
-    """规则通过明确登记选择，示例只证明端口，不宣称任何Provider公式。"""
-    calls: list[CapacityDeclaration] = []
-
-    def local_rule(
-        payload: Mapping[str, object], declaration: CapacityDeclaration
-    ) -> CapacityEstimate:
-        assert payload["model"] == "explicit/model"
-        calls.append(declaration)
-        return CapacityEstimate(
-            len(encode(payload).encode()), "test-local-v1", "synthetic_text", "utf8_reference"
-        )
-
-    declaration = GenerationCapacity(1000, 100, "test-local-rule")
-    result = check_capacity(payload(), declaration, rules={"test-local-rule": local_rule})
-    assert calls == [declaration] and result.estimate.method == "test-local-v1"
-
-
-def test_registered_rule_internal_failure_keeps_exception_without_fallback() -> None:
-    """计量规则的内部异常不转成零量、通用分词或另一条规则。"""
-    failure = RuntimeError("synthetic rule failure")
-
-    def broken_rule(
-        payload: Mapping[str, object], declaration: CapacityDeclaration
-    ) -> CapacityEstimate:
-        raise failure
-
-    with pytest.raises(RuntimeError) as caught:
-        check_capacity(
-            payload(), GenerationCapacity(1000, 100, "broken"), rules={"broken": broken_rule}
-        )
-    assert caught.value is failure
+@pytest.mark.parametrize(
+    "ratio,maintenance_due,target_met", [(0.5, False, True), (0.8, True, False), (1.0, True, False)]
+)
+def test_thresholds_share_the_input_budget_denominator(
+    ratio: float, maintenance_due: bool, target_met: bool
+) -> None:
+    """触发、目标和派发上限都比较同一输入预算，并包含等号边界。"""
+    request = payload()
+    size = assess_capacity(request, GenerationCapacity(10000, 100)).estimate.input_units
+    budget = int(size / ratio)
+    result = check_capacity(request, GenerationCapacity(budget + 100, 100), reserve_fraction=0)
+    assert result.maintenance_due is maintenance_due
+    assert result.target_met is target_met
+    assert result.within_budget

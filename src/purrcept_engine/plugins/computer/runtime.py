@@ -5,6 +5,7 @@ ComputerRuntime独占一个驱动和采样任务，正式输入/媒体归宿主�
 不解锁。没有react、独立画面解释、自动声音或重做旧行动。查询只读缓存。
 单次截图先保存同库证据，再写入配置目录的独立 JPEG；返回路径可用于显式
 发送。连续观察不写文件，关闭不删除已交付文件，也不自行执行消息发送。
+宿主命令委托给独立 CommandRunner；连接同时授予命令调用资格，断开回收其进程树。
 """
 
 from __future__ import annotations
@@ -34,6 +35,7 @@ from purrcept_engine.plugin_system import (
     MediaAsset,
     MediaReference,
 )
+from purrcept_engine.plugins.computer.command import CommandParameters, CommandRunner
 from purrcept_engine.plugins.computer.driver import ComputerDriver
 from purrcept_engine.plugins.computer.models import (
     ChangeDetector,
@@ -114,7 +116,7 @@ class _Candidate:
 
 
 class ComputerRuntime:
-    """插件拥有的采集生命周期，扩展驱动只在显式connect时创建。
+    """插件拥有的电脑生命周期，驱动与命令只在显式连接后启用。
 
     inputs/evidence为有限宿主端口；preferences为独立业务偏好文件，不恢复
     连接。采集失败和主体失败都暂停交付，明确observe(start)创建新代次。
@@ -131,6 +133,7 @@ class ComputerRuntime:
         preferences: Path,
         *,
         screenshot_dir: Path,
+        command_base_dir: Path,
         monotonic: Callable[[], float] = time.monotonic,
     ) -> None:
         """构造只登记所有权，不读取设备或创建后台任务。
@@ -143,12 +146,14 @@ class ComputerRuntime:
             policy: 明确的观察间隔、变化门槛与帧节流规则。
             preferences: 显式保存的观察偏好文件路径。
             screenshot_dir: 单次截图的文件保存目录，关闭后仍保留已交付文件。
+            command_base_dir: 宿主命令默认工作目录，也是相对路径的解析基准。
             monotonic: 本实例使用的单调时钟，不与持久化墙钟混用。
         """
         self.instance_id, self._factory = instance_id, driver_factory
         self._inputs, self._evidence = inputs, evidence
         self.policy, self._preferences = policy, preferences
         self._screenshot_dir = screenshot_dir.absolute()
+        self._commands = CommandRunner(command_base_dir)
         self._clock = monotonic
         self._driver: ComputerDriver | None = None
         self._connection: str | None = None
@@ -189,6 +194,25 @@ class ComputerRuntime:
         if not self._driver.alive:
             raise ComputerError("宿主电脑采集进程已断开。")
         return self._driver
+
+    async def command(self, parameters: CommandParameters, deadline: float) -> CallOutcome:
+        """在已连接电脑上运行一次宿主 PowerShell 命令。
+
+        Args:
+            parameters: 脚本、工作目录、超时和输出预算。
+            deadline: 执行服务提供的绝对单调截止时间。
+
+        Returns:
+            命令的实际退出、输出或部分未知事实；不会重试或回滚外部效果。
+
+        Raises:
+            ComputerError: 电脑尚未连接或已经断开。
+            HostStateError: 插件已停止接管新命令。
+        """
+        self._require_driver()
+        if self._stopping:
+            raise HostStateError("电脑已停止接管新命令。")
+        return await self._commands.run(parameters, deadline)
 
     async def connect(self) -> JsonObject:
         """并发连接只创建一个驱动，未完成断开不构造第二份资源。
@@ -599,7 +623,7 @@ class ComputerRuntime:
         """先撤连接代次，再让驱动结束阻塞采集。
 
         Note:
-            不关闭电脑应用。
+            终止本插件在途命令的进程树；不关闭其他电脑应用。
         """
         self._connection, self._observing = None, False
         self._generation += 1
@@ -613,14 +637,25 @@ class ComputerRuntime:
         return self.snapshot()
 
     async def _disconnect(self) -> None:
-        """驱动先打断原生采集，然后收回采样任务；失败不清空仍占用引用。"""
+        """命令和采集都必须收回；一方失败仍释放另一方，失败不清空占用引用。"""
+        failures: list[BaseException] = []
+        try:
+            await self._commands.stop()
+        except BaseException as error:
+            failures.append(error)
         driver = self._driver
-        if driver is not None:
-            await driver.close()
+        try:
+            if driver is not None:
+                await driver.close()
+        except BaseException as error:
+            failures.append(error)
+        else:
+            if self._driver is driver:
+                self._driver = None
         if self._sampler is not None:
             await asyncio.gather(self._sampler, return_exceptions=True)
-        if self._driver is driver:
-            self._driver = None
+        if failures:
+            raise BaseExceptionGroup("电脑命令或采集资源收尾失败。", failures)
 
     async def close(self) -> None:
         """实际借用结束后的总资源清理，不关闭共享宿主Store。"""

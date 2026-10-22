@@ -56,7 +56,7 @@ def test_only_successfully_sent_complete_receipt_grants_next_action_reading(
     )
 
     def capacity(payload: JsonObject) -> CapacityAssessment:
-        return check_capacity(payload, GenerationCapacity(10_000, 100, "reference-text-only-v1"))
+        return check_capacity(payload, GenerationCapacity(2_500, 100))
 
     assert gate.presented_call_ids == frozenset()
     prepared = gate.prepare(request, model="openai/test", capacity=capacity)

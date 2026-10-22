@@ -140,7 +140,6 @@ def assembly(
                     "api_key": "synthetic",
                     "context_window": 300_000,
                     "max_output_tokens": 1000,
-                    "capacity_rule": "reference-text-only-v1",
                 }
             },
             "subject": {"foreground": "main", "reflection": "main", "summary": "main"},
@@ -166,7 +165,6 @@ def assembly(
         execute=execute,
         plugins={} if plugins is None else plugins,
         can_start=lambda: None,
-        rules={},
         wakeup_committed=lambda: None,
         knowledge=KnowledgeService(store.knowledge),
     )
@@ -596,7 +594,7 @@ async def test_full_current_state_exceeds_actual_request_capacity_without_silent
             WakeupPlan(
                 id=f"plan:{ordinal}",
                 due=time.time() + 3600,
-                reason="必须保留的承诺" + "x" * 10_000,
+                reason="必须保留的承诺" + "x" * 40_000,
                 evidence=source,
             )
         )

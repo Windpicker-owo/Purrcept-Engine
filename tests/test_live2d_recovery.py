@@ -468,7 +468,6 @@ async def test_actual_host_can_close_during_plugin_native_authorization(tmp_path
                     "api_key": "synthetic-key",
                     "context_window": 10000,
                     "max_output_tokens": 1000,
-                    "capacity_rule": "test-only",
                 }
             },
             "subject": {"foreground": "test", "reflection": "test", "summary": "test"},

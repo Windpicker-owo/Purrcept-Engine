@@ -91,12 +91,12 @@ async def admit(store: Store, identity: str, text: str) -> str:
 
 def assess(payload: JsonObject):
     """允许旧完整请求超额供摘要维护，保持同一参考计量分母。"""
-    return assess_capacity(payload, GenerationCapacity(32_000, 100, "reference-text-only-v1"))
+    return assess_capacity(payload, GenerationCapacity(8_000, 100))
 
 
 def check(payload: JsonObject):
     """真实派发仍核完整输入，不借摘要放宽输出预留或容量门槛。"""
-    return check_capacity(payload, GenerationCapacity(32_000, 100, "reference-text-only-v1"))
+    return check_capacity(payload, GenerationCapacity(8_000, 100))
 
 
 async def refresh(budget: RequestBudget) -> DynamicState:
@@ -166,7 +166,7 @@ async def test_history_preview_uses_actual_tool_tail_projection(store: Store) ->
 
     def measure(payload: JsonObject) -> CapacityAssessment:
         captured.append(payload)
-        return assess_capacity(payload, GenerationCapacity(100_000, 100, "reference-text-only-v1"))
+        return assess_capacity(payload, GenerationCapacity(100_000, 100))
 
     backend = Backend("不应调用")
     maintenance = HistoryMaintenance(
@@ -245,9 +245,7 @@ async def test_idle_summary_is_installed_before_begin_turn_and_real_core_adopts_
         summary,
         model="openai/summary",
         retry=RetrySettings(attempts=1),
-        summary_capacity=lambda payload: check_capacity(
-            payload, GenerationCapacity(100_000, 256, "reference-text-only-v1")
-        ),
+        summary_capacity=lambda payload: check_capacity(payload, GenerationCapacity(100_000, 256)),
         output_tokens=256,
         diagnostic_bytes=1024,
         compiler=compile_materials,

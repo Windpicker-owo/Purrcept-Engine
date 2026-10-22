@@ -22,7 +22,6 @@ from purrcept_engine.app.knowledge_resources import KnowledgeResources
 from purrcept_engine.app.panel import PanelController
 from purrcept_engine.app.subject import SubjectAssembly
 from purrcept_engine.domain.activities.service import ActivityService
-from purrcept_engine.domain.context.capacity import CapacityRule
 from purrcept_engine.domain.execution.ports import ActionExecutor
 from purrcept_engine.domain.execution.providers import (
     CallOutcome,
@@ -34,10 +33,6 @@ from purrcept_engine.domain.knowledge.ports import Reranker
 from purrcept_engine.domain.knowledge.semantic import EmbeddingProvider
 from purrcept_engine.errors import ConfigError, HostStateError
 from purrcept_engine.infrastructure.locking import InstanceLock
-from purrcept_engine.infrastructure.models.capacity import (
-    RULE,
-    count_litellm_capacity,
-)
 from purrcept_engine.infrastructure.models.clients import DecisionResource, OpenAIGenerationResource
 from purrcept_engine.infrastructure.sqlite.store import Store
 from purrcept_engine.plugin_system.audio_port import AudioOutputPort
@@ -57,7 +52,6 @@ class EngineState:
         console_output: Callable[[str], None] = print,
         generation_backends: Mapping[str, ModelBackend] | None = None,
         decision_backends: Mapping[str, DecisionBackend] | None = None,
-        capacity_rules: Mapping[str, CapacityRule] | None = None,
         embedding_provider: EmbeddingProvider | None = None,
         reranker: Reranker | None = None,
     ) -> None:
@@ -70,7 +64,6 @@ class EngineState:
             console_output: 显式控制台能力使用的文字输出回调。
             generation_backends: 按配置名注入的生成后端，由嵌入调用者负责最终关闭。
             decision_backends: 按配置名注入的判断后端，由嵌入调用者负责最终关闭。
-            capacity_rules: 按规则名显式登记的纯容量计量函数。
             embedding_provider: 嵌入调用者注入的向量 Provider；None 按显式配置装配。
             reranker: 可选重排器，只能对给定候选排序。 None 表示不重排。
 
@@ -101,10 +94,6 @@ class EngineState:
         self.executor_factory = executor_factory
         self.generation_backends = MappingProxyType(dict(generation_backends or {}))
         self.decision_backends = MappingProxyType(dict(decision_backends or {}))
-        # CLI 与嵌入宿主共享显式可选的内置规则，构造时不导入 LiteLLM。
-        self.capacity_rules = MappingProxyType(
-            {RULE: count_litellm_capacity, **dict(capacity_rules or {})}
-        )
         if embedding_provider is not None and config.knowledge.embedding is None:
             raise ConfigError("knowledge.embedding: 借入向量后端仍须显式声明配置。")
         self.embedding_provider, self.reranker = embedding_provider, reranker

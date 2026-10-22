@@ -1,4 +1,4 @@
-"""电脑显式连接与按真实输入处理确认的持续观察，入口见plugin.factory。"""
+"""电脑显式连接、截图、持续观察与宿主命令，入口见 plugin.factory。"""
 
 from purrcept_engine.plugins.computer.plugin import factory, make_factory
 

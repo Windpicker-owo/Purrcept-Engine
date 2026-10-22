@@ -187,7 +187,7 @@ class HistoryPreparation:
             )
 
         def measure() -> CapacityAssessment:
-            """首轮完整布局及分词可能耗时数秒，不能阻塞麦克风采集。"""
+            """完整媒体布局和 JSON 编码可能较大，准备工作不能阻塞麦克风采集。"""
             materials, _ = self.compiler(layout(checkpoint), model=self.model)
             payload = decode_object(materials.encode("utf-8")).get("payload")
             if not isinstance(payload, dict):

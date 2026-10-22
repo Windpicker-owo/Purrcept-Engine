@@ -147,6 +147,7 @@ async def controlled(
         ObservationPolicy(),
         tmp_path / "preferences.json",
         screenshot_dir=tmp_path / ".purrcept" / "computer-screenshots",
+        command_base_dir=tmp_path,
         monotonic=lambda: clock[0],
     )
 
@@ -394,6 +395,7 @@ async def test_background_disconnect_ends_blocked_capture_and_rejects_late_previ
         ObservationPolicy(),
         tmp_path / "preferences.json",
         screenshot_dir=tmp_path / ".purrcept" / "computer-screenshots",
+        command_base_dir=tmp_path,
     )
     try:
         await runtime.connect()
@@ -426,6 +428,7 @@ async def test_observation_preferences_survive_reopen_but_do_not_restore_connect
         restored,
         tmp_path / "preferences.json",
         screenshot_dir=tmp_path / ".purrcept" / "computer-screenshots",
+        command_base_dir=tmp_path,
     )
     try:
         assert not unopened.snapshot()["connected"] and not unopened.snapshot()["observing"]
@@ -600,6 +603,7 @@ async def test_real_sampler_capture_failure_pauses_and_close_still_releases_driv
         ObservationPolicy(),
         tmp_path / "preferences.json",
         screenshot_dir=tmp_path / ".purrcept" / "computer-screenshots",
+        command_base_dir=tmp_path,
     )
     await runtime.connect()
     await runtime.observe("start")
@@ -629,6 +633,7 @@ async def test_real_sampler_capacity_failure_pauses_until_explicit_start(
         ObservationPolicy(),
         tmp_path / "preferences.json",
         screenshot_dir=tmp_path / ".purrcept" / "computer-screenshots",
+        command_base_dir=tmp_path,
     )
     rejected, received = asyncio.Event(), asyncio.Event()
     original_submit = Inputs.submit
@@ -686,7 +691,6 @@ async def test_actual_host_worker_persists_native_screenshot_receipt(
                 "api_key": "synthetic",
                 "context_window": 100000,
                 "max_output_tokens": 1000,
-                "capacity_rule": "reference-text-only-v1",
             }
         },
         "subject": {"foreground": "test", "reflection": "test", "summary": "test"},
@@ -755,6 +759,7 @@ async def test_actual_host_worker_persists_native_screenshot_receipt(
             "me.computer.foreground",
             "me.computer.screenshot",
             "me.computer.observe",
+            "me.computer.command",
         }
     finally:
         if sending is not None:

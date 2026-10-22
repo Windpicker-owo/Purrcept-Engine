@@ -195,8 +195,6 @@ def _capacity_details(error: CapacityError) -> dict[str, object]:
         "reason": str(error),
         "scope": "complete_next_request",
     }
-    if error.missing:
-        result["missing"] = error.missing
     if error.assessment is not None:
         assessment = error.assessment
         result.update(
@@ -209,9 +207,9 @@ def _capacity_details(error: CapacityError) -> dict[str, object]:
 
 
 def _correctable(error: CapacityError) -> bool:
-    # 只有材料超额或缺少媒体计量依据可以撤回尚未交付的原文。配置、SDK
-    # 形状、规则实现及其它内部故障不能被包装为让模型反复尝试的输入问题。
-    return error.code in ("over_capacity", "unsupported_media")
+    # 只有材料超额可以撤回尚未交付的原文。配置、SDK 形状及其它内部
+    # 故障不能被包装为让模型反复尝试的输入问题。
+    return error.code == "over_capacity"
 
 
 def _full_action_matches(payload: JsonObject, current: JsonObject) -> bool:

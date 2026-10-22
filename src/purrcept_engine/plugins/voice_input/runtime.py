@@ -105,7 +105,7 @@ class VoiceInputRuntime:
             capture_factory: 为当前插件实例创建独立捕获驱动的工厂。
             vad_factory: 创建当前输入实例 VAD 检测器的工厂。
             transcriber: 当前运行实例借用的流式转写资源。
-            native_audio_enabled: 宿主确认模型音频声明与媒体计量规则均可用于原声准入。
+            native_audio_enabled: 宿主确认前台模型显式声明音频传输能力，可接管原声输入。
 
         Note:
             构造不打开声卡、VAD 或付费模型。
@@ -285,9 +285,7 @@ class VoiceInputRuntime:
                     raise VoiceInputError("收音已经开启，请先停止当前会话。")
                 await self.driver
             if mode == "audio" and not self.native_audio_enabled:
-                raise VoiceInputError(
-                    "直接听原声需要模型音频能力和已注册的媒体计量规则；请使用识别成文字。"
-                )
+                raise VoiceInputError("直接听原声需要前台模型声明音频能力；请使用识别成文字。")
             if mode == "asr" and not self.settings.asr_api_key.get_secret_value():
                 raise VoiceInputError("ASR 未配置显式密钥，收音尚未开启。")
             self.session, self.mode, self.device = uuid4().hex, mode, device

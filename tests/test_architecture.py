@@ -1,7 +1,8 @@
-"""验证分层和重构前公开边界，基线固定于提交 9329231。
+"""验证依赖分层、当前公开接口和历史数据库的明确边界。
 
-依赖检查覆盖延迟和类型导入，避免纯声明悄悄带入资源实现。接口与 DDL 固件
-从重构前源码提取，不由当前实现生成；业务行为仍由各领域和真实跨层测试验证。
+依赖检查覆盖延迟和类型导入，避免纯声明悄悄带入资源实现。DDL 固件固定于
+提交 9329231，不随当前实现重建；门面签名基线只随明确的公开 API 变更更新。
+业务行为仍由各领域和真实跨层测试验证。
 """
 
 import ast
@@ -97,8 +98,8 @@ def test_dependency_direction_has_no_reverse_resource_import(area: str) -> None:
     assert violations == []
 
 
-def test_host_signatures_and_root_exports_match_before_refactor() -> None:
-    """门面可委托新组件，调用方式与原有顶层导出仍须与固定基线一致。"""
+def test_host_signatures_and_root_exports_match_declared_api() -> None:
+    """门面调用方式与顶层导出须符合显式维护的 API 基线，规则注册入口已移除。"""
     tree = ast.parse((_SOURCE / "app/host.py").read_text(encoding="utf-8"))
     host = next(
         node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == "EngineHost"

@@ -556,7 +556,6 @@ async def test_actual_sdk_http_payload_matches_recorded_ordered_materials(
             "api_base": "https://generation.invalid/v1",
             "context_window": 10000,
             "max_output_tokens": 1000,
-            "capacity_rule": "synthetic-test-rule",
         }
     )
     resource = OpenAIGenerationResource.create(settings)
@@ -651,7 +650,6 @@ async def test_real_sdk_retry_has_two_http_attempts_and_preserves_same_payload(
                 "model": "openai/gemini-3.8-flash-high",
                 "api_key": "synthetic-key",
                 "api_base": "https://model.invalid/v1",
-                "capacity_rule": "synthetic-test-rule",
                 "context_window": 10000,
                 "max_output_tokens": 1000,
             }
@@ -680,7 +678,6 @@ async def test_real_sdk_retry_has_two_http_attempts_and_preserves_same_payload(
                 "api_key": "synthetic-key",
                 "api_base": "https://model.invalid/v1",
                 "input_limit": 10000,
-                "capacity_rule": "synthetic-test-rule",
             }
         )
         decision_resource = DecisionResource.create(decision_settings)

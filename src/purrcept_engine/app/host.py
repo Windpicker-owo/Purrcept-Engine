@@ -20,7 +20,6 @@ from purrcept_engine.app.lifecycle import HostLifecycle
 from purrcept_engine.app.panel import ControlRequest
 from purrcept_engine.app.queries import HostQueries
 from purrcept_engine.domain.activities.models import ActivityCommand, ActivityRecord, CommandKind
-from purrcept_engine.domain.context.capacity import CapacityRule
 from purrcept_engine.domain.controls.models import ControlRecord
 from purrcept_engine.domain.execution.catalog import Catalog
 from purrcept_engine.domain.execution.models import ActionRecord
@@ -57,7 +56,6 @@ class EngineHost:
         console_output: Callable[[str], None] = print,
         generation_backends: Mapping[str, ModelBackend] | None = None,
         decision_backends: Mapping[str, DecisionBackend] | None = None,
-        capacity_rules: Mapping[str, CapacityRule] | None = None,
         embedding_provider: EmbeddingProvider | None = None,
         reranker: Reranker | None = None,
     ) -> None:
@@ -70,7 +68,6 @@ class EngineHost:
             console_output: 显式控制台能力使用的文字输出回调。
             generation_backends: 按配置名注入的生成后端，由嵌入调用者负责最终关闭。
             decision_backends: 按配置名注入的判断后端，由嵌入调用者负责最终关闭。
-            capacity_rules: 按规则名显式登记的纯容量计量函数。
             embedding_provider: 嵌入调用者注入的向量 Provider；None 按显式配置装配。
             reranker: 可选重排器，只能对给定候选排序。 None 表示不重排。
 
@@ -88,7 +85,6 @@ class EngineHost:
             console_output=console_output,
             generation_backends=generation_backends,
             decision_backends=decision_backends,
-            capacity_rules=capacity_rules,
             embedding_provider=embedding_provider,
             reranker=reranker,
         )

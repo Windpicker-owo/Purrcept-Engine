@@ -85,7 +85,7 @@ async def admitted(store: Store, native_id: str, text: str) -> str:
 
 def capacity(payload: JsonObject):
     """真实纯参考计量包含固定前缀、工具和尾部，不用零估算放行。"""
-    return check_capacity(payload, GenerationCapacity(100_000, 1000, "reference-text-only-v1"))
+    return check_capacity(payload, GenerationCapacity(100_000, 1000))
 
 
 async def refresh(budget: RequestBudget) -> DynamicState:
@@ -133,7 +133,7 @@ async def test_core_history_continues_and_dynamic_tail_does_not_become_history(
     assert isinstance(tail, TextBlock) and tail.text.startswith("宿主已提交")
     requests = await store.requests_for_turn("foreground", "turn1")
     assert len(requests) == 1 and requests[0].request.capacity_json is not None
-    assert "reference-text-only-v1" in requests[0].request.capacity_json
+    assert "multimodal-heuristic-v1" in requests[0].request.capacity_json
     await session.close()
     await store.close()
 

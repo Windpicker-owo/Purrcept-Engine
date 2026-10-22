@@ -67,7 +67,6 @@ def _config(path: Path, *, proactive: bool = False) -> EngineConfig:
         "api_key": "synthetic",
         "context_window": 100_000,
         "max_output_tokens": 1000,
-        "capacity_rule": "reference-text-only-v1",
     }
     raw: dict[str, object] = {
         "host": {"data_dir": path},

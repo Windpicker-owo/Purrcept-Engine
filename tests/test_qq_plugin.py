@@ -38,7 +38,6 @@ def config(directory: Path, *, call_timeout: float = 15.0, page_chars: int = 800
                     "api_key": "synthetic",
                     "context_window": 100000,
                     "max_output_tokens": 1000,
-                    "capacity_rule": "reference-text-only-v1",
                 }
             },
             "subject": {"foreground": "local", "reflection": "local", "summary": "local"},

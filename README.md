@@ -65,7 +65,7 @@ me.bed.rest(...)                                      # 睡觉：普通刺激只
 | `clock` | 读取时间、设置闹钟（`me.clock.*`） | 非 UTC 时区需 `time` |
 | `bed` | 睡眠与起床（`me.bed.*`） | — |
 | `qq` | 经 OneBot WebSocket 收发消息、文件与 QQ 空间（`me.phone.qq.*`） | `qq` |
-| `computer` | 连接电脑、截图（`me.computer.*`） | — |
+| `computer` | 连接电脑、截图、连续观察与宿主 PowerShell 命令（`me.computer.*`） | — |
 | `browser` | 搜索、打开、阅读网页（`me.computer.browser.*`） | `browser` |
 | `microphone` | 语音合成与播放 | FFmpeg / FFplay |
 | `voice_input` | 收音、VAD 与 ASR | `voice-input` |
@@ -105,7 +105,7 @@ uv sync --locked
 | --- | --- |
 | `[models.名称]` | `model` 填 `openai/实际模型名`，`api_base` 填服务端的完整兼容地址，`api_key` 填明确凭据；不会自动选择环境中的替代端点。 |
 | `context_window` / `max_output_tokens` | 填端点真实窗口和输出上限；输出必须小于总窗口，模板值只是示例。 |
-| `capacity_rule` / `media_rule` | 纯文本生成可用 `litellm-token-counter-v1` / `unsupported`。声明媒体支持还需适用的计量规则，详见配置说明。 |
+| `supports_contents` | 按实际传输能力声明文字、图片和音频；统一估算文本 token、图片尺寸和音频时长，无需配置计量规则。 |
 | `[subject]` | `foreground`、`reflection`、`summary` 引用已声明的生成模型名称；`attention` 可引用同一个生成模型，或独立专用判断模型。 |
 | `console = true` | 开启终端输入和 `me.console.output` 能力。每行文字作为刺激接管，主体自行决定是否表达。 |
 | `[host] data_dir` | 保存 `engine.sqlite3`、媒体和日志，相对配置文件目录解析；同目录不能同时启动两个实例。 |
@@ -172,7 +172,7 @@ uv run python -m build
 | 文档 | 内容 |
 | --- | --- |
 | [代码架构与调用链](docs/architecture.md) | 目录地图、依赖方向与主要调用路径 |
-| [配置说明](docs/configuration.md) | 最小配置、模型与计量规则、角色卡、预算及插件接入 |
+| [配置说明](docs/configuration.md) | 最小配置、模型与容量估算、角色卡、预算及插件接入 |
 | [主体运行行为](docs/behavior.md) | 注意、睡眠、主动思考、记忆、插件与关闭细则 |
 | [输入材料契约](docs/input-materials.md) | 内容块布局、媒体投影与时间顺序 |
 | [构建与分发](docs/distribution.md) | PyPI 依赖、wheel 构建与独立安装冒烟 |

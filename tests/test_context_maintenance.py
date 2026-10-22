@@ -77,12 +77,10 @@ def proposal() -> SummaryProposal:
     frozen = source()
     summary = Message.user("summary with original source references")
     candidate = candidate_checkpoint(frozen, summary)
-    large = GenerationCapacity(100000, 100, "reference-text-only-v1")
+    large = GenerationCapacity(100000, 100)
     candidate_size = assess_capacity(payload(candidate), large).estimate.input_units
     # 将实际候选设在约60%以证明0.5不是安装硬门槛，完整原请求仍更大。
-    limits = GenerationCapacity(
-        int(candidate_size / 0.6 / 0.9) + 100, 100, "reference-text-only-v1"
-    )
+    limits = GenerationCapacity(int(candidate_size / 0.6 / 0.9) + 100, 100)
     before = assess_capacity(payload(frozen.checkpoint), limits)
     after = assess_capacity(payload(candidate), limits)
     return build_summary_proposal(

@@ -141,7 +141,6 @@ async def test_host_assembles_once_then_real_worker_speak_links_independent_body
                 "api_key": "synthetic",
                 "context_window": 100000,
                 "max_output_tokens": 1000,
-                "capacity_rule": "reference-text-only-v1",
             }
         },
         "subject": {"foreground": "offline", "reflection": "offline", "summary": "offline"},

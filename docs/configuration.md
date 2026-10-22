@@ -42,8 +42,6 @@ api_base = "http://127.0.0.1:4000/v1"
 api_key = "replace-with-your-key"
 context_window = 32000
 max_output_tokens = 4096
-capacity_rule = "litellm-token-counter-v1"
-media_rule = "unsupported"
 supports_contents = ["text"]
 
 [subject]
@@ -82,23 +80,33 @@ speech_style = "用简洁自然的中文交流。"
 | `context_window` | 仅生成模型需要；输入与输出共享的实际窗口。 |
 | `max_output_tokens` | 仅生成模型需要；实际输出预留，必须小于窗口。 |
 | `input_limit` | 专用判断必填，表示其协议输入上限；生成模型可选，用来进一步限制输入。 |
-| `capacity_rule` | 对完整请求执行容量预检的规则，不能由模型名自动推断。 |
 | `supports_contents` | 默认 `["text"]`，按真实传输能力声明 `image`、`audio`、`video`；声明不能替代实际媒体支持。 |
-| `media_rule` | 默认 `unsupported`，表示当前容量规则不接纳原生媒体。 |
 
 ### 容量与媒体
 
-- `litellm-token-counter-v1`：生成请求使用 LiteLLM 包内 tokenizer，对完整 JSON
-  及工具目录计量，是本地参考估算，不是服务端精确 usage。
-- `reference-text-only-v1`：完整纯文本 JSON 的 UTF-8 字节参考量，一字节一单位，
-  不等同于 token。可用于专用判断或显式选择此保守参考口径的生成路径。
-- `gemini-3-inline-v1`：配合生成 token 规则计量 Gemini 3 默认内联单帧图片及
-  WAV/MP3。原生图片/音频需同时加入 `supports_contents`；不能用于任意视觉模型。
-  MP3 计量还需要 `voice-input` extra。当前没有通用 video 计量规则。
+所有生成与专用判断请求使用同一个内置多模态估算器，不需要配置或注册规则，
+也不按模型名切换算法。估算覆盖完整请求的文字、工具 schema、目录和动态状态，
+媒体 base64 先从计量副本中分离，不作为正文分词：
 
-不支持的输入媒体会以文字引用呈现，原件仍保存；没有适用的媒体计量依据则明确
-拒绝派发。只添加 `supports_contents = ["text", "image"]` 不能让模型成功看图。
-布局和媒体窗口详见 [输入材料契约](input-materials.md)。
+- 文本：ASCII 每四字符约一 token，其他 Unicode 字符各约一 token，保留 JSON
+  结构开销；这是无 tokenizer 依赖的字符启发式。
+- 图片：读取实际尺寸，按 `256 + 256 × ceil(宽 / 512) × ceil(高 / 512)` 估算；
+  动图乘实际帧数。同尺寸 PNG/JPEG 不因压缩率或元信息产生巨大占用差异。
+- 音频：PyAV 自动识别文件容器并流式读取实际样本，以每秒 32 token 估算；
+  同长度 WAV/MP3 的结果接近，不随采样率或压缩体积成比例变化。
+- 远端图片：预检不下载 URL，无法读取尺寸时统一留出 2048 token 的规划额度；
+  该固定假设不代表已看过像素，也不保证覆盖任意远端图片的实际用量。
+
+这些系数是 Engine 的统一规划假设，不是任一模型的精确计量或误差上界。
+服务端实际口径存在差异，可参考 [Gemini token 说明](https://ai.google.dev/gemini-api/docs/tokens)
+与 [OpenAI 图片计量说明](https://developers.openai.com/api/docs/guides/images-vision)。
+预检仅解码已接管的内存材料；不读取外部路径或联网；媒体读取或解码失败会明确报错，不按零量
+放行。原始请求不被改写，完整原件仍参与指纹和证据记录。
+
+原生图片/音频仍需在 `supports_contents` 声明实际支持能力；不支持的输入媒体
+会以文字引用呈现，原件仍保存。声明不能替代传输支持，当前没有原生视频传输。
+PDF、Word、ZIP 等文件若只以附件引用呈现，只计入实际交付的引用文字，不能
+把文件已保存理解成正文已进入模型。布局和窗口详见 [输入材料契约](input-materials.md)。
 
 ### 独立专用判断模型
 
@@ -111,8 +119,6 @@ model = "typesafe/your-decision-model"
 api_base = "http://127.0.0.1:4001/v1"
 api_key = "replace-with-your-decision-key"
 input_limit = 8192
-capacity_rule = "reference-text-only-v1"
-media_rule = "unsupported"
 supports_contents = ["text"]
 ```
 
@@ -190,6 +196,11 @@ group_list = []
 声音、收音、电脑、Live2D 的端点、设备和校准示例从 README 的内置能力表进入。
 浏览器需安装 `browser` extra，并显式准备 Patchright 浏览器程序，运行时不下载。
 
+电脑插件还提供 `me.computer.command(command=..., cwd=..., timeout_seconds=...)`。
+启用并显式连接电脑后，主体可以当前 Engine 账号运行宿主 PowerShell 命令，继承
+宿主环境与该账号权限。无需新增配置字段；目录、输出额度及超时语义见
+[电脑插件说明](../src/purrcept_engine/plugins/computer/README.md#宿主命令)。
+
 外部已安装包使用 `entry = "package.module:factory"`；本地插件放在配置目录的
 `plugins/包名/` 中并导出 `factory`，使用 `entry = "local/包名:factory"`。
 根目录 `plugins/` 不受 Git 追踪，也不随 Engine 分发。内置插件仍随包提供。
@@ -222,5 +233,6 @@ group_list = []
   调用输出能力。通过 `catalog` 检查输出通道是否装配，并检查输入处理回执。
 - **启用插件提示缺少依赖**：在同一个环境安装对应 extra，再重启。
 - **数据目录已占用**：关闭原宿主或为新实例选择不同数据目录；不要删除活跃锁。
-- **启用媒体后容量拒绝**：核对传输支持、`supports_contents` 和 `media_rule` 三者，
-  不要通过放宽窗口或把媒体按零量计算来绕过错误。
+- **启用媒体后容量拒绝**：核对实际窗口与输出额度、图片尺寸或音频时长；
+  内联 base64 不作为正文计数。读取或解码失败会明确报告材料错误，传输能力另由
+  `supports_contents` 及具体后端决定。

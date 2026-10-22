@@ -26,7 +26,7 @@ src/purrcept_engine/
 │   └── audio/、time/、controls/  共享业务值、规则与有限端口
 ├── infrastructure/
 │   ├── sqlite/             一个提交器和各领域账本，不决定模型展示
-│   ├── models/             SDK 编译、客户端、计量与向量 HTTP 实现
+│   ├── models/             SDK 编译、客户端与向量 HTTP 实现
 │   ├── execution/          默认隔离执行器、Worker 会话、IPC 与调用调度
 │   ├── processes/          Windows 进程资源工具
 │   ├── audio/              可复用的 WAV 技术编码工具
@@ -44,6 +44,12 @@ src/purrcept_engine/
 
 普通内部协作直接借用具体对象；跨资源边界才定义协议。这里没有全局 Manager、
 自动发现或通用依赖容器，模块导入不启动设备或工作任务。
+
+电脑的 `command` 是宿主侧可信能力，由电脑实例持有 `CommandRunner`，通过通用
+`WindowsProcess` 的显式标准流、工作目录和环境选项创建独立 Job。进程从创建时即
+归入该 Job，输出管道持续排空且只保留有限前缀；断开连接回收其进程树。只有该命令
+能力显式继承宿主环境，行动 Worker 仍使用原有最小环境和资源限制，不能借此扩大
+Worker 的导入或宿主对象访问权限。命令回执仍沿通用能力执行与独立持久化路径保存。
 
 QQ 文件保存由两个独立能力串联：QQ 插件 `file_url` 只读取实际平台下载链接，
 Notebook `save_file` 复用 `infrastructure/files.py` 的有界下载后，在自身
@@ -104,6 +110,10 @@ TextBlock/ImageBlock/AudioBlock。QQ 的 `plugins/qq/presentation.py` 只选择�
 留在权威库，不自动倾倒入模型。注意工作背景单独呈现精简 YAML。
 完整回执仍由通用 `render_material` 呈现。详见[输入材料契约](input-materials.md)。
 结构化存储和工具协议保持原状；新请求按实际渲染结果计量，既有会话消息不重写。
+容量预检由 `domain/context/capacity.py` 核验预算，`token_estimation.py` 提供
+唯一内置多模态估算：正文与工具 schema 按字符启发式，图片按尺寸、音频按时长。
+base64 不算正文；Pillow/PyAV 仅同步读取内存原件，准备在线程中完成，不联网
+或打开外部路径。不再装配可替换的模型或媒体规则。
 
 ## 路径一：启动与装配
 

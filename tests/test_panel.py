@@ -84,7 +84,6 @@ def _host(tmp_path: Path, *, release: asyncio.Event | None = None, instance_id: 
                     "api_key": "synthetic",
                     "context_window": 100_000,
                     "max_output_tokens": 1000,
-                    "capacity_rule": "reference-text-only-v1",
                 }
             },
             "subject": {"foreground": "model", "reflection": "model", "summary": "model"},

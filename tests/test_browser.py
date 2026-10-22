@@ -591,7 +591,6 @@ async def test_real_host_worker_all_browser_paths_and_native_receipts(tmp_path: 
                 "api_key": "synthetic",
                 "context_window": 100000,
                 "max_output_tokens": 1000,
-                "capacity_rule": "reference-text-only-v1",
             }
         },
         "subject": {"foreground": "test", "reflection": "test", "summary": "test"},

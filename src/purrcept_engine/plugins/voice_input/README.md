@@ -6,21 +6,16 @@
 `me.microphone.interrupt`。
 
 ASR 使用配置中的百炼 Fun-ASR WebSocket 地址、模型和显式密钥。原生音频模式
-要求生成模型的 `supports_contents` 包含 `audio`、配置非 `unsupported` 的 `media_rule`，
-以及适用的容量规则；仅声明模型支持音频不能启用原声。Host 已内置注册
-`litellm-token-counter-v1`，CLI 与嵌入宿主都可直接使用。Gemini 3 配置示例：
+要求前台生成模型的 `supports_contents` 包含 `audio`，例如：
 
 ```toml
-capacity_rule = "litellm-token-counter-v1"
-media_rule = "gemini-3-inline-v1"
 supports_contents = ["text", "image", "audio"]
 ```
 
-完整请求的 JSON 文字及工具定义使用 LiteLLM 内置 cl100k tokenizer 参考值，
-音频按实际 WAV/MP3 时长计入 25 token/秒，内联单帧图片按默认分辨率计入
-1120 token。媒体依据见 [Gemini 3 媒体分辨率](https://ai.google.dev/gemini-api/docs/media-resolution)。
-这是本地估计，不是 Gemini 私有 tokenizer 或服务端 usage；上下文窗口仍使用
-显式配置及余量。未知媒体、远端 URL 和损坏媒体明确失败，原始请求不被改写。
+文字、工具定义和内联音频共用一个内置 token 估算器，不需要额外注册或配置
+规则。音频由 PyAV 自动识别并流式读取实际样本，按每秒 32 token 统一估算；
+同长度 WAV/MP3 的结果接近，不将 base64 或采样率当作上下文占用。该系数是
+粗略规划假设，不是服务端精确 usage；音频解码失败会明确报错，原请求不被改写。
 实际网关效果仍需要另行实机验收。
 来源显示名 `source_name`、会话和发言身份进入输入事实，不提供人员权限。
 
@@ -53,7 +48,7 @@ vad_interrupt_enabled = true
 运行时先明确枚举 `me.voice_input.devices()`，再调用
 `me.voice_input.start(mode="asr", device=设备编号)`，或使用面板同名控制。
 省略设备编号采用当前默认输入。切换模式前先停止当前收音；`audio` 模式除了
-`supports_contents` 包含 `audio`，还必须配置适用的媒体计量规则，文本参考规则不能使用。
+`supports_contents` 包含 `audio`，本次完整请求还须满足统一容量预算。
 
 `vad_interrupt_enabled` 默认 `true`。WebUI“设备 → 收音 → VAD 自动停播”或
 `me.voice_input.set_vad_interrupt(enabled=False)` 可在运行中关闭；选择立即生效，

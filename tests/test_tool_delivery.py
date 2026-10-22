@@ -8,14 +8,16 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import time
 from collections import deque
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
 import pytest_asyncio
+from PIL import Image
 from purrcept_core.models import (
     ContentBlock,
     ImageBlock,
@@ -31,9 +33,7 @@ from purrcept_core.models import (
 
 from purrcept_engine.app.config import RetrySettings
 from purrcept_engine.domain.context.capacity import (
-    CapacityDeclaration,
     CapacityError,
-    CapacityEstimate,
     GenerationCapacity,
     check_capacity,
 )
@@ -204,7 +204,7 @@ async def run(
     scope: SessionScope = "foreground",
     refresh_state: RefreshState = refresh,
     presented: PresentedGate | None = None,
-    window: int = 32_000,
+    window: int = 8_000,
     capacity_check: CapacityCheck | None = None,
     turn_id: str = "actual-turn",
     foreground_input: str | None = None,
@@ -255,11 +255,7 @@ async def run(
             diagnostic_bytes=0,
             refresh=refresh_state,
             capacity=capacity_check
-            or (
-                lambda payload: check_capacity(
-                    payload, GenerationCapacity(window, 1000, "reference-text-only-v1")
-                )
-            ),
+            or (lambda payload: check_capacity(payload, GenerationCapacity(window, 1000))),
             presented=presented,
             delivery=delivery,
         )
@@ -383,27 +379,33 @@ async def test_multiple_real_results_and_fresh_tail_are_measured_as_one_request(
             "结束",
         ),
         refresh_state=fresh_tail,
-        window=32_000,
+        window=8_000,
     )
     first, second = delivered(result)
     assert not first.is_error and second.is_error
     assert obj(payload(first)["item"])["text"] == "A" * 8000
     assert payload(second)["stored_ref"] == {"id": "second", "version": 1}
-    assessment = check_capacity(
-        transport.payloads[1], GenerationCapacity(32000, 1000, "reference-text-only-v1")
-    )
+    assessment = check_capacity(transport.payloads[1], GenerationCapacity(8000, 1000))
     assert assessment.within_budget
     assert "F" * 8000 in encode(transport.payloads[1]["messages"])
 
 
-async def test_unknown_media_keeps_native_blob_and_does_not_grant_reflection_coverage(
+def png_pixels(size: int) -> bytes:
+    """生成可验证的压缩图片，以尺寸而非伪造文件体积改变媒体 token 估计。"""
+    buffer = io.BytesIO()
+    with Image.new("L", (size, size)) as image:
+        image.save(buffer, format="PNG")
+    return buffer.getvalue()
+
+
+async def test_oversized_media_keeps_native_blob_and_does_not_grant_reflection_coverage(
     store: Store,
 ) -> None:
     await source(store, "initial", "已有材料")
     initial = await store.knowledge.read_evidence("initial")
     assert initial.slice is not None
     batch = await store.knowledge.begin_reflection("batch", (initial.slice.slice_ref,))
-    asset = MediaAsset(b"actual-native-pixels", "image/png")
+    asset = MediaAsset(png_pixels(4096), "image/png")
     reference = MediaReference(
         hashlib.sha256(asset.content).hexdigest(), "image/png", len(asset.content)
     )
@@ -436,7 +438,7 @@ async def test_unknown_media_keeps_native_blob_and_does_not_grant_reflection_cov
         presented=presented,
     )
     block = delivered(result)[0]
-    assert block.is_error and obj(payload(block)["capacity"])["code"] == "unsupported_media"
+    assert block.is_error and obj(payload(block)["capacity"])["code"] == "over_capacity"
     assert payload(block)["stored_ref"] == {"id": "image", "version": 1}
     assert await store.get_media(reference.media_id) == asset.content
     assert tools.presented_refs(ModelRequest(result.checkpoint.history.messages)) == ()
@@ -547,7 +549,7 @@ async def test_capacity_receipt_itself_cannot_hide_an_unusable_existing_request(
 
 async def test_native_media_and_adjacent_tool_order_survive_accepted_delivery(store: Store) -> None:
     """媒体实际 SDK 附件与全部相邻工具结果一并计量，Gate 不自行重排协议。"""
-    content = b"known-test-native-pixels"
+    content = png_pixels(32)
     reference = MediaReference(hashlib.sha256(content).hexdigest(), "image/png", len(content))
     await store.knowledge.capture(
         EvidenceSnapshot(
@@ -565,30 +567,9 @@ async def test_native_media_and_adjacent_tool_order_survive_accepted_delivery(st
     gate = ToolDeliveryGate(compiler=compile_materials)
     tools = foreground(store, gate)
 
-    def registered_rule(
-        payload: Mapping[str, object], declaration: CapacityDeclaration
-    ) -> CapacityEstimate:
-        # 测试只声明这一固定语料的完整 JSON 字节参考；原生 data URL 全部
-        # 入账，不使用生产 Provider token 公式，也不推广到其它模型或媒体。
-        assert declaration.media_rule == "test-native-reference-v1"
-        return CapacityEstimate(
-            len(encode(payload).encode("utf-8")),
-            "test-native-reference-v1",
-            "complete_test_sdk_json_with_known_native_media",
-            "utf8_byte_reference",
-        )
-
     def capacity(payload: JsonObject):
-        return check_capacity(
-            payload,
-            GenerationCapacity(
-                32_000,
-                1000,
-                "test-native-reference-v1",
-                media_rule="test-native-reference-v1",
-            ),
-            rules={"test-native-reference-v1": registered_rule},
-        )
+        """原生媒体与相邻回执统一使用内置完整多模态 token 估算。"""
+        return check_capacity(payload, GenerationCapacity(8_000, 1000))
 
     result, transport = await run(
         store,
@@ -812,7 +793,7 @@ async def test_current_tail_does_not_duplicate_or_bypass_frozen_action_delivery(
         tools.tools,
         gate,
         ((ToolCallBlock("work", "play_action", arguments={"action_code": "actual code"}),), "结束"),
-        window=200_000 if full_delivery else 32_000,
+        window=200_000 if full_delivery else 8_000,
         foreground_input=admission.input_id,
         refresh_state=current,
     )
@@ -850,7 +831,7 @@ async def test_current_tail_does_not_duplicate_or_bypass_frozen_action_delivery(
         resumed_gate,
         ("下一批结束",),
         turn_id="work-resumed",
-        window=200_000 if full_delivery else 32_000,
+        window=200_000 if full_delivery else 8_000,
         refresh_state=current,
     )
     resumed_calls = tail_text(resumed_transport.payloads[0])
@@ -872,7 +853,7 @@ async def test_current_tail_does_not_duplicate_or_bypass_frozen_action_delivery(
         late_gate,
         ("核对迟到事实",),
         turn_id="work-late",
-        window=200_000 if full_delivery else 32_000,
+        window=200_000 if full_delivery else 8_000,
         refresh_state=current,
     )
     late_calls = tail_text(late_transport.payloads[0])

@@ -276,7 +276,6 @@ def _generation_resource() -> OpenAIGenerationResource:
             model=_MODEL,
             api_key=SecretStr(_EXPLICIT_KEY),
             api_base=_GENERATION_BASE,
-            capacity_rule="synthetic-test-rule",
             context_window=1000000,
             max_output_tokens=100,
         )
@@ -297,7 +296,6 @@ def _decision_resource(path: Literal["decision", "openrouter"] = "decision") -> 
             model=model,
             api_key=SecretStr(_EXPLICIT_KEY),
             api_base=api_base,
-            capacity_rule="synthetic-test-rule",
             input_limit=12000,
         )
     )
@@ -452,12 +450,12 @@ assert 'purrcept_litellm' not in sys.modules
 
 generation = OpenAIGenerationResource.create(GenerationModelSettings(
     kind='generation', model='openai/synthetic', api_key=SecretStr('synthetic'),
-    api_base='https://generation.invalid/v1', capacity_rule='synthetic',
+    api_base='https://generation.invalid/v1',
     context_window=1000, max_output_tokens=100,
 ))
 decision = DecisionResource.create(DecisionModelSettings(
     kind='decision', model=sys.argv[1], api_key=SecretStr('synthetic'),
-    api_base='https://decision.invalid/v1', capacity_rule='synthetic', input_limit=1000,
+    api_base='https://decision.invalid/v1', input_limit=1000,
 ))
 assert generation.backend is generation
 assert decision.backend is decision

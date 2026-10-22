@@ -178,7 +178,6 @@ async def rig(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[
                     "api_key": "synthetic",
                     "context_window": 100000,
                     "max_output_tokens": 1000,
-                    "capacity_rule": "reference-text-only-v1",
                 }
             },
             "subject": {"foreground": "main", "reflection": "main", "summary": "main"},

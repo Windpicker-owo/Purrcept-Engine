@@ -153,7 +153,7 @@ async def _result(
 
 
 def _capacity(payload: JsonObject) -> CapacityAssessment:
-    return check_capacity(payload, GenerationCapacity(200_000, 1000, "reference-text-only-v1"))
+    return check_capacity(payload, GenerationCapacity(200_000, 1000))
 
 
 async def _refresh(budget: RequestBudget) -> DynamicState:

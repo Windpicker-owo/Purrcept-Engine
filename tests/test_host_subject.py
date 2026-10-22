@@ -60,7 +60,6 @@ def config(directory: Path) -> EngineConfig:
                     "api_key": "synthetic",
                     "context_window": 100_000,
                     "max_output_tokens": 1000,
-                    "capacity_rule": "reference-text-only-v1",
                 }
             },
             "subject": {"foreground": "main", "reflection": "main", "summary": "main"},

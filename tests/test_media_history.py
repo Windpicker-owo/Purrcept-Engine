@@ -56,7 +56,6 @@ from purrcept_engine.domain.inputs.models import (
 from purrcept_engine.domain.subject.models import SessionScope
 from purrcept_engine.domain.subject.session import ContinuousSession, DynamicState
 from purrcept_engine.infrastructure.audio.wav import encode_wav
-from purrcept_engine.infrastructure.models.capacity import RULE, count_litellm_capacity
 from purrcept_engine.infrastructure.models.compiler import compile_materials
 from purrcept_engine.infrastructure.sqlite.store import Store
 from purrcept_engine.values import JsonObject
@@ -247,8 +246,7 @@ def test_summary_does_not_reintroduce_expired_media_and_keeps_its_original_sourc
 def _capacity(payload: JsonObject):
     return check_capacity(
         payload,
-        GenerationCapacity(100_000, 1000, RULE, "gemini-3-inline-v1"),
-        rules={RULE: count_litellm_capacity},
+        GenerationCapacity(100_000, 1000),
     )
 
 

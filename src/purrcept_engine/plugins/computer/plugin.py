@@ -1,4 +1,4 @@
-"""电脑纯配置与六项稳定模型能力，真实驱动只由显式connect创建。
+"""电脑纯配置与七项稳定模型能力，真实驱动只由显式connect创建。
 
 电脑是主体下的设备父节点，浏览器作为独立子应用由自己的工厂装配。react
 及旧宿主租约/内部配置入口不进入目录。测试通过make_factory注入离线驱动，
@@ -31,6 +31,7 @@ from purrcept_engine.plugin_system import (
     PreviewFrame,
     typed_factory,
 )
+from purrcept_engine.plugins.computer.command import CommandParameters
 from purrcept_engine.plugins.computer.driver import ComputerDriver, ProcessDriver
 from purrcept_engine.plugins.computer.models import ComputerError, Target
 from purrcept_engine.plugins.computer.runtime import ComputerRuntime, load_policy
@@ -110,7 +111,7 @@ def make_factory(driver_factory: Callable[[], ComputerDriver]) -> PluginFactory:
             _Empty,
             20.0,
             f"await {path}.disconnect()",
-            "停止感知，不关闭电脑应用。",
+            "停止感知并终止本插件在途命令的进程树，不关闭其他电脑应用。",
             control=True,
         )
         foreground = CapabilityDeclaration(
@@ -146,6 +147,20 @@ def make_factory(driver_factory: Callable[[], ComputerDriver]) -> PluginFactory:
             "start创建新观察代次；pause暂停；status不采集。失败后须明确start继续。",
             control=True,
         )
+        command = CapabilityDeclaration(
+            instance_id + ":computer.command",
+            object_id,
+            "command",
+            "以 Engine 当前账号在已连接宿主电脑运行非交互 PowerShell 命令。",
+            CommandParameters,
+            310.0,
+            f'await {path}.command(command="Get-ChildItem", timeout_seconds=30)',
+            "具备当前账号的真实文件、程序和网络权限，继承宿主环境。"
+            "cwd 默认主配置目录，相对路径也沿该目录解析；每次调用使用独立 shell。"
+            "返回 exit_code、stdout、stderr 和截断标记；非零退出为失败。"
+            "超时或断开终止本次进程树，保留已取得输出，先前效果不会回滚；未知结果不得自动重试。",
+            concurrency="target_serial",
+        )
 
         async def build(ports: PluginPorts) -> PluginRuntime:
             """借用本实例的有限端口，创建能力实现与插件资源所有者。"""
@@ -161,6 +176,7 @@ def make_factory(driver_factory: Callable[[], ComputerDriver]) -> PluginFactory:
                 policy,
                 preferences,
                 screenshot_dir=screenshot_dir,
+                command_base_dir=base_dir,
             )
 
             async def run_status(parameters: _Empty, context: CallContext) -> CallOutcome:
@@ -204,6 +220,15 @@ def make_factory(driver_factory: Callable[[], ComputerDriver]) -> PluginFactory:
                     raise CapabilityInputError(str(error)) from error
                 return CallOutcome("confirmed", result)
 
+            async def run_command(
+                parameters: CommandParameters, context: CallContext
+            ) -> CallOutcome:
+                """连接资格由电脑实例复核，真实执行和回执沿用同一能力边界。"""
+                try:
+                    return await computer.command(parameters, context.deadline)
+                except ComputerError as error:
+                    raise CapabilityInputError(str(error)) from error
+
             def revision() -> str:
                 """返回当前已取得业务状态的版本标记，供面板观察变化。"""
                 state = computer.snapshot()
@@ -226,6 +251,7 @@ def make_factory(driver_factory: Callable[[], ComputerDriver]) -> PluginFactory:
                     FunctionCapability(foreground, run_foreground),
                     FunctionCapability(screenshot, run_screenshot),
                     FunctionCapability(observe, run_observe),
+                    FunctionCapability(command, run_command),
                 ),
                 stop_inputs=computer.stop_inputs,
                 close=computer.close,
@@ -260,7 +286,7 @@ def make_factory(driver_factory: Callable[[], ComputerDriver]) -> PluginFactory:
                     object_id, settings.computer_id, settings.label.strip(), "subject"
                 ),
             ),
-            (status, connect, disconnect, foreground, screenshot, observe),
+            (status, connect, disconnect, foreground, screenshot, observe, command),
             build,
             required_modules=("PIL",),
         )

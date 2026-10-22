@@ -2,7 +2,7 @@
 
 ``WindowsProcess.launch`` 先建立 Job 限制，再用 JOB_LIST 原子关联子进程；
 HANDLE_LIST 只交接调用方明确提供的 IPC 句柄。Job 留在宿主，最后一个句柄
-关闭会终止所属进程。本模块不执行脚本、解释 IPC 或保存业务回执。
+关闭会终止所属进程。本模块不解释脚本、解析 IPC 或保存业务回执。
 
 原生 CPU 限制只计用户态时间；``total_cpu_seconds`` 提供用户态与内核态之和，
 由执行宿主核对总 CPU 预算。提交内存限制拒绝超额分配，不保证进程自动退出；
@@ -100,6 +100,10 @@ class _StartupInfo(ctypes.Structure):
     """STARTUPINFOW 的固定字段及标准流句柄，不让 Job 句柄进入此结构。"""
 
     cb: int
+    dwFlags: int
+    hStdInput: int
+    hStdOutput: int
+    hStdError: int
     _fields_ = [
         ("cb", ctypes.c_uint32),
         ("lpReserved", ctypes.c_wchar_p),
@@ -331,7 +335,7 @@ class _CreateProcess(_Function, Protocol):
         inherit: bool,
         flags: int,
         environment: object,
-        directory: None,
+        directory: str | None,
         startup: object,
         output: object,
     ) -> int:
@@ -713,6 +717,9 @@ class WindowsProcess:
         cpu_seconds: float | None = 15.0,
         memory_bytes: int | None = 512 * 1024 * 1024,
         inherited_handles: tuple[int, ...] = (),
+        standard_handles: tuple[int, int, int] | None = None,
+        directory: Path | None = None,
+        inherit_environment: bool = False,
     ) -> Self:
         """不经 shell 创建进程，限制与归属失败时回收本次全部资源。
 
@@ -721,12 +728,15 @@ class WindowsProcess:
             cpu_seconds: 此 Worker 允许使用的 CPU 秒数上限。 默认 15.0。
             memory_bytes: 此 Worker 允许使用的内存字节上限。
             inherited_handles: 子进程启动时唯一允许继承的原生句柄集合。 默认不附加此类条目。
+            standard_handles: 显式标准输入、输出、错误句柄，必须都在继承列表中。
+            directory: 子进程的绝对工作目录；None 沿用宿主目录。
+            inherit_environment: 可信宿主命令可显式继承环境；隔离 Worker 保持默认 False。
 
         Returns:
-            校验完成的当前值或解析后的新配置，具体是否复制由实现说明。
+            已验证 Job 归属并独占主进程及 Job 句柄的所有者。
 
         Raises:
-            ValueError: 明确继承的 IPC 句柄必须已标记为可继承。
+            ValueError: 标准流不在继承列表中、目录不是绝对路径，或继承句柄未标记为可继承。
             ctypes.WinError: 参数、材料或当前状态不满足此入口的约束。
             OSError: 典型拒绝原因：Job 回读额度与请求不一致；CreateProcessW
                 未返回完整进程所有权；新进程未归入指定 Job，拒绝采用；
@@ -735,12 +745,28 @@ class WindowsProcess:
 
         Note:
             executable 必须是绝对路径。明确传入的句柄须已经标记为可继承；本入口
-            不临时扩大其他句柄的继承资格。环境只包含操作系统给出的 SystemRoot。
+            不临时扩大其他句柄的继承资格。默认环境只包含操作系统给出的 SystemRoot。
+            标准流、目录和环境只影响本次创建，不修改宿主全局状态。
             原生失败传播 OSError；清理同时失败时汇总原始异常，不伪报成功。
-            两项额度同时为 None 时只取得可信设备辅助进程的完整进程树所有权。
-            模型行动调用始终传入已校验正额度，不能通过此选择取消 Worker 限制。
+            两项额度同时为 None 时只取得可信宿主能力进程的完整进程树所有权。
+            隔离行动 Worker 启动始终传入已校验正额度，不能通过此选择取消 Worker 限制。
         """
         cpu_ticks = _validate_launch(command, cpu_seconds, memory_bytes, inherited_handles)
+        if standard_handles is not None and (
+            not isinstance(standard_handles, tuple)
+            or len(standard_handles) != 3
+            or any(
+                type(handle) is not int or handle not in inherited_handles
+                for handle in standard_handles
+            )
+        ):
+            raise ValueError("标准流必须是继承列表中的三个原生句柄。")
+        if directory is not None and (
+            not isinstance(directory, Path) or not directory.is_absolute()
+        ):
+            raise ValueError("子进程工作目录必须是绝对路径。")
+        if type(inherit_environment) is not bool:
+            raise ValueError("inherit_environment 必须是布尔值。")
         api = _kernel32()
         for handle in inherited_handles:
             flags = ctypes.c_uint32()
@@ -763,7 +789,7 @@ class WindowsProcess:
                     or actual_limits.memory_bytes != memory_bytes
                 ):
                     raise OSError("Job 回读额度与请求不一致。")
-            environment = _environment(api)
+            environment = None if inherit_environment else _environment(api)
 
             # Initialize 的第一次失败仅用于取得必需字节数，不是可忽略的设置失败。
             attribute_size = ctypes.c_size_t()
@@ -796,6 +822,14 @@ class WindowsProcess:
                     )
                 startup = _StartupInfoEx()
                 startup.StartupInfo.cb = ctypes.sizeof(startup)
+                if standard_handles is not None:
+                    # STARTF_USESTDHANDLES 只接入显式管道，不能继承宿主终端或 IPC。
+                    startup.StartupInfo.dwFlags = 0x00000100
+                    (
+                        startup.StartupInfo.hStdInput,
+                        startup.StartupInfo.hStdOutput,
+                        startup.StartupInfo.hStdError,
+                    ) = standard_handles
                 startup.lpAttributeList = ctypes.addressof(attributes)
                 command_line = ctypes.create_unicode_buffer(list2cmdline(command))
                 _check(
@@ -807,7 +841,7 @@ class WindowsProcess:
                         bool(inherited_handles),
                         _EXTENDED_STARTUP | _UNICODE_ENVIRONMENT | _NO_WINDOW,
                         environment,
-                        None,
+                        None if directory is None else str(directory),
                         ctypes.byref(startup),
                         ctypes.byref(process_info),
                     )

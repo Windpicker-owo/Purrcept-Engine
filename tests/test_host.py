@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Mapping
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -18,7 +17,6 @@ from purrcept_engine import (
     InstanceLocked,
     StorageError,
 )
-from purrcept_engine.domain.context.capacity import CapacityDeclaration, CapacityEstimate
 from purrcept_engine.infrastructure.locking import InstanceLock
 from purrcept_engine.infrastructure.models.clients import OpenAIGenerationResource
 from purrcept_engine.infrastructure.sqlite.store import Store
@@ -44,7 +42,6 @@ def _config(directory: Path, *, close_seconds: float = 30.0) -> EngineConfig:
                     "api_key": "synthetic-key",
                     "context_window": 10000,
                     "max_output_tokens": 1000,
-                    "capacity_rule": "test-only",
                 }
             },
             "subject": {"foreground": "test", "reflection": "test", "summary": "test"},
@@ -62,23 +59,11 @@ def _submission() -> InputSubmission:
     )
 
 
-@pytest.mark.parametrize(
-    "supports,rule,media,registered,expected",
-    [
-        (True, "reference-text-only-v1", "unsupported", False, False),
-        (True, "reference-text-only-v1", "test-audio", True, False),
-        (True, "test-audio", "unsupported", True, False),
-        (True, "test-audio", "test-audio", False, False),
-        (False, "test-audio", "test-audio", True, False),
-        (True, "test-audio", "test-audio", True, True),
-        (True, "litellm-token-counter-v1", "gemini-3-inline-v1", False, True),
-        (True, "litellm-token-counter-v1", "unknown", False, False),
-    ],
-)
-async def test_native_audio_admission_requires_registered_media_capacity(
-    tmp_path: Path, supports: bool, rule: str, media: str, registered: bool, expected: bool
+@pytest.mark.parametrize("supports", [True, False])
+async def test_native_audio_admission_follows_declared_transport_support(
+    tmp_path: Path, supports: bool
 ) -> None:
-    """真实宿主接线不能把端点的音频声明当作原声请求可派发的依据。"""
+    """统一估算无需额外登记，原声准入由前台音频能力声明决定。"""
     observed: list[bool] = []
 
     async def build(ports: PluginPorts) -> PluginRuntime:
@@ -89,27 +74,18 @@ async def test_native_audio_admission_requires_registered_media_capacity(
         del instance, raw, base
         return PluginBlueprint((), (), build)
 
-    def measure(
-        payload: Mapping[str, object], declaration: CapacityDeclaration
-    ) -> CapacityEstimate:
-        del payload, declaration
-        return CapacityEstimate(1, "test-audio", "synthetic", "synthetic")
-
     raw = _config(tmp_path).model_dump()
     raw["models"]["test"].update(
         supports_contents=["text", "audio"] if supports else ["text"],
-        capacity_rule=rule,
-        media_rule=media,
     )
     raw["plugins"] = [{"instance_id": "probe", "entry": "probe"}]
     host = EngineHost(
         EngineConfig.validate(raw, base_dir=tmp_path),
         plugin_factories={"probe": PluginFactory(prepare)},
-        capacity_rules={rule: measure} if registered else {},
     )
     await host.start()
     try:
-        assert observed == [expected]
+        assert observed == [supports]
     finally:
         await host.close()
 

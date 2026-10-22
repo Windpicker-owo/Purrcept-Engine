@@ -372,7 +372,6 @@ def _config(directory: Path) -> EngineConfig:
                     "api_key": "synthetic",
                     "context_window": 10000,
                     "max_output_tokens": 1000,
-                    "capacity_rule": "test-only",
                 }
             },
             "subject": {"foreground": "local", "reflection": "local", "summary": "local"},

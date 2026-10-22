@@ -257,7 +257,7 @@ async def prepare_summary_request(
     Note:
         全部旧历史装不下时逐次减半轮数，最多检查对数次，不逐条删除正文。
         保留检查点的其余历史供候选拼接；候选仍超额时不安装、不继续循环摘要。
-        缺少媒体计量依据等错误不能被当成长度问题；最早一轮也装不下则明确失败。
+        输出声明或 JSON 编码错误不能被当成长度问题；最早一轮也装不下则明确失败。
     """
     while True:
         check_budget()
@@ -305,7 +305,7 @@ class HistoryMaintenance:
         diagnostic_bytes: int,
         can_start: Callable[[], None] | None = None,
     ) -> None:
-        """固定命名资源与计量入口，失败不寻找另一模型或另一容量规则。
+        """固定命名资源与内置计量入口，失败不寻找另一模型。
 
         Args:
             store: 应用借出的领域存储端口，实际连接和关闭归资源所有者。

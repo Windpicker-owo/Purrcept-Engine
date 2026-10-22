@@ -7,7 +7,6 @@
 import base64
 import hashlib
 import json
-from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -20,7 +19,6 @@ from test_host_subject import Backend, proposal, wait_processed
 from purrcept_engine.app.config import EngineConfig, PluginSettings
 from purrcept_engine.app.host import EngineHost
 from purrcept_engine.app.receipts import LateCallResults
-from purrcept_engine.domain.context.capacity import CapacityDeclaration, CapacityEstimate
 from purrcept_engine.domain.execution.catalog import CapabilityDeclaration, ObjectDeclaration
 from purrcept_engine.domain.execution.providers import (
     CallContext,
@@ -44,7 +42,7 @@ from purrcept_engine.plugin_system.contracts import (
 )
 
 PNG = base64.b64decode(
-    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aT1sAAAAASUVORK5CYII="
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGMQkdMAAACkAFt2Ll/jAAAAAElFTkSuQmCC"
 )
 
 
@@ -109,15 +107,6 @@ class Capture:
         return PluginFactory(prepare)
 
 
-def native_reference(
-    payload: Mapping[str, object], declaration: CapacityDeclaration
-) -> CapacityEstimate:
-    """隔离测试明确注册完整 JSON 计量，不宣称生产 Provider 的媒体公式。"""
-    return CapacityEstimate(
-        len(json.dumps(payload).encode()), "test-native-v1", "complete_test_payload", "test_units"
-    )
-
-
 @pytest.mark.asyncio
 async def test_action_native_media_reaches_core_without_creating_a_second_input(
     tmp_path: Path,
@@ -145,8 +134,6 @@ async def test_action_native_media_reaches_core_without_creating_a_second_input(
                     "api_key": "synthetic",
                     "context_window": 100_000,
                     "max_output_tokens": 1000,
-                    "capacity_rule": "test-native-v1",
-                    "media_rule": "test-native-v1",
                 }
             },
             "subject": {"foreground": "main", "reflection": "main", "summary": "main"},
@@ -158,7 +145,6 @@ async def test_action_native_media_reaches_core_without_creating_a_second_input(
         configuration,
         plugin_factories={"capture": capture.factory()},
         generation_backends={"main": backend},
-        capacity_rules={"test-native-v1": native_reference},
     )
     await host.start()
     try:

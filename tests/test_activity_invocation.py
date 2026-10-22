@@ -612,7 +612,6 @@ async def test_actual_host_keeps_plugin_store_lock_and_activity_until_real_relea
                     "api_key": "synthetic",
                     "context_window": 10000,
                     "max_output_tokens": 1000,
-                    "capacity_rule": "test-only",
                 }
             },
             "subject": {"foreground": "local", "reflection": "local", "summary": "local"},

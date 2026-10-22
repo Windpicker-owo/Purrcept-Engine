@@ -25,7 +25,6 @@ from purrcept_engine.app.config import DecisionModelSettings, EngineConfig, Gene
 from purrcept_engine.domain.context.capacity import (
     CapacityAssessment,
     CapacityError,
-    CapacityRule,
     DecisionCapacity,
     GenerationCapacity,
     assess_capacity,
@@ -94,7 +93,6 @@ def build_subject(
     execute: ActionCallback,
     plugins: Mapping[str, PluginRuntime],
     can_start: Callable[[], None],
-    rules: Mapping[str, CapacityRule],
     wakeup_committed: Callable[[], None],
     knowledge: KnowledgeService,
 ) -> SubjectAssembly:
@@ -109,7 +107,6 @@ def build_subject(
         execute: 当前主体执行受限行动的有限入口。
         plugins: 本实例已装配的插件运行资源，不执行隐式发现。
         can_start: 实际派发前重新检查的资格回调，等待后仍须复核。
-        rules: 已装配容量规则表，未知名称不能静默使用其他规则。
         wakeup_committed: 计划提交后唤醒调度器的回调，不直接执行计划。
         knowledge: 原文展开与认识召回服务，修订仍经过反思批次契约。
 
@@ -120,7 +117,7 @@ def build_subject(
         TypeError: 已校验主体用途没有生成模型声明。
 
     Note:
-        rules 是明确注册的纯计量依据，不根据模型名猜 Provider 窗口或媒体公式。
+        所有模型共用完整请求的多模态 token 估算，不根据模型名猜窗口或选择公式。
         外部模型不可用沿原预算失败，不从其余配置寻找替代模型。
     """
     foreground_name = config.subject.foreground
@@ -146,12 +143,10 @@ def build_subject(
             GenerationCapacity(
                 settings.context_window,
                 settings.max_output_tokens,
-                settings.capacity_rule,
-                settings.media_rule,
                 settings.input_limit,
             )
             if isinstance(settings, GenerationModelSettings)
-            else DecisionCapacity(settings.input_limit, settings.capacity_rule, settings.media_rule)
+            else DecisionCapacity(settings.input_limit)
         )
 
         def measure(payload: JsonObject) -> CapacityAssessment:
@@ -163,7 +158,6 @@ def build_subject(
                 reserve_fraction=config.context.input_reserve_fraction,
                 trigger=config.context.summary_trigger,
                 target=config.context.summary_target,
-                rules=rules,
             )
 
         return measure

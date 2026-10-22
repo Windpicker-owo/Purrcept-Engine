@@ -1,4 +1,4 @@
-"""核对非 editable 安装的 SDK、包内资源、真实 Worker 和同库媒体路径。
+"""核对非 editable 安装的 SDK、包内资源、统一容量预检与真实 Worker。
 
 由待验收环境的 Python 以 -I 执行；临时目录由本脚本创建并在真实关闭后删除。
 合成图片和控制台显示替身不接触用户数据、设备或真实消息，模型后端禁止调用。
@@ -8,6 +8,7 @@ SDK 导入使用调用者明确选择的本地价格表模式，不请求在线�
 from __future__ import annotations
 
 import asyncio
+import base64
 import hashlib
 import importlib.metadata
 import importlib.util
@@ -59,13 +60,13 @@ def installed_packages() -> dict[str, str]:
 
 
 async def verify_host(directory: Path) -> dict[str, object]:
-    """用生产入口验证临时宿主、真实 Worker 与同库媒体重开。
+    """用生产入口验证统一预检、临时宿主、真实 Worker 与同库媒体重开。
 
     Args:
         directory: 本次验收独占的临时目录，不得传入现有用户数据目录。
 
     Returns:
-        实际行动、逐调用回执、完整媒体与目录锁归还的验收结果。
+        统一容量估算、实际行动、完整媒体与目录锁归还的验收结果。
 
     Raises:
         AssertionError: 实际 Worker、媒体重开或资源归还不满足验收条件。
@@ -77,7 +78,10 @@ async def verify_host(directory: Path) -> dict[str, object]:
     from purrcept_core.models import ModelEventSink, ModelRequest, ModelResponse
 
     from purrcept_engine import EngineConfig, EngineHost
+    from purrcept_engine.domain.context.capacity import GenerationCapacity, check_capacity
+    from purrcept_engine.infrastructure.audio.wav import encode_wav
     from purrcept_engine.infrastructure.sqlite.store import Store
+    from purrcept_engine.serialization import encode
 
     class OfflineBackend:
         """仅禁止模型网络路径；本场景没有输入或到期反思，不需合成回复。"""
@@ -105,13 +109,41 @@ async def verify_host(directory: Path) -> dict[str, object]:
                     "api_key": "synthetic",
                     "context_window": 100000,
                     "max_output_tokens": 1000,
-                    "capacity_rule": "reference-text-only-v1",
                 }
             },
             "subject": {"foreground": "main", "reflection": "main", "summary": "main"},
         },
         base_dir=directory,
     )
+    # 包内预检必须读取实际图片尺寸和音频时长，不能把内联编码当正文。
+    audio = encode_wav(bytes(32_000 * 60), 16_000)
+    payload = {
+        "model": "openai/never-called",
+        "max_tokens": 100,
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": "data:image/png;base64," + base64.b64encode(pixels).decode()
+                        },
+                    },
+                    {
+                        "type": "input_audio",
+                        "input_audio": {"format": "wav", "data": base64.b64encode(audio).decode()},
+                    },
+                ],
+            }
+        ],
+    }
+    measured = check_capacity(payload, GenerationCapacity(10_000, 100))
+    assert measured.estimate.method == "multimodal-heuristic-v1"
+    assert 1920 + 512 <= measured.estimate.input_units < 3000
+    assert measured.payload_sha256 == hashlib.sha256(encode(payload).encode()).hexdigest()
+    assert importlib.util.find_spec("purrcept_engine.infrastructure.models.capacity") is None
+
     shown: list[str] = []
     host = EngineHost(
         config, generation_backends={"main": OfflineBackend()}, console_output=shown.append
@@ -151,7 +183,12 @@ async def verify_host(directory: Path) -> dict[str, object]:
         assert await reopened.query_action(action.action_id) == action
     finally:
         assert (await reopened.close()).phase == "closed"
-    return {"worker": "confirmed", "image": "pixels-and-reference-reopened", "models_called": 0}
+    return {
+        "worker": "confirmed",
+        "image": "pixels-and-reference-reopened",
+        "capacity": measured.estimate.method,
+        "models_called": 0,
+    }
 
 
 async def main() -> None:

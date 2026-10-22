@@ -766,6 +766,7 @@ name = "purrcept-engine"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
+    { name = "av", marker = "sys_platform == 'win32'" },
     { name = "httpx", marker = "sys_platform == 'win32'" },
     { name = "litellm", marker = "sys_platform == 'win32'" },
     { name = "openai", marker = "sys_platform == 'win32'" },
@@ -790,7 +791,6 @@ time = [
     { name = "tzdata", marker = "sys_platform == 'win32'" },
 ]
 voice-input = [
-    { name = "av", marker = "sys_platform == 'win32'" },
     { name = "numpy", marker = "sys_platform == 'win32'" },
     { name = "onnxruntime", marker = "sys_platform == 'win32'" },
     { name = "sounddevice", marker = "sys_platform == 'win32'" },
@@ -813,7 +813,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "av", marker = "extra == 'voice-input'", specifier = "==16.1.0" },
+    { name = "av", specifier = "==16.1.0" },
     { name = "httpx", specifier = "==0.28.1" },
     { name = "litellm", specifier = "==1.105.0" },
     { name = "numpy", marker = "extra == 'voice-input'", specifier = "==2.5.1" },

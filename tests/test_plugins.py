@@ -107,7 +107,6 @@ def _config(tmp_path: Path, *, console: bool = False, close_seconds: float = 30)
                     "api_key": "synthetic",
                     "context_window": 10000,
                     "max_output_tokens": 1000,
-                    "capacity_rule": "test-only",
                 }
             },
             "subject": {"foreground": "test", "reflection": "test", "summary": "test"},

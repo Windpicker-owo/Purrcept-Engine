@@ -153,11 +153,9 @@ def proposal(
 ) -> SummaryProposal:
     summary = context_summary_materials.summary_message(source, "实际摘要正文")
     candidate = candidate_checkpoint(source, summary)
-    large = GenerationCapacity(100_000, 100, "reference-text-only-v1")
+    large = GenerationCapacity(100_000, 100)
     candidate_size = assess_capacity(assessment_payload(candidate), large).estimate.input_units
-    limits = GenerationCapacity(
-        int(candidate_size / 0.6 / 0.9) + 100, 100, "reference-text-only-v1"
-    )
+    limits = GenerationCapacity(int(candidate_size / 0.6 / 0.9) + 100, 100)
     before = assess_capacity(assessment_payload(source.checkpoint), limits)
     after = assess_capacity(assessment_payload(candidate), limits)
     reference = "summary:" + source.coverage_id

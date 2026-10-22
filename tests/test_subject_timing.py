@@ -157,7 +157,6 @@ async def test_late_stimulus_is_dated_before_previous_reply_and_clock_refreshes(
         "api_key": "synthetic",
         "context_window": 100_000,
         "max_output_tokens": 1000,
-        "capacity_rule": "reference-text-only-v1",
     }
     config = EngineConfig.validate(
         {

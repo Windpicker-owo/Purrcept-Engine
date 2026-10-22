@@ -78,9 +78,7 @@ def _coordinator(store: Store, *, coalesce_seconds: float = 0) -> SubjectService
             _UnusedModel(),
             "openai/test",
             1000,
-            lambda payload: check_capacity(
-                payload, GenerationCapacity(300_000, 1000, "reference-text-only-v1")
-            ),
+            lambda payload: check_capacity(payload, GenerationCapacity(300_000, 1000)),
             _Retry(),
             compiler=compile_materials,
         ),

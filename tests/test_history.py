@@ -117,11 +117,11 @@ def layout(checkpoint: ConversationCheckpoint) -> ModelRequest:
 
 
 def source_capacity(payload: JsonObject):
-    return assess_capacity(payload, GenerationCapacity(100_000, 100, "reference-text-only-v1"))
+    return assess_capacity(payload, GenerationCapacity(100_000, 100))
 
 
 def summary_capacity(payload: JsonObject):
-    return check_capacity(payload, GenerationCapacity(100_000, 256, "reference-text-only-v1"))
+    return check_capacity(payload, GenerationCapacity(100_000, 256))
 
 
 class Backend:
@@ -486,7 +486,7 @@ async def test_oversized_history_summarizes_one_fitting_prefix_and_keeps_the_res
     maintenance = service(store, backend)
 
     def limited(payload: JsonObject):
-        return check_capacity(payload, GenerationCapacity(6_000, 256, "reference-text-only-v1"))
+        return check_capacity(payload, GenerationCapacity(2_000, 256))
 
     maintenance.summary_capacity = limited
     try:
@@ -522,7 +522,7 @@ async def test_one_oversized_turn_does_not_reserve_or_dispatch_and_can_follow_co
     maintenance = service(store, backend)
 
     def too_small(payload: JsonObject):
-        return check_capacity(payload, GenerationCapacity(1_000, 256, "reference-text-only-v1"))
+        return check_capacity(payload, GenerationCapacity(1_000, 256))
 
     maintenance.summary_capacity = too_small
     try:

@@ -393,7 +393,7 @@ async def test_slow_model_preparation_keeps_native_capture_draining(
         """保留完整计量结果，只增加本地计算等待。"""
         nonlocal measurements
         measurements += 1
-        # 超过生产队列的 64 × 10 ms 容量，模拟首次分词加载和长历史计算。
+        # 超过生产队列的 64 × 10 ms 容量，模拟完整媒体布局和长历史编码。
         time.sleep(0.85)
         return capacity(payload)
 

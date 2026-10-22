@@ -99,7 +99,6 @@ async def test_cancelled_admission_observer_still_stops_audio_and_delivers_next_
                     "api_key": "synthetic",
                     "context_window": 100000,
                     "max_output_tokens": 1000,
-                    "capacity_rule": "reference-text-only-v1",
                 }
             },
             "subject": {"foreground": "main", "reflection": "main", "summary": "main"},

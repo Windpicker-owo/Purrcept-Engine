@@ -26,10 +26,6 @@ from purrcept_engine.domain.activities.service import ActivityService
 from purrcept_engine.domain.execution.models import ActionRecord
 from purrcept_engine.domain.execution.ports import ActionExecutor
 from purrcept_engine.errors import ConfigError, HostStateError
-from purrcept_engine.infrastructure.models.capacity import (
-    GEMINI_MEDIA,
-    RULE,
-)
 from purrcept_engine.infrastructure.models.clients import DecisionResource, OpenAIGenerationResource
 from purrcept_engine.infrastructure.sqlite.store import Store
 from purrcept_engine.plugin_system.captions import SpeechCaption
@@ -113,18 +109,11 @@ class EngineAssembly:
                 for binding in self.state.prepared.catalog.bindings.values()
             }
             foreground_model = self.state.config.models[self.state.config.subject.foreground]
-            # 模型声明只说明端点能力；没有已注册的媒体计量依据就不能接管
-            # 原声，否则收音成功后每一段都会在真正派发模型前失败。
+            # 原声准入只取决于前台声明的传输能力；容量由统一估算器在
+            # 每次请求派发前检查，不再依赖模型或媒体专用规则注册。
             native_audio_enabled = (
                 isinstance(foreground_model, GenerationModelSettings)
                 and "audio" in foreground_model.supports_contents
-                and foreground_model.media_rule != "unsupported"
-                and foreground_model.capacity_rule != "reference-text-only-v1"
-                and foreground_model.capacity_rule in self.state.capacity_rules
-                and (
-                    foreground_model.capacity_rule != RULE
-                    or foreground_model.media_rule == GEMINI_MEDIA
-                )
             )
             for instance_id, blueprint in self.state.prepared.blueprints:
                 paths = frozenset(
@@ -238,7 +227,6 @@ class EngineAssembly:
                 execute=self.host.execute,
                 plugins=self.state.plugins,
                 can_start=self.lifecycle.check_owned_dispatch,
-                rules=self.state.capacity_rules,
                 wakeup_committed=self.state.work_changed.set,
                 knowledge=self.state.knowledge_resources.knowledge,
             )

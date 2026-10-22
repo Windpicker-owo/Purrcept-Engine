@@ -1,8 +1,8 @@
 """声明并校验宿主的不可变启动配置，不启动模型、插件或设备。
 
 TOML 与程序式调用共同经过 ``EngineConfig.validate``；交叉引用和额度关系
-在配置边界核验，再以显式基准目录解析路径。模型名称不决定容量规则或媒体支持，
-规则标识由后续模型适配边界核对。插件配置保留为不可变 JSON，纯声明与依赖
+在配置边界核验，再以显式基准目录解析路径。模型名称不决定窗口或媒体支持，
+所有模型共用内置容量估算。插件配置保留为不可变 JSON，纯声明与依赖
 核验由 app.assembly 完成，配置本身不构造资源。
 """
 
@@ -124,17 +124,15 @@ class LoggingSettings(_Settings):
 
 
 class _ModelSettings(_Settings):
-    """显式选择端点、内容类型及计量依据；实际传输来源由适配验证。
+    """显式选择端点和内容类型；实际传输来源由适配验证。
 
     supports_contents 默认仅 text，刺激渲染时按此声明投影媒体，原件不变。
-    媒体能力声明不替代传输实现，也不绕过 media_rule 的容量核验。
+    媒体能力声明不替代传输实现；所有请求使用同一内置多模态 token 估算核验容量。
     """
 
     model: NonEmptyString
     api_base: NonEmptyString
     api_key: SecretStr
-    capacity_rule: NonEmptyString
-    media_rule: NonEmptyString = "unsupported"
     supports_contents: tuple[ContentKind, ...] = ("text",)
 
     @field_validator("supports_contents", mode="before")

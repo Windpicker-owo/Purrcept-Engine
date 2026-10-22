@@ -134,7 +134,6 @@ async def _running(
         "api_key": "synthetic",
         "context_window": 100_000,
         "max_output_tokens": 1000,
-        "capacity_rule": "reference-text-only-v1",
     }
     config = EngineConfig.validate(
         {
@@ -150,7 +149,6 @@ async def _running(
                     "api_base": "http://127.0.0.1:9999/v1",
                     "api_key": "synthetic",
                     "input_limit": 100_000,
-                    "capacity_rule": "reference-text-only-v1",
                 },
             },
             "subject": {

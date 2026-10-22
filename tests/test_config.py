@@ -32,7 +32,6 @@ def _configuration() -> dict[str, object]:
                 "api_key": "fixture-secret",
                 "context_window": 32000,
                 "max_output_tokens": 4096,
-                "capacity_rule": "fixture-text-v1",
             },
             "gate": {
                 "kind": "decision",
@@ -40,7 +39,6 @@ def _configuration() -> dict[str, object]:
                 "api_base": "http://127.0.0.1:4001/v1",
                 "api_key": "fixture-gate-secret",
                 "input_limit": 8192,
-                "capacity_rule": "fixture-decision-v1",
             },
         },
         "subject": {
@@ -72,7 +70,8 @@ def test_configuration_resolves_and_freezes_startup_snapshot(tmp_path: Path) -> 
     assert config.execution.pending_input_bytes == 256 * 1024 * 1024
     assert config.activities.initial_seconds == 3600
     assert config.context.page_chars == 8000
-    assert config.models["local"].media_rule == "unsupported"
+    assert "media_rule" not in config.models["local"].model_dump()
+    assert "capacity_rule" not in config.models["local"].model_dump()
     assert config.models["local"].supports_contents == ("text",)
     assert isinstance(config.models, MappingProxyType)
 
@@ -95,7 +94,6 @@ def test_programmatic_construction_requires_explicit_relative_base(tmp_path: Pat
         api_key=SecretStr("fixture-secret"),
         context_window=32000,
         max_output_tokens=4096,
-        capacity_rule="fixture-v1",
     )
     config = EngineConfig(
         host=HostSettings(data_dir=Path("state")),
@@ -150,7 +148,8 @@ def test_frame_must_leave_room_for_protocol_envelope() -> None:
         {"api_base": "http://localhost:bad-port/v1"},
         {"context_window": True},
         {"max_output_tokens": 32000},
-        {"capacity_rule": ""},
+        {"capacity_rule": "removed-rule"},
+        {"media_rule": "removed-rule"},
         {"temperature": 0.7},
     ],
 )
@@ -163,7 +162,6 @@ def test_model_boundaries_do_not_infer_missing_contracts(changes: dict[str, obje
         "api_key": "fixture-secret",
         "context_window": 32000,
         "max_output_tokens": 4096,
-        "capacity_rule": "fixture-v1",
     }
     values.update(changes)
     with pytest.raises(ValidationError):
@@ -180,7 +178,6 @@ def test_decision_configuration_rejects_generation_budget() -> None:
                 "api_base": "http://127.0.0.1:4001/v1",
                 "api_key": "fixture-secret",
                 "input_limit": 8192,
-                "capacity_rule": "fixture-v1",
                 "max_output_tokens": 4096,
             }
         )
@@ -193,7 +190,6 @@ def test_models_share_immutable_supported_content_declaration(kind: str) -> None
         "model": "fixture",
         "api_base": "http://127.0.0.1:4000/v1",
         "api_key": "fixture-secret",
-        "capacity_rule": "fixture-v1",
     }
     if kind == "generation":
         values.update(context_window=32000, max_output_tokens=4096)
@@ -226,7 +222,6 @@ def test_supported_content_declaration_rejects_invalid_values(value: object) -> 
                 "model": "fixture",
                 "api_base": "http://127.0.0.1:4000/v1",
                 "api_key": "fixture-secret",
-                "capacity_rule": "fixture-v1",
                 "input_limit": 8192,
                 "supports_contents": value,
             }
@@ -241,7 +236,6 @@ def test_removed_audio_flag_is_rejected_instead_of_silently_ignored() -> None:
                 "model": "fixture",
                 "api_base": "http://127.0.0.1:4000/v1",
                 "api_key": "fixture-secret",
-                "capacity_rule": "fixture-v1",
                 "context_window": 32000,
                 "max_output_tokens": 4096,
                 "supports_audio": True,
@@ -275,5 +269,5 @@ def test_example_toml_uses_file_directory_as_path_base(tmp_path: Path) -> None:
 
     assert config.host.data_dir == tmp_path / ".purrcept-engine"
     assert config.subject.attention == "attention"
-    assert config.models["foreground"].media_rule == "unsupported"
+    assert "capacity_rule" not in config.models["foreground"].model_dump()
     assert config.plugins == ()

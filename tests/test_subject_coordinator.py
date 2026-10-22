@@ -72,6 +72,7 @@ from purrcept_engine.domain.subject.service import SubjectService
 from purrcept_engine.domain.subject.session import DynamicState
 from purrcept_engine.domain.subject.settings import CoordinatorSettings, SubjectModel
 from purrcept_engine.errors import StorageError
+from purrcept_engine.infrastructure.audio.wav import encode_wav
 from purrcept_engine.infrastructure.execution.service import ExecutionService
 from purrcept_engine.infrastructure.models.compiler import compile_materials
 from purrcept_engine.infrastructure.sqlite.store import Store
@@ -256,9 +257,7 @@ async def _rig(
                 generation,
                 "openai/test",
                 1000,
-                lambda payload: check_capacity(
-                    payload, GenerationCapacity(300_000, 1000, "reference-text-only-v1")
-                ),
+                lambda payload: check_capacity(payload, GenerationCapacity(300_000, 1000)),
                 _Retry(),
                 compiler=compile_materials,
                 supports_contents=("text", "image", "audio"),
@@ -266,16 +265,12 @@ async def _rig(
             attention=AttentionModel(
                 decision if attention_kind == "decision" else chat_attention,
                 "typed/test" if attention_kind == "decision" else "openai/attention",
-                (
-                    lambda payload: check_capacity(
-                        payload, DecisionCapacity(decision_limit, "reference-text-only-v1")
-                    )
-                )
+                (lambda payload: check_capacity(payload, DecisionCapacity(decision_limit)))
                 if attention_kind == "decision"
                 else (
                     lambda payload: check_capacity(
                         payload,
-                        GenerationCapacity(decision_limit + 256, 256, "reference-text-only-v1"),
+                        GenerationCapacity(decision_limit + 256, 256),
                     )
                 ),
                 _Retry(),
@@ -585,13 +580,20 @@ async def test_missing_materials_and_native_audio_reach_foreground_once(rig: _Ri
     )
     await rig.coordinator.start()
     await _stage(rig, missing, "processed")
-    audio = await _admit(rig, "audio", "完整原音", media=(MediaAsset(b"raw-audio", "audio/wav"),))
-    # decision 用明确占位完成判断；前台声明支持音频，仍须承担原生计量失败。
-    await _stage(rig, audio, "failed")
+    audio = await _admit(
+        rig, "audio", "完整原音", media=(MediaAsset(encode_wav(bytes(320), 16000), "audio/wav"),)
+    )
+    # decision 用明确占位完成判断；前台支持音频，统一估算后直接交付原件。
+    await _stage(rig, audio, "processed")
     assert len(rig.decision.requests) == 1
     assert "未交付原件" in _text(rig.decision.requests[0])
     assert "audio/wav" in _text(rig.decision.requests[0])
-    assert len(rig.generation.requests) == 1
+    assert len(rig.generation.requests) == 2
+    assert any(
+        isinstance(block, AudioBlock)
+        for message in rig.generation.requests[1].messages
+        for block in message.content
+    )
     assert "attention.missing_materials" in rig.generation.requests[0].messages[-1].text
     assert (await rig.store.get_input(audio)) is not None
 
@@ -616,7 +618,7 @@ async def test_attention_capacity_failure_preserves_whole_batch_for_foreground(
     tmp_path: Path,
 ) -> None:
     # 分节来源字段也计入真实请求；额度容纳两份完整正文及信封，仍装不下三份。
-    value = await _rig(tmp_path, decision_limit=30_000)
+    value = await _rig(tmp_path, decision_limit=8_000)
     try:
         identities = tuple(
             [
@@ -1158,13 +1160,13 @@ async def test_text_only_models_receive_media_placeholders_and_keep_original_evi
 
 
 async def test_failed_native_audio_does_not_poison_the_next_text_interaction(rig: _Rig) -> None:
-    """原声计量失败保留原件；后续纯文本可以了解失败事实而不再次被附件阻断。"""
+    """原声 token 超额保留原件；后续纯文本可以了解失败事实而不再次被附件阻断。"""
     output = io.BytesIO()
     with wave.open(output, "wb") as wav:
         wav.setnchannels(1)
         wav.setsampwidth(2)
-        wav.setframerate(16000)
-        wav.writeframes(bytes(3200))
+        wav.setframerate(8000)
+        wav.writeframes(bytes(1_920_000))
     audio = output.getvalue()
     old = await _admit(
         rig,
@@ -1173,12 +1175,20 @@ async def test_failed_native_audio_does_not_poison_the_next_text_interaction(rig
         context=InputContext(minimum_wake=True),
         media=(MediaAsset(audio, "audio/wav", "voice.wav"),),
     )
+    original_subject = rig.coordinator.subject
+
+    def limited_audio_capacity(payload: JsonObject) -> CapacityAssessment:
+        """小窗口能容纳纯文本，长原声仍须按实际时长触发超额。"""
+        return check_capacity(payload, GenerationCapacity(6000, 1000))
+
+    rig.coordinator.subject = replace(original_subject, capacity=limited_audio_capacity)
     await rig.coordinator.start()
     await _stage(rig, old, "failed")
     assert rig.generation.requests == []
     failures = await rig.store.failed_turns("foreground")
     assert len(failures) == 1 and "CapacityError" in (failures[0].error_json or "")
 
+    rig.coordinator.subject = original_subject
     new = await _admit(
         rig, "asr-text", "这次是识别后的文字。", context=InputContext(minimum_wake=True)
     )
@@ -1389,11 +1399,9 @@ async def test_constructor_failure_closes_already_opened_store(
     assert len(closed) == 1
 
 
-@pytest.mark.parametrize("capacity_kind", ["fixture", "litellm"])
 @pytest.mark.parametrize("attention_audio", [True, False])
-async def test_generation_attention_preserves_native_audio_under_explicit_rule(
+async def test_generation_attention_preserves_native_audio_with_builtin_estimate(
     tmp_path: Path,
-    capacity_kind: str,
     attention_audio: bool,
 ) -> None:
     value = await _rig(tmp_path, attention_kind="generation")
@@ -1407,31 +1415,9 @@ async def test_generation_attention_preserves_native_audio_under_explicit_rule(
     encoded_audio = base64.b64encode(audio).decode("ascii").encode("ascii")
 
     def fixture_capacity(payload: JsonObject) -> CapacityAssessment:
-        """同时核验原有字节替身和真实 LiteLLM 规则，派发必须保留同一原件。"""
-        encoded = encode_json(payload)
-        assert encoded_audio in encoded
-        if capacity_kind == "litellm":
-            from purrcept_engine.domain.context.capacity import GenerationCapacity, check_capacity
-            from purrcept_engine.infrastructure.models.capacity import (
-                GEMINI_MEDIA,
-                RULE,
-                count_litellm_capacity,
-            )
-
-            return check_capacity(
-                payload,
-                GenerationCapacity(300_000, 4096, RULE, GEMINI_MEDIA),
-                rules={RULE: count_litellm_capacity},
-            )
-        return CapacityAssessment(
-            CapacityEstimate(
-                len(encoded), "fixture-10ms-wav-wire-bytes-v1", "fixture_only", "bytes"
-            ),
-            300_000,
-            False,
-            True,
-            hashlib.sha256(encoded).hexdigest(),
-        )
+        """真实统一估算须计入同一原声的完整 base64 表示。"""
+        assert encoded_audio in encode_json(payload)
+        return check_capacity(payload, GenerationCapacity(300_000, 4096))
 
     assert value.coordinator.attention is not None
     value.coordinator.attention = replace(
