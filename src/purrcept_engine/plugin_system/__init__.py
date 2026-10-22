@@ -8,6 +8,7 @@
 from purrcept_engine.domain.activities.contracts import (
     ActivityDefinition,
     ActivityDriver,
+    ActivityError,
     ActivityRecovery,
     DriverAcceptance,
     RecoveryObservation,
@@ -91,6 +92,7 @@ __all__ = [
     "ActivityCommand",
     "ActivityDefinition",
     "ActivityDriver",
+    "ActivityError",
     "ActivityFeedback",
     "ActivityPort",
     "ActivityRecord",
