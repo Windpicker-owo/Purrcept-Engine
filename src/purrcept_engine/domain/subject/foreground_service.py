@@ -146,64 +146,89 @@ class ForegroundService:
     async def foreground_message(
         self, records: tuple[InputRecord, ...], failures: tuple[TurnRecord, ...]
     ) -> Message:
-        """按前台模型内容声明组装当前输入及尚未承接的失败经历。
+        """组装完整当前输入及尚未承接的失败引用目录。
 
         Args:
             records: 按接管顺序取得的完整输入记录。
             failures: 尚未由后续成功处理承接的失败轮次事实。
 
         Returns:
-            供后续 Core 请求使用的消息，保留完整正文和媒体位置，不支持的媒体为文字引用。
+            当前输入保留完整正文和媒体位置；旧失败只携带事实及去重的原文定位。
 
         Raises:
             StorageError: 失败经历引用缺失原文。
 
         Note:
-            失败经历带原文、回执和可展开媒体引用。
+            失败不安装临时 Core 历史，不能把此前请求再次包进当前输入。旧输入
+            正文和媒体通过 read_evidence 按需展开；行动只保留一次状态索引，
+            当前回执引用由宿主动态状态提供。成功承接只确认失败事实已交接，不表示
+            旧原文已读、旧输入处理成功或世界行动需要重放。
         """
         blocks: list[ContentBlock] = []
-        evidence_ids: list[str] = []
-        for failure in failures:
+        current_ids = {record.input_id for record in records}
+        failed_ids = tuple(
+            dict.fromkeys(identity for turn in failures for identity in turn.input_ids)
+        )
+        evidence_ids = list(dict.fromkeys((*failed_ids, *(record.input_id for record in records))))
+        if failures:
+            originals: list[dict[str, object]] = []
+            for input_id in failed_ids:
+                if input_id in current_ids:
+                    continue
+                record = await self.runtime.store.get_input(input_id)
+                if record is None:
+                    raise StorageError("失败经历引用缺失原文。", code="invalid_record")
+                # 原文只在库中查询以核验来源；不能因新的轮次再次失败，就将同一
+                # 长文本、附件或原生回包递归复制进下一份初始消息。
+                originals.append(
+                    {
+                        "id": record.input_id,
+                        "source": record.source,
+                        "occurred_at": record.occurred_at.isoformat(),
+                        "received_at": record.received_at.isoformat(),
+                    }
+                )
+            # 失败原文与行动各按真实身份汇总一次。只将效果状态留进成功历史，
+            # 不复制脚本、输出、调用正文或其历次回包；动态提醒本身不进入历史。
+            actions = await self.runtime.store.actions_for_inputs(failed_ids)
             blocks.append(
                 TextBlock(
                     render_material(
-                        "此前未完成的轮次与真实行动回执",
+                        "此前未完成的轮次（原文按需读取）",
                         {
                             "material_kind": "prior_failed_turn",
-                            "turn": failure,
-                            "evidence_refs": failure.input_ids,
-                            "actions": await self.runtime.store.actions_for_inputs(
-                                failure.input_ids
-                            ),
+                            "turns": failures,
+                            "inputs": originals,
+                            "actions": [
+                                {
+                                    "action_id": action.action_id,
+                                    "input_id": action.input_id,
+                                    "state": action.state,
+                                    "calls": [
+                                        {
+                                            "call_id": call.call_id,
+                                            "path": call.path,
+                                            "target_id": call.target_id,
+                                            "state": call.state,
+                                            "receipt_revision": call.receipt_revision,
+                                        }
+                                        for call in action.calls
+                                    ],
+                                }
+                                for action in actions
+                            ],
+                            "delivery": "reference_only",
+                            "instruction": "这里只交接失败事实与原文引用，未展开旧正文或媒体；"
+                            "需要细节时用 read_evidence(id=输入身份) 分页读取。"
+                            "真实调用状态及回执版本见宿主当前状态；不要自动重放旧行动。",
                         },
                     )
                 )
             )
-            original: list[InputRecord] = []
-            for input_id in failure.input_ids:
-                record = await self.runtime.store.get_input(input_id)
-                if record is None:
-                    raise StorageError("失败经历引用缺失原文。", code="invalid_record")
-                original.append(record)
-                evidence_ids.append(input_id)
-            if original:
-                # 失败媒体不自动再次进入请求：同一不可计量附件会让后续纯文本
-                # 交互永久失败。保留原文和原件引用，明确未展开，由证据工具取回。
-                blocks.extend(
-                    (
-                        await input_message(
-                            self.runtime.store,
-                            tuple(original),
-                            media_as_references=True,
-                            supports_contents=self.runtime.subject.supports_contents,
-                        )
-                    ).content
-                )
         current = await input_message(
             self.runtime.store, records, supports_contents=self.runtime.subject.supports_contents
         )
         blocks.extend(current.content)
-        evidence_ids.extend(record.input_id for record in records)
         processing = await self.runtime.processing(records)
         assembled_at = time.time()
         blocks.append(

@@ -316,7 +316,7 @@ def build_subject(
                 capacity_for(settings, enforce=True),
                 config.subject.attention_retry,
                 kind="generation",
-                output_tokens=min(256, settings.max_output_tokens),
+                output_tokens=settings.max_output_tokens,
                 compiler=compile_materials,
                 profile=attention_profile,
                 supports_contents=settings.supports_contents,

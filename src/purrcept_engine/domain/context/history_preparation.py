@@ -176,8 +176,8 @@ class HistoryPreparation:
                 dynamic=dynamic,
                 max_requests=budget.max_requests,
             )
-            # 首发预览与真实请求使用同一尾部投影，不能因已经完整交付的回执
-            # 正文副本提前触发摘要；没有待工具结果，因此这里只复用纯投影。
+            # 首发预览与真实请求使用同一回执引用投影，不能因尚未按需读取的
+            # 动态正文副本提前触发摘要；没有待工具结果，因此这里只复用纯投影。
             return ToolDeliveryGate(compiler=self.compiler).prepare(
                 preview,
                 model=self.model,

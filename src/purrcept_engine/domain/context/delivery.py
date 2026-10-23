@@ -4,8 +4,8 @@
 执行全部工具后，请求门槛用真实 SDK 编译完整下一请求；只有尚未派发的
 登记结果可以整体改为容量回执。正文不缩短、媒体不变为描述，权威效果不变。
 已采用的交付按消息位置和完整值冻结，随后请求与最终检查点使用同一投影。
-宿主结构化尾部还按权威原文引用、确切回执版本和完整工具值省去重复结果
-正文；容量引用不被尾部重新展开，迟到新版本与完整实际参数仍明确保留。
+宿主结构化尾部按权威原文引用省去结果正文，避免失败积压自动放大下一请求。
+完整工具值只用于证明同版本正文已交付；迟到新版本与完整实际参数仍保留。
 """
 
 from __future__ import annotations
@@ -538,12 +538,13 @@ class ToolDeliveryGate:
     def _project_tail(
         request: ModelRequest, host_state: JsonObject | None, reminder_key: str | None
     ) -> ModelRequest:
-        """消除同回执在宿主尾部的正文副本，不隐藏新的权威回执版本。
+        """将有权威原文的动态回执作为引用，不重复自动注入结果正文。
 
         宿主显式传入结构化状态；普通提醒文字不参与此投影。Store 的
-        original_ref 已核验确切当前 CallRecord 与持久原文一致，工具历史还
-        必须完整值匹配或携带相同已冻结容量引用，才能移除该 result_json。
-        参数、当前状态、错误、目标及时间原值保留；所有引用均不计为已读。
+        original_ref 已核验确切当前 CallRecord 与持久原文一致；即使失败轮次
+        没有安装工具历史，也可按此引用取回正文，不能自动重放其大结果。
+        只有完整工具值匹配才声明已交付。没有当前版本原文引用的迟到结果
+        仍保留正文；参数、状态、错误、目标及时间原值保留，引用不计为已读。
         """
         if host_state is None:
             return request
@@ -562,10 +563,10 @@ class ToolDeliveryGate:
         for raw in calls:
             if not isinstance(raw, dict):
                 raise RuntimeError("宿主当前调用记录不是对象。")
-            mode = _matching_delivery(deliveries, raw)
-            if mode is None:
+            if raw.get("original_ref") is None:
                 selected.append(raw)
                 continue
+            mode = _matching_delivery(deliveries, raw) or "reference_only"
             projected = {key: value for key, value in raw.items() if key != "result_json"}
             projected["result_delivery"] = {
                 "mode": mode,

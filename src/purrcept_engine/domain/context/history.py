@@ -185,7 +185,7 @@ def summary_request(source: SummarySource, output_tokens: int) -> ModelRequest:
 
     Args:
         source: 已冻结的历史范围及所属会话版本。
-        output_tokens: 为本次生成预留的最大输出 token 数。
+        output_tokens: 摘要模型配置声明的最大输出 token 数，包含提供方计入输出的推理。
 
     Returns:
         按实际消息顺序构造的完整 Core 请求。
@@ -212,7 +212,9 @@ def summary_request(source: SummarySource, output_tokens: int) -> ModelRequest:
     return ModelRequest(
         (Message(MessageRole.USER, tuple(content)),),
         instructions=(SUMMARY_SYSTEM_PROMPT.instruction(),),
-        settings=ModelSettings(max_output_tokens=min(4096, output_tokens)),
+        # 输出预算由模型配置拥有。推理模型可能先消耗大量输出 token，不能在
+        # 摘要路径另设隐藏上限，否则配置与容量预检都无法表达真实生成预算。
+        settings=ModelSettings(max_output_tokens=output_tokens),
         metadata={"purpose": "context_maintenance", "target": source.owner_id},
     )
 

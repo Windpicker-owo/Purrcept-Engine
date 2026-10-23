@@ -758,6 +758,75 @@ def tail_text(sdk: JsonObject) -> str:
     return last["content"]
 
 
+async def test_failed_action_result_is_referenced_without_installed_tool_history(
+    store: Store,
+) -> None:
+    """模型尚未收到行动结果就失败时，下一轮不自动重新展开回包或获得已读资格。"""
+    now = datetime.now(UTC)
+    admission = await store.admit(
+        InputSubmission(
+            InputSource("test", "test", "test", "text", "failed-source"),
+            "此前已经执行的输入",
+            now,
+            now,
+            context=InputContext(minimum_wake=True),
+        )
+    )
+    ports = WorkPorts(store, admission.input_id)
+    failed_gate = ToolDeliveryGate(compiler=compile_materials)
+    await foreground(store, failed_gate, ports).play_action("actual code")
+    turn = await store.begin_turn("failed-before-result", "foreground", 0, 1, (admission.input_id,))
+    await store.finish_turn(turn, "failed", error_json='{"error_type":"ModelUnavailableError"}')
+    assert (await store.get_session("foreground")).checkpoint_json is None
+
+    gate = ToolDeliveryGate(compiler=compile_materials)
+    tools = foreground(store, gate)
+    _, transport = await run(
+        store,
+        tools.tools,
+        gate,
+        ("新的短输入可以结束",),
+        refresh_state=lambda budget: actual_work_state(store, budget),
+        turn_id="after-failure",
+    )
+    tail = tail_text(transport.payloads[0])
+    assert '"result_json"' not in tail
+    assert tail.count('"mode": > reference_only') == 3
+    assert tail.count('"details_presented": false') == 3
+    assert '"state": > unknown' in tail and '"receipt_revision": 1' in tail
+    assert "platform-confirmed-42" not in encode(transport.payloads[0])
+    assert "L" * 60_000 not in encode(transport.payloads[0])
+    assert gate.presented_call_ids == frozenset()
+
+    read_gate = ToolDeliveryGate(compiler=compile_materials)
+    _, read_transport = await run(
+        store,
+        foreground(store, read_gate).tools,
+        read_gate,
+        (
+            (
+                ToolCallBlock(
+                    "read-old-result",
+                    "read_evidence",
+                    arguments={
+                        "id": "action_result:work-action",
+                        "version": 1,
+                        "max_chars": 200000,
+                    },
+                ),
+            ),
+            "已核对真实原文",
+        ),
+        refresh_state=lambda budget: actual_work_state(store, budget),
+        turn_id="read-failed-result",
+        window=200_000,
+    )
+    assert "platform-confirmed-42" in encode(read_transport.payloads[1])
+    assert "L" * 60_000 in encode(read_transport.payloads[1])
+    assert read_gate.presented_call_ids == frozenset(("long-read", "platform-send"))
+    assert ports.actions == 1
+
+
 @pytest.mark.parametrize("full_delivery", (False, True))
 async def test_current_tail_does_not_duplicate_or_bypass_frozen_action_delivery(
     store: Store, full_delivery: bool
@@ -892,7 +961,8 @@ async def test_current_tail_does_not_duplicate_or_bypass_frozen_action_delivery(
         )
         before = tail_text(receipt_transport.payloads[0])
         after = tail_text(receipt_transport.payloads[1])
-        assert '"result_json": > {"message_id":"platform-late-99","status":"confirmed"}' in before
+        assert '"result_json"' not in before and '"id": > call:unknown-send:2' in before
+        assert before.count('"details_presented": false') == 3
         assert '"result_json"' not in after and '"receipt_revision": 2' in after
         assert '"id": > call:unknown-send:2' in after and '"version": 1' in after
         assert after.count('"mode": > full_tool_message') == 1

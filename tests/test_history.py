@@ -53,7 +53,7 @@ from purrcept_engine.domain.inputs.models import InputSource, InputSubmission
 from purrcept_engine.domain.model_requests.service import RequestBudgetExceeded
 from purrcept_engine.infrastructure.models.compiler import compile_materials
 from purrcept_engine.infrastructure.sqlite.store import Store
-from purrcept_engine.values import JsonObject
+from purrcept_engine.values import JsonObject, decode_object
 
 
 @pytest_asyncio.fixture
@@ -192,6 +192,63 @@ async def test_history_uses_one_real_recorded_request_no_tools_and_full_candidat
     assert current.version == 2 and current.checkpoint_json is not None
     assert decode_checkpoint(current.checkpoint_json) == result.proposal.candidate
     assert result.proposal.after.estimate.input_units < result.proposal.before.estimate.input_units
+
+
+@pytest.mark.parametrize("output_tokens", (256, 8192, 131072))
+async def test_summary_preserves_configured_output_through_sdk_and_capacity(
+    store: Store, output_tokens: int
+) -> None:
+    """摘要与容量预检使用同一配置预算，推理后仍可产生完整正文。"""
+    source = await saved_source(store)
+    backend = Backend(
+        (
+            ModelResponse(
+                Message(
+                    MessageRole.ASSISTANT,
+                    (
+                        ReasoningBlock("推理" * min(output_tokens // 4, 5000)),
+                        TextBlock('{"summary":"保留真实历史。"}'),
+                    ),
+                )
+            ),
+        )
+    )
+    measured: list[JsonObject] = []
+
+    def capacity(payload: JsonObject):
+        measured.append(payload)
+        return check_capacity(payload, GenerationCapacity(400_000, output_tokens))
+
+    maintenance = HistoryMaintenance(
+        store,
+        store,
+        backend,
+        model="openai/offline",
+        summary_capacity=capacity,
+        retry=RetrySettings(attempts=1),
+        output_tokens=output_tokens,
+        diagnostic_bytes=1024,
+        compiler=compile_materials,
+    )
+    try:
+        result = await maintenance.run(
+            source,
+            source_layout=layout,
+            source_model="openai/offline",
+            source_capacity=source_capacity,
+            deadline=asyncio.get_running_loop().time() + 60,
+        )
+    finally:
+        await maintenance.close()
+    assert result.installed_version == 2
+    assert len(backend.requests) == 1
+    assert backend.requests[0].settings.max_output_tokens == output_tokens
+    assert measured and all(payload["max_tokens"] == output_tokens for payload in measured)
+    records = await store.requests_for_turn("foreground", "summary:" + source.coverage_id)
+    assert len(records) == 1 and records[0].state == "succeeded"
+    sdk = decode_object(records[0].request.materials_json.encode("utf-8"))
+    payload = sdk["payload"]
+    assert isinstance(payload, dict) and payload["max_tokens"] == output_tokens
 
 
 @pytest.mark.asyncio

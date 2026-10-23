@@ -237,3 +237,29 @@ async def test_correctable_tool_error_remains_in_original_model_budget(tmp_path:
         assert {result.tool_call_id for result in results} == {"bad-source", "bad-evidence"}
     finally:
         await host.close()
+
+
+async def test_generation_attention_uses_model_configured_output_budget(tmp_path: Path) -> None:
+    """走真实应用装配，注意判断与前台均遵守所引用模型的输出声明。"""
+    raw = config(tmp_path).model_dump()
+    raw["subject"]["attention"] = "main"
+    raw["subject"]["attention_batch_seconds"] = 0.0
+    backend = Backend(
+        (
+            ModelResponse(Message.assistant('{"attention":"wake","reason":"新的独立输入"}')),
+            ModelResponse(Message.assistant("内部处理完成")),
+        )
+    )
+    host = EngineHost(EngineConfig.validate(raw), generation_backends={"main": backend})
+    await host.start()
+    try:
+        now = datetime.now(UTC)
+        admission = await host.submit(
+            InputSubmission(InputSource("test", "a", "c", "text", "budget"), "新输入", now, now)
+        )
+        await wait_processed(host, admission.input_id)
+        assert len(backend.requests) == 2
+        assert backend.requests[0].tools == ()
+        assert all(request.settings.max_output_tokens == 1000 for request in backend.requests)
+    finally:
+        await host.close()

@@ -168,7 +168,7 @@ def render_host_state(payload: JsonObject) -> str:
 
     Note:
         不遍历删除所有叫 version/id 的字段：证据版本、活动身份和回执版本是
-        行动契约的一部分。calls 在交付 Gate 去重后保留原值，额外派生可读时间。
+        行动契约的一部分。calls 采用交付 Gate 的原文引用投影，额外派生可读时间。
         插件材料由各自 prepare_request 明确选择；诊断 snapshot 不获默认注入资格。
     """
     work = payload["work"]
@@ -205,7 +205,7 @@ def render_host_state(payload: JsonObject) -> str:
         current["observed_at"] = datetime.fromtimestamp(assembled_at, UTC).isoformat()
     calls = work.get("calls")
     if isinstance(calls, list):
-        # 完整工具交付或容量引用去重后仍保留此投影，迟到回执也带其自身版本的时间。
+        # 动态回执改为原文引用后仍保留时间，迟到回执也带其自身版本的记录时间。
         current["calls"] = [
             {**call, "recorded_times_utc": execution_times(call)}
             if isinstance(call, dict)

@@ -844,7 +844,8 @@ async def test_urgent_interrupts_only_observed_generation_and_preserves_failed_i
     assert rig.generation.cancelled == [1]
     assert not await rig.coordinator.input_admitted(urgent, observed_generation=observed)
     assert "prior_failed_turn" in rig.generation.requests[1].messages[-1].text
-    assert "旧正在处理" in rig.generation.requests[1].messages[-1].text
+    assert old in rig.generation.requests[1].messages[-1].text
+    assert "旧正在处理" not in rig.generation.requests[1].messages[-1].text
 
 
 @pytest.mark.parametrize("explicit_interrupt", [False, True])
@@ -1196,8 +1197,8 @@ async def test_failed_native_audio_does_not_poison_the_next_text_interaction(rig
     assert len(rig.generation.requests) == 1
     messages = rig.generation.requests[0].messages
     text = "\n".join(message.text for message in messages)
-    assert "原声发言仍保留。" in text and "这次是识别后的文字。" in text
-    assert "仅提供引用，未展开像素或音频" in text and "prior_failed_turn" in text
+    assert "原声发言仍保留。" not in text and "这次是识别后的文字。" in text
+    assert old in text and "prior_failed_turn" in text and "未展开旧正文或媒体" in text
     assert not any(
         isinstance(block, AudioBlock) for message in messages for block in message.content
     )
@@ -1206,6 +1207,9 @@ async def test_failed_native_audio_does_not_poison_the_next_text_interaction(rig
     processing = await rig.store.input_processing(old)
     assert processing is not None and processing.stage == "failed"
     assert await rig.store.get_media(original.media[0].media_id) == audio
+    page = await rig.store.knowledge.read_evidence(old)
+    assert page.text == "原声发言仍保留。"
+    assert page.snapshot is not None and page.snapshot.media == original.media
     assert await rig.store.failed_turns("foreground") == ()
 
 
@@ -1255,6 +1259,49 @@ async def test_actual_action_survives_failed_turn_and_new_interaction_acknowledg
     assert await rig.store.failed_turns("foreground") == ()
     state = await rig.store.get_session("foreground")
     assert state.checkpoint_json is not None and actions[0].action_id in state.checkpoint_json
+
+
+async def test_large_failed_inputs_do_not_replay_into_later_requests(rig: _Rig) -> None:
+    """连续失败保留原件，短新输入不再被旧正文累积拖过容量门槛。"""
+    await rig.coordinator.start()
+    failed: list[str] = []
+    for index in range(3):
+        rig.generation.responses.extend(
+            (ModelUnavailableError("offline"), ModelUnavailableError("offline"))
+        )
+        identity = await _admit(
+            rig,
+            f"large-failure-{index}",
+            f"旧正文{index}:" + "旧材料" * 20_000,
+            context=InputContext(minimum_wake=True),
+        )
+        await _stage(rig, identity, "failed")
+        failed.append(identity)
+        initial = rig.generation.requests[-1].messages[-1]
+        assert initial.text.count("prior_failed_turn") == (0 if index == 0 else 1)
+        for previous in range(index):
+            assert f"旧正文{previous}:" not in initial.text
+
+    def small_capacity(payload: JsonObject) -> CapacityAssessment:
+        return check_capacity(payload, GenerationCapacity(30_000, 1000))
+
+    rig.coordinator.subject = replace(rig.coordinator.subject, capacity=small_capacity)
+    current = await _admit(
+        rig, "small-recovery", "新的短输入", context=InputContext(minimum_wake=True)
+    )
+    await _stage(rig, current, "processed")
+    request = rig.generation.requests[-1]
+    material = request.messages[-1]
+    assert len(rig.generation.requests) == 7
+    assert "旧材料" not in material.text and "新的短输入" in material.text
+    assert material.metadata["evidence"] == (*failed, current)
+    assert len(material.text) < 10_000
+    assert await rig.store.failed_turns("foreground") == ()
+    for index, identity in enumerate(failed):
+        page = await rig.store.knowledge.read_evidence(identity, max_chars=100)
+        assert page.text.startswith(f"旧正文{index}:") and page.next_cursor is not None
+        processing = await rig.store.input_processing(identity)
+        assert processing is not None and processing.stage == "failed"
 
 
 async def test_generation_attention_uses_configured_model_original_rules_and_no_tools(
