@@ -15,7 +15,7 @@ from purrcept_engine.infrastructure.sqlite import subject as subject_storage
 from purrcept_engine.infrastructure.sqlite import time as time_storage
 from purrcept_engine.values import encode_json
 
-_FORMAT_VERSION = 14
+_FORMAT_VERSION = 15
 
 
 _APPLICATION_ID = 0x50555245
@@ -77,6 +77,8 @@ def _upgrade_stimulus_inbox(connection: sqlite3.Connection, version: int) -> Non
     existing_sql = {_text(row[0]) for row in rows}
     expected_schema: list[str] = []
     for statement in _SCHEMA:
+        if statement in model_storage.USAGE_SCHEMA:
+            continue
         if statement in subject_storage.MINIMUM_WAKE_SCHEMA:
             continue
         if statement == subject_storage.SCHEMA[0]:
@@ -156,6 +158,12 @@ def initialize(connection: sqlite3.Connection) -> None:
             connection.execute(f"PRAGMA application_id = {_APPLICATION_ID}")
         elif version in (12, 13) and identity == _APPLICATION_ID:
             _upgrade_stimulus_inbox(connection, version)
+            for statement in model_storage.USAGE_SCHEMA:
+                connection.execute(statement)
+        elif version == 14 and identity == _APPLICATION_ID:
+            # 只新增实际用量锚点，不重写原请求、响应、会话或媒体。
+            for statement in model_storage.USAGE_SCHEMA:
+                connection.execute(statement)
         elif version != _FORMAT_VERSION or identity != _APPLICATION_ID:
             raise StorageError("数据库不是支持的 Engine 格式。", code="unsupported_format")
 

@@ -218,7 +218,7 @@ class EngineAssembly:
                 embedding=self.state.embedding_provider,
                 reranker=self.state.reranker,
             )
-            self.state.subject = build_subject(
+            self.state.subject = await build_subject(
                 self.state.config,
                 self.state.store,
                 self.state.prepared.catalog,

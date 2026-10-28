@@ -1,8 +1,9 @@
 """模型材料编译、请求证据与重试配置的边界契约，不拥有客户端或提交任务。"""
 
+from collections.abc import Awaitable, Callable
 from typing import Protocol
 
-from purrcept_core.models import DecisionRequest, ModelRequest
+from purrcept_core.models import DecisionRequest, DecisionResponse, ModelRequest, ModelResponse
 
 from purrcept_engine.domain.model_requests.models import (
     AttemptEvidence,
@@ -10,6 +11,12 @@ from purrcept_engine.domain.model_requests.models import (
     RequestEvidence,
     RequestOutcome,
 )
+
+# 成功响应及原请求证据提交后才调用；回调失败属于权威保存失败，不重发模型。
+type UsageObserver = Callable[
+    [RequestEvidence, ModelRequest | DecisionRequest, ModelResponse | DecisionResponse],
+    Awaitable[None],
+]
 
 
 class MaterialCompiler(Protocol):

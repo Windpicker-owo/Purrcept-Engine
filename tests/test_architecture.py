@@ -146,11 +146,16 @@ async def test_existing_baseline_schema_upgrades_only_subject_scheduling(tmp_pat
         actual: list[tuple[str]] = connection.execute(
             "SELECT sql FROM sqlite_master WHERE sql IS NOT NULL AND name NOT LIKE 'sqlite_%'"
         ).fetchall()
-        scheduling = ("input_processing", "minimum_wake_assessments", "minimum_wake_pending")
+        scheduling = (
+            "input_processing",
+            "minimum_wake_assessments",
+            "minimum_wake_pending",
+            "capacity_usage",
+        )
         assert sorted(
             row[0] for row in actual if not any(name in row[0] for name in scheduling)
         ) == (sorted(row[0] for row in before if not any(name in row[0] for name in scheduling)))
-        assert connection.execute("PRAGMA user_version").fetchone() == (14,)
+        assert connection.execute("PRAGMA user_version").fetchone() == (15,)
         columns = {row[1] for row in connection.execute("PRAGMA table_info(input_processing)")}
         assert "due_at" not in columns and "handed_off" not in columns
         columns = {

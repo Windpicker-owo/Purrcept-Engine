@@ -22,12 +22,12 @@ QQ 消息、语音和空闲计时都作为**刺激**进入同一个主体；注�
 （参数从略）：
 
 ```python
-me.phone.qq.file_url(file_id=...)                     # 取得私聊或群文件的下载链接
+me.phone.qq.file_url(file_id=...)  # 取得私聊或群文件的下载链接
 me.notebook.save_file(url=..., path="attachments/qq/报告.pdf")
-me.computer.screenshot()                              # 原图入库，并返回本地 JPEG 路径
-me.phone.qq.send(..., images=[path])                   # 把截图发回 QQ
-me.microphone.speak(...)                              # 合成并播放语音
-me.bed.rest(...)                                      # 睡觉：普通刺激只记历史
+me.computer.screenshot()  # 原图入库，并返回本地 JPEG 路径
+me.phone.qq.send(..., images=[path])  # 把截图发回 QQ
+me.microphone.speak(...)  # 合成并播放语音
+me.bed.rest(...)  # 睡觉：普通刺激只记历史
 ```
 
 每次调用都有逐次回执；未知结果不会被自动重放。用 `uv run purrcept-engine catalog`
@@ -67,6 +67,7 @@ me.bed.rest(...)                                      # 睡觉：普通刺激只
 | `qq` | 经 OneBot WebSocket 收发消息、文件与 QQ 空间（`me.phone.qq.*`） | `qq` |
 | `computer` | 连接电脑、截图、连续观察与宿主 PowerShell 命令（`me.computer.*`） | — |
 | `browser` | 搜索、打开、阅读网页（`me.computer.browser.*`） | `browser` |
+| `meme` | 中文梗检索、详情、本地收藏与每日刺激提醒（`me.computer.meme.*`） | 非 UTC 时区需 `time`；[说明](src/purrcept_engine/plugins/meme/README.md) |
 | `microphone` | 语音合成与播放 | FFmpeg / FFplay |
 | `voice_input` | 收音、VAD 与 ASR | `voice-input` |
 | `live2d` | VTube Studio 身体表达（`me.live2d.*`） | `live2d` |

@@ -3,8 +3,8 @@
 HistoryMaintenance 借用命名模型及权威账本。先按容量选择旧完整轮次前缀，保留
 冻结覆盖后再按维护提示提交一个逻辑请求；唯一传输重试仍由
 ModelGenerationBackend 提供。完整候选用目标会话同一请求布局/计量分母复查，
-事务确认后才返回新版本。失败不自动
-切换来源、调小提示或再摘要，所有原历史及实际响应证据继续保留。
+事务确认后才返回新版本。仅服务端明确超窗时缩小完整前缀，失败归还占位；
+所有原历史及实际响应证据继续保留，不切换模型或裁剪轮内正文。
 摘要实际读取的材料遵守与前台相同的媒体窗口；来源冻结与归档仍保留原检查点。
 """
 
@@ -26,6 +26,7 @@ from purrcept_core.models import (
     Message,
     MessageRole,
     ModelBackend,
+    ModelContextWindowError,
     ModelRequest,
     ModelSettings,
     ReasoningBlock,
@@ -60,6 +61,7 @@ from purrcept_engine.domain.model_requests.ports import (
     MaterialCompiler,
     RequestEvidenceSink,
     RetryPolicy,
+    UsageObserver,
 )
 from purrcept_engine.domain.model_requests.service import (
     ModelGenerationBackend,
@@ -87,7 +89,7 @@ class HistoryResult:
         实例字段在构造后不可重新赋值；嵌套值的冻结范围由字段所属契约决定。
 
         reserved且版本为None表示提案已因目标状态变化失效，不是摘要安装成功；
-        already_attempted/stale/busy不创建模型请求，原始覆盖记录不清除。
+        already_attempted/stale/busy 不创建模型请求；已安装归档保留，未安装占位归还。
     """
 
     reservation: Reservation
@@ -306,6 +308,7 @@ class HistoryMaintenance:
         output_tokens: int,
         diagnostic_bytes: int,
         can_start: Callable[[], None] | None = None,
+        observe_usage: UsageObserver | None = None,
     ) -> None:
         """固定命名资源与内置计量入口，失败不寻找另一模型。
 
@@ -319,6 +322,7 @@ class HistoryMaintenance:
             retry: 唯一传输重试策略，不额外叠加 SDK 隐式重试。
             output_tokens: 为本次生成预留的最大输出 token 数。
             diagnostic_bytes: 单次尝试允许保留的流诊断字节数，不裁剪原参数或完整响应。
+            observe_usage: 成功证据提交后的摘要输入用量保存入口；None 不保存锚点。
             can_start: 实际派发前重新检查的资格回调，等待后仍须复核。 None
                 表示不附加调用方资格条件，宿主固定门槛仍生效。
 
@@ -339,12 +343,17 @@ class HistoryMaintenance:
             diagnostic_bytes,
             can_start,
         )
+        self.observe_usage = observe_usage
         self._closed = False
         self._active = False
         self._wrappers: set[ModelGenerationBackend] = set()
+        self._cleanups: set[asyncio.Task[None]] = set()
+        self._cleanup_failure: Exception | None = None
         self._close_task: asyncio.Task[None] | None = None
 
     def _check(self) -> None:
+        if self._cleanup_failure is not None:
+            raise self._cleanup_failure
         if self._closed:
             raise HostStateError("历史维护已开始关闭。")
         if self.can_start is not None:
@@ -359,7 +368,7 @@ class HistoryMaintenance:
         source_capacity: CapacityCheck,
         deadline: float,
     ) -> HistoryResult:
-        """只计算一次覆盖。
+        """在原截止内维护完整旧前缀，服务端超窗时减半重试。
 
         Args:
             source: 已冻结的历史范围及所属会话版本。
@@ -384,25 +393,60 @@ class HistoryMaintenance:
         if self._active:
             raise HostStateError("同一历史维护所有者已有计算在途。")
         self._active = True
+        try:
+            # 每次超窗只把完整前缀减半；逻辑请求总数由可缩小次数约束，所有
+            # 传输重试、准备和候选校验仍共用调用方已经冻结的绝对截止。
+            budget = RequestBudget(max_requests=source.end_turn.bit_length(), deadline=deadline)
+            while True:
+                budget.check()
+                source, request = await prepare_summary_request(
+                    source,
+                    output_tokens=self.output_tokens,
+                    model=self.model,
+                    capacity=self.summary_capacity,
+                    check_budget=budget.check,
+                    compiler=self.compiler,
+                )
+                try:
+                    return await self._attempt(
+                        source,
+                        request,
+                        budget=budget,
+                        source_layout=source_layout,
+                        source_model=source_model,
+                        source_capacity=source_capacity,
+                    )
+                except ModelContextWindowError:
+                    if source.end_turn == 1:
+                        raise
+                    source = await prepare_off_loop(
+                        partial(shorten_summary_source, source, max(1, source.end_turn // 2))
+                    )
+        finally:
+            self._active = False
+
+    async def _attempt(
+        self,
+        source: SummarySource,
+        request: ModelRequest,
+        *,
+        budget: RequestBudget,
+        source_layout: SourceLayout,
+        source_model: str,
+        source_capacity: CapacityCheck,
+    ) -> HistoryResult:
+        """独占一份冻结覆盖的占位和模型借用；任何未安装结果都归还占位。
+
+        真实尝试留在模型请求账本，不把失败占位当成永久去重资格。
+        先关闭真实模型借用再归还占位，避免取消后仍在运行的模型与新计算重叠。
+        """
+        reservation = await self._reserve(source)
+        if reservation != "reserved":
+            return HistoryResult(reservation)
         wrapper: ModelGenerationBackend | None = None
         try:
-            budget = RequestBudget(max_requests=1, deadline=deadline)
-            budget.check()
-            # 先完成纯容量选择，不能把尚未派发的容量失败永久登记为模型已尝试。
-            source, request = await prepare_summary_request(
-                source,
-                output_tokens=self.output_tokens,
-                model=self.model,
-                capacity=self.summary_capacity,
-                check_budget=budget.check,
-                compiler=self.compiler,
-            )
-            reservation = await self.store.reserve_summary(source)
-            if reservation != "reserved":
-                return HistoryResult(reservation)
             budget.check()
             self._check()
-
             before = await prepare_off_loop(
                 lambda: _assessment(
                     source_layout(source.checkpoint), source_model, source_capacity, self.compiler
@@ -418,6 +462,7 @@ class HistoryMaintenance:
                 policy=self.retry,
                 diagnostic_bytes=self.diagnostic_bytes,
                 can_start=self._check,
+                observe_usage=self.observe_usage,
                 compiler=self.compiler,
             )
             self._wrappers.add(wrapper)
@@ -451,11 +496,38 @@ class HistoryMaintenance:
             installed = await self.store.install_summary(proposal)
             return HistoryResult(reservation, proposal, installed)
         finally:
-            if wrapper is not None:
-                # 即使请求失败，资源借用仍由本对象持有；close重复等待同一包装排空。
-                await wrapper.close()
-                self._wrappers.discard(wrapper)
-            self._active = False
+            try:
+                if wrapper is not None:
+                    await wrapper.close()
+                    self._wrappers.discard(wrapper)
+            finally:
+                await self.store.release_summary(source)
+
+    async def _reserve(self, source: SummarySource) -> Reservation:
+        """取消等待不能遗失已接管占位；归还任务一直归本维护所有者持有。"""
+        claim = asyncio.create_task(self.store.reserve_summary(source))
+        try:
+            return await asyncio.shield(claim)
+        except asyncio.CancelledError:
+
+            async def settle() -> None:
+                """只归还本任务实际取得的占位，不碰并发维护已持有的覆盖。"""
+                if await claim == "reserved":
+                    await self.store.release_summary(source)
+
+            cleanup = asyncio.create_task(settle(), name="summary-claim-cleanup")
+            self._cleanups.add(cleanup)
+            cleanup.add_done_callback(self._cleanup_done)
+            await asyncio.shield(cleanup)
+            raise
+
+    def _cleanup_done(self, task: asyncio.Task[None]) -> None:
+        """收取再次取消后仍由本对象持有的归还结果，权威失败阻止后续维护。"""
+        self._cleanups.discard(task)
+        if not task.cancelled():
+            error = task.exception()
+            if isinstance(error, Exception):
+                self._cleanup_failure = error
 
     async def close(self) -> None:
         """撤销新计算并收回包装，取消等待不会取消同一个后台清理任务。"""
@@ -468,3 +540,7 @@ class HistoryMaintenance:
         """宿主总关闭期限由外层拥有，本清理不另起600秒或重置任何请求截止。"""
         if self._wrappers:
             await asyncio.gather(*(wrapper.close() for wrapper in tuple(self._wrappers)))
+        while self._cleanups:
+            await asyncio.gather(*tuple(self._cleanups))
+        if self._cleanup_failure is not None:
+            raise self._cleanup_failure

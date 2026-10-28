@@ -7,7 +7,7 @@ from collections.abc import Callable
 from importlib import import_module
 from importlib.metadata import version
 from pathlib import Path
-from typing import Protocol, cast
+from typing import Literal, Protocol, cast
 
 from purrcept_core.models import (
     DecisionRequest,
@@ -113,12 +113,26 @@ def compile_materials(request: ModelRequest | DecisionRequest, *, model: str) ->
             raise ModelRequestError("SDK 自动重试必须显式关闭", provider="engine", model=model)
     public = {key: value for key, value in payload.items() if key not in _TRANSPORT_FIELDS}
     excluded = sorted(key for key in payload if key in _TRANSPORT_FIELDS)
-    filename: object = module.__dict__.get("__file__")
-    if not isinstance(filename, str):
+    identity = compiler_identity("generation" if isinstance(request, ModelRequest) else "decision")
+    return encode({"payload": public, "excluded_transport_fields": excluded}), identity
+
+
+def compiler_identity(kind: Literal["generation", "decision"]) -> str:
+    """返回当前冻结编译器的身份，供启动恢复时拒绝跨 SDK 版本复用用量。
+
+    Args:
+        kind: 实际请求协议种类，不根据模型名推断。
+
+    Note:
+        与 compile_materials 使用同一模块源码和安装版本，不构造请求或连接端点。
+    """
+    module = import_module(
+        "purrcept_litellm._request" if kind == "generation" else "purrcept_litellm._decision"
+    )
+    if module.__file__ is None:
         raise TypeError("冻结 SDK 编译器没有可核验源码。")
-    fingerprint = hashlib.sha256(Path(filename).read_bytes()).hexdigest()
-    identity = (
+    fingerprint = hashlib.sha256(Path(module.__file__).read_bytes()).hexdigest()
+    return (
         f"purrcept_litellm/{version('purrcept_litellm')}:litellm/{version('litellm')}:"
         f"{module.__name__}:{fingerprint}"
     )
-    return encode({"payload": public, "excluded_transport_fields": excluded}), identity

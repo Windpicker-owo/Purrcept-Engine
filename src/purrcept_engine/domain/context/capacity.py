@@ -1,6 +1,7 @@
-"""对完整模型请求执行统一多模态 token 估算及容量检查。
+"""以已确认输入用量和新增材料估算核验完整请求容量。
 
 应用只声明窗口与输出上限；每次派发前提交真实 SDK 布局的完整材料。
+usage 复用同用途、端点及 SDK 布局的实际输入前缀；缺失基线或前缀重写时，
 token_estimation 以固定启发式分别估算文字、图片尺寸和音频时长，不按模型
 选择规则，不把媒体 base64 算成文本。assess_capacity 为历史维护返回可超额
 结论，check_capacity 在派发前执行硬性预算检查；本模块不裁剪材料或发起网络。
@@ -15,8 +16,10 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 
 from purrcept_engine.domain.context.token_estimation import estimate_tokens
+from purrcept_engine.domain.context.usage import UsageMeter
 from purrcept_engine.errors import EngineError
 from purrcept_engine.serialization import encode
+from purrcept_engine.values import decode_object
 
 
 @dataclass(frozen=True, slots=True)
@@ -58,18 +61,22 @@ CapacityDeclaration = GenerationCapacity | DecisionCapacity
 
 @dataclass(frozen=True, slots=True)
 class CapacityEstimate:
-    """内置估算器的估计值、方法版本与适用范围，不能冒充服务端 token usage。
+    """完整容量规划值，分别说明实际输入基线和新 payload 的估算。
 
     Attributes:
         input_units: 完整请求的参考输入占用，不能冒充服务端 usage。
         method: 内置估算方法的版本标识。
         scope: 此估算实际覆盖的材料范围，不代表服务端 usage。
         unit: 估算采用的参考计数单位。
+        usage_request_id: 可复用前缀实际用量的请求身份；None 表示没有已知基线。
+        observed_input_tokens: 服务端确认的旧输入总量，缓存命中不另行相加。
+        new_input_units: 相同布局前缀以外的新增材料估算；没有基线时为 None。
 
     Note:
         实例字段在构造后不可重新赋值；嵌套值的冻结范围由字段所属契约决定。
 
-        input_units 是用于容量规划的粗略 token 数。文本与媒体采用同一内置
+        input_units 是实际基线加增量估算，不能作为整份新请求的服务端 usage。
+        没有匹配锚点时，文本与媒体采用同一内置
         估算器，媒体编码大小不参与正文计数；系数不依赖模型名，也不承诺是任意
         Provider 实际占用的误差上界。请求的 SHA-256 仍覆盖完整原始材料。
     """
@@ -78,6 +85,20 @@ class CapacityEstimate:
     method: str
     scope: str
     unit: str
+    usage_request_id: str | None = None
+    observed_input_tokens: int | None = None
+    new_input_units: int | None = None
+
+    @property
+    def policy(self) -> str:
+        """返回可比较的规划策略，实际输入基线与新布局估算属于同一内置策略。
+
+        摘要重写前缀会使实际用量锚点不再匹配，前后数据来源因此可以不同；
+        两者仍使用同一 token 单位、增量公式和输入分母。未知方法不合并策略。
+        """
+        if self.method in ("multimodal-heuristic-v1", "provider-usage-plus-delta-v1"):
+            return "builtin-multimodal-v1"
+        return self.method
 
 
 @dataclass(frozen=True, slots=True)
@@ -141,6 +162,7 @@ def assess_capacity(
     reserve_fraction: float = 0.1,
     trigger: float = 0.8,
     target: float = 0.5,
+    usage: UsageMeter | None = None,
 ) -> CapacityAssessment:
     """计量完整候选，允许返回超额结论供维护使用。
 
@@ -150,6 +172,7 @@ def assess_capacity(
         reserve_fraction: 从输入容量中扣除的预留比例。 默认 0.1。
         trigger: 触发摘要维护的输入预算占用比例。 默认 0.8。
         target: 摘要维护后期望达到的输入预算占用比例。 默认 0.5。
+        usage: 当前用途的已确认输入锚点；None 时整份新布局使用内置估算。
 
     Returns:
         对完整请求的参考占用、输入预算、阈值和材料指纹。
@@ -209,11 +232,21 @@ def assess_capacity(
     # 指纹必须覆盖原始媒体；估算只在独立副本中剥离编码数据，不能把
     # 降低估算成本误写成实际请求裁剪，或让相同尺寸/时长随压缩率变化。
     try:
-        input_tokens = estimate_tokens(payload)
+        measured = usage.estimate(decode_object(encoded)) if usage is not None else None
+        input_tokens = measured.input_tokens if measured is not None else estimate_tokens(payload)
     except ValueError as error:
         raise CapacityError(str(error), code="invalid_material") from error
+    anchored = measured is not None and measured.request_id is not None
     estimate = CapacityEstimate(
-        input_tokens, "multimodal-heuristic-v1", "complete_sdk_request", "token_estimate"
+        input_tokens,
+        "provider-usage-plus-delta-v1" if anchored else "multimodal-heuristic-v1",
+        "complete_sdk_request",
+        "token_estimate",
+        usage_request_id=measured.request_id if measured is not None else None,
+        observed_input_tokens=measured.observed_tokens
+        if measured is not None and anchored
+        else None,
+        new_input_units=measured.new_tokens if measured is not None and anchored else None,
     )
     ratio = estimate.input_units / budget
     return CapacityAssessment(
@@ -228,6 +261,7 @@ def check_capacity(
     reserve_fraction: float = 0.1,
     trigger: float = 0.8,
     target: float = 0.5,
+    usage: UsageMeter | None = None,
 ) -> CapacityAssessment:
     """真正派发前核验完整材料。
 
@@ -237,6 +271,7 @@ def check_capacity(
         reserve_fraction: 从输入容量中扣除的预留比例。 默认 0.1。
         trigger: 触发摘要维护的输入预算占用比例。 默认 0.8。
         target: 摘要维护后期望达到的输入预算占用比例。 默认 0.5。
+        usage: 当前用途的已确认输入锚点；None 时整份新布局使用内置估算。
 
     Returns:
         对完整请求的参考占用、输入预算、阈值和材料指纹。
@@ -253,6 +288,7 @@ def check_capacity(
         reserve_fraction=reserve_fraction,
         trigger=trigger,
         target=target,
+        usage=usage,
     )
     if not result.within_budget:
         raise CapacityError("完整请求超过可用输入额度。", code="over_capacity", assessment=result)

@@ -44,12 +44,13 @@ from purrcept_engine.domain.context.checkpoints import decode_checkpoint, encode
 from purrcept_engine.domain.context.delivery import ToolDeliveryGate
 from purrcept_engine.domain.context.media_history import expire_history_media
 from purrcept_engine.domain.context.presentation import render_host_state
-from purrcept_engine.domain.context.templates import DYNAMIC_STATE_PROMPT
+from purrcept_engine.domain.context.templates import DYNAMIC_STATE_PROMPT, ENGINE_STATE_REMINDER_KEY
 from purrcept_engine.domain.model_requests.models import RequestScope
 from purrcept_engine.domain.model_requests.ports import (
     MaterialCompiler,
     RequestEvidenceSink,
     RetryPolicy,
+    UsageObserver,
 )
 from purrcept_engine.domain.model_requests.service import (
     ModelGenerationBackend,
@@ -63,7 +64,7 @@ from purrcept_engine.domain.subject.models import (
     TurnRecord,
 )
 from purrcept_engine.domain.subject.session_ports import SessionStore
-from purrcept_engine.errors import HostStateError
+from purrcept_engine.errors import HostStateError, SessionVersionChanged
 from purrcept_engine.serialization import encode
 from purrcept_engine.values import JsonObject, decode_object
 
@@ -120,7 +121,7 @@ class DynamicReminder:
     提醒是 user 尾部材料，不拥有 system 权限，也不写入连续历史。
     """
 
-    source_id = "engine.committed_state"
+    source_id = ENGINE_STATE_REMINDER_KEY
 
     def __init__(self, state: DynamicState) -> None:
         """借用当前批次的内存状态，不注册后台任务。
@@ -308,8 +309,8 @@ class PreparedGenerationBackend:
         if not isinstance(payload, dict):
             raise TypeError("SDK 编译材料必须包含 payload 对象。")
         self.last_capacity = self.capacity(payload)
-        # 计量依据独立保存为 Engine 元数据，不插入模型可见正文，也不把远端
-        # usage 当成本地预检结果。请求证据与开始意图一起保留该方法版本。
+        # 实际输入基线与新材料估算分别保存为 Engine 元数据，不插入模型正文；
+        # 组合规划值不能冒充本次完整请求的实际 usage。
         current = replace(
             current, metadata={**current.metadata, "engine.capacity": encode(self.last_capacity)}
         )
@@ -460,6 +461,7 @@ class ContinuousSession:
         delivery: ToolDeliveryGate | None = None,
         accepted_failures: tuple[str, ...] = (),
         prepare_history: PrepareHistory | None = None,
+        observe_usage: UsageObserver | None = None,
     ) -> SessionResult:
         """从主动处理起计预算，成功提交后返回。
 
@@ -482,6 +484,7 @@ class ContinuousSession:
             presented: 真实请求成功门槛的完整材料呈现回调。 None 表示没有额外的呈现追踪回调。
             delivery: 本轮工具原文交付门槛；None 不执行候选交付替换。
             accepted_failures: 当前成功交互明确承接的先前失败轮次身份。 默认不附加此类条目。
+            observe_usage: 成功证据提交后的输入用量保存入口；None 不保存锚点。
             prepare_history: 会话空闲时维护已提交历史的入口；None 不维护。
 
         Returns:
@@ -525,6 +528,7 @@ class ContinuousSession:
                 delivery=delivery,
                 accepted_failures=accepted_failures,
                 prepare_history=prepare_history,
+                observe_usage=observe_usage,
             ),
             name=f"subject-{self.scope}-{generation}",
         )
@@ -552,6 +556,7 @@ class ContinuousSession:
         delivery: ToolDeliveryGate | None,
         accepted_failures: tuple[str, ...],
         prepare_history: PrepareHistory | None,
+        observe_usage: UsageObserver | None,
     ) -> SessionResult:
         """只采用当前权威版本；Core 临时成功不是 Engine 安装历史的提交点。"""
         wrapped: ModelGenerationBackend | None = None
@@ -564,24 +569,35 @@ class ContinuousSession:
             # 展开，不能先花完组装时间再启动一份全新的 600 秒预算。
             prepared_message = message if isinstance(message, Message) else await message()
             budget.check()
-            dynamic = await refresh(budget)
             settings = ModelSettings(max_output_tokens=output_tokens)
-            if prepare_history is not None:
-                # Ordering: 摘要只安装空闲的权威会话；正式 begin_turn 之后不能
-                # 替换 Core 正在使用的历史，也不能重启已经发生工具效果的循环。
-                previous = await prepare_history(
-                    previous,
-                    prepared_message,
-                    instructions=instructions,
-                    tools=tools,
-                    settings=settings,
-                    dynamic=dynamic,
-                    budget=budget,
-                )
+            while True:
                 budget.check()
-            turn = await self.store.begin_turn(
-                turn_id, self.scope, previous.version, generation, input_ids
-            )
+                dynamic = await refresh(budget)
+                if prepare_history is not None:
+                    # Ordering: 摘要只安装空闲的权威会话；正式 begin_turn 之后不能
+                    # 替换 Core 正在使用的历史，也不能重启已经发生工具效果的循环。
+                    previous = await prepare_history(
+                        previous,
+                        prepared_message,
+                        instructions=instructions,
+                        tools=tools,
+                        settings=settings,
+                        dynamic=dynamic,
+                        budget=budget,
+                    )
+                budget.check()
+                try:
+                    turn = await self.store.begin_turn(
+                        turn_id, self.scope, previous.version, generation, input_ids
+                    )
+                except SessionVersionChanged:
+                    # 后台睡眠摘要可以在预检与接管之间完成安装。此时还没有模型
+                    # 或工具效果，只重新读取和预检；输入组装、轮次身份、生成代次
+                    # 及绝对截止均保持原值。已有在途轮次等其它冲突继续明确失败。
+                    budget.check()
+                    previous = await self.store.get_session(self.scope)
+                    continue
+                break
             wrapped = ModelGenerationBackend(
                 backend,
                 evidence,
@@ -589,6 +605,7 @@ class ContinuousSession:
                 budget=budget,
                 policy=retry,
                 diagnostic_bytes=diagnostic_bytes,
+                observe_usage=observe_usage,
                 can_start=self.can_start,
                 compiler=self.compiler,
             )

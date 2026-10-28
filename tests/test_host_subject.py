@@ -18,6 +18,7 @@ from purrcept_core.models import (
     ModelRequest,
     ModelResponse,
     TextBlock,
+    TokenUsage,
     ToolCallBlock,
     ToolResultBlock,
 )
@@ -235,6 +236,39 @@ async def test_correctable_tool_error_remains_in_original_model_budget(tmp_path:
         failed_action = decode_object(first.text.encode())
         assert failed_action["state"] == "failed" and failed_action["calls"] == []
         assert {result.tool_call_id for result in results} == {"bad-source", "bad-evidence"}
+    finally:
+        await host.close()
+
+
+async def test_host_reuses_actual_input_usage_for_next_independent_turn(tmp_path: Path) -> None:
+    """实际应用装配跨轮复用用量；新的唤醒和动态状态只增加增量估算。"""
+    backend = Backend(
+        (
+            ModelResponse(Message.assistant("首轮结束"), usage=TokenUsage(10_000, 20)),
+            ModelResponse(Message.assistant("次轮结束"), usage=TokenUsage(10_100, 20)),
+        )
+    )
+    host = EngineHost(config(tmp_path), generation_backends={"main": backend})
+    await host.start()
+    try:
+        for index in range(2):
+            now = datetime.now(UTC)
+            admission = await host.submit(
+                InputSubmission(
+                    InputSource("test", "a", "c", "text", str(index)),
+                    "短输入",
+                    now,
+                    now,
+                )
+            )
+            await wait_processed(host, admission.input_id)
+        assert len(backend.requests) == 2
+        facts = backend.requests[1].metadata["engine.capacity"]
+        assert isinstance(facts, str)
+        estimate = decode_object(facts.encode("utf-8"))["estimate"]
+        assert isinstance(estimate, dict)
+        assert estimate["method"] == "provider-usage-plus-delta-v1"
+        assert estimate["observed_input_tokens"] == 10_000
     finally:
         await host.close()
 

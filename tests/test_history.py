@@ -24,6 +24,7 @@ from purrcept_core.models import (
     ImageBytes,
     Message,
     MessageRole,
+    ModelContextWindowError,
     ModelEventSink,
     ModelRequest,
     ModelResponse,
@@ -31,9 +32,12 @@ from purrcept_core.models import (
     ModelUnavailableError,
     ReasoningBlock,
     ReminderState,
+    SystemInstruction,
     TextBlock,
+    TokenUsage,
     ToolCallBlock,
     ToolResultBlock,
+    ToolSet,
 )
 
 from purrcept_engine.app.config import RetrySettings
@@ -49,9 +53,17 @@ from purrcept_engine.domain.context.maintenance import (
     SummarySource,
     freeze_summary_source,
 )
+from purrcept_engine.domain.context.usage import UsageMeter
 from purrcept_engine.domain.inputs.models import InputSource, InputSubmission
-from purrcept_engine.domain.model_requests.service import RequestBudgetExceeded
-from purrcept_engine.infrastructure.models.compiler import compile_materials
+from purrcept_engine.domain.model_requests.models import RequestScope
+from purrcept_engine.domain.model_requests.service import (
+    ModelGenerationBackend,
+    RequestBudget,
+    RequestBudgetExceeded,
+)
+from purrcept_engine.domain.subject.models import SessionRecord, SessionScope
+from purrcept_engine.domain.subject.session import ContinuousSession, DynamicState
+from purrcept_engine.infrastructure.models.compiler import compile_materials, compiler_identity
 from purrcept_engine.infrastructure.sqlite.store import Store
 from purrcept_engine.values import JsonObject, decode_object
 
@@ -155,6 +167,118 @@ def service(store: Store, backend: Backend) -> HistoryMaintenance:
     )
 
 
+@pytest.mark.parametrize("stop_after_install", (False, True))
+async def test_summary_install_between_preparation_and_claim_reloads_without_replaying_input(
+    store: Store, monkeypatch: pytest.MonkeyPatch, stop_after_install: bool
+) -> None:
+    """真实摘要赢得接管竞态后重读历史，保留原预算并且只组装一次输入。"""
+    source = await saved_source(store)
+    summary_backend = Backend((ModelResponse(Message.assistant('{"summary":"新的权威摘要"}')),))
+    maintenance = service(store, summary_backend)
+    backend = Backend((ModelResponse(Message.assistant("本轮完成")),))
+    session = ContinuousSession(
+        store, "foreground", can_start=lambda: None, compiler=compile_materials
+    )
+    prepared_versions: list[int] = []
+    budgets: list[RequestBudget] = []
+    input_assemblies = 0
+    installed = False
+    original_begin = store.begin_turn
+
+    async def input_message() -> Message:
+        """复现需要异步取得材料的输入，竞态恢复不能重复取得。"""
+        nonlocal input_assemblies
+        input_assemblies += 1
+        return Message.user("本次输入")
+
+    async def refresh(budget: RequestBudget) -> DynamicState:
+        """预算对象供准备与真实请求共同观察。"""
+        budgets.append(budget)
+        return DynamicState("本轮动态材料")
+
+    async def prepare(
+        session: SessionRecord,
+        message: Message,
+        *,
+        instructions: tuple[SystemInstruction, ...],
+        tools: ToolSet,
+        settings: ModelSettings,
+        dynamic: DynamicState,
+        budget: RequestBudget,
+    ) -> SessionRecord:
+        """记录本次完整预检使用的权威版本。"""
+        prepared_versions.append(session.version)
+        return session
+
+    async def racing_begin(
+        turn_id: str,
+        scope: SessionScope,
+        expected_version: int,
+        generation: int,
+        input_ids: tuple[str, ...],
+    ):
+        """在版本读取之后、接管事务之前安装真实摘要。"""
+        nonlocal installed
+        if not installed:
+            installed = True
+            result = await maintenance.run(
+                source,
+                source_layout=layout,
+                source_model="openai/offline",
+                source_capacity=source_capacity,
+                deadline=budgets[0].deadline,
+            )
+            assert result.installed_version == 2
+            if stop_after_install:
+                budgets[0].revoke()
+        return await original_begin(turn_id, scope, expected_version, generation, input_ids)
+
+    monkeypatch.setattr(store, "begin_turn", racing_begin)
+    try:
+        run = session.run(
+            input_message,
+            turn_id="claim-race",
+            input_ids=(),
+            backend=backend,
+            evidence=store,
+            model="openai/offline",
+            instructions=(),
+            tools=ToolSet(),
+            output_tokens=100,
+            max_requests=2,
+            turn_seconds=30,
+            retry=RetrySettings(attempts=1),
+            diagnostic_bytes=1024,
+            refresh=refresh,
+            capacity=source_capacity,
+            prepare_history=prepare,
+        )
+        if stop_after_install:
+            with pytest.raises(RequestBudgetExceeded):
+                await run
+            assert prepared_versions == [1]
+            assert backend.requests == []
+            failed = await store.get_turn("claim-race")
+            assert failed is not None and failed.state == "failed"
+            assert failed.error_json is not None and "budget_exhausted" in failed.error_json
+        else:
+            result = await run
+            assert prepared_versions == [1, 2]
+            assert result.session.version == 3
+            assert result.turn.session_version == 2
+            assert len(backend.requests) == 1
+            assert "新的权威摘要" in backend.requests[0].messages[0].text
+            assert backend.requests[0].messages[-1].text == "本次输入"
+            assert await store.failed_turns("foreground") == ()
+        assert input_assemblies == 1 and session.generation == 1
+        assert all(budget is budgets[0] for budget in budgets)
+        assert len(summary_backend.requests) == 1
+        assert (await store.get_session("foreground")).active_turn is None
+    finally:
+        await session.close()
+        await maintenance.close()
+
+
 @pytest.mark.asyncio
 async def test_history_uses_one_real_recorded_request_no_tools_and_full_candidate_check(
     store: Store,
@@ -252,9 +376,14 @@ async def test_summary_preserves_configured_output_through_sdk_and_capacity(
 
 
 @pytest.mark.asyncio
-async def test_invalid_complete_summary_does_not_retry_same_coverage(store: Store) -> None:
+async def test_invalid_summary_releases_coverage_for_later_recovery(store: Store) -> None:
     source = await saved_source(store)
-    backend = Backend((ModelResponse(Message.assistant('{"summary":""}')),))
+    backend = Backend(
+        (
+            ModelResponse(Message.assistant('{"summary":""}')),
+            ModelResponse(Message.assistant('{"summary":"后续维护恢复成功。"}')),
+        )
+    )
     maintenance = service(store, backend)
     try:
         with pytest.raises(SummaryError, match="summary"):
@@ -274,9 +403,155 @@ async def test_invalid_complete_summary_does_not_retry_same_coverage(store: Stor
         )
     finally:
         await maintenance.close()
-    assert again.reservation == "already_attempted" and len(backend.requests) == 1
-    assert (await store.get_session("foreground")).version == 1
-    assert len(await store.requests_for_turn("foreground", "summary:" + source.coverage_id)) == 1
+    assert again.installed_version == 2 and len(backend.requests) == 2
+    assert (await store.get_session("foreground")).version == 2
+    assert len(await store.requests_for_turn("foreground", "summary:" + source.coverage_id)) == 2
+
+
+async def test_summary_rewrite_can_replace_observed_input_with_new_layout_estimate(
+    store: Store,
+) -> None:
+    """实际基线触发维护后，摘要新布局不再匹配旧锚点，仍可按同一策略安装。"""
+    source = await saved_source(store)
+    usage = UsageMeter(store, "source-binding", compiler_identity("generation"), None)
+    observed = Backend(
+        (ModelResponse(Message.assistant("历史请求成功"), usage=TokenUsage(50_000, 20)),)
+    )
+    wrapper = ModelGenerationBackend(
+        observed,
+        store,
+        compiler=compile_materials,
+        scope=RequestScope("foreground", "observed-source"),
+        budget=RequestBudget(max_requests=1, deadline=asyncio.get_running_loop().time() + 30),
+        policy=RetrySettings(attempts=1),
+        diagnostic_bytes=0,
+        observe_usage=usage.observe,
+    )
+    try:
+        await wrapper.generate(layout(source.checkpoint), model="openai/offline")
+    finally:
+        await wrapper.close()
+
+    def measured(payload: JsonObject):
+        return assess_capacity(payload, GenerationCapacity(100_000, 100), usage=usage)
+
+    maintenance = service(
+        store, Backend((ModelResponse(Message.assistant('{"summary":"新的历史摘要"}')),))
+    )
+    try:
+        result = await maintenance.run(
+            source,
+            source_layout=layout,
+            source_model="openai/offline",
+            source_capacity=measured,
+            deadline=asyncio.get_running_loop().time() + 30,
+        )
+    finally:
+        await maintenance.close()
+    assert result.installed_version == 2 and result.proposal is not None
+    assert result.proposal.before.estimate.method == "provider-usage-plus-delta-v1"
+    assert result.proposal.before.estimate.input_units == 50_000
+    assert result.proposal.after.estimate.method == "multimodal-heuristic-v1"
+
+
+async def test_server_context_rejection_reduces_prefix_with_one_original_deadline(
+    store: Store,
+) -> None:
+    """本地低估导致超窗后缩小完整范围，旧失败和新请求都保留，预算不重置。"""
+    source = await saved_source(store)
+    backend = Backend(
+        (
+            ModelContextWindowError("input too long"),
+            ModelResponse(Message.assistant('{"summary":"缩小覆盖后恢复。"}')),
+        )
+    )
+    maintenance = service(store, backend)
+    deadline = asyncio.get_running_loop().time() + 60
+    try:
+        result = await maintenance.run(
+            source,
+            source_layout=layout,
+            source_model="openai/offline",
+            source_capacity=source_capacity,
+            deadline=deadline,
+        )
+    finally:
+        await maintenance.close()
+    assert len(backend.requests) == 2 and result.installed_version == 2
+    assert result.proposal is not None and result.proposal.source.end_turn < source.end_turn
+    assert "source-0:" in backend.requests[1].messages[0].text
+    assert "source-1:" not in backend.requests[1].messages[0].text
+    failed = await store.requests_for_turn("foreground", "summary:" + source.coverage_id)
+    succeeded = await store.requests_for_turn(
+        "foreground", "summary:" + result.proposal.source.coverage_id
+    )
+    assert len(failed) == len(succeeded) == 1
+    assert failed[0].state == "failed" and succeeded[0].state == "succeeded"
+    for record in (*failed, *succeeded):
+        assert len(record.attempts) == 1 and record.attempts[0].start.deadline <= deadline
+
+
+async def test_only_one_complete_turn_rejection_stops_without_restarting_budget(
+    store: Store,
+) -> None:
+    source = await saved_source(store)
+    from purrcept_engine.domain.context.maintenance import shorten_summary_source
+
+    source = shorten_summary_source(source, 1)
+    backend = Backend((ModelContextWindowError("single turn too long"),))
+    maintenance = service(store, backend)
+    try:
+        with pytest.raises(ModelContextWindowError):
+            await maintenance.run(
+                source,
+                source_layout=layout,
+                source_model="openai/offline",
+                source_capacity=source_capacity,
+                deadline=asyncio.get_running_loop().time() + 30,
+            )
+        assert len(backend.requests) == 1
+        assert (await store.get_session("foreground")).version == 1
+        assert await store.reserve_summary(source) == "reserved"
+    finally:
+        await maintenance.close()
+
+
+async def test_repeated_cancellation_during_summary_claim_releases_owned_reservation(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """占位提交后、结果返回前被连续取消，close 仍等待归还且不触发模型。"""
+    source = await saved_source(store)
+    reserve = store.reserve_summary
+    claimed, returned = asyncio.Event(), asyncio.Event()
+
+    async def delayed(current: SummarySource):
+        result = await reserve(current)
+        claimed.set()
+        await returned.wait()
+        return result
+
+    monkeypatch.setattr(store, "reserve_summary", delayed)
+    backend = Backend(())
+    maintenance = service(store, backend)
+    task = asyncio.create_task(
+        maintenance.run(
+            source,
+            source_layout=layout,
+            source_model="openai/offline",
+            source_capacity=source_capacity,
+            deadline=asyncio.get_running_loop().time() + 30,
+        )
+    )
+    await claimed.wait()
+    task.cancel()
+    await asyncio.sleep(0)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    returned.set()
+    await maintenance.close()
+    assert backend.requests == []
+    assert await reserve(source) == "reserved"
 
 
 @pytest.mark.asyncio
@@ -338,7 +613,7 @@ async def test_database_wait_does_not_restart_the_original_600_second_deadline(
         monkeypatch.setattr(loop, "time", original_time)
         await maintenance.close()
     assert backend.requests == [] and (await store.get_session("foreground")).version == 1
-    assert await reserve(source) == "already_attempted"
+    assert await reserve(source) == "reserved"
 
 
 @pytest.mark.asyncio
@@ -484,7 +759,7 @@ async def test_cancelled_summary_retains_coverage_and_real_cancelled_attempt(sto
         and records[0].attempts[0].result.state == "cancelled"
     )
     assert (await store.get_session("foreground")).version == 1
-    assert await store.reserve_summary(source) == "already_attempted"
+    assert await store.reserve_summary(source) == "reserved"
 
 
 def test_summary_media_remain_native_and_nested_receipts_keep_their_association() -> None:

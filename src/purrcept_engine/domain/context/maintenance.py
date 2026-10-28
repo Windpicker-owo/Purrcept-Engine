@@ -95,7 +95,8 @@ class MaintenanceStore(Protocol):
     """主体借用的有限历史维护提交面，生产实现复用 Store 专属连接。
 
     reserve_summary 在摘要模型启动前核验版本和 idle，并可靠记录该 coverage
-    已尝试；同覆盖不因模型失败自动重跑。install_summary 重验版本及 idle，
+    在途；同覆盖不能并发重复计算。失败或取消须 release_summary 归还占位，
+    后续独立维护可以按新预算恢复。install_summary 重验版本及 idle，
     同事务归档原检查点、保存候选与摘要来源关系并递增会话版本。返回新版本
     意味提交已完成，None 意味当前版本或空闲条件不再成立，旧状态不变。
     原始材料不删除；等待取消遵守 Store 的已接管事务规则。
@@ -108,7 +109,7 @@ class MaintenanceStore(Protocol):
             source: 已冻结的历史范围及所属会话版本。
 
         Returns:
-            reserved 表示已登记本覆盖的唯一尝试；already_attempted 表示此前已尝试；stale 或
+            reserved 表示已取得独占占位；already_attempted 表示覆盖已有在途计算或已安装；stale 或
             busy 表示当前版本或空闲条件不允许维护。
         """
         ...
@@ -124,6 +125,18 @@ class MaintenanceStore(Protocol):
 
         Note:
             提交失败原样传播，不先更新内存会话。
+        """
+        ...
+
+    async def release_summary(self, source: SummarySource) -> None:
+        """归还同一冻结来源的未安装占位，不移除成功归档或原请求证据。
+
+        Args:
+            source: 本次调用已成功保留的来源，不允许释放其它版本的在途计算。
+
+        Note:
+            维护所有者在失败、取消及候选过期后调用；成功安装后调用无效果。
+            进程中断留下的占位由独占数据目录锁内的启动恢复归还。
         """
         ...
 
@@ -347,7 +360,7 @@ def validate_summary_proposal(proposal: SummaryProposal) -> None:
             raise SummaryError("摘要计量需要非负整数用量及正整数输入分母。")
     if (
         before.input_budget != after.input_budget
-        or before.estimate.method != after.estimate.method
+        or before.estimate.policy != after.estimate.policy
         or before.estimate.unit != after.estimate.unit
         or before.estimate.scope != after.estimate.scope
     ):

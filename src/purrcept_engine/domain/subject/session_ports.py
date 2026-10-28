@@ -69,6 +69,11 @@ class SessionStore(Protocol):
 
         Returns:
             本轮接管身份、来源输入、生成代次与当前结论。
+
+        Raises:
+            SessionVersionChanged: 会话仍空闲但历史已更新，尚未写入接管事实。
+                调用方须在原预算内重新读取、预检，不能直接恢复旧检查点。
+            StorageError: 已有在途轮次或输入资格失效，不能借重试重放工作。
         """
         ...
 

@@ -1,7 +1,7 @@
 """在 Store 唯一连接中登记摘要覆盖并原子替换已提交会话。
 
-reserve_summary 在模型派发前保存完整冻结来源及媒体关系；同一覆盖已尝试的
-事实跨重启和版本变化保留。install_summary 复核原版本、空闲条件、真实成功
+reserve_summary 在模型派发前保存完整冻结来源及媒体关系；失败只归还临时
+占位，真实请求与响应仍归模型账本。install_summary 复核原版本、空闲条件、真实成功
 模型响应、受保护后缀与完整请求缩小，候选、归档关联和会话版本同事务生效。
 失败或过期不删除旧历史，不产生另一连接、自动迁移或重新计算摘要。
 """
@@ -27,7 +27,6 @@ from purrcept_engine.domain.context.summary_references import summary_references
 from purrcept_engine.domain.subject.models import SessionScope
 from purrcept_engine.errors import StorageError
 from purrcept_engine.infrastructure.sqlite.checkpoints import intern_checkpoint, restore_checkpoint
-from purrcept_engine.infrastructure.sqlite.knowledge import get_evidence
 from purrcept_engine.infrastructure.sqlite.model_requests import (
     decode_attempt,
     decode_request,
@@ -114,6 +113,7 @@ def _dependencies(
 ) -> tuple[tuple[str, str, int], ...]:
     """冻结每个真实来源的版本，旧摘要引用指向已安装归档而不是新外部证据。"""
     result: list[tuple[str, str, int]] = []
+    parents: list[str] = []
     for reference in summary_references(source):
         if reference.startswith("summary:"):
             coverage = reference[len("summary:") :]
@@ -127,21 +127,60 @@ def _dependencies(
             if version > source.source_version:
                 raise SummaryError("来源引用的摘要比冻结会话更新。")
             result.append(("summary", coverage, version))
-            _check_dependencies(connection, source.owner_id, coverage)
+            parents.append(coverage)
         else:
             # 本标记只由宿主正式输入装配生成，Input ID 的发生事实固定在version1；
             # 后来同名材料不能成为过去消息的来源。其他引用须先明确版本表示。
-            snapshot = get_evidence(connection, reference, version=1, include_inactive=True)
-            if snapshot is None or not snapshot.valid:
+            if not _evidence_validity(connection, reference, 1):
                 raise SummaryError("原历史的正式来源已经失效。")
-            result.append(("evidence", reference, snapshot.version))
+            result.append(("evidence", reference, 1))
+    # 旧摘要可能同时保留多个祖先引用。整批共用一次图遍历，否则每个根都会
+    # 重读相同祖先和原文，持有唯一 Store 线程直到模型预算已经耗尽。
+    checked_evidence = frozenset(
+        (identity, version) for kind, identity, version in result if kind == "evidence"
+    )
+    _check_dependencies(
+        connection, source.owner_id, tuple(parents), checked_evidence=checked_evidence
+    )
     return tuple(result)
 
 
-def _check_dependencies(connection: sqlite3.Connection, owner_id: str, coverage_id: str) -> None:
-    """沿实际已安装版本链迭代复查原始来源，不因反复压缩把撤销事实洗掉。"""
-    pending = [coverage_id]
+def _evidence_validity(
+    connection: sqlite3.Connection, evidence_id: str, version: int
+) -> bool | None:
+    """只复核确切来源的存续状态，缺失与已撤销由调用方按所处阶段区分。
+
+    原文正文在接管时完整校验并按版本保存；撤销后的权威状态单独存于 valid。
+    摘要依赖检查不展开正文，也不取得阅读资格。读取整个 payload_json 会让
+    每次摘要反复解码全部历史材料，而其内容不参与这里的存续判定。
+    """
+    row: tuple[object, ...] | None = connection.execute(
+        "SELECT valid FROM knowledge_evidence WHERE evidence_id=? AND version=?",
+        (evidence_id, version),
+    ).fetchone()
+    if row is None:
+        return None
+    if row[0] not in (0, 1):
+        raise StorageError("原文有效性字段损坏。", code="invalid_record")
+    return row[0] == 1
+
+
+def _check_dependencies(
+    connection: sqlite3.Connection,
+    owner_id: str,
+    coverage_ids: tuple[str, ...],
+    *,
+    checked_evidence: frozenset[tuple[str, int]] = frozenset(),
+) -> None:
+    """同事务遍历所有根，每个摘要及确切原文版本只复核一次。
+
+    去重仅属于本次检查；安装时重新遍历，仍能发现模型等待期间的来源撤销。
+    共享祖先不会重复展开，但每条摘要边的版本关系都必须核验。
+    checked_evidence 仅接收调用方在当前事务刚核验的直接原文，不跨事务复用。
+    """
+    pending = list(coverage_ids)
     seen: set[str] = set()
+    valid_evidence = set(checked_evidence)
     while pending:
         coverage = pending.pop()
         if coverage in seen:
@@ -160,13 +199,15 @@ def _check_dependencies(connection: sqlite3.Connection, owner_id: str, coverage_
         ).fetchall()
         for kind, identity, version in rows:
             if kind == "evidence":
-                snapshot = get_evidence(
-                    connection, _text(identity), version=_integer(version), include_inactive=True
-                )
-                if snapshot is None:
+                reference = (_text(identity), _integer(version))
+                if reference in valid_evidence:
+                    continue
+                valid = _evidence_validity(connection, *reference)
+                if valid is None:
                     raise StorageError("摘要依赖缺少原文版本。", code="invalid_record")
-                if not snapshot.valid:
+                if not valid:
                     raise SummaryError("摘要依赖的原文版本已经撤销。")
+                valid_evidence.add(reference)
             elif kind == "summary":
                 parent: tuple[object, ...] | None = connection.execute(
                     "SELECT installed_version FROM summary_attempts "
@@ -189,7 +230,7 @@ def reserve_summary(connection: sqlite3.Connection, source: SummarySource) -> Re
         source: 已冻结的历史范围及所属会话版本。
 
     Returns:
-        reserved 表示已登记本覆盖的唯一尝试；already_attempted 表示此前已尝试；stale 或 busy
+        reserved 表示已取得独占占位；already_attempted 表示覆盖在途或已安装；stale 或 busy
         表示当前版本或空闲条件不允许维护。
 
     Raises:
@@ -345,7 +386,7 @@ def install_summary(connection: sqlite3.Connection, proposal: SummaryProposal) -
             raise SummaryError("摘要尝试的冻结保护或完整来源被改变。")
         if row[2] is not None:
             raise StorageError("已安装摘要仍指向旧会话版本。", code="invalid_record")
-        _check_dependencies(connection, source.owner_id, source.coverage_id)
+        _check_dependencies(connection, source.owner_id, (source.coverage_id,))
         _verified_response(connection, proposal)
         candidate, media = intern_checkpoint(connection, encode_checkpoint(proposal.candidate))
         next_version = source.source_version + 1
@@ -395,7 +436,7 @@ def initialize(connection: sqlite3.Connection) -> None:
         connection: 仅在 Store 专属线程当前短事务中借用的连接，不在回调中等待设备或模型。
 
     Note:
-        尝试覆盖跨重启保留，不自动迁移或重新计算。
+        宿主已独占数据目录且旧请求已中断，只归还未安装的旧占位，不重发模型。
     """
     for table in (
         "summary_attempts",
@@ -404,3 +445,35 @@ def initialize(connection: sqlite3.Connection) -> None:
         "summary_dependencies",
     ):
         connection.execute(f"SELECT * FROM {table} LIMIT 0")
+    rows: list[tuple[object, ...]] = connection.execute(
+        "SELECT owner_id,coverage_id FROM summary_attempts WHERE installed_version IS NULL"
+    ).fetchall()
+    for owner, coverage in rows:
+        _drop_reservation(connection, _text(owner), _text(coverage))
+
+
+def _drop_reservation(connection: sqlite3.Connection, owner: str, coverage: str) -> None:
+    """仅删除未安装计算的占位关系；原件 BLOB、请求及真实响应始终保留。"""
+    for table in ("summary_dependencies", "summary_candidate_media", "summary_source_media"):
+        connection.execute(
+            f"DELETE FROM {table} WHERE owner_id=? AND coverage_id=?", (owner, coverage)
+        )
+    connection.execute(
+        "DELETE FROM summary_attempts WHERE owner_id=? AND coverage_id=?", (owner, coverage)
+    )
+
+
+def release_summary(connection: sqlite3.Connection, source: SummarySource) -> None:
+    """只归还本调用实际取得的来源占位，成功归档及别的在途版本不能删除。"""
+    with connection:
+        connection.execute("BEGIN IMMEDIATE")
+        row: tuple[object, ...] | None = connection.execute(
+            "SELECT source_json,installed_version FROM summary_attempts "
+            "WHERE owner_id=? AND coverage_id=?",
+            (source.owner_id, source.coverage_id),
+        ).fetchone()
+        if row is None or row[1] is not None:
+            return
+        if row[0] != _source_identity(source):
+            raise SummaryError("不能归还其它冻结版本的摘要占位。")
+        _drop_reservation(connection, source.owner_id, source.coverage_id)

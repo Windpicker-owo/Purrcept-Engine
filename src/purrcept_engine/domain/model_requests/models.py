@@ -64,7 +64,8 @@ class RequestEvidence:
         materials_json 是冻结 SDK 编译的公开 payload，不含凭据或客户端。compiler
         同时记录源码摘要与包版本，便于核对冻结转换。预算值记录本次约定，不代表
         每次尝试都能取得完整时长；上层截止仍可更早结束调用。capacity_json
-        保存派发前的纯计量方法、适用范围和分母，与 Provider usage 分开。
+        保存派发前的实际输入锚点、增量估算、适用范围和分母；新请求的完整
+        Provider usage 仍只由其真实响应提供。
     """
 
     request_id: str

@@ -116,7 +116,7 @@ TOML相对路径沿配置目录，程序式调用未给base_dir时沿数据目�
 
 ## 插件能力
 
-内置插件显式启用：`notebook`、`clock`、`bed`、`computer`、`browser`、`qq`、
+内置插件显式启用：`notebook`、`clock`、`bed`、`computer`、`browser`、`meme`、`qq`、
 `microphone`（输出）、`voice_input`（收音）和 `live2d`。
 可选依赖通过对应 extra 安装，例如 `uv sync --extra qq --extra browser`；
 纯配置声明不打开设备，电脑仍须明确连接。Notebook 覆盖写入必须提供读取或
@@ -134,6 +134,18 @@ QQ 附件可由主体显式保存到 Notebook：`me.phone.qq.file_url` 按实际
 `file_timeout_seconds` 默认 30 秒，与 Markdown 的 `max_bytes` 分开。
 QQ 再发送文件仍受 `extra_media_roots` 等允许目录约束；需要回发时显式加入
 Notebook 附件目录。文件链接协议见 [NapCat 文件文档](https://napneko.github.io/develop/file)。
+
+### 中文梗百科与每日提醒
+
+`meme` 插件挂在已声明的 computer 下，提供公开梗检索、详情、本地收藏和收藏列表。
+收藏保存首次取得的详情快照，重复收藏不覆盖；离线仍能列出收藏。技能存于 Notebook
+的 skills 目录，指导主体遇到疑似梗先检索，空闲时通过浏览器补充出处和使用语境。
+
+每日检查只在 Engine 运行时执行，默认北京时间 09:00。最近扫描窗口有新增或变化
+才以 `meme.daily` 提交一条最低 WAKE 刺激，不自动发送外部消息。首次检查介绍当前
+窗口；没有变化保持安静。待投原文先落盘，正式接管后才推进已见版本；重启沿用
+相同事件身份去重。停机期间不逐日补发，失败退避且保留原因。详细窗口与持久化
+边界见[梗百科插件说明](../src/purrcept_engine/plugins/meme/README.md)。
 
 ### 电脑截图
 
@@ -213,7 +225,10 @@ QQ 与收音分别提供真实资源归还明证；历史输入异常仍报告�
 配置结构与旧 Runtime 不兼容。新数据目录使用 `engine.sqlite3`，不会读取、
 迁移或删除旧 Runtime 数据；切换前必须停止旧实例，避免同账号重复接收。
 
-本版启动时将 Engine 格式12/13原子升级为14，分离缓存、收件箱与唤醒状态，
+本版启动时将 Engine 格式12/13/14原子升级为15，新增实际输入用量锚点；
+格式14只增加指纹存储，不重写原请求、响应、会话或媒体。启动归还未安装
+摘要遗留的临时占位，成功归档和请求证据保留，不自动重发模型。
+从格式12/13升级时继续分离缓存、收件箱与唤醒状态，
 移除注意 defer。旧未执行的 defer 转为一次保底唤醒，旧已结案 observe 不重放；
 原文、BLOB、会话、请求和真实回执保留，格式13的旧升级判断原样归档到
 minimum_wake_assessments_v13。升级前停止宿主并复制完整数据目录；升级拒绝

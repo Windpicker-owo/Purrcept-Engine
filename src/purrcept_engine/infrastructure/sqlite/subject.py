@@ -25,7 +25,7 @@ from purrcept_engine.domain.subject.models import (
     TurnOutcome,
     TurnRecord,
 )
-from purrcept_engine.errors import StorageError
+from purrcept_engine.errors import SessionVersionChanged, StorageError
 from purrcept_engine.infrastructure.sqlite.model_requests import (
     intern_core_media,
     restore_core_media,
@@ -424,7 +424,8 @@ def begin_turn(
         本轮接管身份、来源输入、生成代次与当前结论。
 
     Raises:
-        StorageError: 会话版本变化或已有在途处理；输入不再具有前台交接资格。
+        SessionVersionChanged: 空闲会话版本已经更新，尚未接管，允许重新准备。
+        StorageError: 已有在途处理或输入不再具有前台交接资格。
 
     Note:
         不得与同一会话的在途轮次重叠。
@@ -432,8 +433,12 @@ def begin_turn(
     with connection:
         connection.execute("BEGIN IMMEDIATE")
         current = session(connection, scope)
-        if current.version != expected_version or current.active_turn is not None:
-            raise StorageError("会话版本变化或已有在途处理。", code="session_conflict")
+        if current.active_turn is not None:
+            raise StorageError("会话已有在途处理。", code="session_conflict")
+        if current.version != expected_version:
+            # 摘要可在空闲时安装。版本比较和 active_turn 接管必须在同一事务，
+            # 旧布局不能直接恢复；尚无外部效果时由会话所有者重新准备最新历史。
+            raise SessionVersionChanged()
         for input_id in input_ids:
             item = processing(connection, input_id)
             if item is None or item.stage not in ("priority", "foreground", "claimed"):

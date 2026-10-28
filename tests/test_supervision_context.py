@@ -121,7 +121,7 @@ class Backend:
         return ModelResponse(Message.assistant("内部结束"))
 
 
-def assembly(
+async def assembly(
     store: Store,
     directory: Path,
     backend: Backend,
@@ -156,7 +156,7 @@ def assembly(
         raise AssertionError("本场景不应派发世界行动。")
 
     catalog = prepare_plugins((), base_dir=directory, factories={}).catalog
-    return build_subject(
+    return await build_subject(
         config,
         store,
         catalog,
@@ -219,7 +219,7 @@ async def test_actual_request_contains_all_open_notices_and_plans_then_refreshes
             )
         )
     backend = Backend()
-    assembled = assembly(store, tmp_path, backend)
+    assembled = await assembly(store, tmp_path, backend)
     try:
         first = await admit(store, "first")
         await run(assembled, store, first, "turn:first")
@@ -274,7 +274,7 @@ async def test_real_request_uses_explicit_plugin_materials_without_diagnostic_fa
         "diagnostic-only": PluginRuntime((), snapshot=diagnostic),
     }
     backend = Backend()
-    assembled = assembly(store, tmp_path, backend, plugins=plugins)
+    assembled = await assembly(store, tmp_path, backend, plugins=plugins)
     try:
         identity = await admit(store, "current")
         await run(assembled, store, identity, "turn:explicit-materials")
@@ -412,7 +412,7 @@ async def test_open_supervision_protects_source_older_than_recent_turns_during_r
     await notices(store, sources[0])
     assert await store.protected_input_ids(tuple(sources)) == {sources[0]}
     backend = Backend()
-    assembled = assembly(store, tmp_path, backend)
+    assembled = await assembly(store, tmp_path, backend)
     try:
         current = await admit(store, "current")
         await run(assembled, store, current, "turn:current")
@@ -599,7 +599,7 @@ async def test_full_current_state_exceeds_actual_request_capacity_without_silent
             )
         )
     backend = Backend()
-    assembled = assembly(store, tmp_path, backend)
+    assembled = await assembly(store, tmp_path, backend)
     try:
         identity = await admit(store, "current")
         with pytest.raises(CapacityError) as caught:

@@ -1,4 +1,4 @@
-"""验证格式12/13到14的显式迁移原子保留旧事实，失败保持原版本和实际数据。
+"""验证格式12/13到15的显式迁移原子保留旧事实，失败保持原版本和实际数据。
 
 基准库由当前 Store 在临时目录生成，关闭后去掉新增表并标为冻结格式12。
 比较覆盖全部原表、FTS影子表、SQLite序号和原始JSON/BLOB；基准样本先结案，
@@ -109,6 +109,7 @@ def restore_old_subject_schema(connection: sqlite3.Connection, *, version: int =
         "FROM input_processing"
     ).fetchall()
     connection.execute("DROP TABLE minimum_wake_assessments")
+    connection.execute("DROP TABLE capacity_usage")
     connection.execute("DROP TABLE input_processing")
     connection.execute(_PROCESSING_V13)
     connection.executemany(
@@ -264,7 +265,7 @@ async def test_known_format12_upgrade_preserves_all_old_rows_and_reopens_once(
     finally:
         await store.close()
     after = snapshot(old_database)
-    assert after.version == 14 and after.application_id == before.application_id
+    assert after.version == 15 and after.application_id == before.application_id
     assert {name: after.rows[name] for name in before.rows if name != "input_processing"} == {
         name: rows for name, rows in before.rows.items() if name != "input_processing"
     }
@@ -273,19 +274,57 @@ async def test_known_format12_upgrade_preserves_all_old_rows_and_reopens_once(
         for row in before.rows["input_processing"]
     )
     assert after.rows["input_processing"] == expected_processing
-    assert set(after.rows) - set(before.rows) == {"minimum_wake_assessments"}
+    assert set(after.rows) - set(before.rows) == {"minimum_wake_assessments", "capacity_usage"}
     assert after.rows["minimum_wake_assessments"] == ()
     added_schema = set(after.schema) - set(before.schema)
     assert {row[1] for row in added_schema} == {
         "minimum_wake_assessments",
         "minimum_wake_pending",
+        "capacity_usage",
+        "sqlite_autoindex_capacity_usage_1",
         "sqlite_autoindex_minimum_wake_assessments_1",
         "input_processing",
     }
-    assert all(row[2] in ("minimum_wake_assessments", "input_processing") for row in added_schema)
+    assert all(
+        row[2] in ("minimum_wake_assessments", "input_processing", "capacity_usage")
+        for row in added_schema
+    )
     reopened = await Store.open(old_database)
     await reopened.close()
     assert snapshot(old_database) == after
+
+
+async def test_format14_adds_usage_storage_without_rewriting_original_rows(tmp_path: Path) -> None:
+    """当前在用的格式14只新增锚点表，原文和媒体原值保留。"""
+    path = tmp_path / "format14.sqlite3"
+    store = await Store.open(path)
+    now = datetime.now(UTC)
+    try:
+        admitted = await store.admit(
+            InputSubmission(
+                InputSource("test", "a", "c", "text"),
+                "升级前原文",
+                now,
+                now,
+                media=(MediaAsset(b"original", "application/octet-stream"),),
+            )
+        )
+        await store.complete_input(admitted.input_id)
+    finally:
+        await store.close()
+    with closing(sqlite3.connect(path)) as connection, connection:
+        connection.execute("DROP TABLE capacity_usage")
+        connection.execute("PRAGMA user_version=14")
+    before = snapshot(path)
+    opened = await Store.open(path)
+    try:
+        assert await opened.get_usage_anchor("new-binding") is None
+    finally:
+        await opened.close()
+    after = snapshot(path)
+    assert after.version == 15
+    assert {key: after.rows[key] for key in before.rows} == before.rows
+    assert set(after.rows) - set(before.rows) == {"capacity_usage"}
 
 
 @pytest.mark.parametrize("damage", ("column", "table", "index", "foreign_key", "check_constraint"))
@@ -484,7 +523,7 @@ async def test_second_ddl_failure_rolls_back_created_table_and_version(
     assert before.version == 12 and "minimum_wake_assessments" not in before.rows
 
 
-@pytest.mark.parametrize("version", (0, 11, 15, 999))
+@pytest.mark.parametrize("version", (0, 11, 16, 999))
 async def test_unknown_database_version_is_not_changed(old_database: Path, version: int) -> None:
     """只有明确格式12获得局部升级，已有数据的未知版本不能按空库初始化。"""
     with closing(sqlite3.connect(old_database)) as connection, connection:
@@ -550,6 +589,6 @@ async def test_format13_pending_defer_migrates_once_and_assessment_history_is_re
     finally:
         await store.close()
     after = snapshot(path)
-    assert after.version == 14
+    assert after.version == 15
     assert after.rows["minimum_wake_assessments_v13"] == before.rows["minimum_wake_assessments"]
     assert after.rows["inputs"] == before.rows["inputs"]

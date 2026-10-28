@@ -26,6 +26,19 @@ class StorageError(EngineError):
         self.code = code
 
 
+class SessionVersionChanged(StorageError):
+    """空闲会话在读取与接管之间更新，调用方须用最新历史重新预检。
+
+    存储在没有在途轮次且尚未写入接管事实时抛出。ContinuousSession 仅在
+    模型和工具尚未开始的准备阶段捕获，并沿用原轮次身份、生成代次和预算。
+    已有在途轮次或失去输入资格仍属于独立冲突，不能使用此异常重放工作。
+    """
+
+    def __init__(self) -> None:
+        """报告可重新准备的历史版本变化，不授予新的模型或行动预算。"""
+        super().__init__("会话历史已更新，需要重新准备。", code="session_version_changed")
+
+
 class HostStateError(EngineError):
     """当前宿主生命周期不允许该操作；已接管工作不因此被撤销。"""
 

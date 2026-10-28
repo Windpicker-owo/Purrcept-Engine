@@ -30,7 +30,7 @@ from purrcept_core.models import (
 
 import purrcept_engine.domain.context.summary_materials as context_summary_materials
 from purrcept_engine.domain.context.capacity import GenerationCapacity, assess_capacity
-from purrcept_engine.domain.context.checkpoints import encode_checkpoint
+from purrcept_engine.domain.context.checkpoints import decode_checkpoint, encode_checkpoint
 from purrcept_engine.domain.context.maintenance import (
     SummaryError,
     SummaryProposal,
@@ -46,6 +46,7 @@ from purrcept_engine.domain.model_requests.models import (
     RequestEvidence,
     RequestScope,
 )
+from purrcept_engine.errors import StorageError
 from purrcept_engine.infrastructure.sqlite import knowledge, maintenance, model_requests, subject
 from purrcept_engine.infrastructure.sqlite.checkpoints import intern_checkpoint, restore_checkpoint
 from purrcept_engine.serialization import encode
@@ -255,7 +256,7 @@ def test_reserve_and_install_version_and_idle_are_real_database_gates(
     )
 
 
-def test_failed_same_coverage_never_retries_after_version_and_tail_change(
+def test_startup_releases_failed_coverage_after_version_and_tail_change(
     connection: sqlite3.Connection,
 ) -> None:
     source = saved_source(connection)
@@ -269,8 +270,9 @@ def test_failed_same_coverage_never_retries_after_version_and_tail_change(
         connection.execute("UPDATE subject_sessions SET version=9,checkpoint_json=?", (stored,))
     frozen = freeze_summary_source(changed, owner_id="foreground", source_version=9)
     assert frozen is not None and frozen.coverage_id == source.coverage_id
-    maintenance.initialize(connection)
-    assert maintenance.reserve_summary(connection, frozen) == "already_attempted"
+    with connection:
+        maintenance.initialize(connection)
+    assert maintenance.reserve_summary(connection, frozen) == "reserved"
 
 
 @pytest.mark.parametrize(
@@ -389,6 +391,125 @@ def test_failed_source_media_archive_relationship_does_not_consume_coverage(
         maintenance.reserve_summary(connection, source)
     assert connection.execute("SELECT count(*) FROM summary_attempts").fetchone() == (0,)
     assert connection.execute("SELECT count(*) FROM summary_source_media").fetchone() == (0,)
+    assert subject.session(connection, "foreground").checkpoint_json == encode_checkpoint(
+        source.checkpoint
+    )
+
+
+def shared_ancestor_source(connection: sqlite3.Connection) -> SummarySource:
+    """安装两代真实摘要并保留共同祖先，供下一次维护复核依赖图。"""
+    source = saved_source(connection)
+    for index in range(2):
+        assert maintenance.reserve_summary(connection, source) == "reserved"
+        candidate = proposal(connection, source, request_id=f"ancestor-request-{index}")
+        assert maintenance.install_summary(connection, candidate) is not None
+        session = subject.session(connection, "foreground")
+        assert session.checkpoint_json is not None
+        checkpoint = decode_checkpoint(session.checkpoint_json)
+        history = checkpoint.history
+        # 新增完整轮次使下一次摘要可以再次覆盖旧摘要；每代都会保留旧来源引用。
+        expanded = replace(
+            checkpoint,
+            history=replace(
+                history,
+                messages=(*history.messages, Message.user("new material " * 200)),
+                turn_index=history.turn_index + 1,
+                turn_boundaries=(*history.turn_boundaries, len(history.messages) + 1),
+            ),
+        )
+        with connection:
+            stored, media = intern_checkpoint(connection, encode_checkpoint(expanded))
+            connection.execute(
+                "UPDATE subject_sessions SET version=version+1,checkpoint_json=? WHERE scope=?",
+                (stored, "foreground"),
+            )
+            connection.execute("DELETE FROM session_media WHERE scope='foreground'")
+            connection.executemany(
+                "INSERT INTO session_media VALUES('foreground',?)",
+                ((identity,) for identity in media),
+            )
+        frozen = freeze_summary_source(
+            expanded, owner_id="foreground", source_version=session.version + 1
+        )
+        assert frozen is not None
+        source = frozen
+    return source
+
+
+def test_shared_summary_ancestors_are_checked_once_without_reading_source_bodies(
+    connection: sqlite3.Connection,
+) -> None:
+    source = shared_ancestor_source(connection)
+    statements: list[str] = []
+
+    def authorize(
+        action: int,
+        table: str | None,
+        column: str | None,
+        database: str | None,
+        trigger: str | None,
+    ) -> int:
+        """摘要资格只依赖来源的确切版本及 valid，不能重新读取历史正文。"""
+        if (
+            action == sqlite3.SQLITE_READ
+            and table == "knowledge_evidence"
+            and column == "payload_json"
+        ):
+            return sqlite3.SQLITE_DENY
+        return sqlite3.SQLITE_OK
+
+    connection.set_trace_callback(statements.append)
+    connection.set_authorizer(authorize)
+    try:
+        assert maintenance.reserve_summary(connection, source) == "reserved"
+    finally:
+        connection.set_authorizer(None)
+        connection.set_trace_callback(None)
+
+    # 公共祖先在同一次预留中只展开一次；多根分别遍历会重复执行此查询。
+    traversals = [
+        sql
+        for sql in statements
+        if sql.startswith("SELECT kind,id,version FROM summary_dependencies")
+    ]
+    assert len(traversals) == 2
+
+
+def test_shared_ancestor_revocation_during_model_wait_still_blocks_installation(
+    connection: sqlite3.Connection,
+) -> None:
+    source = shared_ancestor_source(connection)
+    assert maintenance.reserve_summary(connection, source) == "reserved"
+    candidate = proposal(connection, source, request_id="after-ancestors")
+    knowledge.revoke_evidence(connection, "input-source", 1)
+    version = subject.session(connection, "foreground").version
+    with pytest.raises(SummaryError, match="撤销"):
+        maintenance.install_summary(connection, candidate)
+    assert subject.session(connection, "foreground").version == version
+
+
+@pytest.mark.parametrize("broken", ("missing_evidence", "missing_archive", "wrong_version"))
+def test_broken_shared_ancestor_relationship_is_not_hidden_by_deduplication(
+    connection: sqlite3.Connection, broken: str
+) -> None:
+    source = shared_ancestor_source(connection)
+    parent = connection.execute(
+        "SELECT coverage_id FROM summary_attempts ORDER BY installed_version LIMIT 1"
+    ).fetchone()[0]
+    if broken == "missing_evidence":
+        with connection:
+            connection.execute(
+                "INSERT INTO summary_dependencies VALUES('foreground',?,'evidence','missing',1)",
+                (parent,),
+            )
+    else:
+        with connection:
+            connection.execute(
+                "INSERT INTO summary_dependencies VALUES('foreground',?,'summary',?,?)",
+                (parent, "missing" if broken == "missing_archive" else parent, 999),
+            )
+    with pytest.raises(StorageError):
+        maintenance.reserve_summary(connection, source)
     assert subject.session(connection, "foreground").checkpoint_json == encode_checkpoint(
         source.checkpoint
     )

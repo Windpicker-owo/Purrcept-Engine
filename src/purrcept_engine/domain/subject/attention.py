@@ -30,7 +30,7 @@ from purrcept_engine.domain.context.materials import UnsupportedMaterial, input_
 from purrcept_engine.domain.context.presentation import render_attention_context
 from purrcept_engine.domain.inputs.models import InputRecord, MediaReference
 from purrcept_engine.domain.model_requests.contents import ContentKind, validate_supported_contents
-from purrcept_engine.domain.model_requests.ports import MaterialCompiler, RetryPolicy
+from purrcept_engine.domain.model_requests.ports import MaterialCompiler, RetryPolicy, UsageObserver
 from purrcept_engine.domain.model_requests.service import prepare_off_loop
 from purrcept_engine.domain.subject.prompts import (
     ATTENTION_GENERATION_PROMPT,
@@ -64,6 +64,7 @@ class AttentionModel:
         capacity: 对完整实际请求执行容量核验的函数。
         retry: 唯一传输重试策略，不额外叠加 SDK 隐式重试。
         compiler: 按实际 SDK 布局冻结完整请求材料的纯编译器。
+        observe_usage: 成功证据提交后的实际输入用量保存入口；None 不保存锚点。
         profile: 与主脑同源渲染的固定角色卡，用于理解姓名、兴趣和关系；不是外界输入。
         kind: 此业务值所属的稳定种类。
         output_tokens: 为本次生成预留的最大输出 token 数。
@@ -84,6 +85,7 @@ class AttentionModel:
     profile: str = field(kw_only=True)
     kind: Literal["decision", "generation"] = field(kw_only=True)
     output_tokens: int | None = field(default=None, kw_only=True)
+    observe_usage: UsageObserver | None = field(default=None, kw_only=True)
     supports_contents: tuple[ContentKind, ...] = field(default=("text",), kw_only=True)
 
     def __post_init__(self) -> None:

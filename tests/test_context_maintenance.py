@@ -218,6 +218,9 @@ async def test_install_port_returns_version_only_after_commit_and_preserves_fail
         async def reserve_summary(self, source: SummarySource) -> Reservation:
             return "reserved"
 
+        async def release_summary(self, source: SummarySource) -> None:
+            pass
+
         async def install_summary(self, proposal: SummaryProposal) -> int | None:
             self.expected = proposal
             if self.error is not None:

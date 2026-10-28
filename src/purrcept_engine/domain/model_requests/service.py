@@ -49,6 +49,7 @@ from purrcept_engine.domain.model_requests.ports import (
     MaterialCompiler,
     RequestEvidenceSink,
     RetryPolicy,
+    UsageObserver,
 )
 from purrcept_engine.serialization import encode
 
@@ -61,8 +62,9 @@ class RequestBudget:
     """由主体创建、单事件循环使用的整轮逻辑数量与固定截止。
 
     主体在开始主动处理时创建；组装材料、工具等待和退避都消耗此截止。
-    generation 包装只 claim 一次，不自动重置预算。摘要和注意判断可各用
-    单请求预算，不借前台整轮名额。撤销使以后 claim/attempt 立即失去资格，
+    generation 包装每次 generate 只 claim 一次，不自动重置预算。摘要使用
+    有界缩小次数及原截止，注意判断使用单请求预算，不借前台整轮名额。
+    撤销使以后 claim/attempt 立即失去资格，
     主体仍须取消当前调用以及时传播抢占或关闭。
     """
 
@@ -247,6 +249,7 @@ class _RetryRunner:
         budget: RequestBudget,
         policy: RetryPolicy,
         diagnostic_bytes: int,
+        observe_usage: UsageObserver | None = None,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
         can_start: Callable[[], None] | None = None,
     ) -> None:
@@ -259,6 +262,7 @@ class _RetryRunner:
             budget: 当前连续批次共享的请求数量与单调截止预算。
             policy: 唯一的有界传输重试策略，不另起一轮预算。
             diagnostic_bytes: 单次尝试允许保留的流诊断字节数，不裁剪原参数或完整响应。
+            observe_usage: 成功证据提交后的用量保存入口；None 不保存增量锚点。
             sleep: 等待退避间隔的异步函数，可注入确定性的测试时钟。
             can_start: 实际派发前重新检查的资格回调，等待后仍须复核。 None
                 表示不附加调用方资格条件，宿主固定门槛仍生效。
@@ -274,6 +278,7 @@ class _RetryRunner:
         self.budget = budget
         self.policy = policy
         self.diagnostic_bytes = diagnostic_bytes
+        self.observe_usage = observe_usage
         self.sleep = sleep
         self.can_start = can_start
         self._evidence_failure: Exception | None = None
@@ -506,6 +511,10 @@ class _RetryRunner:
                 )
             )
             await self._commit(self.sink.finish_request(evidence.request_id, "succeeded"))
+            # Ordering: 只有成功响应和原请求都已提交，后续请求才能复用实际输入用量。
+            # 缓存命中已包含在 input_tokens 中，回调不使用输出或推理 token 充当输入。
+            if self.observe_usage is not None:
+                await self._commit(self.observe_usage(evidence, request, response))
             self._check()
             # 响应事实仍真实成功，但权威提交等待可能已经耗尽逻辑期限。
             # 迟到交付不能让 Core 在过期请求之后开始新的工具副作用。
@@ -537,6 +546,7 @@ class ModelGenerationBackend(_RetryRunner):
         budget: RequestBudget,
         policy: RetryPolicy,
         diagnostic_bytes: int,
+        observe_usage: UsageObserver | None = None,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
         can_start: Callable[[], None] | None = None,
     ) -> None:
@@ -550,6 +560,7 @@ class ModelGenerationBackend(_RetryRunner):
             budget: 当前连续批次共享的请求数量与单调截止预算。
             policy: 唯一的有界传输重试策略，不另起一轮预算。
             diagnostic_bytes: 单次尝试允许保留的流诊断字节数，不裁剪原参数或完整响应。
+            observe_usage: 成功证据提交后的用量保存入口；None 不保存增量锚点。
             sleep: 等待退避间隔的异步函数，可注入确定性的测试时钟。
             can_start: 实际派发前重新检查的资格回调，等待后仍须复核。 None
                 表示不附加调用方资格条件，宿主固定门槛仍生效。
@@ -561,6 +572,7 @@ class ModelGenerationBackend(_RetryRunner):
             budget=budget,
             policy=policy,
             diagnostic_bytes=diagnostic_bytes,
+            observe_usage=observe_usage,
             compiler=compiler,
             sleep=sleep,
             can_start=can_start,
@@ -606,6 +618,7 @@ class ModelDecisionBackend(_RetryRunner):
         budget: RequestBudget,
         policy: RetryPolicy,
         diagnostic_bytes: int,
+        observe_usage: UsageObserver | None = None,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
         can_start: Callable[[], None] | None = None,
     ) -> None:
@@ -619,6 +632,7 @@ class ModelDecisionBackend(_RetryRunner):
             budget: 当前连续批次共享的请求数量与单调截止预算。
             policy: 唯一的有界传输重试策略，不另起一轮预算。
             diagnostic_bytes: 单次尝试允许保留的流诊断字节数，不裁剪原参数或完整响应。
+            observe_usage: 成功证据提交后的用量保存入口；None 不保存增量锚点。
             sleep: 等待退避间隔的异步函数，可注入确定性的测试时钟。
             can_start: 实际派发前重新检查的资格回调，等待后仍须复核。 None
                 表示不附加调用方资格条件，宿主固定门槛仍生效。
@@ -630,6 +644,7 @@ class ModelDecisionBackend(_RetryRunner):
             budget=budget,
             policy=policy,
             diagnostic_bytes=diagnostic_bytes,
+            observe_usage=observe_usage,
             compiler=compiler,
             sleep=sleep,
             can_start=can_start,

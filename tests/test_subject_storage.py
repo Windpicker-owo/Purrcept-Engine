@@ -8,7 +8,7 @@ from purrcept_core.models import ConversationCheckpoint, ConversationState, Mess
 
 from purrcept_engine.domain.context.checkpoints import decode_checkpoint, encode_checkpoint
 from purrcept_engine.domain.inputs.models import InputContext, InputSource, InputSubmission
-from purrcept_engine.errors import StorageError
+from purrcept_engine.errors import SessionVersionChanged, StorageError
 from purrcept_engine.infrastructure.sqlite.store import Store
 
 
@@ -22,6 +22,37 @@ def submission(native_id: str, *, wake: bool = False, text: str = "原始材料"
         now,
         context=InputContext(minimum_wake=wake),
     )
+
+
+async def test_only_idle_version_change_can_be_reprepared(tmp_path: Path) -> None:
+    """版本过期未写入轮次；已有在途轮次仍明确拒绝，存储线程继续可用。"""
+    store = await Store.open(tmp_path / "claim.sqlite3")
+    try:
+        seed = await store.begin_turn("seed", "foreground", 0, 1, ())
+        checkpoint = ConversationCheckpoint(
+            ConversationState(
+                (Message.user("旧输入"), Message.assistant("已完成")),
+                turn_index=1,
+                turn_boundaries=(2,),
+            ),
+            ReminderState(),
+        )
+        await store.finish_turn(seed, "succeeded", checkpoint_json=encode_checkpoint(checkpoint))
+        with pytest.raises(SessionVersionChanged):
+            await store.begin_turn("stale", "foreground", 0, 2, ())
+        assert await store.get_turn("stale") is None
+        assert (await store.get_session("foreground")).active_turn is None
+
+        active = await store.begin_turn("active", "foreground", 1, 2, ())
+        with pytest.raises(StorageError) as busy:
+            await store.begin_turn("overlap", "foreground", 0, 3, ())
+        assert not isinstance(busy.value, SessionVersionChanged)
+        assert busy.value.code == "session_conflict"
+        assert await store.get_turn("overlap") is None
+        assert (await store.get_session("foreground")).active_turn == "active"
+        await store.finish_turn(active, "cancelled", error_json='{"error_type":"CancelledError"}')
+    finally:
+        await store.close()
 
 
 @pytest.mark.asyncio

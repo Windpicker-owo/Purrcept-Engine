@@ -84,7 +84,14 @@ speech_style = "用简洁自然的中文交流。"
 
 ### 容量与媒体
 
-所有生成与专用判断请求使用同一个内置多模态估算器，不需要配置或注册规则，
+成功模型请求返回 `usage.input_tokens` 后，Engine 按用途、配置名、端点、模型与
+编译器身份保存实际输入锚点。后续请求的静态输入和历史前缀完全相同时，沿用
+这份实际输入用量，只估算新增消息、工具结果与新动态尾部；缓存命中输入不
+重复相加，输出和推理用量不充当已知输入。旧动态尾部的用量保守保留在基线中。
+锚点只保存指纹和用量，不复制正文；重启可恢复。没有 usage、零值或失败响应
+不覆盖旧锚点。摘要重写、工具目录变更或媒体过期改变前缀时，新布局重新估算。
+
+新增或没有可复用锚点的材料使用同一个内置多模态估算器，不需要配置或注册规则，
 也不按模型名切换算法。估算覆盖完整请求的文字、工具 schema、目录和动态状态，
 媒体 base64 先从计量副本中分离，不作为正文分词：
 
@@ -98,6 +105,9 @@ speech_style = "用简洁自然的中文交流。"
   该固定假设不代表已看过像素，也不保证覆盖任意远端图片的实际用量。
 
 这些系数是 Engine 的统一规划假设，不是任一模型的精确计量或误差上界。
+服务端明确拒绝摘要输入超窗时，维护在原截止内减半选择完整旧轮次前缀；
+请求数量受可减半次数约束，不裁剪轮内正文或重放工具。失败和取消归还占位，
+后续独立维护可恢复同覆盖，已安装摘要及原请求/响应证据继续保留。
 服务端实际口径存在差异，可参考 [Gemini token 说明](https://ai.google.dev/gemini-api/docs/tokens)
 与 [OpenAI 图片计量说明](https://developers.openai.com/api/docs/guides/images-vision)。
 预检仅解码已接管的内存材料；不读取外部路径或联网；媒体读取或解码失败会明确报错，不按零量
@@ -204,6 +214,15 @@ group_list = []
 外部已安装包使用 `entry = "package.module:factory"`；本地插件放在配置目录的
 `plugins/包名/` 中并导出 `factory`，使用 `entry = "local/包名:factory"`。
 根目录 `plugins/` 不受 Git 追踪，也不随 Engine 分发。内置插件仍随包提供。
+
+中文梗百科使用 `entry = "meme"`，父节点由 `computer_id` 指定，默认能力路径为
+`me.computer.meme.*`。支持检索、详情、本地收藏、收藏列表和立即检查更新。
+`daily_enabled = true`、`daily_at = "09:00"`、`timezone = "Asia/Shanghai"` 默认
+每天在 Engine 运行期间拉取最近窗口，有变化才提交一条刺激；不会自动对外发消息。
+收藏和待投提醒存入 `.purrcept/meme/state-<instance_id>.json`。给 bot 的技能放在
+`.purrcept/notebook/skills/meme-library/SKILL.md`，由 Notebook 的技能目录发现，
+不安装到 Codex。配置示例与窗口、退避、重启语义见
+[梗百科插件说明](../src/purrcept_engine/plugins/meme/README.md)。
 
 ## 面板、存储与执行额度
 

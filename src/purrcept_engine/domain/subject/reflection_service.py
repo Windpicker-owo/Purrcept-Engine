@@ -200,6 +200,7 @@ class ReflectionService:
                 instructions=self.runtime.instructions,
                 tools=tools.toolset(),
                 output_tokens=self.runtime.reflection.output_tokens,
+                observe_usage=self.runtime.reflection.observe_usage,
                 max_requests=self.runtime.settings.max_requests,
                 turn_seconds=remaining,
                 retry=self.runtime.reflection.retry,

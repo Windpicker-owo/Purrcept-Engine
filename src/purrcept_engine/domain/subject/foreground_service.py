@@ -319,6 +319,7 @@ class ForegroundService:
             instructions=self.runtime.instructions,
             tools=tools.tools,
             output_tokens=self.runtime.subject.output_tokens,
+            observe_usage=self.runtime.subject.observe_usage,
             max_requests=self.runtime.settings.max_requests,
             turn_seconds=self.runtime.settings.turn_seconds,
             retry=self.runtime.subject.retry,

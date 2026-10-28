@@ -6,6 +6,9 @@
 
 from purrcept_core.models import PromptTemplate, RenderPolicy
 
+# 请求局部尾部与实际用量锚点共用此身份，不能按用户正文中的相似标题定位。
+ENGINE_STATE_REMINDER_KEY = "engine.committed_state"
+
 # Core 默认 optional 会把纯空白视为空。模型原文、配置字段和序列化正文必须
 # 保留精确字符，使用 Core 的显式策略直接转为文字，不隐式 strip 或二次插值。
 VERBATIM = RenderPolicy(str)

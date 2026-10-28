@@ -14,7 +14,7 @@ from purrcept_core.models import (
 )
 
 from purrcept_engine.domain.model_requests.contents import ContentKind, validate_supported_contents
-from purrcept_engine.domain.model_requests.ports import MaterialCompiler, RetryPolicy
+from purrcept_engine.domain.model_requests.ports import MaterialCompiler, RetryPolicy, UsageObserver
 from purrcept_engine.domain.subject.session import (
     CapacityCheck,
 )
@@ -31,6 +31,7 @@ class SubjectModel:
         capacity: 对完整实际请求执行容量核验的函数。
         retry: 唯一传输重试策略，不额外叠加 SDK 隐式重试。
         compiler: 按实际 SDK 布局冻结完整请求材料的纯编译器。
+        observe_usage: 成功证据提交后的实际输入用量保存入口；None 不保存锚点。
         supports_contents: 刺激允许交付的内容类型；默认仅 text，其他媒体原位转为文字引用。
 
     Note:
@@ -44,6 +45,7 @@ class SubjectModel:
     retry: RetryPolicy
     compiler: MaterialCompiler
     supports_contents: tuple[ContentKind, ...] = ("text",)
+    observe_usage: UsageObserver | None = None
 
     def __post_init__(self) -> None:
         """程序式装配与配置加载共用相同内容声明约束。"""

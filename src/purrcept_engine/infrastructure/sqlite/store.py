@@ -38,6 +38,7 @@ from purrcept_engine.domain.context.maintenance import (
     SummaryProposal,
     SummarySource,
 )
+from purrcept_engine.domain.context.usage import UsageAnchor
 from purrcept_engine.domain.execution.models import (
     ActionOutcome,
     ActionRecord,
@@ -1390,12 +1391,88 @@ class Store:
             source: 已冻结的历史范围及所属会话版本。
 
         Returns:
-            reserved 表示已登记本覆盖的唯一尝试；already_attempted 表示此前已尝试；stale 或
+            reserved 表示已取得独占占位；already_attempted 表示覆盖在途或已安装；stale 或
             busy 表示当前版本或空闲条件不允许维护。
         """
         return await self._submit(
             lambda connection: maintenance_storage.reserve_summary(connection, source),
             logical_bytes=len(serialization.encode(source).encode("utf-8")),
+            control=True,
+            writing=True,
+        )
+
+    async def get_usage_anchor(self, binding: str) -> UsageAnchor | None:
+        """恢复指定端点/用途绑定的实际用量指纹，不加载历史正文或媒体。
+
+        Args:
+            binding: 应用生成的用途、端点、模型与协议绑定摘要。
+
+        Raises:
+            StorageError: 保存的锚点字段损坏，不能静默退回估算。
+        """
+
+        def read(connection: sqlite3.Connection) -> UsageAnchor | None:
+            row: tuple[object, ...] | None = connection.execute(
+                "SELECT request_id,anchor_json FROM capacity_usage WHERE binding=?", (binding,)
+            ).fetchone()
+            if row is None:
+                return None
+            try:
+                value = decode_object(_text(row[1]).encode("utf-8"))
+            except ValueError as error:
+                raise StorageError("用量锚点编码损坏。", code="invalid_record") from error
+            if value.get("type") != "UsageAnchor" or value.get("request_id") != row[0]:
+                raise StorageError("用量锚点来源身份不一致。", code="invalid_record")
+            prefix = value.get("prefix")
+            if not isinstance(prefix, list):
+                raise StorageError("用量锚点前缀形状无效。", code="invalid_record")
+            try:
+                return UsageAnchor(
+                    _text(value.get("request_id")),
+                    _text(value.get("compiler")),
+                    _text(value.get("static_digest")),
+                    _text(value.get("field")),
+                    tuple(_text(item) for item in prefix),
+                    _integer(value.get("input_tokens")),
+                )
+            except ValueError as error:
+                raise StorageError("用量锚点字段损坏。", code="invalid_record") from error
+
+        return await self._submit(read)
+
+    async def put_usage_anchor(self, binding: str, anchor: UsageAnchor) -> None:
+        """仅为已提交成功请求保存实际输入用量，原材料仍由请求账本持有。
+
+        Args:
+            binding: 应用生成的独立用途及模型端点绑定摘要。
+            anchor: 已按实际 SDK 输入冻结的不可变用量和指纹。
+
+        Raises:
+            StorageError: 来源请求不存在或尚未成功提交。
+        """
+        encoded = serialization.encode(anchor)
+
+        def save(connection: sqlite3.Connection) -> None:
+            with connection:
+                connection.execute("BEGIN IMMEDIATE")
+                row: tuple[object, ...] | None = connection.execute(
+                    "SELECT state FROM model_requests WHERE request_id=?", (anchor.request_id,)
+                ).fetchone()
+                if row != ("succeeded",):
+                    raise StorageError("用量锚点缺少真实成功请求。", code="invalid_record")
+                connection.execute(
+                    "INSERT INTO capacity_usage(binding,request_id,anchor_json) VALUES(?,?,?) "
+                    "ON CONFLICT(binding) DO UPDATE SET request_id=excluded.request_id, "
+                    "anchor_json=excluded.anchor_json",
+                    (binding, anchor.request_id, encoded),
+                )
+
+        await self._submit(save, logical_bytes=len(encoded.encode("utf-8")), writing=True)
+
+    async def release_summary(self, source: SummarySource) -> None:
+        """归还未安装摘要的临时占位，后续独立维护仍使用其自身原始预算。"""
+        await self._submit(
+            lambda connection: maintenance_storage.release_summary(connection, source),
             control=True,
             writing=True,
         )
@@ -1435,6 +1512,10 @@ class Store:
 
         Returns:
             本轮接管身份、来源输入、生成代次与当前结论。
+
+        Raises:
+            SessionVersionChanged: 事务发现空闲会话历史已更新，尚未接管本轮。
+            StorageError: 会话已有在途轮次或输入不再具有交接资格。
         """
         return await self._submit(
             lambda connection: subject_storage.begin_turn(

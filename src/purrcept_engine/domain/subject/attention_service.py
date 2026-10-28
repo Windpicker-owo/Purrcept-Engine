@@ -166,6 +166,7 @@ class AttentionService:
                 diagnostic_bytes=self.runtime.settings.diagnostic_bytes,
                 can_start=can_assess,
                 compiler=self.runtime.attention.compiler,
+                observe_usage=self.runtime.attention.observe_usage,
             )
         else:
             backend = ModelGenerationBackend(
@@ -177,6 +178,7 @@ class AttentionService:
                 diagnostic_bytes=self.runtime.settings.diagnostic_bytes,
                 can_start=can_assess,
                 compiler=self.runtime.attention.compiler,
+                observe_usage=self.runtime.attention.observe_usage,
             )
         self.runtime.attention_backends.add(backend)
         level: AttentionLevel = "wake"

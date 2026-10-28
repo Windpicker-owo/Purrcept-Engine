@@ -6,6 +6,7 @@
 """
 
 import asyncio
+import hashlib
 import logging
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
@@ -34,10 +35,11 @@ from purrcept_engine.domain.context.history import HistoryMaintenance
 from purrcept_engine.domain.context.history_preparation import HistoryPreparation
 from purrcept_engine.domain.context.maintenance import SummaryError
 from purrcept_engine.domain.context.materials import media_blocks
+from purrcept_engine.domain.context.usage import UsageMeter
 from purrcept_engine.domain.execution.catalog import Catalog
 from purrcept_engine.domain.inputs.models import MediaReference
 from purrcept_engine.domain.knowledge.service import KnowledgeService
-from purrcept_engine.domain.model_requests.service import RequestBudget
+from purrcept_engine.domain.model_requests.service import RequestBudget, prepare_off_loop
 from purrcept_engine.domain.subject.attention import AttentionModel
 from purrcept_engine.domain.subject.background import BackgroundService
 from purrcept_engine.domain.subject.background_ports import BackgroundSettings
@@ -51,9 +53,10 @@ from purrcept_engine.domain.subject.reflection_tools import reflection_instructi
 from purrcept_engine.domain.subject.service import SubjectService
 from purrcept_engine.domain.subject.session import DynamicState
 from purrcept_engine.domain.subject.settings import CoordinatorSettings, SubjectModel
-from purrcept_engine.infrastructure.models.compiler import compile_materials
+from purrcept_engine.infrastructure.models.compiler import compile_materials, compiler_identity
 from purrcept_engine.infrastructure.sqlite.store import Store
 from purrcept_engine.plugin_system.contracts import PluginRuntime
+from purrcept_engine.serialization import encode
 from purrcept_engine.values import JsonObject
 
 _logger = logging.getLogger(__name__)
@@ -83,7 +86,7 @@ class SubjectAssembly:
     sleep_history: HistoryPreparation
 
 
-def build_subject(
+async def build_subject(
     config: EngineConfig,
     store: Store,
     catalog: Catalog,
@@ -96,7 +99,7 @@ def build_subject(
     wakeup_committed: Callable[[], None],
     knowledge: KnowledgeService,
 ) -> SubjectAssembly:
-    """按配置 discriminator 选择命名资源，构造不查询库或发起模型请求。
+    """按配置选择命名资源，恢复各用途用量锚点并连接领域所有者。
 
     Args:
         config: 已校验的宿主配置声明，不在构造时连接外部服务。
@@ -133,10 +136,32 @@ def build_subject(
     ):
         raise TypeError("已校验主体用途没有生成模型声明。")
 
+    async def usage_for(name: str, owner: str) -> UsageMeter:
+        """用明确用途、配置名、端点及模型隔离实际用量，不把凭据写入绑定。"""
+        settings = config.models[name]
+        binding = hashlib.sha256(
+            encode(
+                {
+                    "owner": owner,
+                    "name": name,
+                    "endpoint": settings.api_base,
+                    "model": settings.model,
+                    "kind": settings.kind,
+                    "usage_policy": "exact-prefix-v1",
+                }
+            ).encode("utf-8")
+        ).hexdigest()
+        identity = await prepare_off_loop(lambda: compiler_identity(settings.kind))
+        return UsageMeter(store, binding, identity, await store.get_usage_anchor(binding))
+
+    foreground_usage = await usage_for(foreground_name, "foreground")
+    reflection_usage = await usage_for(reflection_name, "reflection")
+
     def capacity_for(
         settings: GenerationModelSettings | DecisionModelSettings,
         *,
         enforce: bool,
+        usage: UsageMeter,
     ) -> Callable[[JsonObject], CapacityAssessment]:
         """为一个模型声明绑定完整请求容量评估或强制核验。"""
         declaration = (
@@ -158,6 +183,7 @@ def build_subject(
                 reserve_fraction=config.context.input_reserve_fraction,
                 trigger=config.context.summary_trigger,
                 target=config.context.summary_target,
+                usage=usage,
             )
 
         return measure
@@ -165,8 +191,11 @@ def build_subject(
     ledger = store.knowledge
     diagnostic_bytes = config.diagnostics.max_bytes
 
-    def history_for(name: str, settings: GenerationModelSettings) -> HistoryPreparation:
+    async def history_for(
+        name: str, settings: GenerationModelSettings, owner: str, usage: UsageMeter
+    ) -> HistoryPreparation:
         """各维护用途独占在途状态，底层借用相同摘要资源与权威 CAS。"""
+        summary_usage = await usage_for(summary_name, "summary:" + owner)
         return HistoryPreparation(
             store,
             HistoryMaintenance(
@@ -174,23 +203,30 @@ def build_subject(
                 store,
                 generation[summary_name],
                 model=summary_settings.model,
-                summary_capacity=capacity_for(summary_settings, enforce=True),
+                summary_capacity=capacity_for(summary_settings, enforce=True, usage=summary_usage),
                 retry=config.subject.summary_retry,
                 output_tokens=summary_settings.max_output_tokens,
+                observe_usage=summary_usage.observe,
                 diagnostic_bytes=diagnostic_bytes,
                 can_start=can_start,
                 compiler=compile_materials,
             ),
             backend=generation[name],
             model=settings.model,
-            assess=capacity_for(settings, enforce=False),
+            assess=capacity_for(settings, enforce=False, usage=usage),
             context=config.context,
             compiler=compile_materials,
         )
 
-    history = history_for(foreground_name, foreground_settings)
-    reflection_history = history_for(reflection_name, reflection_settings)
-    sleep_history = history_for(foreground_name, foreground_settings)
+    history = await history_for(
+        foreground_name, foreground_settings, "foreground", foreground_usage
+    )
+    reflection_history = await history_for(
+        reflection_name, reflection_settings, "reflection", reflection_usage
+    )
+    sleep_history = await history_for(
+        foreground_name, foreground_settings, "sleep", foreground_usage
+    )
 
     async def native(media: tuple[MediaReference, ...]) -> tuple[ContentBlock, ...]:
         """从权威媒体存储展开已接管的原生内容。"""
@@ -296,29 +332,32 @@ def build_subject(
     attention_name = config.subject.attention
     if attention_name is not None:
         settings = config.models[attention_name]
+        attention_usage = await usage_for(attention_name, "attention")
         # 与前台使用同一角色配置和 Core 角色卡模板；不从聊天正文或平台昵称猜身份。
         attention_profile = format_character_card(config.subject.character.record())
         if isinstance(settings, DecisionModelSettings):
             attention = AttentionModel(
                 decisions[attention_name],
                 settings.model,
-                capacity_for(settings, enforce=True),
+                capacity_for(settings, enforce=True, usage=attention_usage),
                 config.subject.attention_retry,
                 kind="decision",
                 compiler=compile_materials,
                 profile=attention_profile,
+                observe_usage=attention_usage.observe,
                 supports_contents=settings.supports_contents,
             )
         else:
             attention = AttentionModel(
                 generation[attention_name],
                 settings.model,
-                capacity_for(settings, enforce=True),
+                capacity_for(settings, enforce=True, usage=attention_usage),
                 config.subject.attention_retry,
                 kind="generation",
                 output_tokens=settings.max_output_tokens,
                 compiler=compile_materials,
                 profile=attention_profile,
+                observe_usage=attention_usage.observe,
                 supports_contents=settings.supports_contents,
             )
     subject = SubjectService(
@@ -330,10 +369,11 @@ def build_subject(
             generation[foreground_name],
             foreground_settings.model,
             foreground_settings.max_output_tokens,
-            capacity_for(foreground_settings, enforce=True),
+            capacity_for(foreground_settings, enforce=True, usage=foreground_usage),
             config.subject.foreground_retry,
             compiler=compile_materials,
             supports_contents=foreground_settings.supports_contents,
+            observe_usage=foreground_usage.observe,
         ),
         attention=attention,
         settings=CoordinatorSettings(
@@ -364,10 +404,11 @@ def build_subject(
             generation[reflection_name],
             reflection_settings.model,
             reflection_settings.max_output_tokens,
-            capacity_for(reflection_settings, enforce=True),
+            capacity_for(reflection_settings, enforce=True, usage=reflection_usage),
             config.subject.reflection_retry,
             compiler=compile_materials,
             supports_contents=reflection_settings.supports_contents,
+            observe_usage=reflection_usage.observe,
         ),
         instructions=reflection_instructions(),
         settings=BackgroundSettings(

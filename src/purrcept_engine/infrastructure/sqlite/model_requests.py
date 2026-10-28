@@ -36,6 +36,11 @@ from purrcept_engine.serialization import encode
 _logger = logging.getLogger(__name__)
 
 
+USAGE_SCHEMA = (
+    "CREATE TABLE capacity_usage (binding TEXT PRIMARY KEY, "
+    "request_id TEXT NOT NULL REFERENCES model_requests(request_id), anchor_json TEXT NOT NULL)",
+)
+
 SCHEMA = (
     "CREATE TABLE model_requests (request_id TEXT PRIMARY KEY, evidence_json TEXT NOT NULL, "
     "state TEXT NOT NULL CHECK(state IN "
@@ -54,6 +59,7 @@ SCHEMA = (
     "attempt_id TEXT NOT NULL REFERENCES model_attempts(attempt_id), "
     "media_id TEXT NOT NULL REFERENCES media(media_id), PRIMARY KEY(attempt_id,media_id))",
     *retention.SCHEMA,
+    *USAGE_SCHEMA,
 )
 
 
@@ -288,6 +294,7 @@ def initialize(connection: sqlite3.Connection) -> None:
     connection.execute("SELECT request_id,evidence_json,state FROM model_requests LIMIT 0")
     connection.execute("SELECT attempt_id,start_json,result_json FROM model_attempts LIMIT 0")
     connection.execute("SELECT request_id,media_id FROM model_request_media LIMIT 0")
+    connection.execute("SELECT binding,request_id,anchor_json FROM capacity_usage LIMIT 0")
     connection.execute("SELECT attempt_id,media_id FROM model_attempt_media LIMIT 0")
     # 启动事务由 Store 持有；恢复失败不能单独提交任何子系统。
     rows: list[tuple[object, ...]] = connection.execute(
