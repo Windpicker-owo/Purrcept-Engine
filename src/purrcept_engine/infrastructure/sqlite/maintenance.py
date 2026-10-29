@@ -26,10 +26,11 @@ from purrcept_engine.domain.context.summary_materials import summary_message
 from purrcept_engine.domain.context.summary_references import summary_references
 from purrcept_engine.domain.subject.models import SessionScope
 from purrcept_engine.errors import StorageError
+from purrcept_engine.infrastructure.sqlite import archive
 from purrcept_engine.infrastructure.sqlite.checkpoints import intern_checkpoint, restore_checkpoint
 from purrcept_engine.infrastructure.sqlite.model_requests import (
-    decode_attempt,
     decode_request,
+    restore_attempt,
     restore_core_media,
 )
 from purrcept_engine.serialization import encode
@@ -341,7 +342,7 @@ def _verified_response(connection: sqlite3.Connection, proposal: SummaryProposal
     ).fetchone()
     if attempt is None or attempt[0] is None:
         raise SummaryError("摘要模型请求缺少实际成功尝试。")
-    result = decode_attempt(_text(attempt[0]))
+    result = restore_attempt(connection, _text(attempt[0]))
     if result.state != "succeeded" or result.response_json is None:
         raise SummaryError("摘要最后尝试没有已确认正文。")
     summary = _response_summary(restore_core_media(connection, result.response_json))
@@ -426,6 +427,8 @@ def install_summary(connection: sqlite3.Connection, proposal: SummaryProposal) -
             "INSERT INTO session_media VALUES(?,?)",
             ((source.owner_id, media_id) for media_id in media),
         )
+        # 安装后的恢复只读取 subject_sessions；完整源和候选进入独立保留周期。
+        archive.detach_summary(connection, source.owner_id, source.coverage_id)
     return next_version
 
 

@@ -366,6 +366,7 @@ async def test_real_core_media_window_survives_tool_rounds_retry_failure_and_reo
             assert await store.get_media(record.media[1].media_id) == png
         evidence = await store.requests_for_turn(scope, "turn:0")
         assert len(evidence) == 1
+        assert evidence[0].request.materials_json is not None
         payload = json.loads(evidence[0].request.materials_json)["payload"]
         audio_parts = [
             part

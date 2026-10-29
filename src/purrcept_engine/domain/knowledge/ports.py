@@ -6,7 +6,7 @@ KnowledgeService 与独立反思借用这些契约；应用注入同库实现和
 
 from __future__ import annotations
 
-from typing import Protocol
+from typing import Literal, Protocol
 
 from purrcept_core.models import ContentBlock, Message
 
@@ -164,6 +164,8 @@ class KnowledgeStore(Protocol):
         batch_id: str,
         required_slice_refs: tuple[str, ...],
         findings: tuple[OperationalFinding, ...] = (),
+        *,
+        purpose: Literal["memory", "behavior"] = "memory",
     ) -> ReflectionBatch:
         """冻结范围和异常，恢复代次不能借用旧资格。
 

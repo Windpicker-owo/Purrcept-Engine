@@ -1,7 +1,11 @@
 {
   "compilerOptions": {
     "target": "ES2022",
-    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "lib": [
+      "ES2022",
+      "DOM",
+      "DOM.Iterable"
+    ],
     "module": "ESNext",
     "moduleResolution": "Bundler",
     "jsx": "react-jsx",
@@ -14,15 +18,10 @@
     "isolatedModules": true,
     "verbatimModuleSyntax": true,
     "skipLibCheck": true,
-    "noEmit": true,
-    "paths": {
-      "@purrcept/cel": ["../../purrcept_design/react/src/index.ts"],
-      "react": ["../../purrcept_design/react/node_modules/@types/react/index.d.ts"],
-      "react/jsx-runtime": ["../../purrcept_design/react/node_modules/@types/react/jsx-runtime.d.ts"],
-      "react-dom/client": ["../../purrcept_design/react/node_modules/@types/react-dom/client.d.ts"],
-      "motion/react": ["../../purrcept_design/react/node_modules/motion/dist/react.d.ts"],
-      "vitest": ["../../purrcept_design/react/node_modules/vitest/dist/index.d.ts"]
-    }
+    "noEmit": true
   },
-  "include": ["src", "tests"]
+  "include": [
+    "src",
+    "tests"
+  ]
 }

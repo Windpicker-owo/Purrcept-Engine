@@ -200,31 +200,23 @@ def make_factory(driver_factory: Callable[[BrowserSettings], BrowserDriver]) -> 
             if evidence is None:
                 raise ConfigError("browser插件需要宿主原文/媒体端口。")
             session = BrowserSession(instance_id, driver_factory(settings), settings, evidence)
-            try:
-                await session.start()
-            except BaseException as error:
-                # build尚未交回Runtime，资源只归session，宿主不能猜SDK取得了什么。
-                try:
-                    await session.close()
-                except BaseException as cleanup:
-                    raise BaseExceptionGroup(
-                        "浏览器启动与资源收尾均失败。", [error, cleanup]
-                    ) from None
-                raise
 
             async def run_status(parameters: _Empty, context: CallContext) -> CallOutcome:
                 """只读当前插件已取得的业务状态。"""
                 del parameters, context
+                await session.start()
                 return await _result(session.status())
 
             async def run_open(parameters: _Open, context: CallContext) -> CallOutcome:
                 """按站点策略实际打开明确的浏览器 URL。"""
                 del context
+                await session.start()
                 return await _result(session.open(parameters.url))
 
             async def run_read(parameters: _Read, context: CallContext) -> CallOutcome:
                 """读取笔记原文，并沿已保存快照分页。"""
                 del context
+                await session.start()
                 return await _result(
                     session.read(parameters.mode, parameters.max_chars, parameters.cursor)
                 )
@@ -232,21 +224,25 @@ def make_factory(driver_factory: Callable[[BrowserSettings], BrowserDriver]) -> 
             async def run_search(parameters: _Search, context: CallContext) -> CallOutcome:
                 """使用明确搜索路线取得结果并保存原始材料。"""
                 del context
+                await session.start()
                 return await _result(session.search(parameters.query))
 
             async def run_snapshot(parameters: _Snapshot, context: CallContext) -> CallOutcome:
                 """读取当前页面的节点树与当次有效引用。"""
                 del context
+                await session.start()
                 return await _result(session.snapshot(interactive=parameters.interactive))
 
             async def run_click(parameters: _Ref, context: CallContext) -> CallOutcome:
                 """点击当前页面仍有效的节点引用。"""
                 del context
+                await session.start()
                 return await _result(session.click(parameters.ref))
 
             async def run_type(parameters: _Type, context: CallContext) -> CallOutcome:
                 """在当前有效节点输入文字，并按明确参数提交。"""
                 del context
+                await session.start()
                 return await _result(
                     session.type_text(parameters.ref, parameters.text, submit=parameters.submit)
                 )
@@ -254,6 +250,7 @@ def make_factory(driver_factory: Callable[[BrowserSettings], BrowserDriver]) -> 
             async def run_scroll(parameters: _Scroll, context: CallContext) -> CallOutcome:
                 """按明确方向和距离滚动视口或有效节点。"""
                 del context
+                await session.start()
                 return await _result(
                     session.scroll(parameters.direction, parameters.ref, parameters.amount)
                 )
@@ -261,11 +258,13 @@ def make_factory(driver_factory: Callable[[BrowserSettings], BrowserDriver]) -> 
             async def run_save(parameters: _Ref, context: CallContext) -> CallOutcome:
                 """取得当前节点原图或元素截图，保留取得方式。"""
                 del context
+                await session.start()
                 return await _result(session.image(ref=parameters.ref))
 
             async def run_screenshot(parameters: _Screenshot, context: CallContext) -> CallOutcome:
                 """取得真实截图，并按明确参数决定是否接管原生图像。"""
                 del context
+                await session.start()
                 return await _result(session.image(ref=None, full_page=parameters.full_page))
 
             async def prepare_request() -> JsonObject:

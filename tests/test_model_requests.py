@@ -238,6 +238,7 @@ async def test_retry_reuses_request_identity_and_keeps_attempts_separate() -> No
     assert sink.results[0].retry_wait_seconds == 1.0
     success = json.loads(cast(str, sink.results[1].response_json))
     assert success["message"]["content"][1]["arguments"] == {"code": "pass"}
+    assert sink.results[0].argument_events_json is not None
     assert (
         json.loads(sink.results[0].argument_events_json)[0]["arguments_delta"] == '{code: "pass"}'
     )
@@ -364,6 +365,7 @@ async def test_diagnostic_overflow_keeps_authoritative_response_and_original_arg
     assert result.state == "succeeded" and not result.diagnostics_complete
     assert result.omitted_events == 3
     assert result.diagnostic_events_json == "[]"
+    assert result.argument_events_json is not None
     assert json.loads(result.argument_events_json)[0]["arguments_delta"] == '{code: "pass"}'
     assert json.loads(cast(str, result.response_json))["message"]["content"][1]["arguments"] == {
         "code": "pass"
@@ -460,6 +462,7 @@ async def test_decision_retains_refusal_and_uses_one_logical_budget() -> None:
     assert backend.requests[0] is backend.requests[1] is request
     assert budget.used == 1
     assert sink.requests[0].attempt_seconds == 5 and sink.requests[0].total_seconds == 8
+    assert sink.requests[0].materials_json is not None
     assert json.loads(sink.requests[0].materials_json)["payload"]["input"] == "evidence"
     await wrapper.close()
 
@@ -481,6 +484,7 @@ async def test_sqlite_roundtrip_and_interruption_preserve_attempt_facts(tmp_path
     assert record.state == "succeeded"
     with pytest.raises(StorageError, match="冲突"):
         sql.finish_request(connection, record.request.request_id, "failed")
+    assert record.request.materials_json is not None
     request = RequestEvidence(
         "interrupted",
         RequestScope("reflection", "turn"),
@@ -573,6 +577,7 @@ async def test_actual_sdk_http_payload_matches_recorded_ordered_materials(
         response = await wrapper.generate(_request(), model=settings.model)
         assert response.text == "ok" and len(requests) == 1
         actual = cast(dict[str, object], json.loads(requests[0].content))
+        assert sink.requests[0].materials_json is not None
         expected = cast(dict[str, object], json.loads(sink.requests[0].materials_json)["payload"])
         assert actual["messages"] == expected["messages"]
         assert actual["tools"] == expected["tools"]
@@ -701,6 +706,7 @@ async def test_real_sdk_retry_has_two_http_attempts_and_preserves_same_payload(
         finally:
             await decision_wrapper.close()
             await decision_resource.close()
+        assert sink.requests[0].materials_json is not None
         materials = json.loads(sink.requests[0].materials_json)["payload"]
         assert materials["input"][0]["content"] == [
             {"type": "input_text", "text": "first source"},
@@ -954,9 +960,11 @@ async def test_real_store_sink_reconstructs_media_and_independent_attempts(tmp_p
                 raw: str = connection.execute(
                     "SELECT evidence_json FROM model_requests LIMIT 1"
                 ).fetchone()[0]
-                interned = json.loads(json.loads(raw)["materials_json"])["payload"]["messages"][0][
-                    "content"
-                ]
+                assert json.loads(raw)["materials_json"] is None
+                body = connection.execute(
+                    "SELECT content_json FROM model_bodies WHERE kind='request' LIMIT 1"
+                ).fetchone()[0]
+                interned = json.loads(body)["payload"]["messages"][0]["content"]
                 assert (
                     interned[0]["text"]
                     == json.loads(material)["payload"]["messages"][0]["content"][0]["text"]

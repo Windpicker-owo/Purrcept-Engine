@@ -82,6 +82,19 @@ class HostLifecycle:
                     before=now - self.state.config.diagnostics.retention_days * 86400,
                     expired_at=now,
                 )
+                bodies = await store.expire_model_bodies(
+                    before=now - self.state.config.diagnostics.retention_days * 86400,
+                    now=now,
+                    max_bytes=self.state.config.diagnostics.retained_bytes,
+                )
+                self.state.diagnostic_cleanup = {
+                    **self.state.diagnostic_cleanup,
+                    "bodies": bodies,
+                    "has_more": bool(
+                        self.state.diagnostic_cleanup.get("has_more") or bodies.get("has_more")
+                    ),
+                }
+                await store.collect_unused_media()
             except StorageError as error:
                 if error.code != "store_busy":
                     raise
@@ -108,6 +121,7 @@ class HostLifecycle:
         """
         if not task.cancelled() and (error := task.exception()) is not None:
             self.state.maintenance_failure = error
+            self.state.maintenance_health.fail(error)
 
     def query(self) -> HostSnapshot:
         """返回生命周期快照，不触发存储读取、设备或模型调用。
@@ -436,8 +450,8 @@ class HostLifecycle:
             await asyncio.gather(
                 subject.service.session.close(),
                 subject.background.session.close(),
+                subject.background.behavior_session.close(),
                 subject.foreground_history.close(),
-                subject.reflection_history.close(),
                 subject.sleep_history.close(),
                 return_exceptions=True,
             )
@@ -487,7 +501,18 @@ class HostLifecycle:
         if subject is not None and subject.background.failure is not None:
             raise subject.background.failure
         if not store.authority_available:
-            raise StorageError("权威存储当前不能接管新派发。")
+            raise StorageError("权威存储当前不能接管新派发。") from store.authority_failure
+
+    def check_ready_dispatch(self) -> None:
+        """公开业务等待全部插件就绪；内部启动输入仍可先持久接管。
+
+        Raises:
+            HostStateError: 启动阶段尚未结束。
+            StorageError: 权威存储已失去派发资格。
+        """
+        if self.state.startup_stage is not None:
+            raise HostStateError("宿主仍在启动，请等待全部资源就绪。")
+        self.check_dispatch()
 
     def check_owned_dispatch(self) -> None:
         """将宿主正常关闭传入工作器取消链，内部故障仍保持原始类型。

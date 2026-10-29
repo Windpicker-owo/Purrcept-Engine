@@ -9,7 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
-type SessionScope = Literal["foreground", "reflection"]
+type SessionScope = Literal["foreground", "reflection", "behavior_review", "memory_consolidation"]
 
 
 type InputStage = Literal[

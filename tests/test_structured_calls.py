@@ -204,11 +204,18 @@ async def test_arguments_are_frozen_before_authority_wait(
     [({"label": 17}, "CapabilityInputError"), ({"label": "bug"}, "RuntimeError")],
 )
 async def test_same_provider_boundary_rejects_input_and_preserves_program_error(
-    rig: _Rig, arguments: JsonObject, error_type: str
+    rig: _Rig,
+    arguments: JsonObject,
+    error_type: str,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     result = await rig.service.invoke("me.left.call", arguments)
     assert result.state == "failed" and result.calls[0].state == "failed"
     assert result.calls[0].error_type == error_type and not rig.effects
+    primary = [record for record in caplog.records if record.levelname == "ERROR"]
+    assert len(primary) == 1
+    assert primary[0].exc_info is not None
+    assert "original provider failure" not in primary[0].getMessage()
 
 
 async def test_provider_cancellation_is_unknown_not_unstarted(rig: _Rig) -> None:

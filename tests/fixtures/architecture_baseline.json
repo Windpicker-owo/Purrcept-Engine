@@ -2,7 +2,7 @@
   "baseline": "9329231",
   "host_methods": {
     "__init__": {
-      "arguments": "arguments(posonlyargs=[], args=[arg(arg='self'), arg(arg='config', annotation=Name(id='EngineConfig', ctx=Load()))], kwonlyargs=[arg(arg='plugin_factories', annotation=BinOp(left=Subscript(value=Name(id='Mapping', ctx=Load()), slice=Tuple(elts=[Name(id='str', ctx=Load()), Name(id='PluginFactory', ctx=Load())], ctx=Load()), ctx=Load()), op=BitOr(), right=Constant(value=None))), arg(arg='executor_factory', annotation=BinOp(left=Name(id='ExecutorFactory', ctx=Load()), op=BitOr(), right=Constant(value=None))), arg(arg='console_output', annotation=Subscript(value=Name(id='Callable', ctx=Load()), slice=Tuple(elts=[List(elts=[Name(id='str', ctx=Load())], ctx=Load()), Constant(value=None)], ctx=Load()), ctx=Load())), arg(arg='generation_backends', annotation=BinOp(left=Subscript(value=Name(id='Mapping', ctx=Load()), slice=Tuple(elts=[Name(id='str', ctx=Load()), Name(id='ModelBackend', ctx=Load())], ctx=Load()), ctx=Load()), op=BitOr(), right=Constant(value=None))), arg(arg='decision_backends', annotation=BinOp(left=Subscript(value=Name(id='Mapping', ctx=Load()), slice=Tuple(elts=[Name(id='str', ctx=Load()), Name(id='DecisionBackend', ctx=Load())], ctx=Load()), ctx=Load()), op=BitOr(), right=Constant(value=None))), arg(arg='embedding_provider', annotation=BinOp(left=Name(id='EmbeddingProvider', ctx=Load()), op=BitOr(), right=Constant(value=None))), arg(arg='reranker', annotation=BinOp(left=Name(id='Reranker', ctx=Load()), op=BitOr(), right=Constant(value=None)))], kw_defaults=[Constant(value=None), Constant(value=None), Name(id='print', ctx=Load()), Constant(value=None), Constant(value=None), Constant(value=None), Constant(value=None)], defaults=[])",
+      "arguments": "arguments(posonlyargs=[], args=[arg(arg='self'), arg(arg='config', annotation=Name(id='EngineConfig', ctx=Load()))], kwonlyargs=[arg(arg='plugin_factories', annotation=BinOp(left=Subscript(value=Name(id='Mapping', ctx=Load()), slice=Tuple(elts=[Name(id='str', ctx=Load()), Name(id='PluginFactory', ctx=Load())], ctx=Load()), ctx=Load()), op=BitOr(), right=Constant(value=None))), arg(arg='executor_factory', annotation=BinOp(left=Name(id='ExecutorFactory', ctx=Load()), op=BitOr(), right=Constant(value=None))), arg(arg='console_output', annotation=Subscript(value=Name(id='Callable', ctx=Load()), slice=Tuple(elts=[List(elts=[Name(id='str', ctx=Load())], ctx=Load()), Constant(value=None)], ctx=Load()), ctx=Load())), arg(arg='generation_backends', annotation=BinOp(left=Subscript(value=Name(id='Mapping', ctx=Load()), slice=Tuple(elts=[Name(id='str', ctx=Load()), Name(id='ModelBackend', ctx=Load())], ctx=Load()), ctx=Load()), op=BitOr(), right=Constant(value=None))), arg(arg='decision_backends', annotation=BinOp(left=Subscript(value=Name(id='Mapping', ctx=Load()), slice=Tuple(elts=[Name(id='str', ctx=Load()), Name(id='DecisionBackend', ctx=Load())], ctx=Load()), ctx=Load()), op=BitOr(), right=Constant(value=None))), arg(arg='embedding_provider', annotation=BinOp(left=Name(id='EmbeddingProvider', ctx=Load()), op=BitOr(), right=Constant(value=None))), arg(arg='reranker', annotation=BinOp(left=Name(id='Reranker', ctx=Load()), op=BitOr(), right=Constant(value=None))), arg(arg='on_data_dir_acquired', annotation=BinOp(left=Subscript(value=Name(id='Callable', ctx=Load()), slice=Tuple(elts=[List(elts=[Name(id='Path', ctx=Load())], ctx=Load()), Constant(value=None)], ctx=Load()), ctx=Load()), op=BitOr(), right=Constant(value=None)))], kw_defaults=[Constant(value=None), Constant(value=None), Name(id='print', ctx=Load()), Constant(value=None), Constant(value=None), Constant(value=None), Constant(value=None), Constant(value=None)], defaults=[])",
       "returns": "Constant(value=None)",
       "async": false,
       "decorators": []
@@ -89,6 +89,12 @@
       "async": true,
       "decorators": []
     },
+    "query_health": {
+      "arguments": "arguments(posonlyargs=[], args=[arg(arg='self')], kwonlyargs=[], kw_defaults=[], defaults=[])",
+      "returns": "Name(id='JsonObject', ctx=Load())",
+      "async": false,
+      "decorators": []
+    },
     "query_panel": {
       "arguments": "arguments(posonlyargs=[], args=[arg(arg='self')], kwonlyargs=[], kw_defaults=[], defaults=[])",
       "returns": "Name(id='JsonObject', ctx=Load())",
@@ -113,6 +119,24 @@
       "async": false,
       "decorators": []
     },
+    "query_reviews": {
+      "arguments": "arguments(posonlyargs=[], args=[arg(arg='self'), arg(arg='before', annotation=BinOp(left=Name(id='str', ctx=Load()), op=BitOr(), right=Constant(value=None)))], kwonlyargs=[arg(arg='kind', annotation=Name(id='str', ctx=Load()))], kw_defaults=[Constant(value='action')], defaults=[Constant(value=None)])",
+      "returns": "Name(id='JsonObject', ctx=Load())",
+      "async": true,
+      "decorators": []
+    },
+    "query_review": {
+      "arguments": "arguments(posonlyargs=[], args=[arg(arg='self'), arg(arg='action_id', annotation=Name(id='str', ctx=Load()))], kwonlyargs=[], kw_defaults=[], defaults=[])",
+      "returns": "BinOp(left=Name(id='JsonObject', ctx=Load()), op=BitOr(), right=Constant(value=None))",
+      "async": true,
+      "decorators": []
+    },
+    "query_review_media": {
+      "arguments": "arguments(posonlyargs=[], args=[arg(arg='self'), arg(arg='action_id', annotation=Name(id='str', ctx=Load())), arg(arg='media_id', annotation=Name(id='str', ctx=Load()))], kwonlyargs=[], kw_defaults=[], defaults=[])",
+      "returns": "BinOp(left=Subscript(value=Name(id='tuple', ctx=Load()), slice=Tuple(elts=[Name(id='bytes', ctx=Load()), Name(id='str', ctx=Load())], ctx=Load()), ctx=Load()), op=BitOr(), right=Constant(value=None))",
+      "async": true,
+      "decorators": []
+    },
     "query": {
       "arguments": "arguments(posonlyargs=[], args=[arg(arg='self')], kwonlyargs=[], kw_defaults=[], defaults=[])",
       "returns": "Name(id='HostSnapshot', ctx=Load())",
@@ -128,24 +152,6 @@
     "wait_closed": {
       "arguments": "arguments(posonlyargs=[], args=[arg(arg='self')], kwonlyargs=[arg(arg='wait_seconds', annotation=BinOp(left=Name(id='float', ctx=Load()), op=BitOr(), right=Constant(value=None)))], kw_defaults=[Constant(value=None)], defaults=[])",
       "returns": "Name(id='HostSnapshot', ctx=Load())",
-      "async": true,
-      "decorators": []
-    },
-    "query_reviews": {
-      "arguments": "arguments(posonlyargs=[], args=[arg(arg='self'), arg(arg='before', annotation=BinOp(left=Name(id='str', ctx=Load()), op=BitOr(), right=Constant(value=None)))], kwonlyargs=[], kw_defaults=[], defaults=[Constant(value=None)])",
-      "returns": "Name(id='JsonObject', ctx=Load())",
-      "async": true,
-      "decorators": []
-    },
-    "query_review": {
-      "arguments": "arguments(posonlyargs=[], args=[arg(arg='self'), arg(arg='action_id', annotation=Name(id='str', ctx=Load()))], kwonlyargs=[], kw_defaults=[], defaults=[])",
-      "returns": "BinOp(left=Name(id='JsonObject', ctx=Load()), op=BitOr(), right=Constant(value=None))",
-      "async": true,
-      "decorators": []
-    },
-    "query_review_media": {
-      "arguments": "arguments(posonlyargs=[], args=[arg(arg='self'), arg(arg='action_id', annotation=Name(id='str', ctx=Load())), arg(arg='media_id', annotation=Name(id='str', ctx=Load()))], kwonlyargs=[], kw_defaults=[], defaults=[])",
-      "returns": "BinOp(left=Subscript(value=Name(id='tuple', ctx=Load()), slice=Tuple(elts=[Name(id='bytes', ctx=Load()), Name(id='str', ctx=Load())], ctx=Load()), ctx=Load()), op=BitOr(), right=Constant(value=None))",
       "async": true,
       "decorators": []
     }

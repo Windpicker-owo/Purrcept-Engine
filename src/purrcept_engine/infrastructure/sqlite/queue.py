@@ -20,6 +20,8 @@ import purrcept_engine.domain.time.models as time_models
 from purrcept_engine.domain.context.maintenance import (
     SummaryError,
 )
+from purrcept_engine.domain.health import ComponentHealth
+from purrcept_engine.domain.model_requests.models import BackgroundBudgetExceeded
 from purrcept_engine.errors import StorageError
 from purrcept_engine.infrastructure.sqlite.schema import initialize
 
@@ -119,6 +121,7 @@ class SqliteExecutor:
 
             路径在交接前固定到当前工作目录，实际文件与 SQLite I/O 全部在线程上。
         """
+        self.health = ComponentHealth("storage")
         self._initialize = initialize
         self._path = Path(os.path.abspath(path))
         self._max_inputs = max_inputs
@@ -137,7 +140,7 @@ class SqliteExecutor:
         self._control_bytes = 0
         self._closing = False
         self._connection_closing = False
-        self._failure: StorageError | None = None
+        self._failure: BaseException | None = None
         self._thread = threading.Thread(target=self._run, name="purrcept-storage", daemon=False)
         self._change_revision = 0
         self._changed = asyncio.Event()
@@ -187,6 +190,12 @@ class SqliteExecutor:
         """数据库线程仅排入本循环通知，事实及其可靠待办已经提交。"""
         self._change_revision += 1
         self._changed.set()
+
+    @property
+    def failure(self) -> BaseException | None:
+        """返回原始权威故障，调用方可保留原因链而非创建无来源的离线错误。"""
+        with self._condition:
+            return self._failure
 
     @property
     def authority_available(self) -> bool:
@@ -338,6 +347,9 @@ class SqliteExecutor:
                 if error.code in {"invalid_record", "unsupported_format"}:
                     self._latch_failure(error)
                 error_to_send = error
+            except BackgroundBudgetExceeded as error:
+                # 后台派发门槛是明确业务等待，不锁存为权威线程故障。
+                error_to_send = error
             except knowledge_models.KnowledgeInputError as error:
                 # 来源/批次/版本冲突可在原预算内纠正，不是数据库或程序故障。
                 # 该显式业务分类仍原样交回，其他未识别异常继续停止派发。
@@ -374,6 +386,7 @@ class SqliteExecutor:
 
     def _abort_pending(self, error: BaseException) -> None:
         """程序异常停止线程派发，并把所有已接管等待者交回同一个真实故障。"""
+        self._latch_failure(error)
         with self._condition:
             self._closing = True
             self._connection_closing = True
@@ -389,11 +402,12 @@ class SqliteExecutor:
             for queued in pending:
                 queued.fail(error)
 
-    def _latch_failure(self, failure: StorageError) -> None:
+    def _latch_failure(self, failure: BaseException) -> None:
         """权威故障保留为拒写原因，不自动重建连接或替换空数据库。"""
         with self._condition:
             if self._failure is None:
                 self._failure = failure
+                self._loop.call_soon_threadsafe(self.health.fail, failure)
                 self._loop.call_soon_threadsafe(self._notify_change)
 
     @staticmethod

@@ -109,9 +109,10 @@ class HostSettings(_Settings):
 
 
 class DiagnosticSettings(_Settings):
-    """控制详细模型流诊断的容量与时间，权威请求和原始参数不受此清理。"""
+    """限制诊断正文的时间及合计容量；业务事实和受保护依据独立保留。"""
 
     retention_days: PositiveInt = 7
+    retained_bytes: PositiveInt = 1_073_741_824
     max_bytes: Annotated[int, Field(ge=0)] = 1_048_576
 
 
@@ -230,6 +231,10 @@ class SubjectSettings(_Settings):
     proactive_idle_seconds: PositiveSeconds = 300.0
     reflection_batch_seconds: PositiveSeconds = 60.0
     reflection_batch_turns: PositiveInt = 8
+    behavior_review_enabled: bool = True
+    memory_consolidation_enabled: bool = True
+    memory_batch_seconds: PositiveSeconds = 1800.0
+    memory_batch_turns: PositiveInt = 32
 
 
 class CharacterSettings(_Settings):

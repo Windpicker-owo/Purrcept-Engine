@@ -120,49 +120,25 @@ def test_host_signatures_and_root_exports_match_declared_api() -> None:
     assert purrcept_engine.__all__ == original["root_exports"]
 
 
-async def test_existing_baseline_schema_upgrades_only_subject_scheduling(tmp_path: Path) -> None:
-    """冻结基线经真实迁移打开，调度表以外的 DDL 和应用身份保持原值。"""
+async def test_legacy_architecture_database_is_rejected_without_mutation(tmp_path: Path) -> None:
+    """历史冻结基线用于确认拒绝边界；当前迁移只接受格式15。"""
+    from purrcept_engine.errors import StorageError
+
     original = baseline()
-    raw = original["statements"]
-    assert isinstance(raw, list)
-    statements = [item for item in raw if isinstance(item, str)]
-    assert len(statements) == len(raw)
-    version, identity = original["format_version"], original["application_id"]
-    assert isinstance(version, int) and isinstance(identity, int)
-    path = tmp_path / "baseline.sqlite3"
+    statements = original["statements"]
+    assert isinstance(statements, list)
+    path = tmp_path / "legacy.sqlite3"
     with sqlite3.connect(path) as connection:
         for statement in statements:
+            assert isinstance(statement, str)
             connection.execute(statement)
-        connection.execute(f"PRAGMA user_version = {version}")
-        connection.execute(f"PRAGMA application_id = {identity}")
-        # FTS5 自动创建影子表；比较旧 DDL 实际形成的完整结构，而非忽略它们。
-        before: list[tuple[str]] = connection.execute(
-            "SELECT sql FROM sqlite_master WHERE sql IS NOT NULL AND name NOT LIKE 'sqlite_%'"
-        ).fetchall()
-        assert set(statements) <= {row[0] for row in before}
-    store = await Store.open(path)
-    await store.close()
-    with sqlite3.connect(path) as connection:
-        actual: list[tuple[str]] = connection.execute(
-            "SELECT sql FROM sqlite_master WHERE sql IS NOT NULL AND name NOT LIKE 'sqlite_%'"
-        ).fetchall()
-        scheduling = (
-            "input_processing",
-            "minimum_wake_assessments",
-            "minimum_wake_pending",
-            "capacity_usage",
-        )
-        assert sorted(
-            row[0] for row in actual if not any(name in row[0] for name in scheduling)
-        ) == (sorted(row[0] for row in before if not any(name in row[0] for name in scheduling)))
-        assert connection.execute("PRAGMA user_version").fetchone() == (15,)
-        columns = {row[1] for row in connection.execute("PRAGMA table_info(input_processing)")}
-        assert "due_at" not in columns and "handed_off" not in columns
-        columns = {
-            row[1] for row in connection.execute("PRAGMA table_info(minimum_wake_assessments)")
-        }
-        assert {"batch_id", "expected_json", "observed_generation"} <= columns
-        assert connection.execute("PRAGMA application_id").fetchone() == (identity,)
+        connection.execute(f"PRAGMA user_version={original['format_version']}")
+        connection.execute(f"PRAGMA application_id={original['application_id']}")
+    before = path.read_bytes()
+    with pytest.raises(StorageError) as error:
+        await Store.open(path)
+    assert error.value.code == "unsupported_format"
+    assert path.read_bytes() == before
 
 
 def test_migrated_namespaces_have_no_compatibility_modules() -> None:

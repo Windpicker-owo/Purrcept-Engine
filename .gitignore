@@ -14,3 +14,6 @@ build/
 purrcept.toml
 # 配置目录下的外部插件由使用者维护；随包内置插件仍在 src/purrcept_engine/plugins。
 /plugins/
+
+node_modules/
+frontend/.test-tmp/

@@ -43,7 +43,7 @@ def installed_packages() -> dict[str, str]:
 
     expected = {
         "purrcept_core": "0.6.0",
-        "purrcept_litellm": "0.2.0",
+        "purrcept_litellm": "0.2.1",
         "purrcept_engine": "0.1.0",
         "litellm": "1.105.0",
     }

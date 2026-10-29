@@ -133,6 +133,7 @@ class InputAdmissionService:
         }:
             return
         self.state.input_failure = self.state.input_failure or error
+        self.state.input_health.fail(error)
 
     def vad_done(self, task: asyncio.Task[CallOutcome]) -> None:
         """停音观察结束不重发。
@@ -146,3 +147,4 @@ class InputAdmissionService:
         self.state.vad_tasks.discard(task)
         if not task.cancelled() and (error := task.exception()) is not None:
             self.state.input_failure = self.state.input_failure or error
+            self.state.input_health.fail(error)

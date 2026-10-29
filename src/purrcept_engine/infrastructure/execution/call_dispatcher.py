@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import math
 from collections import deque
 from dataclasses import replace
@@ -343,9 +344,11 @@ class CallDispatcher:
             # 此时实际 Provider 已开始。其自身取消不能证明外部效果撤销。
             return CallOutcome("unknown", None, "CancelledError", "Provider 已取消，效果未确认。")
         except CapabilityInputError as error:
+            call.diagnostic_error = error
             return CallOutcome("failed", None, type(error).__name__, str(error))
         except Exception as error:
             # 只在真实扩展边界保留程序失败；资格/权威异常不进入此翻译范围。
+            call.diagnostic_error = error
             return CallOutcome("failed", None, type(error).__name__, str(error))
 
     def call_eligible(self, call: CapabilityCall) -> bool:
@@ -433,6 +436,35 @@ class CallDispatcher:
             error=outcome.error,
             media=outcome.media,
         )
+        logging.getLogger(__name__).log(
+            logging.WARNING
+            if receipt.state == "unknown"
+            else logging.ERROR
+            if receipt.state == "failed"
+            else logging.DEBUG,
+            "能力执行结果未知，需要核对。"
+            if receipt.state == "unknown"
+            else "能力执行失败。"
+            if receipt.state == "failed"
+            else "能力执行已确认。",
+            extra={
+                "action_id": receipt.action_id,
+                "call_id": receipt.call_id,
+                "path": receipt.path,
+                "outcome": receipt.state,
+                "error_type": receipt.error_type,
+                "receipt_revision": receipt.receipt_revision,
+            },
+            exc_info=None
+            if call.diagnostic_error is None
+            else (
+                type(call.diagnostic_error),
+                call.diagnostic_error,
+                call.diagnostic_error.__traceback__,
+            ),
+        )
+        call.diagnostic_error = None
+
         if isinstance(call.action, StructuredAction):
             # 结构化观察直接读取已提交事实，没有 IPC 交付上限或虚构 Worker。
             # 超时已交付首版未知时，迟到回执仅追加原调用，不能复活旧观察。

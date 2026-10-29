@@ -45,6 +45,7 @@ from purrcept_engine.domain.knowledge.models import (
     WakeupPlan,
 )
 from purrcept_engine.errors import StorageError
+from purrcept_engine.infrastructure.sqlite import analysis_work, behavior_review
 from purrcept_engine.infrastructure.sqlite.model_requests import (
     intern_core_media,
     restore_core_media,
@@ -121,6 +122,8 @@ SCHEMA = (
     "CREATE TABLE knowledge_supervision (id TEXT PRIMARY KEY, payload_json TEXT NOT NULL, "
     "state TEXT NOT NULL, response TEXT, created_at REAL NOT NULL)",
     "CREATE TABLE knowledge_plans (id TEXT PRIMARY KEY, payload_json TEXT NOT NULL)",
+    *analysis_work.SCHEMA,
+    *behavior_review.SCHEMA,
 )
 
 
@@ -291,6 +294,7 @@ def put_evidence_in_transaction(
             "INSERT INTO pending_knowledge VALUES(?,?,?,'pending',NULL)",
             (snapshot.evidence_id, snapshot.version, now),
         )
+        analysis_work.enqueue(connection, snapshot.evidence_id, snapshot.version, now)
     return snapshot
 
 
@@ -635,6 +639,8 @@ def begin_reflection(
     batch_id: str,
     required_slice_refs: tuple[str, ...],
     findings: tuple[OperationalFinding, ...] = (),
+    *,
+    purpose: Literal["memory", "behavior"] = "memory",
 ) -> ReflectionBatch:
     """冻结本批范围。
 
@@ -665,7 +671,11 @@ def begin_reflection(
         version = 1
         if row is not None:
             current = _decode(row[1], ReflectionBatch)
-            if current.required_slice_refs != required_slice_refs or current.findings != findings:
+            if (
+                current.required_slice_refs != required_slice_refs
+                or current.findings != findings
+                or current.purpose != purpose
+            ):
                 raise KnowledgeConflict("反思批次身份与既有范围冲突。")
             if row[2] != "interrupted":
                 return get_reflection(connection, batch_id, _integer(row[0]))
@@ -675,6 +685,8 @@ def begin_reflection(
             version=version,
             required_slice_refs=required_slice_refs,
             findings=findings,
+            purpose=purpose,
+            created_at=time.time(),
         )
         connection.execute(
             "INSERT INTO reflection_batches VALUES(?,?,?,'running',NULL)",
@@ -753,6 +765,7 @@ def abandon_reflection(
             "WHERE batch_id=? AND version=?",
             (interrupted.model_dump_json(), batch_id, version),
         )
+        analysis_work.settle(connection, batch_id, failure=reason)
         return interrupted
 
 
@@ -1632,6 +1645,58 @@ def semantic_search(
     return tuple(item[-1] for item in sorted(ranked, reverse=True))
 
 
+def vector_candidates(
+    connection: sqlite3.Connection,
+    model: str,
+    after: tuple[str, str, int] | None,
+    *,
+    limit: int = 128,
+) -> tuple[tuple[KnowledgeReference, str], ...]:
+    """按模型索引稳定分页，只在数据库线程核验来源，不解析或计算向量。"""
+    rows = connection.execute(
+        "SELECT kind,id,version,vector_json FROM knowledge_index WHERE "
+        "model=? AND vector_json IS NOT NULL "
+        + ("AND (kind,id,version)>(?,?,?) " if after is not None else "")
+        + "ORDER BY kind,id,version LIMIT ?",
+        (model, *(after or ()), limit),
+    ).fetchall()
+    return tuple(
+        (
+            KnowledgeReference(kind=_kind(row[0]), id=_text(row[1]), version=_integer(row[2])),
+            _text(row[3]),
+        )
+        for row in rows
+    )
+
+
+def rank_vectors(
+    query: tuple[float, ...],
+    rows: tuple[tuple[KnowledgeReference, str], ...],
+    previous: tuple[tuple[float, str, str, int, KnowledgeReference], ...],
+    limit: int,
+) -> tuple[tuple[float, str, str, int, KnowledgeReference], ...]:
+    """在线程外用有界堆计算相同的精确排名，不改变完整候选召回语义。"""
+    import heapq
+
+    ranked = list(previous)
+    unit = _unit(query)
+    for reference, encoded in rows:
+        try:
+            raw: object = json.loads(encoded)
+        except json.JSONDecodeError as error:
+            raise StorageError("派生向量不是有效JSON。", code="invalid_index") from error
+        if not isinstance(raw, list):
+            raise StorageError("派生向量形状损坏。", code="invalid_index")
+        stored = _unit(tuple(_number(value) for value in cast(list[object], raw)))
+        if len(stored) != len(unit):
+            raise StorageError("同模型向量维度不一致。", code="invalid_index")
+        score = sum(left * right for left, right in zip(unit, stored, strict=True))
+        heapq.heappush(ranked, (score, reference.id, reference.kind, reference.version, reference))
+        if len(ranked) > limit:
+            heapq.heappop(ranked)
+    return tuple(ranked)
+
+
 def _terms(text: str) -> tuple[str, ...]:
     """沿用中文单字、二元组和规范化拉丁词，关键词不依赖 token 猜测。"""
     terms: list[str] = []
@@ -1863,6 +1928,13 @@ def finish_reflection(
                             written.append(reference)
                 if any(not _covered(scope, actual) for scope in scopes):
                     raise KnowledgeInputError("written 缺少本批实际有效修订及对应来源范围。")
+        if batch.purpose == "behavior":
+            if submission.behavior is None:
+                raise KnowledgeInputError("行为评审必须提交明确结论。")
+            _presented(connection, batch_id, version, submission.behavior.evidence)
+            for observation in submission.behavior.observations:
+                _presented(connection, batch_id, version, observation.evidence)
+            behavior_review.finish(connection, batch, submission.behavior)
         receipt = ReflectionReceipt(
             batch_id=batch_id,
             version=version,
@@ -1913,9 +1985,11 @@ def finish_reflection(
                 "SELECT r.slice_ref,r.state,r.reason FROM knowledge_review_ranges r JOIN "
                 "knowledge_slices s ON r.slice_ref=s.slice_ref JOIN reflection_batches b "
                 "ON r.batch_id=b.batch_id AND r.batch_version=b.version WHERE "
-                "s.evidence_id=? AND s.version=? ORDER BY "
+                "s.evidence_id=? AND s.version=? AND "
+                "coalesce(json_extract(b.payload_json,'$.purpose'),'memory')=? "
+                "ORDER BY "
                 "json_extract(b.receipt_json,'$.completed_at')",
-                (identity, source_version),
+                (identity, source_version, batch.purpose),
             ).fetchall()
             effective: dict[str, tuple[str, str | None]] = {}
             for row in rows:
@@ -1936,7 +2010,7 @@ def finish_reflection(
                 unit=unit,
                 media_ids=tuple(item.media_id for item in snapshot.media),
             )
-            if _covered(full, scopes):
+            if _covered(full, scopes) and batch.purpose == "memory":
                 deferred_ranges = [item for item in effective.values() if item[0] == "deferred"]
                 state = "deferred" if deferred_ranges else "reviewed"
                 reasons = (
@@ -1947,6 +2021,7 @@ def finish_reflection(
                     "version=?",
                     (state, reasons, identity, source_version),
                 )
+        analysis_work.settle(connection, batch_id)
         return receipt
 
 
@@ -1958,6 +2033,11 @@ def finish_reflection(
 def _notice_active(connection: sqlite3.Connection, notice: SupervisionNotice) -> bool:
     """交付前复核来源和活动版本；业务撤销令意见失效，内部错误继续传播。"""
     if notice.expires_at is not None and notice.expires_at <= time.time():
+        return False
+    observation = connection.execute(
+        "SELECT opportunities FROM supervision_outcomes WHERE notice_id=?", (notice.id,)
+    ).fetchone()
+    if observation is not None and observation[0] >= 20:
         return False
     if notice.activity_id is not None:
         row = _one(
@@ -1991,8 +2071,27 @@ def supervise(
     """
     with connection:
         connection.execute("BEGIN IMMEDIATE")
-        _active_batch(connection, batch_id, version)
-        _presented(connection, batch_id, version, notice.evidence)
+        batch = _active_batch(connection, batch_id, version)
+        fragments = _presented(connection, batch_id, version, notice.evidence)
+        if batch.purpose == "behavior":
+            notice = behavior_review.normalize_notice(batch, notice)
+            if notice.generalized and len({fragment.evidence_id for fragment in fragments}) < 2:
+                raise KnowledgeInputError("泛化纠偏至少需要两项独立来源。")
+            same = connection.execute(
+                "SELECT n.id FROM supervision_outcomes o JOIN "
+                "knowledge_supervision n ON n.id=o.notice_id WHERE o.dedup_key=? "
+                "AND json_extract(n.payload_json,'$.expires_at')>? AND "
+                "o.opportunities<20 ORDER BY n.created_at LIMIT 1",
+                (behavior_review.notice_key(notice), time.time()),
+            ).fetchone()
+            if same is not None:
+                existing = get_supervision(connection, same[0])
+                assert existing is not None
+                connection.execute(
+                    "INSERT OR IGNORE INTO behavior_suggestions VALUES(?,?)",
+                    (batch_id, existing.notice.id),
+                )
+                return existing.model_copy(update={"duplicate": True})
         if not _notice_active(connection, notice):
             raise KnowledgeConflict("监管来源、期限或活动版本已失效。")
         row = _one(
@@ -2016,6 +2115,15 @@ def supervise(
             "INSERT INTO knowledge_supervision VALUES(?,?,'open',NULL,?)",
             (notice.id, notice.model_dump_json(), now),
         )
+        if batch.purpose == "behavior":
+            connection.execute(
+                "INSERT INTO supervision_outcomes(notice_id,batch_id,dedup_key) VALUES(?,?,?)",
+                (notice.id, batch_id, behavior_review.notice_key(notice)),
+            )
+        if batch.purpose == "behavior":
+            connection.execute(
+                "INSERT OR IGNORE INTO behavior_suggestions VALUES(?,?)", (batch_id, notice.id)
+            )
         return SupervisionRecord(notice=notice, state="open", created_at=now, active=True)
 
 

@@ -48,7 +48,9 @@ from purrcept_engine.domain.subject.foreground_tools import (
     format_character_card,
 )
 from purrcept_engine.domain.subject.ports import ActionCallback
-from purrcept_engine.domain.subject.prompts import SLEEP_HISTORY_PREVIEW_PROMPT
+from purrcept_engine.domain.subject.prompts import (
+    SLEEP_HISTORY_PREVIEW_PROMPT,
+)
 from purrcept_engine.domain.subject.reflection_tools import reflection_instructions
 from purrcept_engine.domain.subject.service import SubjectService
 from purrcept_engine.domain.subject.session import DynamicState
@@ -71,7 +73,6 @@ class SubjectAssembly:
         foreground_history: 前台已提交历史的独立维护所有者。
         knowledge: 原文展开与认识召回服务，修订仍经过反思批次契约。
         background: 同一主体的独立反馈和反思所有者。
-        reflection_history: 反思已提交历史的独立维护所有者。
         sleep_history: 睡眠期间的一次前台压缩所有者，不与正常首发预检共享在途状态。
 
     Note:
@@ -82,7 +83,6 @@ class SubjectAssembly:
     foreground_history: HistoryPreparation
     knowledge: KnowledgeService
     background: BackgroundService
-    reflection_history: HistoryPreparation
     sleep_history: HistoryPreparation
 
 
@@ -155,7 +155,8 @@ async def build_subject(
         return UsageMeter(store, binding, identity, await store.get_usage_anchor(binding))
 
     foreground_usage = await usage_for(foreground_name, "foreground")
-    reflection_usage = await usage_for(reflection_name, "reflection")
+    reflection_usage = await usage_for(reflection_name, "memory_consolidation")
+    behavior_usage = await usage_for(reflection_name, "behavior_review")
 
     def capacity_for(
         settings: GenerationModelSettings | DecisionModelSettings,
@@ -187,6 +188,21 @@ async def build_subject(
             )
 
         return measure
+
+    capacity_key = hashlib.sha256(
+        encode(
+            {
+                "compiler": compiler_identity("generation"),
+                "model": reflection_settings.model,
+                "window": reflection_settings.context_window,
+                "output": reflection_settings.max_output_tokens,
+                "input_limit": reflection_settings.input_limit,
+                "contents": reflection_settings.supports_contents,
+                "context": config.context.model_dump(mode="json"),
+            }
+        ).encode()
+    ).hexdigest()
+    await store.feedback.configure_capacity(capacity_key)
 
     ledger = store.knowledge
     diagnostic_bytes = config.diagnostics.max_bytes
@@ -221,9 +237,6 @@ async def build_subject(
     history = await history_for(
         foreground_name, foreground_settings, "foreground", foreground_usage
     )
-    reflection_history = await history_for(
-        reflection_name, reflection_settings, "reflection", reflection_usage
-    )
     sleep_history = await history_for(
         foreground_name, foreground_settings, "sleep", foreground_usage
     )
@@ -233,8 +246,8 @@ async def build_subject(
         return await media_blocks(store, media)
 
     async def attention_work() -> JsonObject:
-        """注意只取得有限相关背景，完整未决状态保留给前台/反思真实请求。"""
-        session = await store.get_session("foreground")
+        """注意只取得有限相关背景，完整未决状态保留给前台真实请求。"""
+        session = await store.get_session_state("foreground")
         turn = None if session.active_turn is None else await store.get_turn(session.active_turn)
         plans = await ledger.pending_plans(limit=32)
         activities = await store.activity_records()
@@ -325,8 +338,8 @@ async def build_subject(
         except (CapacityError, ModelError, SummaryError) as error:
             # 无可用容量/模型不应把睡眠变成宿主故障；记录真实失败且不赠送重试。
             # 权威库、内部程序故障及取消不在此转换。
-            sleep_history.last_failure = type(error).__name__ + ": " + str(error)
-            _logger.warning("睡眠历史维护保留原版本：%s", sleep_history.last_failure)
+            sleep_history.last_failure = type(error).__name__
+            _logger.warning("睡眠历史维护保留原版本。", extra={"error_type": type(error).__name__})
 
     attention: AttentionModel | None = None
     attention_name = config.subject.attention
@@ -410,6 +423,16 @@ async def build_subject(
             supports_contents=reflection_settings.supports_contents,
             observe_usage=reflection_usage.observe,
         ),
+        behavior=SubjectModel(
+            generation[reflection_name],
+            reflection_settings.model,
+            reflection_settings.max_output_tokens,
+            capacity_for(reflection_settings, enforce=True, usage=behavior_usage),
+            config.subject.reflection_retry,
+            compiler=compile_materials,
+            supports_contents=reflection_settings.supports_contents,
+            observe_usage=behavior_usage.observe,
+        ),
         instructions=reflection_instructions(),
         settings=BackgroundSettings(
             diagnostic_bytes,
@@ -418,15 +441,17 @@ async def build_subject(
             successful_turns=config.subject.reflection_batch_turns,
             max_requests=config.subject.reflection_turn.max_requests,
             turn_seconds=config.subject.reflection_turn.total_seconds,
+            behavior_enabled=config.subject.behavior_review_enabled,
+            memory_enabled=config.subject.memory_consolidation_enabled,
+            memory_batch_seconds=config.subject.memory_batch_seconds,
+            memory_batch_turns=config.subject.memory_batch_turns,
         ),
         media=native,
         refresh=refresh,
-        prepare_history=reflection_history,
+        prepare_history=None,
         foreground_generation=lambda: subject.generation,
         interrupt_foreground=subject.session.interrupt,
         can_start=can_start,
     )
     subject.bind_background(background)
-    return SubjectAssembly(
-        subject, history, knowledge, background, reflection_history, sleep_history
-    )
+    return SubjectAssembly(subject, history, knowledge, background, sleep_history)

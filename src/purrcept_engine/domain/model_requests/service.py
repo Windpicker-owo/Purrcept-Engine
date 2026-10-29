@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import math
 from collections.abc import Awaitable, Callable, Mapping
 from datetime import UTC, datetime
@@ -24,6 +25,7 @@ from purrcept_core.models import (
     ModelAuthenticationError,
     ModelBackend,
     ModelContextWindowError,
+    ModelError,
     ModelEventSink,
     ModelRateLimitError,
     ModelRequest,
@@ -39,6 +41,7 @@ from purrcept_core.models import (
 from purrcept_engine.domain.model_requests.models import (
     AttemptEvidence,
     AttemptStart,
+    BackgroundBudgetExceeded,
     FailureEvidence,
     RequestEvidence,
     RequestKind,
@@ -451,7 +454,11 @@ class _RetryRunner:
                 await self._commit(self.sink.finish_request(evidence.request_id, "timed_out"))
                 raise RequestBudgetExceeded("逻辑模型请求达到截止", provider="engine")
             start = AttemptStart(evidence.request_id, str(uuid4()), sequence, attempt_deadline)
-            await self._commit(self.sink.begin_attempt(start))
+            try:
+                await self._commit(self.sink.begin_attempt(start))
+            except BackgroundBudgetExceeded:
+                await self._commit(self.sink.finish_request(evidence.request_id, "failed"))
+                raise
             buffer = _EventBuffer(self.diagnostic_bytes)
             try:
                 self._check()
@@ -484,6 +491,28 @@ class _RetryRunner:
                             retry_wait=wait if retry else None,
                         )
                     )
+                )
+                logging.getLogger(__name__).log(
+                    logging.WARNING
+                    if retry
+                    else logging.DEBUG
+                    if failure.category == "unclassified" and not isinstance(error, ModelError)
+                    else logging.ERROR,
+                    "模型传输失败，将按预算重试。" if retry else "模型请求最终失败。",
+                    extra={
+                        "request_id": evidence.request_id,
+                        "attempt_id": start.attempt_id,
+                        "scope": self.scope.owner_id,
+                        "model": model,
+                        "outcome": state,
+                        "category": failure.category,
+                        "error_type": failure.error_type,
+                        "status_code": failure.status_code,
+                        "attempts": sequence,
+                        "duration_ms": (asyncio.get_running_loop().time() - started) * 1000,
+                        "retry_wait": wait if retry else 0,
+                    },
+                    exc_info=(type(error), error, error.__traceback__) if not retry else None,
                 )
                 if not retry:
                     await self._commit(self.sink.finish_request(evidence.request_id, state))

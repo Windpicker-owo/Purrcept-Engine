@@ -62,10 +62,20 @@ class BackgroundSettings:
     max_sources: int = 32
     max_requests: int = 8
     turn_seconds: float = 600.0
+    behavior_enabled: bool = True
+    memory_enabled: bool = True
+    memory_batch_seconds: float = 1800.0
+    memory_batch_turns: int = 32
 
     def __post_init__(self) -> None:
         """在公开构造边界拒绝布尔值、无穷时间和无界扫描。"""
-        for value in (self.page_chars, self.successful_turns, self.max_sources, self.max_requests):
+        for value in (
+            self.page_chars,
+            self.successful_turns,
+            self.max_sources,
+            self.max_requests,
+            self.memory_batch_turns,
+        ):
             if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
                 raise ValueError("后台页长、批量和请求次数必须是正整数。")
         if self.max_sources > 32:
@@ -76,6 +86,6 @@ class BackgroundSettings:
             or self.diagnostic_bytes < 0
         ):
             raise ValueError("诊断额度必须是非负整数。")
-        for value in (self.batch_seconds, self.turn_seconds):
+        for value in (self.batch_seconds, self.turn_seconds, self.memory_batch_seconds):
             if isinstance(value, bool) or not math.isfinite(value) or value <= 0:
                 raise ValueError("后台时间必须是有限正数。")

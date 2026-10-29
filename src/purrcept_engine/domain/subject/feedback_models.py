@@ -92,6 +92,13 @@ class ReflectionState:
     oldest_queued_at: float | None
     priority: bool
     next_plan_at: float | None
+    next_attempt_at: float | None = None
+    budget_remaining: int = 32
+    budget_reset_at: float | None = None
+    blocked_count: int = 0
+    continuation: bool = False
+    capacity_blocked_count: int = 0
+    waiting_evidence_count: int = 0
 
 
 @dataclass(frozen=True, slots=True)

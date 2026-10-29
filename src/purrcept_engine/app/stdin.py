@@ -274,13 +274,21 @@ class ConsoleIngress:
                     line = await self.reader.read_line()
                 except (OSError, UnicodeError) as error:
                     self._failure = error
-                    _logger.error("控制台输入通道已停止：%s", error)
+                    _logger.error(
+                        "控制台输入通道已停止。",
+                        extra={"error_type": type(error).__name__},
+                        exc_info=True,
+                    )
                     return
                 except StorageError as error:
                     if error.code != "input_capacity":
                         raise
                     self._failure = error
-                    _logger.error("控制台输入通道已停止：%s", error)
+                    _logger.error(
+                        "控制台输入通道已停止。",
+                        extra={"error_type": type(error).__name__},
+                        exc_info=True,
+                    )
                     return
                 if line is None:
                     return

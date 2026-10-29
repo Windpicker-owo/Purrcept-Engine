@@ -7,12 +7,12 @@ import type { ReactElement } from "react";
 import { Button } from "@purrcept/cel";
 import type { PanelClient, PanelState } from "../client";
 import { targetReason } from "../model/controls";
-import type { Session, Snapshot } from "../contracts";
+import type { ObjectValue, Session, Snapshot } from "../contracts";
 import { deviceMark, mark } from "../semantics";
 import type { Mark } from "../semantics";
 import { deviceName, stageName } from "../model/names";
 import type { Route } from "../model/routes";
-import { duration, EmptyNote, PageHeading, Section, StateMark, TechDetails, Unavailable } from "../ui/common";
+import { duration, EmptyNote, PageHeading, Section, StateMark, TechDetails, time, Unavailable } from "../ui/common";
 
 /** 收尾优先于忙碌；缺失会话始终明确表示未知，不推断为空闲。 */
 function sessionMark(session: Session | null): Mark {
@@ -28,6 +28,14 @@ function SessionRow({ title, description, session }: { title: string; descriptio
       {session?.budgets.map((budget, index) => <p key={index}>本轮已用 {budget.used_requests} / {budget.max_requests} 次模型请求，剩余 {duration(budget.remaining_seconds)}</p>)}
     </div>
   </div>;
+}
+
+/** 调度原因直接来自后台最近观察；浏览器不自行恢复额度或猜测任务已完成。 */
+function AnalysisRow({ title, value, enabled }: { title: string; value: unknown; enabled: unknown }): ReactElement | null {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return null;
+  const status = value as ObjectValue;
+  const reasons: Record<string,string> = { initializing:"准备中", running:"运行中", idle:"没有待办", batch_wait:"等待合批", cooldown:"失败冷却中", budget_wait:"等待共享额度恢复", waiting_evidence:"等待相关新证据", capacity_blocked:"材料超过容量，等待配置调整", failed:"任务已停止" };
+  return <div className="setting-row"><div><h3>{title}调度</h3><p>{enabled === false ? "已关闭" : reasons[String(status.state)] ?? "状态未提供"}</p><p className="muted">容量阻塞 {String(status.capacity_blocked_count ?? 0)} 项，等待证据 {String(status.waiting_evidence_count ?? 0)} 项。</p></div><p>共享一小时额度剩余 {String(status.budget_remaining ?? "未知")} / 32 次真实传输尝试</p></div>;
 }
 
 /**
@@ -51,6 +59,9 @@ export function System({ state, client, go }: { state: PanelState; client: Panel
       {s.pending_resources.length > 0 ? <div className="setting-row"><div><h3>正在释放的资源</h3></div><p>{s.pending_resources.join("、")}</p></div> : null}
     </Section>
 
+    {s.health.components.some((component) => component.state === "failed") ? <Section id="system-failures" title="组件故障">
+      {s.health.components.filter((component) => component.state === "failed").map((component) => <div className="setting-row" key={component.component}><div><h3>{({ storage:"权威存储", subject: "主体协调", background: "可靠反馈", behavior: "行为评审", memory: "记忆整理", maintenance: "数据维护", input_handoff: "输入交接", startup: "启动" } as Record<string,string>)[component.component] ?? "运行组件"}</h3><p>该组件已暂停；已有事实和行动结果仍可核对。</p>{component.failed_at !== null ? <p className="muted">首次故障：{time(component.failed_at)}</p> : null}<TechDetails items={[["错误",component.error_code],["类型",component.error_type],["诊断关联",component.error_id]]} /></div><StateMark state="failed" label="已停止" /></div>)}
+    </Section> : null}
     <Section id="system-subject" title="她的思考">
       {s.proactive_thinking !== null ? <div className="setting-row">
         <div><h3>主动思考</h3><p className="muted">没有新刺激或没有唤醒主脑，任一状态持续 {duration(s.proactive_thinking.idle_seconds)} 就在主脑空闲后唤起一次。被注意机制暂存的消息会一起处理。她也可以继续休息。</p>
@@ -64,8 +75,20 @@ export function System({ state, client, go }: { state: PanelState; client: Panel
         </Button></div>
       </div> : null}
       <SessionRow title="回应" description="处理新消息并决定怎么做。" session={s.foreground} />
-      <SessionRow title="反思" description="回顾经历、整理记忆，不影响回应新消息。" session={s.reflection} />
+      <SessionRow title="行为评审" description="每批独立检查近期互动，不继承上一批评审过程。" session={s.behavior_review} />
+      <SessionRow title="记忆整理" description="整理新增事实、偏好与经验，不影响回应新消息。" session={s.reflection} />
+      <AnalysisRow title="行为评审" value={s.analysis?.behavior} enabled={s.analysis?.behavior_enabled} />
+      <AnalysisRow title="记忆整理" value={s.analysis?.memory} enabled={s.analysis?.memory_enabled} />
       {s.knowledge !== null ? <div className="setting-row"><div><h3>记忆检索</h3></div><p>{s.knowledge.semantic_enabled === true ? "语义检索已启用" : "仅关键词检索"}{typeof s.knowledge.index_failure === "string" && s.knowledge.index_failure !== "" ? ` · 索引故障：${s.knowledge.index_failure}` : ""}</p></div> : null}
+    </Section>
+
+    {s.supervision_observations.length ? <Section id="system-observations" title="建议后的观察">
+      {s.supervision_observations.map((item) => <div className="setting-row" key={String(item.notice_id)}><div><h3>{({ observing:"观察中", expired:"期限已结束", opportunities_exhausted:"观察机会已用完" } as Record<string,string>)[String(item.observation_state)] ?? "观察状态未知"}</h3><p>前台回应：{({ open:"尚未回应", accept:"接受", partial:"部分接受", reject:"拒绝" } as Record<string,string>)[String(item.adoption)] ?? "状态未知"}；相关机会 {String(item.opportunities)} / 20。</p></div><p>{({ improved:"已有改善证据", recurred:"发现复发", insufficient_samples:"观察样本不足" } as Record<string,string>)[String(item.outcome)] ?? "结果未知"}</p></div>)}
+    </Section> : null}
+
+    <Section id="system-storage" title="诊断数据">
+      <p>请求、响应和流诊断正文默认保留七天或合计 1 GiB。当前工作和独立保存的业务证据受保护。</p>
+      {s.storage_statistics === null ? <p className="muted">尚未运行数据库统计；面板不会扫描全库。</p> : <TechDetails items={[["最近维护统计", s.storage_statistics]]} />}
     </Section>
 
     <Section id="system-inputs" title="待处理消息" aside={<span className="section-count">{count} / {s.pending_limits.count} 条</span>}>

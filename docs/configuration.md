@@ -68,7 +68,7 @@ speech_style = "用简洁自然的中文交流。"
 ## 模型声明和用途
 
 `[models.任意名称]` 声明资源，`[subject]` 用名称引用它。前台、反思和摘要必须
-引用 `kind = "generation"` 的模型；三者可以共用端点，前台和反思各有独立会话。
+引用 `kind = "generation"` 的模型；三者可以共用端点。前台保留连续历史；行为评审与记忆整理分别拥有每批空历史会话。
 注意可以引用生成模型或 `kind = "decision"` 的专用判断模型；省略 `attention`
 时不装配注意评估器，普通输入按无注意模型路径请求前台。
 
@@ -144,7 +144,9 @@ Engine 不会在判断失败后切换到聊天端点。
 | `[subject.character]` | `name`、`one_line`、`persona`、`relationship`、`speech_style`、`notes` 六项固定身份文字，缺省为 `None`；不从长期认识恢复。 |
 | `subject.attention_batch_seconds` / `attention_batch_size` | `0.1` 秒 / `8` 条，普通注意合批门槛。 |
 | `subject.proactive_thinking` / `proactive_idle_seconds` | `false` / `300.0` 秒。启用后按静默或主脑未激活期限，在主脑空闲时触发一次思考；会产生模型费用。 |
-| `subject.reflection_batch_seconds` / `reflection_batch_turns` | `60.0` 秒 / `8` 轮，独立反思的合批触发条件。 |
+| `subject.behavior_review_enabled` / `memory_consolidation_enabled` | 默认均为 `true`，独立关闭相应分析任务；可靠反馈继续运行。 |
+| `subject.memory_batch_seconds` / `memory_batch_turns` | `1800.0` 秒 / `32` 轮，记忆整理有待办时的合批触发条件。 |
+| `subject.reflection_batch_seconds` / `reflection_batch_turns` | `60.0` 秒 / `8` 轮，局部行为评审的合批触发条件。 |
 | `[subject.foreground_retry]` 等 | `attempts = 2` 含首次；`attempt_seconds = 120.0`、`total_seconds = 180.0`。注意默认每次 `5.0`、总计 `8.0` 秒。可分别设置 `reflection_retry`、`summary_retry`、`attention_retry`。 |
 | `[subject.foreground_turn]` / `[subject.reflection_turn]` | `max_requests = 8`、`total_seconds = 600.0`，限制整轮逻辑请求数与总时间；传输重试共用原逻辑请求预算。 |
 | `[context]` | 占用达到 `summary_trigger = 0.8` 时尝试历史维护，目标 `summary_target = 0.5`，必须小于触发比例。`input_reserve_fraction = 0.1` 为下一批输入预留额度，`protected_turns = 2` 保护近期完整轮次，`page_chars = 8000` 限制展开页。 |
@@ -239,8 +241,10 @@ group_list = []
 检查点间隔 5 秒；暂停和离线时间不扣减。
 
 `[logging]` 默认保留 7 天、单文件 10 MiB、最多 7 份；`[diagnostics]` 默认保留
-7 天、详细模型流 1 MiB。这些清理只约束诊断，原始输入、媒体、请求及真实回执
-不会随诊断过期删除。`[knowledge.embedding]` 缺省时仅本地检索；启用语义检索需
+7 天，单次流诊断 `max_bytes = 1048576`，所有请求、响应、已安装摘要副本和流诊断正文
+合计 `retained_bytes = 1073741824`。最旧可清理正文先淘汰，永久元数据仍保留。
+原始输入、真实行动回执、独立证据及其媒体不随诊断期限删除；保护项可使正文暂时超额。
+这不限制整个数据库大小。维护与成本策略见 [运行治理](governance.md)。`[knowledge.embedding]` 缺省时仅本地检索；启用语义检索需
 明确填写 OpenAI 兼容的 `model`、向量空间版本 `model_id`、`api_base` 及可选凭据，
 配置契约见 [EmbeddingSettings](../src/purrcept_engine/domain/knowledge/settings.py)。
 

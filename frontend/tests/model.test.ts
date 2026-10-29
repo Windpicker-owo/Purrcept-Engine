@@ -27,6 +27,13 @@ function entry(patch: Partial<Entry> = {}): Entry {
 }
 
 describe("agentView", () => {
+  it("主体丧失派发资格时禁止把空闲会话显示为安静待命", () => {
+    const base = host();
+    const failed = { ...base, health: { ...base.health, can_process: false } };
+    expect(agentView(failed, true, [])).toMatchObject({ state: "failed", headline: "主体已停止处理" });
+    const partial = { ...base, health: { ...base.health, components: [{ component: "memory", state: "failed", failed_at: 1, error_id: "fault", error_code: "component_failed", error_type: "LookupError", can_process: false }] } };
+    expect(agentView(partial, true, []).headline).toBe("部分后台工作已暂停");
+  });
   it("断线时不把旧快照当作当前状态", () => {
     expect(agentView(host(), false, []).state).toBe("warning");
     expect(agentView(null, false, []).headline).toContain("还没有连上");
@@ -60,6 +67,11 @@ describe("agentView", () => {
 });
 
 describe("attentionItems", () => {
+  it("组件故障进入可导航的待处理事项，不只留在空闲状态文案中", () => {
+    const s = host();
+    s.health.components = [{ component:"memory",state:"failed",failed_at:1,error_id:"fault",error_code:"component_failed",error_type:"LookupError",can_process:false }];
+    expect(attentionItems(s, []).find((item) => item.id === "component-health")).toMatchObject({ title:"部分后台工作已暂停",route:{page:"system",id:null},needsUser:true });
+  });
   it("汇总存储、设备、未知结果、活动与容量", () => {
     const s: Snapshot = {
       ...host(), authority_available: false,

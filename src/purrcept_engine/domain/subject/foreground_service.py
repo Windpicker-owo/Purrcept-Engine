@@ -8,6 +8,7 @@ ContinuousSession 拥有连续历史和生成资格，Core 拥有轮内模型/�
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -124,6 +125,7 @@ class ForegroundService:
             一次调用对应一次前台轮次；Core 继续拥有轮内模型/工具循环。
             模型暂时失败由 Session 留下失败经历，新的唤醒由外部协调者安排。
         """
+        started = time.perf_counter()
         try:
             await self.run_foreground(records)
         except asyncio.CancelledError:
@@ -142,6 +144,14 @@ class ForegroundService:
         ):
             # Session 已完成失败结案；没有独立新输入就不重新发起同轮预算。
             pass
+        finally:
+            logging.getLogger(__name__).info(
+                "本轮输入处理已结束。",
+                extra={
+                    "input_count": len(records),
+                    "duration_ms": (time.perf_counter() - started) * 1000,
+                },
+            )
 
     async def foreground_message(
         self, records: tuple[InputRecord, ...], failures: tuple[TurnRecord, ...]

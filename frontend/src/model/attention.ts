@@ -43,6 +43,14 @@ export function attentionItems(snapshot: Snapshot | null, entries: readonly Entr
       route: { page: "system", id: null }, needsUser: true,
     });
   }
+  if (snapshot.authority_available && snapshot.health.components.some((component) => component.state === "failed")) {
+    items.push({
+      id: "component-health", state: "failed",
+      title: snapshot.health.can_process ? "部分后台工作已暂停" : "主体已停止处理新工作",
+      impact: snapshot.health.can_process ? "新消息仍可处理，暂停的分析任务需要核对故障。" : "已有历史仍可读取，新的派发已停止。",
+      next: "查看组件故障与诊断关联", route: { page: "system", id: null }, needsUser: true,
+    });
+  }
   for (const device of snapshot.devices) {
     const status = deviceMark(device);
     const error = typeof device.state.error === "string" && device.state.error !== "" ? device.state.error : null;

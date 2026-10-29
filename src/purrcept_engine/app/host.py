@@ -7,6 +7,7 @@ EngineAssembly。具体模型循环、执行器和账本分别由下层所有者
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable, Mapping
+from pathlib import Path
 from uuid import uuid4
 
 from purrcept_core.models import DecisionBackend, ModelBackend
@@ -58,6 +59,7 @@ class EngineHost:
         decision_backends: Mapping[str, DecisionBackend] | None = None,
         embedding_provider: EmbeddingProvider | None = None,
         reranker: Reranker | None = None,
+        on_data_dir_acquired: Callable[[Path], None] | None = None,
     ) -> None:
         """校验配置与插件声明，创建尚未启动的宿主实例。
 
@@ -70,6 +72,7 @@ class EngineHost:
             decision_backends: 按配置名注入的判断后端，由嵌入调用者负责最终关闭。
             embedding_provider: 嵌入调用者注入的向量 Provider；None 按显式配置装配。
             reranker: 可选重排器，只能对给定候选排序。 None 表示不重排。
+            on_data_dir_acquired: 目录锁取得后用于安装应用诊断的同步回调；None 不调用。
 
         Raises:
             ConfigError: 配置或插件纯声明不成立，尚未取得外部资源。
@@ -87,6 +90,7 @@ class EngineHost:
             decision_backends=decision_backends,
             embedding_provider=embedding_provider,
             reranker=reranker,
+            on_data_dir_acquired=on_data_dir_acquired,
         )
         self._lifecycle = HostLifecycle(self._state)
         self._inputs = InputAdmissionService(self._state, self._lifecycle)
@@ -237,7 +241,7 @@ class EngineHost:
             与前台 play_action 共用冻结目录和执行器。取消观察不撤销已开始效果。input_id
             仅作因果关联；presented_call_ids 只能由可信交付门槛提供，不向 Worker 或模型开放。
         """
-        self._lifecycle.check_dispatch()
+        self._lifecycle.check_ready_dispatch()
         execution = self._state.execution
         if execution is None:
             raise HostStateError("执行服务尚未装配。")
@@ -246,7 +250,7 @@ class EngineHost:
             """在实际派发前复核宿主阶段与本次生成资格。"""
             if self._state.phase in ("closing", "closed"):
                 return False
-            self._lifecycle.check_dispatch()
+            self._lifecycle.check_ready_dispatch()
             return can_start is None or can_start()
 
         return await execution.execute(
@@ -316,7 +320,7 @@ class EngineHost:
             与脚本共用目录、并发和真实回执。观察取消或 unknown 不代表资源已经归还；
             活动所有者须用配对资源等待入口确认。接管身份不证明已发生效果。
         """
-        self._lifecycle.check_dispatch()
+        self._lifecycle.check_ready_dispatch()
         execution = self._state.execution
         if execution is None:
             raise HostStateError("执行服务尚未装配。")
@@ -325,7 +329,7 @@ class EngineHost:
             """在实际派发前复核宿主阶段与本次生成资格。"""
             if self._state.phase in ("closing", "closed"):
                 return False
-            self._lifecycle.check_dispatch()
+            self._lifecycle.check_ready_dispatch()
             return can_start is None or can_start()
 
         return await execution.invoke(
@@ -414,6 +418,10 @@ class EngineHost:
         """
         return await self._queries.query_request(request_id)
 
+    def query_health(self) -> JsonObject:
+        """读取启动和组件健康，不打开数据库、插件或模型资源。"""
+        return self._queries.query_health()
+
     async def query_panel(self) -> JsonObject:
         """读取有限真实概况与设备缓存状态。
 
@@ -438,7 +446,7 @@ class EngineHost:
         Note:
             提交面板允许的显式控制，共用原能力、活动或主体选项所有者，不经过模型。
         """
-        self._lifecycle.check_dispatch()
+        self._lifecycle.check_ready_dispatch()
         if self._state.panel is None:
             raise HostStateError("面板控制尚未装配。")
         return await self._state.panel.submit(request)
@@ -470,7 +478,7 @@ class EngineHost:
         """
         return self._queries.query_preview(target)
 
-    async def query_reviews(self, before: str | None = None) -> JsonObject:
+    async def query_reviews(self, before: str | None = None, *, kind: str = "action") -> JsonObject:
         """读取按时间倒序排列的有限历史审查列表。
 
         Args:
@@ -480,7 +488,7 @@ class EngineHost:
             HostStateError: 权威库尚未取得。
             ControlError: 历史游标不存在。
         """
-        return await self._queries.query_reviews(before)
+        return await self._queries.query_reviews(before, kind=kind)
 
     async def query_review(self, action_id: str) -> JsonObject | None:
         """读取行动所见刺激、完整执行材料和人工评价，不确认消费。

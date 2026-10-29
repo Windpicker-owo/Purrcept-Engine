@@ -145,6 +145,8 @@ class CapabilityCall:
     ordinary: bool
     target_reserved: bool = False
     provider_started: bool = False
+    # 原异常只借到对应回执日志提交，随后清空，避免 traceback 长期持有 Provider 资源。
+    diagnostic_error: BaseException | None = None
 
     @property
     def source_id(self) -> str:

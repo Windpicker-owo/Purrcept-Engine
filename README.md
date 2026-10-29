@@ -43,10 +43,10 @@ me.bed.rest(...)  # 睡觉：普通刺激只记历史
   写入 `engine.sqlite3`，请求与回执都可追溯。
 - **会睡觉，也会主动想起你。** `me.bed.rest` 后只有高优先刺激能唤醒主脑；开启主动
   思考后，空闲满间隔会以 `subject.idle` 保底唤起一次。
-- **长期记忆靠反思，不靠聊天记录。** 独立反思通过 `revise_memory` 有据写入，冲突
+- **长期记忆靠反思，不靠聊天记录。** 独立记忆整理通过 `revise_memory` 有据写入，冲突
   记忆保留双向反证与版本。
 - **可以主动评价她的行为。** WebUI“行为审查”展示当轮刺激和完整行动，可选择
-  好/坏并留言；评价持久交给主脑与反思，指导后续行动与纠偏记忆。
+  好/坏并留言；评价持久交给主脑、局部行为评审与记忆整理，分别保留交接责任。
 
 ## 工作方式
 
@@ -167,8 +167,8 @@ uv run python -m build
 
 类型检查使用 strict Pyright。离线验收在命令级设置 `LITELLM_LOCAL_MODEL_COST_MAP=True`，
 只选择 SDK 包内元数据；wheel 构建、非 editable 安装与离线冒烟见
-[构建与分发](docs/distribution.md)。前端开发和重建面板需要同级 Design 工作区，
-步骤见 [前端说明](frontend/README.md)，安装后的运行不依赖此工作区。
+[构建与分发](docs/distribution.md)。前端开发和重建面板使用仓内固定 Design 包与 npm 锁，
+步骤见 [前端说明](frontend/README.md)，安装后直接使用随 wheel 分发的资源。
 
 ## 文档
 
@@ -179,6 +179,8 @@ uv run python -m build
 | [主体运行行为](docs/behavior.md) | 注意、睡眠、主动思考、记忆、插件与关闭细则 |
 | [输入材料契约](docs/input-materials.md) | 内容块布局、媒体投影与时间顺序 |
 | [构建与分发](docs/distribution.md) | PyPI 依赖、wheel 构建与独立安装冒烟 |
+| [运行治理与维护](docs/governance.md) | 健康、分析队列、诊断保留及离线维护契约 |
+| [修复验收记录](docs/repair-validation.md) | 五部分交付、质量检查、独立安装及合成性能测量 |
 | [断点调试指南](docs/debugging.md) | VS Code 启动配置与 decision 断点 |
 | [贡献指南](CONTRIBUTING.md) | 源码注释与公开 API 契约规范 |
 
@@ -186,3 +188,7 @@ uv run python -m build
 
 - 当前验证范围以离线测试、临时 SQLite、真实 Windows Worker 和独立安装为主。
 - 离线验收不代表模型或设备的实际效果；部署时需自行确认端点、账号和设备配置。
+
+运行治理、健康查询、后台共享成本额度、诊断正文保留及离线数据库维护见
+[运行治理](docs/governance.md)。构建仅依赖仓内冻结产物和锁文件；适配库0.2.1尚未
+公开发布，本轮独立安装步骤及限制见 [构建与分发](docs/distribution.md)。

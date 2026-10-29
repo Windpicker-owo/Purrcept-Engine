@@ -3,31 +3,31 @@
 
 :root {
   /* colors */
-  --pc-color-canvas: #F4F1EE;
-  --pc-color-atmosphere-rose: #FBE6EE;
+  --pc-color-canvas: #F2F4F7;
+  --pc-color-atmosphere-sky: #E2EBFC;
   --pc-color-atmosphere-peach: #FCEEE2;
   --pc-color-surface: #FFFFFF;
-  --pc-color-surface-sunken: #F5F2EF;
-  --pc-color-surface-selected: #EEE9E4;
+  --pc-color-surface-sunken: #F3F5F8;
+  --pc-color-surface-selected: #E8ECF2;
   --pc-color-glass: rgba(255, 255, 255, 0.78);
   --pc-color-ink: #15171A;
   --pc-color-ink-secondary: #484D55;
   --pc-color-ink-muted: #5E636B;
   --pc-color-ink-disabled: #A3A7AD;
   --pc-color-on-ink: #FFFFFF;
-  --pc-color-outline: #D6D1CC;
-  --pc-color-outline-subtle: #E8E4E0;
-  --pc-color-focus-ring: #B82A69;
+  --pc-color-outline: #D3D8E0;
+  --pc-color-outline-subtle: #E4E8EE;
+  --pc-color-focus-ring: #2456D6;
   --pc-color-scrim: rgba(21, 23, 26, 0.32);
-  --pc-color-brand: #B82A69;
-  --pc-color-brand-hover: #A02259;
-  --pc-color-brand-pressed: #861C4B;
+  --pc-color-brand: #2456D6;
+  --pc-color-brand-hover: #1C47B8;
+  --pc-color-brand-pressed: #163A99;
   --pc-color-on-brand: #FFFFFF;
-  --pc-color-brand-container: #FCE4EF;
-  --pc-color-on-brand-container: #7E1747;
-  --pc-color-active: #1460CC;
-  --pc-color-active-container: #E5EEFC;
-  --pc-color-on-active-container: #0E3F86;
+  --pc-color-brand-container: #E3EBFD;
+  --pc-color-on-brand-container: #173B8F;
+  --pc-color-active: #0A7480;
+  --pc-color-active-container: #DDF2F4;
+  --pc-color-on-active-container: #06525B;
   --pc-color-success: #127236;
   --pc-color-success-container: #E4F3E9;
   --pc-color-on-success-container: #0F5A2B;
@@ -104,8 +104,8 @@
   --pc-shadow-dialog: 0 4px 12px rgba(21, 23, 26, 0.08), 0 24px 64px rgba(21, 23, 26, 0.20);
 
   /* gradients：只给背景美术 */
-  --pc-gradient-atmosphere: radial-gradient(60% 55% at 0% 0%, var(--pc-color-atmosphere-rose) 0%, transparent 100%), radial-gradient(55% 50% at 100% 0%, var(--pc-color-atmosphere-peach) 0%, transparent 100%);
-  --pc-gradient-stage: linear-gradient(115deg, var(--pc-color-surface) 40%, var(--pc-color-atmosphere-rose) 100%);
+  --pc-gradient-atmosphere: radial-gradient(60% 55% at 0% 0%, var(--pc-color-atmosphere-sky) 0%, transparent 100%), radial-gradient(55% 50% at 100% 0%, var(--pc-color-atmosphere-peach) 0%, transparent 100%);
+  --pc-gradient-stage: linear-gradient(115deg, var(--pc-color-surface) 40%, var(--pc-color-atmosphere-sky) 100%);
 
   /* materials：只给导航轨与浮层 */
   --pc-material-glass-background: var(--pc-color-glass);

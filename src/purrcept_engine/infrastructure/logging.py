@@ -10,14 +10,18 @@
 
 from __future__ import annotations
 
+import json
 import logging
+import math
 import re
 import sys
+from collections.abc import Generator
+from contextlib import contextmanager
 from copy import copy
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
-from typing import TextIO
+from typing import TextIO, cast
 
 _FILE_NAME = re.compile(r"engine-(\d{8})-(\d{6})\.log")
 _MIN_FILE_BYTES = 64
@@ -38,6 +42,22 @@ _SUMMARY_FIELDS = (
     "outcome",
     "receipt_revision",
     "error_type",
+    "calls",
+    "failed_calls",
+    "unknown_calls",
+    "input_count",
+    "plugin_count",
+    "component",
+    "error_id",
+    "error_code",
+    "stage",
+    "duration_ms",
+    "model",
+    "category",
+    "status_code",
+    "attempts",
+    "retry_wait",
+    "remaining_seconds",
 )
 
 
@@ -119,12 +139,94 @@ class _UtcFormatter(logging.Formatter):
         summaries = [
             f"{name}={value}"
             for name in _SUMMARY_FIELDS
-            if isinstance(value := fields.get(name), str | int)
+            if isinstance(value := fields.get(name), str | int | float)
         ]
         if record.exc_info is not None and record.exc_info[0] is not None:
             summaries.append(f"exception_type={record.exc_info[0].__name__}")
         rendered = super().format(public)
         return rendered + (" | " + " ".join(summaries) if summaries else "")
+
+
+def _exception_frames(error: BaseException, seen: set[int], depth: int = 0) -> dict[str, object]:
+    """保留代码位置和原因链，不调用可能泄露远端正文的异常字符串方法。"""
+    if id(error) in seen or depth >= 16:
+        return {"type": type(error).__name__, "truncated": True}
+    seen.add(id(error))
+    frames: list[dict[str, object]] = []
+    trace = error.__traceback__
+    while trace is not None:
+        frame = trace.tb_frame
+        frames.append(
+            {
+                "module": frame.f_globals.get("__name__", ""),
+                "file": Path(frame.f_code.co_filename).name,
+                "function": frame.f_code.co_name,
+                "line": trace.tb_lineno,
+            }
+        )
+        trace = trace.tb_next
+    result: dict[str, object] = {"type": type(error).__name__, "frames": frames[-64:]}
+    cause = error.__cause__
+    if cause is None and not error.__suppress_context__:
+        cause = error.__context__
+    if cause is not None:
+        result["cause"] = _exception_frames(cause, seen, depth + 1)
+    if isinstance(error, BaseExceptionGroup):
+        group = cast(BaseExceptionGroup[BaseException], error)
+        result["exceptions"] = [
+            _exception_frames(child, seen, depth + 1) for child in group.exceptions[:32]
+        ]
+        result["omitted_exceptions"] = max(0, len(group.exceptions) - 32)
+    return result
+
+
+class _DiagnosticFormatter(logging.Formatter):
+    """文件使用 JSON 行；仅允许受控字段和不含正文的异常位置进入诊断。"""
+
+    def format(self, record: logging.LogRecord) -> str:
+        """编码完整事件，不修改共享 LogRecord 或展开任意 extra 对象。"""
+        public: dict[str, object] = {
+            "time": datetime.fromtimestamp(record.created, UTC).isoformat(timespec="milliseconds"),
+            "level": record.levelname,
+            "logger": record.name,
+            "message": record.getMessage(),
+            "location": {
+                "module": record.module,
+                "function": record.funcName,
+                "line": record.lineno,
+            },
+        }
+        for name in _SUMMARY_FIELDS:
+            value = record.__dict__.get(name)
+            if isinstance(value, str | int | float):
+                public[name] = value
+        if record.exc_info is not None and record.exc_info[1] is not None:
+            public["exception"] = _exception_frames(record.exc_info[1], set())
+        return json.dumps(public, ensure_ascii=False, allow_nan=False)
+
+
+@contextmanager
+def console_logging() -> Generator[None]:
+    """CLI 在读取配置前借用终端摘要，退出后恢复原包级配置。
+
+    文件日志须等目录锁取得后另行安装。嵌入宿主不调用此入口；调用者负责让
+    文件所有者先关闭，避免嵌套借用恢复已过期的日志配置。
+    """
+    logger = logging.getLogger("purrcept_engine")
+    previous = logger.level, logger.propagate
+    handler = logging.StreamHandler(sys.stderr)
+    handler.setLevel(logging.INFO)
+    handler.setFormatter(_UtcFormatter("%(asctime)s %(levelname)s: %(message)s"))
+    logger.addHandler(handler)
+    logger.setLevel(logging.INFO)
+    logger.propagate = False
+    try:
+        yield
+    finally:
+        logger.removeHandler(handler)
+        handler.close()
+        logger.setLevel(previous[0])
+        logger.propagate = previous[1]
 
 
 class _TextLogHandler(logging.Handler):
@@ -201,11 +303,22 @@ class _TextLogHandler(logging.Handler):
             text = self.format(record) + "\n"
             encoded = text.encode("utf-8")
             if len(encoded) > self.max_bytes:
-                suffix = b" [truncated]\n"
-                prefix = encoded[: self.max_bytes - len(suffix)]
-                # 截断只舍弃边界上不完整的 UTF-8 字符，完整正文仍归权威存储。
-                text = prefix.decode("utf-8", errors="ignore") + suffix.decode("ascii")
+                # 保持 JSON 行有效；不能为了文件额度把结构化诊断截成坏 JSON。
+                minimal = {"level": record.levelname, "truncated": True, "message": ""}
+                overhead = (
+                    len(json.dumps(minimal, ensure_ascii=False, separators=(",", ":")).encode()) + 1
+                )
+                message = record.getMessage().encode("utf-8")[: max(0, self.max_bytes - overhead)]
+                minimal["message"] = message.decode("utf-8", errors="ignore")
+                text = json.dumps(minimal, ensure_ascii=False, separators=(",", ":")) + "\n"
                 encoded = text.encode("utf-8")
+                # 引号、反斜线和控制字符可能扩张；继续缩短至实际编码满足额度。
+                while len(encoded) > self.max_bytes:
+                    minimal["message"] = str(minimal["message"])[
+                        : max(0, len(str(minimal["message"])) // 2)
+                    ]
+                    text = json.dumps(minimal, ensure_ascii=False, separators=(",", ":")) + "\n"
+                    encoded = text.encode("utf-8")
 
             # 文件日期归写入资源的当前寿命，事件自己的时间仍由 formatter 保留。
             day = datetime.now(UTC).date()
@@ -338,6 +451,37 @@ class CliLogging:
         self._logger.addHandler(file_handler)
         self._logger.addHandler(console_handler)
 
+    def record_startup_phase(self, stage: str, duration_ms: float) -> None:
+        """补写锁取得前已报告到终端的耗时，仅写文件，避免重复终端摘要。
+
+        Args:
+            stage: configuration、plugin_declarations 或 web 的固定阶段身份。
+            duration_ms: 原阶段的单调计时结果，不以补写时刻重新计算。
+
+        Raises:
+            RuntimeError: 文件日志所有者已关闭。
+            ValueError: 阶段身份或计时结果无效。
+        """
+        if self._closed:
+            raise RuntimeError("CLI 日志已经关闭。")
+        if (
+            stage not in ("configuration", "plugin_declarations", "web")
+            or not math.isfinite(duration_ms)
+            or duration_ms < 0
+        ):
+            raise ValueError("启动补写只接受明确的阶段与有限非负耗时。")
+        record = self._logger.makeRecord(
+            "purrcept_engine.app.cli",
+            logging.INFO,
+            __file__,
+            0,
+            "启动早期阶段耗时已记录。",
+            (),
+            None,
+            extra={"stage": stage, "duration_ms": duration_ms},
+        )
+        self._file.handle(record)
+
     @classmethod
     def open(
         cls,
@@ -347,6 +491,7 @@ class CliLogging:
         max_bytes: int = 10485760,
         max_files: int = 7,
         console: TextIO | None = None,
+        include_console: bool = True,
     ) -> CliLogging:
         """取得日志资源后安装 handler。
 
@@ -356,6 +501,7 @@ class CliLogging:
             max_bytes: 此边界允许保留或接管的最大字节数。 默认 10485760。
             max_files: 当前日志所有者允许保留的文件数量上限。 默认 7。
             console: 可选的 CLI 文本输出流。 None 不额外安装控制台日志输出。
+            include_console: False 表示终端已由更早的 CLI 所有者安装，避免重复摘要。
 
         Returns:
             本次 CLI 取得的日志处理器所有者。
@@ -392,9 +538,11 @@ class CliLogging:
             raise
 
         formatter = _UtcFormatter("%(asctime)s %(levelname)s %(name)s: %(message)s")
-        file_handler.setFormatter(formatter)
+        file_handler.setFormatter(_DiagnosticFormatter())
         console_handler = logging.StreamHandler(sys.stderr if console is None else console)
         console_handler.setLevel(logging.INFO)
+        if not include_console:
+            console_handler.setLevel(logging.CRITICAL + 1)
         console_handler.setFormatter(formatter)
         return cls(file_handler, console_handler)
 

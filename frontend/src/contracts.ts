@@ -29,42 +29,58 @@ export interface Action {
   error: PreviewText | null; calls: Call[];
 }
 /** 人工审查展开完整原文，区别于快照的有界预览。 */
+export interface ReviewAction {
+  action_id: string; state: string; source: string; output: string; error: string | null; result_json: string | null;
+  calls: { call_id: string; path: string; state: string; arguments_json: string; result_json: string | null; error: string | null }[];
+}
 export interface Review {
   revision: string; turn_id: string | null;
+  target: { kind: "action" | "turn" | "call"; id: string; state: string };
   stimuli: { input_id: string; adapter_id: string; display_name: string | null; text: string; occurred_at: string; received_at: string; media: { media_id: string; media_type: string; name: string | null }[] }[];
-  action: { action_id: string; state: string; source: string; output: string; error: string | null; result_json: string | null;
-    calls: { call_id: string; path: string; state: string; arguments_json: string; result_json: string | null; error: string | null }[] };
+  action: ReviewAction | null; actions: ReviewAction[];
   feedback: { evidence_id: string; request_id: string; revision: string; rating: "good" | "bad"; comment: string; created_at: number }[];
 }
-
-/** 校验完整审查材料，不把缺失原文或未知评分补成成功。 */
+/** 目标身份保留种类；没有行动的轮次不会被包装成虚构行动。 */
+export interface ReviewItem { target_kind: "action" | "turn" | "call"; target_id: string; state: string; created_at: number; label: string }
+function reviewKind(value: unknown): "action" | "turn" | "call" {
+  if (value !== "action" && value !== "turn" && value !== "call") throw new ContractError("review.kind");
+  return value;
+}
+/** 将页面选择的真实目标交给统一控制账本。 */
+export function reviewTarget(id: string): string { return id.startsWith("turn:") || id.startsWith("call:") ? id : `action:${id}`; }
+function reviewAction(value: unknown, at: string): ReviewAction {
+  const a = object(value, at);
+  return { action_id: text(a.action_id, at), state: text(a.state, at), source: text(a.source, at), output: text(a.output, at),
+    error: nullable(a.error, at, text), result_json: nullable(a.result_json, at, text),
+    calls: list(a.calls, at, (entry, field) => { const c = object(entry, field); return {
+      call_id: text(c.call_id, field), path: text(c.path, field), state: text(c.state, field), arguments_json: text(c.arguments_json, field),
+      result_json: nullable(c.result_json, field, text), error: nullable(c.error, field, text),
+    }; }),
+  };
+}
+/** 校验完整审查材料与明确目标，缺少行动不会被补成成功。 */
 export function review(value: unknown): Review {
-  const v = object(value, "review");
-  const a = object(v.action, "review.action");
+  const v = object(value, "review"); const t = object(v.target, "review.target");
   return {
     revision: text(v.revision, "revision"), turn_id: nullable(v.turn_id, "turn_id", text),
-    action: {
-      action_id: text(a.action_id, "action_id"), state: text(a.state, "state"), source: text(a.source, "source"), output: text(a.output, "output"),
-      error: nullable(a.error, "error", text), result_json: nullable(a.result_json, "result_json", text),
-      calls: list(a.calls, "calls", (entry, at) => { const c = object(entry, at); return {
-        call_id: text(c.call_id, at), path: text(c.path, at), state: text(c.state, at), arguments_json: text(c.arguments_json, at),
-        result_json: nullable(c.result_json, at, text), error: nullable(c.error, at, text),
-      }; }),
-    },
+    target: { kind: reviewKind(t.kind), id: text(t.id, "target.id"), state: text(t.state, "target.state") },
+    action: nullable(v.action, "action", reviewAction), actions: list(v.actions, "actions", reviewAction),
     stimuli: list(v.stimuli, "stimuli", (entry, at) => { const s = object(entry, at); return {
       input_id: text(s.input_id, at), adapter_id: text(s.adapter_id, at), display_name: nullable(s.display_name, at, text),
       text: text(s.text, at), occurred_at: text(s.occurred_at, at), received_at: text(s.received_at, at),
       media: list(s.media, at, (entry, field) => { const m = object(entry, field); return { media_id: text(m.media_id, field), media_type: text(m.media_type, field), name: nullable(m.name, field, text) }; }),
     }; }),
-    feedback: list(v.feedback, "feedback", (entry, at) => {
-      const f = object(entry, at);
+    feedback: list(v.feedback, "feedback", (entry, at) => { const f = object(entry, at);
       if (f.rating !== "good" && f.rating !== "bad") throw new ContractError(`${at}.rating`);
-      return { evidence_id: text(f.evidence_id, at), request_id: text(f.request_id, at), revision: text(f.revision, at), rating: f.rating,
-        comment: text(f.comment, at), created_at: number(f.created_at, at) };
+      return { evidence_id: text(f.evidence_id, at), request_id: text(f.request_id, at), revision: text(f.revision, at), rating: f.rating, comment: text(f.comment, at), created_at: number(f.created_at, at) };
     }),
   };
 }
-
+/** 校验三种真实目标的服务端分页。 */
+export function reviewTargets(value: unknown): { items: ReviewItem[]; next_cursor: string | null } {
+  const v = object(value, "review_targets");
+  return { items: list(v.items, "items", (entry, at) => { const i = object(entry, at); return { target_kind: reviewKind(i.target_kind), target_id: text(i.target_id, at), state: text(i.state, at), created_at: number(i.created_at, at), label: text(i.label, at) }; }), next_cursor: nullable(v.next_cursor, "next_cursor", text) };
+}
 /** 历史审查用服务端游标分页，不以本页记录条数推测还有多少历史。 */
 export function reviewPage(value: unknown): { items: Action[]; next_cursor: string | null } {
   const v = object(value, "review_page");
@@ -85,8 +101,28 @@ export interface Device {
   instance_id: string; kind: string | null; revision: string | null; state: ObjectValue;
   controls: DeviceControl[]; has_preview: boolean;
 }
+/** 组件故障独立于进程生命周期；can_process 与实际派发资格一致。 */
+export interface Health {
+  instance_id: string; phase: string; can_process: boolean; startup_stage: string | null;
+  components: { component: string; state: string; failed_at: number | null; error_id: string | null; error_code: string | null; error_type: string | null; can_process: boolean }[];
+}
+/** 校验启动或运行期健康，缺失处理资格不能补成正常。 */
+export function health(value: unknown): Health {
+  const v = object(value, "health");
+  return { instance_id: text(v.instance_id, "health.instance_id"), phase: text(v.phase, "health.phase"),
+    can_process: bool(v.can_process, "health.can_process"), startup_stage: nullable(v.startup_stage, "startup_stage", text),
+    components: list(v.components, "components", (entry, at) => { const c = object(entry, at); return {
+      component: text(c.component, at), state: text(c.state, at), failed_at: nullable(c.failed_at, at, number),
+      error_id: nullable(c.error_id, at, text), error_code: nullable(c.error_code, at, text),
+      error_type: nullable(c.error_type, at, text), can_process: bool(c.can_process, at),
+    }; }),
+  };
+}
 /** 一次成功校验的宿主状态；断线后可只读旧值，控制资格另行复核。 */
 export interface Snapshot {
+  health: Health;
+  behavior_review: Session | null; analysis: ObjectValue | null;
+  storage_statistics: ObjectValue | null; supervision_observations: ObjectValue[];
   proactive_thinking: ProactiveThinking | null;
   instance_id: string; host_version: number; phase: string; pending_resources: string[];
   authority_available: boolean; devices: Device[]; foreground: Session | null; reflection: Session | null;
@@ -243,6 +279,10 @@ export function snapshot(value: unknown): Snapshot {
   const v = object(value, "snapshot");
   const limits = object(v.pending_limits, "pending_limits");
   return {
+    health: health(v.health),
+    behavior_review: nullable(v.behavior_review, "behavior_review", session), analysis: nullable(v.analysis,"analysis",jsonObject),
+    storage_statistics: nullable(v.storage_statistics, "storage_statistics", jsonObject),
+    supervision_observations: list(v.supervision_observations, "supervision_observations", jsonObject),
     proactive_thinking: nullable(v.proactive_thinking, "proactive_thinking", (raw, field) => {
       const p = object(raw, field);
       const seconds = number(p.idle_seconds, `${field}.idle_seconds`);

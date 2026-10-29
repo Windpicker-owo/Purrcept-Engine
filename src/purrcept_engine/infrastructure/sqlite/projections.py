@@ -8,11 +8,12 @@
 from __future__ import annotations
 
 import sqlite3
+import time
 
 import purrcept_engine.domain.execution.models as execution_models
 from purrcept_engine.errors import StorageError
-from purrcept_engine.infrastructure.sqlite import activities, execution, subject
-from purrcept_engine.values import JsonObject, JsonValue
+from purrcept_engine.infrastructure.sqlite import activities, execution
+from purrcept_engine.values import JsonObject, JsonValue, decode_object
 
 
 def runtime(connection: sqlite3.Connection) -> JsonObject:
@@ -36,13 +37,19 @@ def runtime(connection: sqlite3.Connection) -> JsonObject:
         for row in counts
     ]
     sessions: list[JsonValue] = []
-    for scope in ("foreground", "reflection"):
-        record = subject.session(connection, scope)
+    for scope in ("foreground", "memory_consolidation", "behavior_review"):
+        row = connection.execute(
+            "SELECT version,active_turn FROM subject_sessions WHERE scope=?", (scope,)
+        ).fetchone()
         sessions.append(
-            {"scope": scope, "version": record.version, "active_turn": record.active_turn}
+            {
+                "scope": scope,
+                "version": 0 if row is None else _integer(row[0]),
+                "active_turn": None if row is None else row[1],
+            }
         )
     action_rows: list[tuple[object, ...]] = connection.execute(
-        "SELECT action_id FROM actions ORDER BY created_at DESC LIMIT 12"
+        "SELECT action_id FROM actions ORDER BY created_at DESC,action_id DESC LIMIT 12"
     ).fetchall()
     recent: list[JsonValue] = []
     for row in action_rows:
@@ -79,7 +86,35 @@ def runtime(connection: sqlite3.Connection) -> JsonObject:
                 },
             }
         )
+    statistics = connection.execute(
+        "SELECT payload_json FROM storage_statistics WHERE id=1"
+    ).fetchone()
+    # 面板只看有限观察事实；接受建议和后续行为结果保持两个独立维度。
+    observations = connection.execute(
+        "SELECT n.id,n.state,o.opportunities,o.state,"
+        "json_extract(n.payload_json,'$.expires_at') FROM supervision_outcomes o "
+        "JOIN knowledge_supervision n ON n.id=o.notice_id ORDER BY "
+        "n.created_at DESC,n.id DESC LIMIT 32"
+    ).fetchall()
     return {
+        "supervision_observations": [
+            {
+                "notice_id": identity,
+                "adoption": adoption,
+                "opportunities": opportunities,
+                "outcome": outcome,
+                "observation_state": "opportunities_exhausted"
+                if opportunities >= 20
+                else "expired"
+                if expires is not None and expires <= time.time()
+                else "observing",
+                "expires_at": expires,
+            }
+            for identity, adoption, opportunities, outcome, expires in observations
+        ],
+        "storage_statistics": None
+        if statistics is None
+        else decode_object(_text(statistics[0]).encode()),
         "pending_inputs": pending,
         "sessions": sessions,
         "recent_actions": recent,

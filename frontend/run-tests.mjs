@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 
 const temporary = fileURLToPath(new URL("./.test-tmp", import.meta.url));
 await mkdir(temporary, { recursive: true });
-const runner = fileURLToPath(new URL("../../purrcept_design/react/node_modules/vitest/vitest.mjs", import.meta.url));
+const runner = fileURLToPath(new URL("./node_modules/vitest/vitest.mjs", import.meta.url));
 const child = spawn(process.execPath, [runner, "run", "--config", "vitest.config.mjs"], {
   cwd: fileURLToPath(new URL(".", import.meta.url)),
   env: { ...process.env, TEMP: temporary, TMP: temporary },

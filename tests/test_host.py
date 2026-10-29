@@ -255,6 +255,116 @@ async def test_start_failure_does_not_hold_directory_lock(tmp_path: Path) -> Non
     assert (await host.close()).phase == "closed"
 
 
+async def test_coordinator_crash_stops_dispatch_but_keeps_history_queryable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """真实协调任务崩溃后生命周期仍独立，面板不能从空闲推导正常待命。"""
+    from purrcept_engine.domain.subject.coordinator import StimulusCoordinator
+
+    trigger = asyncio.Event()
+    fault = LookupError("synthetic-private-fault")
+
+    async def fail(coordinator: StimulusCoordinator) -> None:
+        del coordinator
+        await trigger.wait()
+        raise fault
+
+    monkeypatch.setattr(StimulusCoordinator, "run", fail)
+    host = EngineHost(_config(tmp_path))
+    await host.start()
+    try:
+        assert host.query_health()["can_process"] is True
+        trigger.set()
+        async with asyncio.timeout(3):
+            while True:
+                if host.query_health()["can_process"] is False:
+                    break
+                await asyncio.sleep(0)
+        assert host.query().phase == "running"
+        panel = await host.query_panel()
+        assert panel["authority_available"] is True
+        assert panel["recent_actions"] == []
+        assert panel["health"] == host.query_health()
+        with pytest.raises(LookupError) as rejected:
+            await host.submit(_submission())
+        assert rejected.value is fault
+    finally:
+        with pytest.raises(BaseExceptionGroup):
+            await host.close()
+    assert host.query().phase == "failed" and host.query().pending_resources == ()
+    unlocked = InstanceLock(tmp_path)
+    unlocked.acquire()
+    unlocked.release()
+
+
+async def test_starting_plugin_can_admit_input_but_public_operations_wait_until_ready(
+    tmp_path: Path,
+) -> None:
+    """插件启动可先存输入，UI 与模型不能趁生命周期 running 提前派发行动。"""
+    from purrcept_core.models import Message, ModelEventSink, ModelRequest, ModelResponse
+
+    entered, release, called = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    admitted: list[str] = []
+
+    class Backend:
+        """只报告实际模型派发，测试不接触网络。"""
+
+        async def generate(
+            self,
+            request: ModelRequest,
+            *,
+            model: str,
+            emit: ModelEventSink | None = None,
+        ) -> ModelResponse:
+            """记录真实 Core 请求已跨过派发门槛，再返回内部文本。"""
+            del request, model, emit
+            called.set()
+            return ModelResponse(Message.assistant("合成内部结果。"))
+
+    async def build(ports: PluginPorts) -> PluginRuntime:
+        async def start() -> None:
+            """模拟主动输入插件在连接尚未完成时交付第一条输入。"""
+            admission = await ports.inputs.submit(_submission())
+            admitted.append(admission.input_id)
+            entered.set()
+            await release.wait()
+
+        return PluginRuntime((), start=start)
+
+    def prepare(instance: str, raw: object, base: Path) -> PluginBlueprint:
+        del instance, raw, base
+        return PluginBlueprint((), (), build)
+
+    raw = _config(tmp_path).model_dump()
+    raw["models"]["test"]["context_window"] = 100000
+    raw["plugins"] = [{"instance_id": "probe", "entry": "probe"}]
+    host = EngineHost(
+        EngineConfig.validate(raw, base_dir=tmp_path),
+        plugin_factories={"probe": PluginFactory(prepare)},
+        generation_backends={"test": Backend()},
+    )
+    starting = asyncio.create_task(host.start())
+    try:
+        await asyncio.wait_for(entered.wait(), 5)
+        health = host.query_health()
+        assert health["phase"] == "running" and health["can_process"] is False
+        assert health["startup_stage"] == "plugin_start:probe"
+        assert await host.query_input(admitted[0]) is not None
+        assert not called.is_set()
+        with pytest.raises(HostStateError, match="启动"):
+            await host.execute("pass")
+        with pytest.raises(HostStateError):
+            await host.query_panel()
+        release.set()
+        await starting
+        await asyncio.wait_for(called.wait(), 5)
+        assert host.query_health()["can_process"] is True
+    finally:
+        release.set()
+        await starting
+        await host.close()
+
+
 async def test_model_assembly_failure_closes_storage_before_unlock(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

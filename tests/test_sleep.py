@@ -21,6 +21,7 @@ from purrcept_core.models import (
 )
 
 from purrcept_engine import EngineConfig, EngineHost, InputSource, InputSubmission
+from purrcept_engine.app.panel import ControlRequest
 from purrcept_engine.domain.context.checkpoints import decode_checkpoint
 from purrcept_engine.domain.inputs.models import InputContext
 from purrcept_engine.domain.subject.models import InputProcessing
@@ -112,6 +113,28 @@ async def _seed(host: EngineHost) -> None:
         await _processed(host, admitted.input_id)
 
 
+async def _proactive(host: EngineHost, enabled: bool) -> None:
+    """通过真实控制隔开普通输入与极短主动期限，避免测试机器速度决定谁先唤醒。"""
+    state = (await host.query_panel())["proactive_thinking"]
+    assert isinstance(state, dict) and isinstance(state["revision"], str)
+    await host.submit_control(
+        ControlRequest(
+            request_id=f"sleep-proactive-{enabled}",
+            instance_id=host.query().instance_id,
+            target="subject",
+            operation="set_proactive_thinking",
+            expected_revision=state["revision"],
+            arguments={"enabled": enabled},
+        )
+    )
+    async with asyncio.timeout(5):
+        while True:
+            current = (await host.query_panel())["proactive_thinking"]
+            if isinstance(current, dict) and current["enabled"] is enabled:
+                return
+            await asyncio.sleep(0.01)
+
+
 async def test_sleep_pauses_attention_and_proactive_priority_wakes_and_leave_restores(
     tmp_path: Path,
 ) -> None:
@@ -154,12 +177,15 @@ async def test_sleep_pauses_attention_and_proactive_priority_wakes_and_leave_res
         assert original is not None and "sleep-background" in original.text
         await asyncio.sleep(0.25)
         assert len(main.requests) == 1
+        # 先独立核对离床后普通输入的注意路线，再开启主动空闲唤醒。
+        await _proactive(host, False)
         assert (await host.invoke("me.bed.leave", {})).state == "completed"
         await asyncio.sleep(0.05)
         assert len(main.requests) == 1
         awake = await host.submit(_input("awake-background", priority=False))
         await _processed(host, awake.input_id)
         assert len(attention.requests) == 1 and len(main.requests) == 2
+        await _proactive(host, True)
         for _ in range(3):
             await asyncio.wait_for(main.arrivals.get(), 5)
         assert "空闲刺激" in main.requests[-1].messages[-1].text

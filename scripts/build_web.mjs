@@ -1,6 +1,6 @@
 /**
  * 将产品源码与真正的 Cel 参考组件编译进 Engine 的有限静态资源。
- * Design 只作为开发期源码/Token/冻结工具链来源；不会改写它或让安装包依赖兄弟目录。
+ * Cel 使用 frontend 锁定的仓内依赖包，工具链由 npm ci 独立安装。
  * 固定资源名与 app/web.py 白名单对应，单个脚本包避免打开任意静态目录。
  */
 import { copyFile, readFile, writeFile } from "node:fs/promises";
@@ -8,8 +8,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import path from "node:path";
 
 const engine = fileURLToPath(new URL("../", import.meta.url));
-const design = path.resolve(engine, "../purrcept_design");
-const dependencies = path.join(design, "react/node_modules");
+const dependencies = path.join(engine, "frontend/node_modules");
 const { build } = await import(pathToFileURL(path.join(dependencies, "vite/dist/node/index.js")).href);
 const output = path.join(engine, "src/purrcept_engine/app/static");
 
@@ -17,14 +16,6 @@ await build({
   configFile: false,
   root: path.join(engine, "frontend"),
   base: "/",
-  resolve: {
-    alias: [
-      { find: "@purrcept/cel", replacement: path.join(design, "react/src/index.ts") },
-      { find: /^motion(\/.*)?$/, replacement: path.join(dependencies, "motion") + "$1" },
-      { find: /^react-dom(\/.*)?$/, replacement: path.join(dependencies, "react-dom") + "$1" },
-      { find: /^react(\/.*)?$/, replacement: path.join(dependencies, "react") + "$1" },
-    ],
-  },
   build: {
     outDir: output,
     emptyOutDir: true,
@@ -46,7 +37,7 @@ await build({
 });
 
 // 产物中的 Token 保持与 Design 完全同源；源码样式不定义第二套 Token。
-await copyFile(path.join(design, "dist/purrcept.css"), path.join(output, "purrcept.css"));
+await copyFile(path.join(dependencies, "@purrcept/cel/dist/purrcept.css"), path.join(output, "purrcept.css"));
 const indexPath = path.join(output, "index.html");
 const html = await readFile(indexPath, "utf8");
 await writeFile(indexPath, html.replaceAll('"/panel.', '"/assets/panel.'));

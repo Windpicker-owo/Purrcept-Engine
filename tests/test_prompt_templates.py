@@ -74,9 +74,8 @@ def test_persona_and_foreground_match_frozen_material(case: str) -> None:
     assert instructions[1].content == (TextBlock(catalog.instructions),)
 
 
-def test_reflection_attention_and_summary_system_text_match_frozen_material() -> None:
+def test_attention_and_summary_system_text_match_frozen_material() -> None:
     samples = baseline()
-    assert reflection_instructions()[0].content == (TextBlock(str(samples["reflection"])),)
     assert ATTENTION_QUESTION.instructions == samples["attention"]
     checkpoint = ConversationCheckpoint(
         ConversationState(
@@ -94,6 +93,17 @@ def test_reflection_attention_and_summary_system_text_match_frozen_material() ->
     assert message.metadata["source_version"] == 3
 
 
+def test_analysis_prompts_have_separate_writing_responsibilities() -> None:
+    """拆分后的固定规则不能同时要求记忆修订和监管，旧反思样本仅留作效果对照。"""
+    memory = reflection_instructions("memory")[0].content[0]
+    behavior = reflection_instructions("behavior")[0].content[0]
+    assert isinstance(memory, TextBlock) and isinstance(behavior, TextBlock)
+    assert "没有监管和世界行动权限" in memory.text
+    assert "没有记忆修订或世界行动权限" in behavior.text
+    assert "无需干预与信息不足" in behavior.text
+    assert "至少需要两项独立来源" in behavior.text
+
+
 def test_both_brains_receive_human_feedback_contract_separate_from_existing_persona() -> None:
     """人工评价指导与评分语义同时交给两个消费者，原人格正文仍按固定样本核验。"""
     foreground = foreground_instructions({}, Catalog((ObjectDeclaration("me", "me", "主体"),), ()))
@@ -102,7 +112,7 @@ def test_both_brains_receive_human_feedback_contract_separate_from_existing_pers
     block = reflection[-1].content[0]
     assert isinstance(block, TextBlock)
     assert "rating=good" in block.text and "rating=bad" in block.text
-    assert "独立反思应优先" in block.text
+    assert "行为评审应优先" in block.text
     assert "单次评分不自动成为普遍规律" in block.text
 
 

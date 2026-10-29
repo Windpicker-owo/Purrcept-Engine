@@ -23,6 +23,7 @@ from purrcept_engine.domain.model_requests.models import (
     AttemptEvidence,
     AttemptRecord,
     AttemptStart,
+    BackgroundBudgetExceeded,
     FailureEvidence,
     RequestEvidence,
     RequestOutcome,
@@ -30,7 +31,7 @@ from purrcept_engine.domain.model_requests.models import (
     RequestScope,
 )
 from purrcept_engine.errors import StorageError
-from purrcept_engine.infrastructure.sqlite import retention
+from purrcept_engine.infrastructure.sqlite import analysis_work, archive, retention
 from purrcept_engine.serialization import encode
 
 _logger = logging.getLogger(__name__)
@@ -47,7 +48,8 @@ SCHEMA = (
     "('running','succeeded','failed','timed_out','cancelled','interrupted')), "
     "created_at REAL NOT NULL, finished_at REAL)",
     "CREATE INDEX model_requests_scope ON model_requests "
-    "(json_extract(evidence_json,'$.scope.owner_id'),json_extract(evidence_json,'$.scope.turn_id'))",
+    "(json_extract(evidence_json,'$.scope.owner_id'),json_extract(evid"
+    "ence_json,'$.scope.turn_id'))",
     "CREATE TABLE model_attempts (attempt_id TEXT PRIMARY KEY, "
     "request_id TEXT NOT NULL REFERENCES model_requests(request_id), sequence INTEGER NOT NULL "
     "CHECK(sequence > 0), start_json TEXT NOT NULL, result_json TEXT, "
@@ -60,6 +62,8 @@ SCHEMA = (
     "media_id TEXT NOT NULL REFERENCES media(media_id), PRIMARY KEY(attempt_id,media_id))",
     *retention.SCHEMA,
     *USAGE_SCHEMA,
+    *archive.BODY_SCHEMA,
+    *archive.TOTAL_SCHEMA,
 )
 
 
@@ -78,18 +82,40 @@ def begin_request(connection: sqlite3.Connection, request: RequestEvidence) -> N
     """
     with connection:
         connection.execute("BEGIN IMMEDIATE")
+        if request.materials_json is None:
+            raise ValueError("新请求必须包含完整材料。")
+        material_bytes = len(request.materials_json.encode("utf-8"))
         materials, media = intern_request_media(connection, request.materials_json)
-        encoded = encode(replace(request, materials_json=materials))
+        original = encode(replace(request, materials_json=materials))
+        encoded = encode(replace(request, materials_json=None))
         row: tuple[object, ...] | None = connection.execute(
             "SELECT evidence_json FROM model_requests WHERE request_id=?", (request.request_id,)
         ).fetchone()
         if row is not None:
             if row != (encoded,):
                 raise StorageError("模型请求身份与材料冲突。", code="request_conflict")
+            archive.put(
+                connection,
+                "request",
+                request.request_id,
+                materials,
+                original,
+                time.time(),
+                original_bytes=material_bytes,
+            )
             return
         connection.execute(
             "INSERT INTO model_requests VALUES (?, ?, 'running', ?, NULL)",
             (request.request_id, encoded, time.time()),
+        )
+        archive.put(
+            connection,
+            "request",
+            request.request_id,
+            materials,
+            original,
+            time.time(),
+            original_bytes=material_bytes,
         )
         connection.executemany(
             "INSERT INTO model_request_media VALUES (?, ?)",
@@ -120,6 +146,17 @@ def begin_attempt(connection: sqlite3.Connection, start: AttemptStart) -> None:
         ).fetchone()
         if previous != (start.sequence - 1, start.sequence - 1):
             raise StorageError("模型尝试顺序冲突。", code="attempt_conflict")
+        scope = connection.execute(
+            "SELECT json_extract(evidence_json,'$.scope.owner_id') FROM "
+            "model_requests WHERE request_id=?",
+            (start.request_id,),
+        ).fetchone()[0]
+        if scope in ("reflection", "behavior_review", "memory_consolidation"):
+            remaining, reset = analysis_work.model_budget(connection, time.time())
+            if not remaining:
+                raise BackgroundBudgetExceeded(
+                    max(1.0, (reset or time.time() + 3600) - time.time())
+                )
         connection.execute(
             "INSERT INTO model_attempts VALUES (?, ?, ?, ?, NULL, ?, NULL)",
             (start.attempt_id, start.request_id, start.sequence, encode(start), time.time()),
@@ -138,11 +175,36 @@ def finish_attempt(connection: sqlite3.Connection, result: AttemptEvidence) -> N
     """
     with connection:
         connection.execute("BEGIN IMMEDIATE")
+        # 计量完整逻辑正文，BLOB 去重只改变物理表示，不能赠送诊断保留额度。
+        body_bytes = len(
+            encode(
+                {
+                    "response_json": result.response_json,
+                    "argument_events_json": result.argument_events_json,
+                }
+            ).encode("utf-8")
+        )
         media: tuple[str, ...] = ()
         response = result.response_json
         if response is not None:
             response, media = intern_core_media(connection, response)
-        encoded = _encode_authority_attempt(replace(result, response_json=response))
+        original = _encode_authority_attempt(replace(result, response_json=response))
+        metadata = dict(
+            _object(
+                _encode_authority_attempt(
+                    replace(result, response_json=None, argument_events_json=None)
+                )
+            )
+        )
+        metadata["usage_json"] = (
+            None
+            if response is None or _object(response).get("usage") is None
+            else encode(_object(response)["usage"])
+        )
+        encoded = encode(metadata)
+        content = encode(
+            {"response_json": response, "argument_events_json": result.argument_events_json}
+        )
         row: tuple[object, ...] | None = connection.execute(
             "SELECT start_json,result_json FROM model_attempts WHERE attempt_id=?",
             (result.start.attempt_id,),
@@ -152,10 +214,28 @@ def finish_attempt(connection: sqlite3.Connection, result: AttemptEvidence) -> N
         if row[1] is not None:
             if row[1] != encoded:
                 raise StorageError("模型尝试结果不能被覆盖。", code="attempt_conflict")
+            archive.put(
+                connection,
+                "attempt",
+                result.start.attempt_id,
+                content,
+                original,
+                time.time(),
+                original_bytes=body_bytes,
+            )
             return
         connection.execute(
             "UPDATE model_attempts SET result_json=?,finished_at=? WHERE attempt_id=?",
             (encoded, time.time(), result.start.attempt_id),
+        )
+        archive.put(
+            connection,
+            "attempt",
+            result.start.attempt_id,
+            content,
+            original,
+            time.time(),
+            original_bytes=body_bytes,
         )
         connection.executemany(
             "INSERT INTO model_attempt_media VALUES (?, ?)",
@@ -198,6 +278,8 @@ def _encode_authority_attempt(result: AttemptEvidence) -> str:
             )
         )
     )
+    value.pop("body_status", None)
+    value.pop("usage_json", None)
     value["diagnostic_events_digest"] = retention.diagnostic_events_digest(
         result.diagnostic_events_json
     )
@@ -262,8 +344,12 @@ def get_request(connection: sqlite3.Connection, request_id: str) -> RequestRecor
         if row is None:
             return None
         request = decode_request(_text(row[0]))
+        materials, status = archive.read(connection, "request", request_id)
         request = replace(
-            request, materials_json=restore_request_media(connection, request.materials_json)
+            request,
+            materials_json=None
+            if materials is None
+            else restore_request_media(connection, materials),
         )
         state = row[1]
         if state not in ("running", "succeeded", "failed", "timed_out", "cancelled", "interrupted"):
@@ -278,11 +364,13 @@ def get_request(connection: sqlite3.Connection, request_id: str) -> RequestRecor
                 decode_start(_text(item[0])),
                 float(_number(item[1])),
                 _optional_number(item[2]),
-                None if item[3] is None else _restore_attempt(connection, _text(item[3])),
+                None if item[3] is None else restore_attempt(connection, _text(item[3])),
             )
             for item in rows
         )
-        return RequestRecord(request, state, _number(row[2]), _optional_number(row[3]), attempts)
+        return RequestRecord(
+            request, state, _number(row[2]), _optional_number(row[3]), attempts, status
+        )
 
 
 def initialize(connection: sqlite3.Connection) -> None:
@@ -312,9 +400,19 @@ def initialize(connection: sqlite3.Connection) -> None:
             False,
             0,
         )
+        original = _encode_authority_attempt(result)
+        archive.put(
+            connection,
+            "attempt",
+            start.attempt_id,
+            encode({"response_json": None, "argument_events_json": "[]"}),
+            original,
+            time.time(),
+        )
+        metadata = _encode_authority_attempt(replace(result, argument_events_json=None))
         connection.execute(
             "UPDATE model_attempts SET result_json=?,finished_at=? WHERE attempt_id=?",
-            (_encode_authority_attempt(result), time.time(), start.attempt_id),
+            (metadata, time.time(), start.attempt_id),
         )
     connection.execute(
         "UPDATE model_requests SET state='interrupted',finished_at=? WHERE state='running'",
@@ -420,9 +518,18 @@ def restore_core_media(connection: sqlite3.Connection, encoded: str) -> str:
     return encode(_core_media(connection, value, set(), restore=True))
 
 
-def _restore_attempt(connection: sqlite3.Connection, encoded: str) -> AttemptEvidence:
+def restore_attempt(connection: sqlite3.Connection, encoded: str) -> AttemptEvidence:
     """还原权威响应，再读取可过期诊断；诊断缺口不阻断权威查询。"""
     result = decode_attempt(encoded)
+    body, status = archive.read(connection, "attempt", result.start.attempt_id)
+    if body is not None:
+        values = _object(body)
+        result = replace(
+            result,
+            response_json=_optional_text(values["response_json"]),
+            argument_events_json=_optional_text(values["argument_events_json"]),
+        )
+    result = replace(result, body_status=status)
     if result.response_json is not None:
         result = replace(result, response_json=restore_core_media(connection, result.response_json))
     try:
@@ -685,7 +792,7 @@ def decode_request(encoded: str) -> RequestEvidence:
         ),
         kind,
         _text(row["model"]),
-        _text(row["materials_json"]),
+        _optional_text(row["materials_json"]),
         _text(row["compiler"]),
         _integer(row["attempts"]),
         _number(row["attempt_seconds"]),
@@ -750,11 +857,12 @@ def decode_attempt(encoded: str) -> AttemptEvidence:
         state,
         _optional_text(row["response_json"]),
         failure,
-        _text(row["argument_events_json"]),
+        _optional_text(row["argument_events_json"]),
         _text(row["diagnostic_events_json"]),
         complete,
         _integer(row["omitted_events"]),
         _optional_number(row["retry_wait_seconds"]),
         _optional_number(row["diagnostics_expired_at"]),
         unavailable,
+        usage_json=_optional_text(row.get("usage_json")),
     )

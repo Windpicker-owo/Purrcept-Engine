@@ -2,13 +2,13 @@
  * 使用真实打包产物验收 WebUI，HTTP 只返回内存中的合成宿主投影。
  * 不启动 Engine、不读取配置或凭据；开关和人工评价专测接受内存模拟控制，其他写入和外网请求失败。
  * 先运行 frontend 的 build，再执行本文件；截图写入 ignored .validation/webui。
- * 浏览器与服务由本脚本拥有，失败也会关闭；使用 Design 已安装的 Playwright 与系统 Edge。
+ * 浏览器与服务由本脚本拥有，失败也会关闭；使用本仓库锁定的 Playwright 与系统 Edge。
  */
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { mkdir, readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
-import { chromium } from '../../purrcept_design/react/node_modules/playwright-core/index.mjs';
+import { chromium } from '../frontend/node_modules/playwright-core/index.mjs';
 import { host, paused } from '../frontend/tests/fixtures.ts';
 
 const output = fileURLToPath(new URL('../.validation/webui/', import.meta.url));
@@ -41,6 +41,7 @@ let proactiveControls = false;
 let reviewControls = false;
 const reviewRequests = [];
 const reviewMaterial = {
+  target: { kind: 'action', id: 'uncertain', state: 'failed' }, actions: [],
   revision: 'review-v1', turn_id: 'example-turn',
   stimuli: [
     { input_id: 'stimulus-one', adapter_id: 'test', display_name: '审查样本', text: '我正在忙，稍后再聊。', occurred_at: '2026-10-28T10:00:00+08:00', received_at: '2026-10-28T10:00:01+08:00', media: [] },
@@ -62,8 +63,8 @@ const assets = new Map(await Promise.all([...files].map(async ([route, [name, ty
   body: await readFile(new URL(`../src/purrcept_engine/app/static/${name}`, import.meta.url)), type,
 }])));
 const server = createServer(async (req, res) => {
-  if (req.method === 'GET' && req.url === '/api/reviews') {
-    res.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify({ items: example.recent_actions, next_cursor: null }));
+  if (req.method === 'GET' && (req.url.startsWith('/api/reviews?') || req.url === '/api/reviews')) {
+    res.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify({ items: example.recent_actions.map((action) => ({ ...action, target_kind: "action", target_id: action.action_id, label: `${action.calls.length} 项操作` })), next_cursor: null }));
     return;
   }
   if (req.method === 'GET' && req.url === '/api/reviews/uncertain') {
@@ -160,7 +161,8 @@ try {
   firstSnapshot.resolve();
   await page.getByRole('heading', { name: '有 1 件事需要你看一下' }).waitFor();
 
-  // 在真实动效设置下逐帧观察快速来回切页，覆盖旧页面并存、白闪和位置拖尾。
+  // 在真实动效设置下逐帧观察快速来回切页：旧页面不能并存，新页面面板以 pc-enter 到达，
+  // 任何一帧都不能出现空白（面板透明度不低于 0.4），页面容器本身不位移。
   const transitionFrames = await page.evaluate(async () => {
     const routes = ['devices', 'home', 'timeline', 'system', 'activities', 'attention', 'home'];
     // 选中项的终值取自 Cel 组件变量，逐帧比较可发现颜色过渡造成的中间帧。
@@ -177,15 +179,24 @@ try {
         await new Promise(requestAnimationFrame);
         const pages = document.querySelectorAll('main .page');
         const style = pages[0] ? getComputedStyle(pages[0]) : null;
-        const selected = getComputedStyle(document.querySelector('.nav-item[aria-current="page"]'));
-        // 选中项的底色与字色必须同帧到达终值，不能分两次切换。
+        const selectedItem = document.querySelector('.nav-item[aria-current="page"]');
+        const selected = getComputedStyle(selectedItem);
+        const indicator = selectedItem.querySelector('.nav-indicator');
+        const panels = pages[0] ? [...pages[0].children].map((child) => Number(getComputedStyle(child).opacity)) : [];
+        // 选中项文字色与滑动指示块的底色必须同帧到达终值，不能分两次切换。
         samples.push({ count: pages.length, opacity: style?.opacity, transform: style?.transform,
-          navigationReady: selected.backgroundColor === expected.background && selected.color === expected.color });
+          visible: panels.length > 0 && Math.min(...panels) >= 0.4, entering: panels.some((value) => value < 1),
+          navigationReady: selected.color === expected.color && indicator !== null && getComputedStyle(indicator).backgroundColor === expected.background });
       }
     }
     return samples;
   });
-  for (const frame of transitionFrames) assert.deepEqual(frame, { count: 1, opacity: '1', transform: 'none', navigationReady: true });
+  for (const { entering, ...frame } of transitionFrames) assert.deepEqual(frame, { count: 1, opacity: '1', transform: 'none', visible: true, navigationReady: true });
+  assert.ok(transitionFrames.some((frame) => frame.entering), '同级切换应当播放到达过渡');
+  // 到达结束后面板不能残留位移或半透明。
+  await page.waitForTimeout(1000);
+  assert.deepEqual(await page.evaluate(() => [...document.querySelector('main .page').children]
+    .filter((child) => getComputedStyle(child).opacity !== '1' || getComputedStyle(child).transform !== 'none').length), 0);
 
   // 七页在桌面、中等宽度与手机上均不能产生横向溢出。
   for (const width of [1440, 1024, 768, 390, 320]) {

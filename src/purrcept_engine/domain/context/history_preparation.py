@@ -239,8 +239,8 @@ class HistoryPreparation:
                 deadline=budget.deadline,
             )
         except (SummaryError, CapacityError, ModelError) as error:
-            self.last_failure = type(error).__name__ + ": " + str(error)
-            _logger.warning("历史维护保留原版本：%s", self.last_failure)
+            self.last_failure = type(error).__name__
+            _logger.warning("历史维护保留原版本。", extra={"error_type": type(error).__name__})
         else:
             self.last_failure = None
         budget.check()

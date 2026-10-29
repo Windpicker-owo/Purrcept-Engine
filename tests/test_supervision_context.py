@@ -252,7 +252,6 @@ async def test_actual_request_contains_all_open_notices_and_plans_then_refreshes
         await assembled.service.close()
         await assembled.background.close()
         await assembled.foreground_history.close()
-        await assembled.reflection_history.close()
 
 
 async def test_real_request_uses_explicit_plugin_materials_without_diagnostic_fallback(
@@ -289,6 +288,7 @@ async def test_real_request_uses_explicit_plugin_materials_without_diagnostic_fa
         assert diagnostic()["queue"] == 12345
         records = await store.requests_for_turn("foreground", "turn:explicit-materials")
         assert len(records) == 1
+        assert records[0].request.materials_json is not None
         saved = decode_object(records[0].request.materials_json.encode())
         wire, _ = compile_materials(backend.requests[0], model="openai/offline")
         assert saved["payload"] == decode_object(wire.encode())["payload"]
@@ -296,7 +296,6 @@ async def test_real_request_uses_explicit_plugin_materials_without_diagnostic_fa
         await assembled.service.close()
         await assembled.background.close()
         await assembled.foreground_history.close()
-        await assembled.reflection_history.close()
 
 
 async def test_unanswered_supervision_protects_source_and_delivered_input_until_response(
@@ -426,7 +425,6 @@ async def test_open_supervision_protects_source_older_than_recent_turns_during_r
         await assembled.service.close()
         await assembled.background.close()
         await assembled.foreground_history.close()
-        await assembled.reflection_history.close()
 
 
 async def call(store: Store, source: str, identity: str, state: str = "confirmed") -> None:
@@ -613,4 +611,3 @@ async def test_full_current_state_exceeds_actual_request_capacity_without_silent
         await assembled.service.close()
         await assembled.background.close()
         await assembled.foreground_history.close()
-        await assembled.reflection_history.close()

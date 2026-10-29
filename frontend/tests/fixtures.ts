@@ -8,6 +8,9 @@ export const paused: Activity = {
 };
 export function host(instance = "host-1"): Snapshot {
   return {
+    behavior_review: null, analysis: null,
+    storage_statistics: null, supervision_observations: [],
+    health: { instance_id: instance, phase: "running", can_process: true, startup_stage: null, components: [] },
     proactive_thinking: { enabled: false, revision: "0", idle_seconds: 300, waiting_for_idle: false, last_idle_at: null, last_error: null },
     instance_id: instance, host_version: 1, phase: "running", authority_available: true, pending_resources: [], devices: [],
     foreground: { scope: "foreground", generation: 1, busy: false, closing: false, budgets: [] }, reflection: null,

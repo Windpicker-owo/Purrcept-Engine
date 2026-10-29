@@ -44,6 +44,7 @@ export function agentView(snapshot: Snapshot | null, online: boolean, attention:
     const phase = mark(snapshot.phase);
     return { state: phase.state, headline: `Engine ${phase.label}`, detail: "运行就绪后才会接收新的控制。", focus: null };
   }
+  if (!snapshot.health.can_process) return { state: "failed", headline: "主体已停止处理", detail: "请查看系统故障与诊断日志；已有行动的实际结果仍可核对。", focus: "attention" };
   const action = runningAction(snapshot);
   if (action !== undefined) {
     const subjects = actionSubjects(action.calls.map((call) => call.path), snapshot);
@@ -60,8 +61,10 @@ export function agentView(snapshot: Snapshot | null, online: boolean, attention:
   const waiting = snapshot.pending_inputs.filter((item) => item.stage !== "processed" && item.stage !== "failed" && item.stage !== "submitted").reduce((sum, item) => sum + item.count, 0);
   if (waiting > 0) return { state: "perceiving", headline: `收到 ${waiting} 条新消息`, detail: "正在判断要不要回应。", focus: null };
   if (listening) return { state: "perceiving", headline: "正在听", detail: "收音已开启。", focus: null };
+  if (snapshot.behavior_review?.busy) return { state: "reasoning", headline: "正在回顾近期互动", detail: "行为评审独立运行，新的消息仍可处理。", focus: null };
   if (snapshot.reflection?.busy) return { state: "reasoning", headline: "正在回顾和整理记忆", detail: "这是独立的反思，不影响她回应新消息。", focus: null };
   const forUser = attention.filter((item) => item.needsUser);
   if (forUser.length > 0) return { state: "waiting-user", headline: `有 ${forUser.length} 件事需要你看一下`, detail: forUser[0]?.title ?? "", focus: "attention" };
+  if (snapshot.health.components.some((component) => component.state === "failed")) return { state: "warning", headline: "部分后台工作已暂停", detail: "新的消息仍可处理，请查看系统中的组件故障。", focus: "attention" };
   return { state: "idle", headline: "安静待命中", detail: "有新消息或到点的提醒时，她会自己开始。", focus: null };
 }

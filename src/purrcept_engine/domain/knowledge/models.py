@@ -373,13 +373,32 @@ class AbandonedMemoryWrite(_Record):
     )
 
 
+class ObservationAssessment(_Record):
+    """对确切后续轮次的改善观察，不能用主脑接受意见冒充结果。"""
+
+    notice_id: Text
+    turn_id: Text
+    outcome: Literal["improved", "recurred", "insufficient_samples"]
+    evidence: tuple[Text, ...] = Field(min_length=1, strict=False)
+
+
+class BehaviorConclusion(_Record):
+    """局部评审的明确结果；不要求为了结案制造批评。"""
+
+    decision: Literal["no_intervention", "suggestion", "insufficient_evidence"]
+    conclusion: Text
+    evidence: tuple[Text, ...] = Field(min_length=1, strict=False)
+    observations: tuple[ObservationAssessment, ...] = Field(default=(), strict=False)
+
+
 class FinishSubmission(_Record):
-    """五工具协议的完成输入，范围核验和真实修订关联由事务完成。"""
+    """按用途提交的完成输入，范围核验和真实修订关联由事务完成。"""
 
     reviews: tuple[Review, ...] = Field(strict=False)
     deferred: tuple[Deferred, ...] = Field(strict=False)
     findings: tuple[FindingAssessment, ...] = Field(strict=False)
     abandoned_writes: tuple[AbandonedMemoryWrite, ...] = Field(default=(), strict=False)
+    behavior: BehaviorConclusion | None = None
 
 
 class ReflectionReceipt(_Record):
@@ -404,6 +423,8 @@ class ReflectionBatch(_Record):
     batch_id: Text
     version: Version
     required_slice_refs: tuple[Text, ...] = Field(min_length=1, strict=False)
+    purpose: Literal["memory", "behavior"] = "memory"
+    created_at: Finite | None = None
     findings: tuple[OperationalFinding, ...] = Field(default=(), strict=False)
     state: Literal["running", "completed", "interrupted"] = "running"
     interrupted_reason: Text | None = None
@@ -426,6 +447,21 @@ class PendingEvidence(_Record):
 #     activity_id: 可选活动约束，须与 activity_version 同时填写。
 #     activity_version: 监管针对的确切活动版本，迟到意见不能控制新状态。
 #     level: reminder、review 或 urgent；紧急意见仍须宿主交接。
+class ObservationScope(_Record):
+    """用明确会话或能力限定后续观察机会，不依靠自然语言猜匹配范围。"""
+
+    adapter_id: Text | None = None
+    conversation_id: Text | None = None
+    capability_path: Text | None = None
+
+    @model_validator(mode="after")
+    def bounded(self) -> Self:
+        """至少声明一项实际匹配条件，避免把所有未来行为都当观察样本。"""
+        if not any((self.adapter_id, self.conversation_id, self.capability_path)):
+            raise ValueError("观察范围至少需要会话、适配器或能力路径。")
+        return self
+
+
 class SupervisionNotice(_Record):
     """有原文依据的监管意见，urgent 只请求重思考，不取得行动权限。"""
 
@@ -437,6 +473,9 @@ class SupervisionNotice(_Record):
     activity_id: Text | None = None
     activity_version: Annotated[int, Field(ge=0)] | None = None
     expires_at: Finite | None = None
+    scope: ObservationScope | None = None
+    expected_change: Text | None = None
+    generalized: bool = False
 
     @model_validator(mode="after")
     def activity_pair(self) -> Self:

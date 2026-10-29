@@ -3,8 +3,8 @@
  * GET 轮询不打开设备；连接状态只来自成功校验的快照。POST 被浏览器中断后仍由
  * Host 拥有工作，页面保留原请求并提供查询/原样重传。令牌与业务事实分开保存。
  */
-import { controlRequest, controlResult, credentials, snapshot, review, reviewPage, ContractError } from "./contracts";
-import type { Review, Action } from "./contracts";
+import { controlRequest, controlResult, credentials, snapshot, review, reviewPage, reviewTargets, health, ContractError } from "./contracts";
+import type { Review, Action, Health } from "./contracts";
 import type { ControlRequest, ControlResult, ObjectValue, Snapshot } from "./contracts";
 
 /** 本标签页持有的原控制与观察进度，业务所有权仍归宿主。 */
@@ -14,6 +14,7 @@ export interface Entry {
 }
 /** 页面单一观察者发布的状态，发布后以新顶层快照替换，不在组件内改写。 */
 export interface PanelState {
+  startup?: Health | null;
   snapshot: Snapshot | null; online: boolean; receivedAt: number | null; error: string | null;
   entries: Entry[]; storageError: string | null; controlError: string | null;
 }
@@ -80,9 +81,13 @@ export class PanelClient {
     reviewPage(await responseJson(await this.get(`/api/reviews${before === null ? "" : `?before=${encodeURIComponent(before)}`}`)));
 
   /** 完整材料必须仍属于用户选择的行动，防止并发查询串用评价目标。 */
+  reviewTargets = async (kind: "action" | "turn" | "call", before: string | null = null) =>
+    reviewTargets(await responseJson(await this.get(`/api/reviews?kind=${kind}${before === null ? "" : `&before=${encodeURIComponent(before)}`}`)));
+
   review = async (actionId: string): Promise<Review> => {
     const result = review(await responseJson(await this.get(`/api/reviews/${encodeURIComponent(actionId)}`)));
-    if (result.action.action_id !== actionId) throw new ContractError("review.action_id");
+    const expected = result.target.kind === "action" ? actionId : actionId.replace(`${result.target.kind}:`, "");
+    if (result.target.id !== expected) throw new ContractError("review.target_id");
     return result;
   };
   /** 返回解除订阅，不借用设备或服务资源。 */
@@ -146,12 +151,19 @@ export class PanelClient {
         this.session = credentials(await responseJson(await this.get("/api/session")));
         if (current.instance_id !== this.session.instance_id) throw new ContractError("instance_id");
       }
-      this.publish({ snapshot: current, online: true, receivedAt: Date.now(), error: null });
+      this.publish({ snapshot: current, online: true, receivedAt: Date.now(), error: null, startup: null });
       // 查询原身份不会重投。未知回执也周期复查，因为迟到事实可能澄清原结果。
       await Promise.all(this.state.entries.map((entry) => this.observe(entry.request.request_id)));
     } catch (error: unknown) {
       this.session = null;
-      this.publish({ online: false, error: message(error) });
+      if (this.state.snapshot === null && error instanceof HttpError && error.status === 503) {
+        try {
+          const starting = health(await responseJson(await this.get("/api/health")));
+          this.publish({ online: false, startup: starting, error: starting.phase === "starting" || starting.phase === "new" || (starting.phase === "running" && starting.startup_stage !== null) ? null : message(error) });
+        } catch (healthError: unknown) {
+          this.publish({ online: false, error: message(healthError), startup: null });
+        }
+      } else this.publish({ online: false, error: message(error), startup: null });
     }
   }
 

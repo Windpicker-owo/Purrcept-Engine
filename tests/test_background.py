@@ -1,4 +1,4 @@
-"""真实 Store/Core 核验可靠后台交接、五工具完成和无新事实不自循环。
+"""真实 Store/Core 核验可靠后台交接、独立工具结案和来源续页。
 
 模型脚本只替代远端响应，原文、媒体、呈现资格、认识修订和会话提交均走真实
 唯一数据库线程。每个测试持有关闭责任，不访问真实服务或已有用户数据。
@@ -253,7 +253,7 @@ class Backend:
                     for item in batch.findings
                 ),
             )
-            arguments = decode_object(submission.model_dump_json().encode("utf-8"))
+            arguments = decode_object(submission.model_dump_json(exclude_none=True).encode("utf-8"))
             call = ToolCallBlock("finish", "finish_reflection", arguments=arguments)
         return ModelResponse(Message(MessageRole.ASSISTANT, (call,)))
 
@@ -295,7 +295,13 @@ async def _background(
             compiler=compile_materials,
         ),
         instructions=(SystemInstruction.from_text("独立反思固定指令"),),
-        settings=BackgroundSettings(4096, page_chars=page_chars, batch_seconds=seconds),
+        settings=BackgroundSettings(
+            4096,
+            page_chars=page_chars,
+            batch_seconds=seconds,
+            memory_batch_seconds=seconds,
+            behavior_enabled=False,
+        ),
         media=media,
         refresh=_refresh,
         prepare_history=None,
@@ -392,29 +398,26 @@ async def test_receipt_media_is_real_same_blob_for_evidence_and_foreground(store
     assert await store.get_media(wake.media[0].media_id) == b"actual-pixels"
 
 
-async def test_finish_tool_only_confirms_batch_and_no_new_epoch_does_not_read_next_page(
-    store: Store,
-) -> None:
-    await _source(store, "long", "完整来源需要多页。" * 10)
+async def test_memory_drains_reviewed_pages_without_new_epoch(store: Store) -> None:
+    """成功页的续读是尚未尝试范围，不需要新事实再次触发。"""
+    await _source(store, "long", "a" * 25)
     backend = Backend(store)
     async with AsyncExitStack() as stack:
         background = await _background(store, stack, backend, page_chars=10)
         await background.start()
-        await _wait_for(lambda: _finished(store, backend))
+
+        async def drained() -> bool:
+            return not await store.knowledge.pending_reflection()
+
+        await _wait_for(drained)
         await _wait_for(lambda: _session_idle(background))
-        assert len(backend.requests) == 2
+        assert len(backend.requests) == 6
         assert tuple(tool.name for tool in backend.requests[0].tools) == (
             "recall",
             "read_evidence",
             "revise_memory",
-            "supervise",
             "finish_reflection",
         )
-        pending = await store.knowledge.pending_reflection()
-        assert len(pending) == 1 and pending[0].reviewed_slice_refs
-        await asyncio.sleep(0.03)
-        assert len(backend.requests) == 2
-        assert (await store.feedback.reflection_state()).oldest_queued_at is None
 
 
 async def _session_idle(background: BackgroundService) -> bool:
@@ -442,13 +445,13 @@ async def test_completion_and_partial_writes_remain_independent_after_batch_fail
             assert memory is not None and memory.patch.content == "保留否定和对象。"
         if mode == "finish_fail":
             assert await store.knowledge.pending_reflection() == ()
-            assert (await store.get_session("reflection")).version == 0
+            assert (await store.get_session("memory_consolidation")).version == 0
         if mode == "final":
             pending = await store.knowledge.pending_reflection()
             assert len(pending) == 1 and pending[0].reviewed_slice_refs == ()
 
 
-async def test_new_independent_source_allows_new_batch_and_history_remains_continuous(
+async def test_new_independent_source_starts_without_prior_review_history(
     store: Store,
 ) -> None:
     await _source(store, "first")
@@ -461,11 +464,11 @@ async def test_new_independent_source_allows_new_batch_and_history_remains_conti
         await _source(store, "second", "新的独立材料")
 
         async def twice() -> bool:
-            return (await store.get_session("reflection")).version == 2
+            return (await store.get_session("memory_consolidation")).version == 2
 
         await _wait_for(twice)
         assert len(backend.requests) == 4
-        assert any(message.text == "内部收尾" for message in backend.requests[2].messages)
+        assert not any(message.text == "内部收尾" for message in backend.requests[2].messages)
         assert backend.requests[0].instructions == backend.requests[2].instructions
 
 
@@ -545,39 +548,33 @@ async def test_empty_bridge_is_readonly_and_close_cancels_owned_model(store: Sto
             await background.start()
 
 
-async def test_one_epoch_freezes_limited_sources_and_keeps_overflow_for_new_facts(
-    store: Store,
+@pytest.mark.parametrize("count", [0, 1, 32, 33, 65])
+async def test_one_epoch_drains_all_unattempted_sources_without_new_facts(
+    store: Store, count: int
 ) -> None:
-    """一批有限来源共享预算，未纳入者只有新增独立事实才重新成为候选。"""
-    for ordinal in range(33):
+    """每批仍有限，但溢出来源无需新输入即可继续处理。"""
+    for ordinal in range(count):
         await _source(store, f"source:{ordinal}")
     backend = Backend(store)
     async with AsyncExitStack() as stack:
         background = await _background(store, stack, backend)
         await background.start()
-        await _wait_for(lambda: _finished(store, backend))
+
+        async def drained() -> bool:
+            return not await store.knowledge.pending_reflection()
+
+        await _wait_for(drained)
         await _wait_for(lambda: _session_idle(background))
-        assert len(backend.requests) == 2
-        pending = await store.knowledge.pending_reflection()
-        assert tuple(item.evidence_id for item in pending) == ("source:32",)
-        await asyncio.sleep(0.03)
-        assert len(backend.requests) == 2
-        await _source(store, "fresh", "新增独立事实")
-
-        async def twice() -> bool:
-            return (await store.get_session("reflection")).version == 2
-
-        await _wait_for(twice)
-        assert len(backend.requests) == 4
-        assert await store.knowledge.pending_reflection() == ()
+        assert len(backend.requests) == 2 * ((count + 31) // 32)
+        assert (await store.feedback.reflection_state()).oldest_queued_at is None
 
 
-@pytest.mark.parametrize("mode", ["finish", "defer", "final"])
-async def test_new_fact_resumes_reviewed_prefix_but_retries_failed_or_deferred_page(
-    store: Store, mode: Literal["finish", "defer", "final"]
+@pytest.mark.parametrize("mode", ["defer", "final"])
+async def test_unrelated_fact_cannot_reset_failed_or_deferred_range(
+    store: Store, mode: Literal["defer", "final"]
 ) -> None:
-    """取得游标不是理解；新事实后只跨过真正复核成功的前缀。"""
-    await _source(store, "long", "abcdefghijklmnopqrstuvwx")
+    """新来源可以工作，但不能为无关旧范围刷新失败额度或取消延期。"""
+    await _source(store, "long", "a" * 24)
     backend = Backend(store, mode)
     async with AsyncExitStack() as stack:
         background = await _background(store, stack, backend, page_chars=10)
@@ -592,29 +589,18 @@ async def test_new_fact_resumes_reviewed_prefix_but_retries_failed_or_deferred_p
         backend.mode = "finish"
         await _source(store, "fresh", "new")
 
-        async def twice() -> bool:
-            return (await store.get_session("reflection")).version == 2
+        async def fresh_done() -> bool:
+            return all(
+                item.evidence_id != "fresh" for item in await store.knowledge.pending_reflection()
+            )
 
-        await _wait_for(twice)
-        latest = next(
-            message
-            for message in reversed(backend.requests[count].messages)
-            if "reflection_batch" in message.metadata
-        )
-        references = latest.metadata["source_slice_refs"]
-        assert isinstance(references, tuple)
-        fragments = [
-            await store.knowledge.get_slice(reference)
-            for reference in references
-            if isinstance(reference, str)
-        ]
-        original = next(
-            fragment
-            for fragment in fragments
-            if fragment is not None and fragment.evidence_id == "long"
-        )
-        assert original.start == (10 if mode == "finish" else 0)
-        await asyncio.sleep(0.03)
+        await _wait_for(fresh_done)
+        await _wait_for(lambda: _session_idle(background))
+        latest = backend.requests[count].messages[0]
+        refs = latest.metadata["source_slice_refs"]
+        assert isinstance(refs, tuple)
+        fragments = [await store.knowledge.get_slice(ref) for ref in refs if isinstance(ref, str)]
+        assert all(item is not None and item.evidence_id == "fresh" for item in fragments)
         assert len(backend.requests) == count + 2
 
 
@@ -678,7 +664,7 @@ class HistoryBackend(Backend):
 
 
 @pytest.mark.parametrize("revoked", [False, True])
-async def test_real_core_checkpoint_reopens_and_restores_exact_prior_tool_delivery(
+async def test_reopened_batch_rejects_prior_delivery_as_current_read_qualification(
     tmp_path: Path,
     revoked: bool,
 ) -> None:
@@ -707,7 +693,7 @@ async def test_real_core_checkpoint_reopens_and_restores_exact_prior_tool_delive
             await background.start()
 
             async def committed() -> bool:
-                return (await first.get_session("reflection")).version == 1
+                return (await first.get_session("memory_consolidation")).version == 1
 
             await _wait_for(committed)
             assert len(backend.requests) == 3
@@ -724,15 +710,14 @@ async def test_real_core_checkpoint_reopens_and_restores_exact_prior_tool_delive
             await background.start()
 
             async def restored() -> bool:
-                return (await reopened.get_session("reflection")).version == 2
+                return (await reopened.get_session("memory_consolidation")).version == 2
 
             await _wait_for(restored)
             memory = await reopened.knowledge.get_memory("recovered")
-            if revoked:
-                assert memory is None
-            else:
-                assert memory is not None and memory.patch.sources == (reference,)
-            assert any(message.name == "read_evidence" for message in backend.requests[0].messages)
+            assert memory is None
+            assert not any(
+                message.name == "read_evidence" for message in backend.requests[0].messages
+            )
             assert len(backend.requests) == 3
     finally:
         await reopened.close()
@@ -955,7 +940,7 @@ async def test_more_than_thirty_two_unanswered_notices_do_not_starve_new_deliver
     assert not (await store.feedback.bridge(now=time.time())).foreground_ids
 
 
-async def test_eight_actual_successful_foreground_turns_trigger_before_sixty_seconds(
+async def test_thirty_two_actual_successful_foreground_turns_trigger_before_sixty_seconds(
     store: Store,
 ) -> None:
     class ForegroundBackend:
@@ -973,7 +958,7 @@ async def test_eight_actual_successful_foreground_turns_trigger_before_sixty_sec
             compiler=compile_materials,
         )
         stack.push_async_callback(foreground.close)
-        for ordinal in range(8):
+        for ordinal in range(32):
             identity = await _admit(store, f"foreground:{ordinal}")
             await foreground.run(
                 Message.user(f"真实外部交互 {ordinal}"),
@@ -993,13 +978,13 @@ async def test_eight_actual_successful_foreground_turns_trigger_before_sixty_sec
                 capacity=_capacity,
             )
         state = await store.feedback.reflection_state()
-        assert state.successful_turns == 8 and state.last_taken_successful_turns == 0
+        assert state.successful_turns == 32 and state.last_taken_successful_turns == 0
         background = await _background(store, stack, backend, seconds=60)
         await background.start()
         async with asyncio.timeout(3):
             await backend.entered.wait()
         state = await store.feedback.reflection_state()
-        assert state.last_taken_successful_turns == 8
+        assert state.last_taken_successful_turns == 32
 
 
 async def test_blocked_urgent_signal_keeps_original_generation_until_real_admission(
@@ -1068,26 +1053,24 @@ async def test_supervision_source_revoked_before_quota_recovers_is_not_delivered
         await store.close()
 
 
-async def test_internal_model_failure_keeps_prototype_and_stops_background_dispatch(
-    store: Store,
-) -> None:
+async def test_internal_analysis_failure_keeps_feedback_running(store: Store) -> None:
+    """分析程序故障可见，但不夺走可靠反馈服务的责任。"""
     await _source(store, "source")
     backend = Backend(store, "internal")
-    background: BackgroundService | None = None
-    with pytest.raises(LookupError, match="程序原型"):
-        async with AsyncExitStack() as stack:
-            background = await _background(store, stack, backend)
-            await background.start()
+    async with AsyncExitStack() as stack:
+        background = await _background(store, stack, backend)
+        await background.start()
 
-            async def faulted() -> bool:
-                return background.failure is not None
+        async def faulted() -> bool:
+            return background.reflection_service.health.error is not None
 
-            await _wait_for(faulted)
-            assert isinstance(background.failure, LookupError)
-            await _source(store, "independent")
-            await asyncio.sleep(0.02)
-            assert len(backend.requests) == 1
-    assert background is not None and background.pending_resources == 0
+        await _wait_for(faulted)
+        assert isinstance(background.reflection_service.health.error, LookupError)
+        assert background.failure is None
+        background.check()
+        await _source(store, "independent")
+        await asyncio.sleep(0.02)
+        assert len(backend.requests) == 1
 
 
 async def test_close_holds_cancelled_feedback_commit_until_real_database_return(
@@ -1176,7 +1159,7 @@ async def test_actual_eight_request_limit_abandons_once_and_new_fact_gets_next_b
         await _source(store, "fresh")
 
         async def committed() -> bool:
-            return (await store.get_session("reflection")).version == 1
+            return (await store.get_session("memory_consolidation")).version == 1
 
         await _wait_for(committed)
         assert len(backend.requests) == 10 and background.failure is None

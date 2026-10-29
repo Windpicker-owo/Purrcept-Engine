@@ -21,6 +21,7 @@ max_files = 7
 [diagnostics]
 retention_days = 7
 max_bytes = 1048576
+retained_bytes = 1073741824 # 请求、响应、摘要副本及流诊断正文的合计上限。
 
 [models.foreground]
 kind = "generation"
@@ -52,6 +53,10 @@ proactive_thinking = false # 启动默认值；WebUI 可在本次运行中切换
 proactive_idle_seconds = 300.0 # 无新刺激或主脑未激活达到此间隔，主脑空闲时唤醒一次。
 reflection_batch_seconds = 60.0
 reflection_batch_turns = 8
+behavior_review_enabled = true
+memory_consolidation_enabled = true
+memory_batch_seconds = 1800.0
+memory_batch_turns = 32
 
 # 六项固定身份缺省为 None；配置需要的字符串，不从认识或人员权限恢复。
 [subject.character]

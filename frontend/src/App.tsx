@@ -5,7 +5,8 @@
  */
 import { useEffect, useState, useSyncExternalStore } from "react";
 import type { ReactElement } from "react";
-import { Button, CelProvider, Feedback, Icon, Sheet } from "@purrcept/cel";
+import { motion } from "motion/react";
+import { Button, CelProvider, Feedback, Icon, Sheet, transitions } from "@purrcept/cel";
 import type { PanelClient, PanelState } from "./client";
 import { agentView } from "./model/agent";
 import type { AgentView } from "./model/agent";
@@ -114,7 +115,8 @@ export function App({ client }: { client: PanelClient }): ReactElement {
   const attention = attentionItems(state.snapshot, state.entries);
   // 首次查询尚未失败时只表达连接中，不能先闪出断线警告再立刻移除。
   const connecting = state.snapshot === null && state.error === null;
-  const agent = agentView(state.snapshot, state.online || connecting, attention);
+  const currentAgent = agentView(state.snapshot, state.online || connecting, attention);
+  const agent = state.snapshot === null && state.startup ? { state: state.startup.phase === "failed" ? "failed" as const : "waiting-external" as const, headline: state.startup.phase === "failed" ? "启动失败" : "Engine 正在启动", detail: state.startup.phase === "failed" ? "请查看诊断日志定位失败阶段。" : ({ sqlite:"正在打开本机数据。", models:"正在准备模型请求服务。", execution:"正在准备行动服务。", subject_restore:"正在恢复主体状态。", subject_start:"正在启用主体工作。" } as Record<string,string>)[state.startup.startup_stage ?? ""] ?? (state.startup.startup_stage?.startsWith("plugin_") ? "正在准备输入与设备插件。" : "配置与设备准备完成后即可接收新的工作。"), focus: null } : currentAgent;
   useEffect(() => { document.title = `${agent.headline} · Purrcept`; }, [agent.headline]);
   const current = PAGES.find((item) => item.id === route.page);
   const age = state.receivedAt === null ? null : Math.floor((Date.now() - state.receivedAt) / 1000);
@@ -132,6 +134,8 @@ export function App({ client }: { client: PanelClient }): ReactElement {
           {PAGES.map((item) => (
             <a key={item.id} className="nav-item pc-focusable" href={routeHref({ page: item.id, id: null })}
               title={`${item.label} · ${item.description}`} aria-current={route.page === item.id ? "page" : undefined}>
+              {/* 当前项指示块是同一个对象，以 move 弹簧从旧位置滑到新位置；文字颜色同帧切换。 */}
+              {route.page === item.id ? <motion.span layoutId="nav-current" className="nav-indicator" transition={transitions.move} aria-hidden="true" /> : null}
               <Icon name={item.icon} /><span>{item.label}</span>
               {item.id === "attention" && attention.length > 0 ? <span className="nav-count" aria-label={`${attention.length} 项待处理`}>{attention.length}</span> : null}
             </a>
@@ -157,7 +161,7 @@ export function App({ client }: { client: PanelClient }): ReactElement {
           <main id="main" className="main-stage" tabIndex={-1}>
             {/* 同级切换立即替换内容，不保留退场页，避免列宽变化时双页叠字和白闪。
                 key 只重置各页的局部筛选；宿主观察和整个外壳保持同一生命周期。 */}
-            <div key={route.page} className="page" data-measure={route.page === "attention" || route.page === "system" ? "reading" : "wide"}>
+            <div key={route.page} className="page pc-enter" data-measure={route.page === "attention" || route.page === "system" ? "reading" : "wide"}>
               {state.snapshot === null && route.page !== "home"
                 ? <section><h1>{current?.label}</h1><p className="page-intro">正在等待本机服务的状态。页面不会启动她或打开设备。</p></section>
                 : <PageBody page={route.page} state={state} client={client} agent={agent} attention={attention} route={route} go={go} />}
@@ -174,7 +178,7 @@ export function App({ client }: { client: PanelClient }): ReactElement {
         {!narrow ? (inspectable ? <aside className="inspector" aria-label="详情">
             {hasSelection ? <>
               <div className="inspector-heading"><span className="eyebrow">详情</span><Button variant="ghost" onClick={close}>关闭</Button></div>
-              <Selection key={route.id} route={route} state={state} client={client} go={go} />
+              <div key={route.id} className="pc-enter"><Selection route={route} state={state} client={client} go={go} /></div>
             </> : <div className="inspector-empty">
               <span className="item-icon" aria-hidden="true"><Icon name={current?.icon ?? "home"} /></span>
               <h2>查看{route.page === "reviews" ? "刺激与行动" : route.page === "timeline" ? "行动结果" : route.page === "devices" ? "设备状态" : "活动进展"}</h2>

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING
 
@@ -73,11 +74,15 @@ class EngineAssembly:
         try:
             self.state.lock.acquire()
             self.state.owns_lock = True
+            if self.state.on_data_dir_acquired is not None:
+                self.state.on_data_dir_acquired(self.state.config.host.data_dir)
+            self.stage("sqlite")
             self.state.store = await Store.open(
                 self.state.config.host.data_dir / "engine.sqlite3",
                 max_inputs=self.state.config.execution.max_pending_inputs,
                 max_input_bytes=self.state.config.execution.pending_input_bytes,
             )
+            self.stage("models")
             model_names = {
                 self.state.config.subject.foreground,
                 self.state.config.subject.reflection,
@@ -133,8 +138,10 @@ class EngineAssembly:
                     native_inputs=self.host,
                     captions=self.caption_snapshot,
                 )
+                self.stage(f"plugin_build:{instance_id}")
                 runtime = await blueprint.build(ports)
                 self.state.plugins[instance_id] = runtime
+            self.stage("execution")
             self.bind_audio_body()
             definitions = tuple(
                 definition
@@ -218,6 +225,7 @@ class EngineAssembly:
                 embedding=self.state.embedding_provider,
                 reranker=self.state.reranker,
             )
+            self.stage("subject_restore")
             self.state.subject = await build_subject(
                 self.state.config,
                 self.state.store,
@@ -245,12 +253,22 @@ class EngineAssembly:
             # 可以在插件启动中接管。关闭已到达时不再启动任何接入。
             if self.state.phase == "starting":
                 self.lifecycle.transition("running")
+            for instance_id, runtime in self.state.plugins.items():
+                if self.state.phase == "running" and runtime.start is not None:
+                    self.stage(f"plugin_start:{instance_id}")
+                    await runtime.start()
+            if self.state.phase == "running":
+                # 输入接入已可持久接管，但模型必须等全部主动插件连接完成，
+                # 防止新 WebUI 或恢复待办在其余资源尚未就绪时开始世界行动。
+                self.stage("subject_start")
                 await self.state.knowledge_resources.start()
                 await self.state.subject.service.start()
-            for runtime in self.state.plugins.values():
-                if self.state.phase == "running" and runtime.start is not None:
-                    await runtime.start()
+            self.stage(None)
         except BaseException as startup_error:
+            if not isinstance(startup_error, asyncio.CancelledError):
+                self.state.startup_failed_stage = self.state.startup_stage
+                self.state.startup_health.fail(startup_error)
+            self.stage(None)
             # 部分启动失败沿同一资源逆序清理。清理失败保留所有权，并与原始
             # 启动错误一起报告，不能解锁后另起宿主覆盖未释放的资源。
             if self.state.phase != "closing":
@@ -269,6 +287,17 @@ class EngineAssembly:
             )
             self.state.maintenance_task.add_done_callback(self.lifecycle.maintenance_done)
         _logger.info("宿主核心存储已就绪。", extra={"host_instance": self.state.instance_id})
+
+    def stage(self, name: str | None) -> None:
+        """结束上个启动阶段并发布其耗时，观察不创建资源或推进业务。"""
+        now = time.perf_counter()
+        previous = self.state.startup_stage
+        if previous is not None:
+            elapsed = (now - self._stage_started) * 1000
+            self.state.startup_timings[previous] = elapsed
+            _logger.info("启动阶段已结束。", extra={"stage": previous, "duration_ms": elapsed})
+        self.state.startup_stage = name
+        self._stage_started = now
 
     def bind_audio_body(self) -> None:
         """全部资源构造后一次关联实际播放事实，配置顺序不决定身体是否可用。

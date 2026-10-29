@@ -244,7 +244,7 @@ class PanelController:
                 await self.proactive.set_enabled(
                     enabled, expected_revision=request.expected_revision
                 )
-            elif request.target.startswith("action:"):
+            elif request.target.startswith(("action:", "turn:", "call:")):
                 if request.operation != "review":
                     raise ControlError("行动审查只允许提交评价。", code="control_target")
                 try:
@@ -253,7 +253,9 @@ class PanelController:
                     raise ControlError("评价须选择好或坏，留言最多 4000 字。") from error
                 await self.human_feedback.submit(
                     request.request_id,
-                    request.target.removeprefix("action:"),
+                    request.target.removeprefix("action:")
+                    if request.target.startswith("action:")
+                    else request.target,
                     request.expected_revision,
                     value,
                 )

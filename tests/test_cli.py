@@ -2,7 +2,7 @@
 
 import asyncio
 import signal
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import cast
 
@@ -108,15 +108,21 @@ def test_close_failure_preserves_force_exit_only_while_resources_remain(
     def force_exit(code: int) -> None:
         raise SystemExit(code)
 
-    def create_host(config: EngineConfig) -> EngineHost:
+    def create_host(
+        config: EngineConfig, *, on_data_dir_acquired: Callable[[Path], None] | None = None
+    ) -> EngineHost:
+        del on_data_dir_acquired
         del config
         return host
 
-    original_report = cli.traceback.print_exception
+    original_report = cli.ComponentHealth.fail
+    reported: list[BaseException] = []
 
-    def report(error: BaseException) -> None:
-        original_report(error)
-        asyncio.get_running_loop().call_soon(press_ctrl_c)
+    def report(owner: cli.ComponentHealth, error: BaseException) -> None:
+        original_report(owner, error)
+        reported.append(error)
+        if pending and owner.component == "shutdown":
+            asyncio.get_running_loop().call_soon(press_ctrl_c)
 
     monkeypatch.setattr(host, "start", start)
     monkeypatch.setattr(host, "close", close)
@@ -124,7 +130,7 @@ def test_close_failure_preserves_force_exit_only_while_resources_remain(
     monkeypatch.setattr(host, "query", query)
     monkeypatch.setattr(cli, "EngineHost", create_host)
     monkeypatch.setattr(cli.os, "_exit", force_exit)
-    monkeypatch.setattr(cli.traceback, "print_exception", report)
+    monkeypatch.setattr(cli.ComponentHealth, "fail", report)
     monkeypatch.setattr("sys.argv", ["purrcept-engine", "--config", str(config_path), "run"])
     if pending:
         with pytest.raises(SystemExit) as forced:
@@ -133,14 +139,13 @@ def test_close_failure_preserves_force_exit_only_while_resources_remain(
         assert len(handlers) == 2 and handlers[0] is handlers[1]
         output = capsys.readouterr()
         assert "关闭失败，仍占用" in output.out and "storage" in output.out
-        assert "synthetic browser close failure" in output.err
+        assert "synthetic browser close failure" not in output.err
     else:
-        with pytest.raises(BaseException) as raised:
-            main()
+        assert main() == 1
         if delayed:
-            assert raised.value is failure
+            assert reported[-1] is failure
         else:
-            group = cast(BaseExceptionGroup[BaseException], raised.value)
+            group = cast(BaseExceptionGroup[BaseException], reported[-1])
             assert group.exceptions == (failure,)
     assert close_calls == 1
     assert signal.getsignal(signal.SIGINT) is signal_owner

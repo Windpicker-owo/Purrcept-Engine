@@ -1,10 +1,10 @@
-"""独立后台的可靠反馈桥接和串行反思会话，不取得世界行动权限。
+"""拥有可靠反馈桥接、局部行为评审与增量记忆整理的独立任务。
 
-两个固定工作器分别交接真实反馈和推进反思。普通材料按最早待办的 60 秒或
-八个成功前台轮次触发；明确执行、设备与终态失败优先。每批冻结有限来源各一页，
-它们共用八次请求和 600 秒，后续未覆盖页面保持待办。认识修订逐次生效；
-只有 finish_reflection 确认覆盖；
-失败和延期没有新独立来源时不重新执行相同范围。Core 仍拥有五工具循环。
+反馈桥接不依赖分析开关。两个分析用途各自领取、结案和续页，每批从空模型
+历史开始；它们共享持久的一小时传输额度，但不互相确认来源已读。行为评审
+默认六十秒或八个成功轮次触发，记忆整理默认三十分钟或三十二个成功轮次触发。
+Core 拥有工具循环，分析任务没有世界执行权限。单个分析故障仅停止自身，
+存储或可靠反馈故障仍阻止依赖同一权威提交的派发。
 """
 
 from __future__ import annotations
@@ -17,6 +17,7 @@ from purrcept_core.models import (
     SystemInstruction,
 )
 
+from purrcept_engine.domain.health import ComponentHealth
 from purrcept_engine.domain.inputs.models import MediaReference
 from purrcept_engine.domain.knowledge.models import (
     SupervisionRecord,
@@ -58,6 +59,7 @@ class BackgroundService:
         foreground_generation: Callable[[], int],
         interrupt_foreground: Callable[[int], bool],
         can_start: Callable[[], None],
+        behavior: SubjectModel | None = None,
     ) -> None:
         """保存明确端口。
 
@@ -82,25 +84,36 @@ class BackgroundService:
         self.store, self.feedback = store, feedback
         self.knowledge, self.knowledge_store = knowledge, knowledge_store
         self.reflection, self.instructions, self.settings = reflection, instructions, settings
+        self.behavior = reflection if behavior is None else behavior
         self.media, self.refresh, self.prepare_history = media, refresh, prepare_history
         self.observe_foreground_generation = foreground_generation
         self.interrupt_foreground, self.can_start = interrupt_foreground, can_start
         self.session = ContinuousSession(
             store,
-            "reflection",
+            "memory_consolidation",
             can_start=self.check,
             compiler=reflection.compiler,
+            history_policy="batch",
+        )
+        self.behavior_session = ContinuousSession(
+            store,
+            "behavior_review",
+            can_start=self.check,
+            compiler=self.behavior.compiler,
+            history_policy="batch",
         )
         self.deliveries = EvidenceDeliveries()
         self.tasks: set[asyncio.Task[None]] = set()
         self.commits: set[asyncio.Task[object]] = set()
         self.failure_error: BaseException | None = None
+        self.health = ComponentHealth("background")
         self.closing = False
         self.started = False
         self.close_task: asyncio.Task[None] | None = None
 
         self.feedback_service = FeedbackService(self)
-        self.reflection_service = ReflectionService(self)
+        self.reflection_service = ReflectionService(self, purpose="memory")
+        self.behavior_service = ReflectionService(self, purpose="behavior")
 
     @property
     def failure(self) -> BaseException | None:
@@ -110,7 +123,12 @@ class BackgroundService:
     @property
     def pending_resources(self) -> int:
         """报告固定工作器、接管提交和仍借用模型的 Core 会话。"""
-        return len(self.tasks) + len(self.commits) + int(self.session.busy)
+        return (
+            len(self.tasks)
+            + len(self.commits)
+            + int(self.session.busy)
+            + int(self.behavior_session.busy)
+        )
 
     def check(self) -> None:
         """在新工作和真实模型边界撤销故障或关闭后的派发资格。
@@ -131,13 +149,18 @@ class BackgroundService:
             HostStateError: 后台已启动。
 
         Note:
-            建立两个固定工作器；重复启动不能形成平行反思。
+            建立可靠反馈及已启用的两个独立分析工作器；重复启动明确拒绝。
         """
         if self.started:
             raise HostStateError("后台已启动。")
         self.check()
         self.started = True
-        for worker in (self.feedback_service, self.reflection_service):
+        workers: list[FeedbackService | ReflectionService] = [self.feedback_service]
+        if self.settings.memory_enabled:
+            workers.append(self.reflection_service)
+        if self.settings.behavior_enabled:
+            workers.append(self.behavior_service)
+        for worker in workers:
             task = worker.start()
             self.tasks.add(task)
             task.add_done_callback(self.worker_done)
@@ -150,8 +173,16 @@ class BackgroundService:
         """
         self.tasks.discard(task)
         if not task.cancelled() and (error := task.exception()) is not None:
+            for analysis in (self.reflection_service, self.behavior_service):
+                if task is analysis.task:
+                    # 分析任务内部失败只撤销自身；可靠反馈与前台仍受真实存储资格保护。
+                    analysis.health.fail(error)
+                    analysis.session.interrupt(analysis.session.generation)
+                    return
             self.failure_error = self.failure_error or error
+            self.health.fail(error)
             self.session.interrupt(self.session.generation)
+            self.behavior_session.interrupt(self.behavior_session.generation)
             for other in self.tasks:
                 other.cancel()
 
@@ -243,7 +274,12 @@ class BackgroundService:
         for task in workers:
             task.cancel()
         try:
-            await self.session.close()
+            sessions = await asyncio.gather(
+                self.session.close(), self.behavior_session.close(), return_exceptions=True
+            )
+            failures = [item for item in sessions if isinstance(item, BaseException)]
+            if failures:
+                raise BaseExceptionGroup("后台会话归还失败。", failures)
         finally:
             results: list[object] = list(await asyncio.gather(*workers, return_exceptions=True))
             self.tasks.clear()

@@ -2,51 +2,16 @@
 
 from __future__ import annotations
 
-import hashlib
-from collections.abc import Callable
-from importlib import import_module
-from importlib.metadata import version
-from pathlib import Path
-from typing import Literal, Protocol, cast
-
 from purrcept_core.models import (
     DecisionRequest,
     ModelRequest,
     ModelRequestError,
 )
+from purrcept_litellm.compilation import compile_decision, compile_request, compiler_identity
+from purrcept_litellm.config import LiteLLMConfig
+from purrcept_litellm.decision import LiteLLMDecisionConfig
 
 from purrcept_engine.serialization import encode
-
-
-class _GenerationCompiler(Protocol):
-    """冻结 SDK 纯编译入口的精确借用签名，不持有传输资源。"""
-
-    def __call__(self, request: ModelRequest, *, model: str, config: object) -> dict[str, object]:
-        """按冻结 SDK 规则将完整生成请求编译为原生 payload。
-
-        Args:
-            request: 已经按 Core 协议组装的完整生成请求。
-            model: 本次调用使用的显式模型名，不在领域层推断替代模型。
-            config: 冻结 SDK 的请求编译配置，仅含明确调用选项，不借入真实凭据。
-        """
-        ...
-
-
-class _DecisionCompiler(Protocol):
-    """专用判断纯编译接缝，保持 SDK 候选与输入表示。"""
-
-    def __call__(
-        self, request: DecisionRequest, *, model: str, config: object
-    ) -> dict[str, object]:
-        """按冻结 SDK 规则将完整判断请求编译为原生 payload。
-
-        Args:
-            request: 已经按 Core 协议组装的专用判断请求。
-            model: 本次调用使用的显式模型名，不在领域层推断替代模型。
-            config: 冻结 SDK 的请求编译配置，仅含明确调用选项，不借入真实凭据。
-        """
-        ...
-
 
 _TRANSPORT_FIELDS = frozenset(
     {
@@ -86,27 +51,21 @@ def compile_materials(request: ModelRequest | DecisionRequest, *, model: str) ->
 
     Raises:
         ModelRequestError: SDK 自动重试必须显式关闭。
-        TypeError: 冻结 SDK 编译器没有可核验源码。
+        TypeError: SDK 编译器身份无法核验。
 
     Note:
-        当前 SDK 未公开编译入口，因此这处接缝精确绑定 0.2.x 的两个模块并记录
-        源码摘要。它不再实现消息或 TypeSafe 协议转换。公开生成参数保持原值；
+        SDK 的公共纯编译入口与实际后端共用同一实现，身份涵盖共享转换依赖。
+        本模块不实现消息或 TypeSafe 协议转换。公开生成参数保持原值；
         明确传输字段仅记录排除名称，不能将秘密写入原始请求证据。
     """
     if isinstance(request, ModelRequest):
-        module = import_module("purrcept_litellm._request")
-        compiler = cast(_GenerationCompiler, module.__dict__["compile_request"])
-        config_module = import_module("purrcept_litellm.config")
-        factory = cast(Callable[..., object], config_module.__dict__["LiteLLMConfig"])
-        config = factory(default_options={"num_retries": 0, "max_retries": 0, "drop_params": False})
-        payload = compiler(request, model=model, config=config)
+        config = LiteLLMConfig(
+            default_options={"num_retries": 0, "max_retries": 0, "drop_params": False}
+        )
+        payload = compile_request(request, model=model, config=config)
     else:
-        module = import_module("purrcept_litellm._decision")
-        decision_compiler = cast(_DecisionCompiler, module.__dict__["compile_decision"])
-        config_module = import_module("purrcept_litellm.decision")
-        factory = cast(Callable[..., object], config_module.__dict__["LiteLLMDecisionConfig"])
-        config = factory(default_options={"num_retries": 0, "max_retries": 0})
-        payload = decision_compiler(request, model=model, config=config)
+        config = LiteLLMDecisionConfig(default_options={"num_retries": 0, "max_retries": 0})
+        payload = compile_decision(request, model=model, config=config)
 
     for field in ("num_retries", "max_retries"):
         if payload.get(field, 0) != 0:
@@ -115,24 +74,3 @@ def compile_materials(request: ModelRequest | DecisionRequest, *, model: str) ->
     excluded = sorted(key for key in payload if key in _TRANSPORT_FIELDS)
     identity = compiler_identity("generation" if isinstance(request, ModelRequest) else "decision")
     return encode({"payload": public, "excluded_transport_fields": excluded}), identity
-
-
-def compiler_identity(kind: Literal["generation", "decision"]) -> str:
-    """返回当前冻结编译器的身份，供启动恢复时拒绝跨 SDK 版本复用用量。
-
-    Args:
-        kind: 实际请求协议种类，不根据模型名推断。
-
-    Note:
-        与 compile_materials 使用同一模块源码和安装版本，不构造请求或连接端点。
-    """
-    module = import_module(
-        "purrcept_litellm._request" if kind == "generation" else "purrcept_litellm._decision"
-    )
-    if module.__file__ is None:
-        raise TypeError("冻结 SDK 编译器没有可核验源码。")
-    fingerprint = hashlib.sha256(Path(module.__file__).read_bytes()).hexdigest()
-    return (
-        f"purrcept_litellm/{version('purrcept_litellm')}:litellm/{version('litellm')}:"
-        f"{module.__name__}:{fingerprint}"
-    )

@@ -432,8 +432,11 @@ async def test_broken_media_reference_is_not_silently_omitted(tmp_path: Path) ->
     finally:
         await store.close()
 
-    with pytest.raises(StorageError) as failed:
-        await Store.open(path)
+    # 普通重开不再做全库外键扫描；完整检查属于明确的离线维护。
+    from purrcept_engine.infrastructure.sqlite.maintenance_cli import check_database
+
+    with sqlite3.connect(path) as connection, pytest.raises(StorageError) as failed:
+        check_database(connection)
     assert failed.value.code == "invalid_record"
     assert table_counts(path) == (1, 0, 1, 1)
 

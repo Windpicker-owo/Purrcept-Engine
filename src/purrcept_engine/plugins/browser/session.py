@@ -70,7 +70,7 @@ class BrowserSession:
     """app借出的浏览器资源，执行期间串行，关闭在所有真实调用借用结束后。
 
     evidence是共享原文/媒体端口，不拥有数据库。纯声明不给Driver；build
-    创建本实例并start，失败也close实际已取得资源。已接管媒体和快照不随
+    创建本实例，首次能力调用才 start；失败也由宿主 close 实际已取得资源。已接管媒体和快照不随
     后续模型/Worker失败撤销，关闭不删除profile、下载或同库媒体。
     """
 
@@ -132,12 +132,14 @@ class BrowserSession:
 
     async def _start(self) -> None:
         """沿用持久profile，策略安装完整成功后才允许能力调用。"""
-        await self._own(
-            asyncio.to_thread(self.settings.user_data_dir.mkdir, parents=True, exist_ok=True)
-        )
-        await self.driver.start()
-        await self.driver.set_navigation_policy(self.check_url)
-        self._started = True
+        # 同一初始化任务由所有首次调用共享；实际资源取得仍与操作、关闭共用锁。
+        async with self._lock:
+            await self._own(
+                asyncio.to_thread(self.settings.user_data_dir.mkdir, parents=True, exist_ok=True)
+            )
+            await self.driver.start()
+            await self.driver.set_navigation_policy(self.check_url)
+            self._started = True
 
     def check_url(self, url: str) -> str:
         """声明主机约束同一函数由入口与真实逐跳请求使用。
@@ -161,6 +163,7 @@ class BrowserSession:
             raise BrowserInputError(str(error)) from error
 
     def _check(self) -> None:
+        """入口检查不能跨等待保留资格；每次取得操作锁后必须再核验关闭门槛。"""
         if not self._started or self._close_task is not None:
             raise BrowserError("浏览器尚未就绪或已关闭。")
 
@@ -188,6 +191,7 @@ class BrowserSession:
         """
         self._check()
         async with self._lock:
+            self._check()
             view = await self.driver.view()
             self._latest, self._observed_at = view, time.time()
             return view.payload()
@@ -201,6 +205,7 @@ class BrowserSession:
         self._check()
         normalized = self.check_url(url)
         async with self._lock:
+            self._check()
             self._refs.clear()
             view = await self.driver.open(
                 normalized, timeout_seconds=self.settings.navigation_timeout_seconds
@@ -253,6 +258,7 @@ class BrowserSession:
             return self._page(await self.evidence.read_evidence_cursor(cursor, max_chars=limit))
         self._check()
         async with self._lock:
+            self._check()
             before = await self.driver.view()
             html = await self.driver.html()
             after = await self.driver.view()
@@ -330,6 +336,7 @@ class BrowserSession:
             raise BrowserInputError("query不能为空。")
         url = self.check_url(build_search_url(self.settings, stripped))
         async with self._lock:
+            self._check()
             self._refs.clear()
             view = await self.driver.open(
                 url, timeout_seconds=self.settings.navigation_timeout_seconds
@@ -383,6 +390,7 @@ class BrowserSession:
         """
         self._check()
         async with self._lock:
+            self._check()
             view = await self.driver.view()
             result = await self.driver.snapshot(interactive=interactive)
             self._refs = dict(result.refs)
@@ -410,6 +418,7 @@ class BrowserSession:
         """
         self._check()
         async with self._lock:
+            self._check()
             handle = self._ref(ref)
             self._refs.clear()
             view = await self.driver.click(handle)
@@ -437,6 +446,7 @@ class BrowserSession:
             raise BrowserInputError("text不能为空。")
         delay_ms = self.settings.typing_pause_seconds(text) / len(text) * 1000
         async with self._lock:
+            self._check()
             handle = self._ref(ref)
             self._refs.clear()
             view = await self.driver.type_text(handle, text, delay_ms=delay_ms, submit=submit)
@@ -455,6 +465,7 @@ class BrowserSession:
         """
         self._check()
         async with self._lock:
+            self._check()
             handle = None if ref is None else self._ref(ref)
             view = await self.driver.scroll(direction=direction, handle=handle, amount=amount)
             return {**await self._decorate(view, "scroll"), "direction": direction}
@@ -471,6 +482,7 @@ class BrowserSession:
         """
         self._check()
         async with self._lock:
+            self._check()
             view = await self.driver.view()
             capture = (
                 await self.driver.screenshot(full_page=full_page)
@@ -559,6 +571,12 @@ class BrowserSession:
             phase = "closing"
         elif self._started:
             phase = "ready"
+        elif (
+            self._start_task is not None
+            and self._start_task.done()
+            and self._start_task.exception() is not None
+        ):
+            phase = "failed"
         else:
             phase = "declared" if self._start_task is None else "starting"
         return {
@@ -579,18 +597,20 @@ class BrowserSession:
         # 必须先加入它，避免close完成后start又交回新页面。
         if self._start_task is not None:
             await asyncio.gather(self._start_task, return_exceptions=True)
-        results = await asyncio.gather(*tuple(self._owned), return_exceptions=True)
-        failures = [result for result in results if isinstance(result, BaseException)]
-        try:
-            await self.driver.close()
-        except BaseException as error:
-            failures.append(error)
-        else:
-            self._closed = True
-        self._started = False
-        self._refs.clear()
-        if failures:
-            raise BaseExceptionGroup("浏览器资源或已接管提交收尾失败。", failures)
+        # 先等待已进入驱动的调用和持久提交，再实际释放浏览器。
+        async with self._lock:
+            results = await asyncio.gather(*tuple(self._owned), return_exceptions=True)
+            failures = [result for result in results if isinstance(result, BaseException)]
+            try:
+                await self.driver.close()
+            except BaseException as error:
+                failures.append(error)
+            else:
+                self._closed = True
+            self._started = False
+            self._refs.clear()
+            if failures:
+                raise BaseExceptionGroup("浏览器资源或已接管提交收尾失败。", failures)
 
 
 def _dimensions(data: bytes) -> tuple[int, int]:

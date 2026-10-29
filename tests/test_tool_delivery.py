@@ -337,6 +337,7 @@ async def test_oversized_page_can_retry_and_reused_call_id_does_not_rewrite_hist
     requests = await store.requests_for_turn("foreground", "actual-turn")
     assert len(requests) == 4
     for record, actual in zip(requests, transport.payloads, strict=True):
+        assert record.request.materials_json is not None
         expected = obj(decode_object(record.request.materials_json.encode("utf-8"))["payload"])
         assert expected["messages"] == actual["messages"]
         assert expected["tools"] == actual["tools"]

@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import io
+import time
 from collections.abc import AsyncIterator
 from pathlib import Path
 
@@ -66,11 +67,33 @@ class Inputs:
         return await self.store.input_processing(input_id)
 
 
+async def test_concurrent_first_use_and_close_share_one_actual_session(
+    store: Store, tmp_path: Path
+) -> None:
+    """并发首次调用共享初始化；关闭封存入口后等同一实际启动和释放。"""
+    driver = OfflineDriver()
+    driver.block_start = True
+    browser = session(store, tmp_path, driver)
+    starts = [asyncio.create_task(browser.start()) for _ in range(12)]
+    await driver.start_entered.wait()
+    closing = asyncio.create_task(browser.close())
+    await asyncio.sleep(0)
+    driver.start_release.set()
+    await asyncio.gather(*starts)
+    await closing
+    await browser.close()
+    assert driver.start_count == 1 and driver.closed == 1
+    assert browser.state()["phase"] == "closed"
+    with pytest.raises(BrowserError, match="关闭"):
+        await browser.start()
+
+
 class OfflineDriver:
     """只有离线已给材料，调用日志用于证明旧cursor不再访问平台。"""
 
     def __init__(self) -> None:
         self.started = False
+        self.start_count = 0
         self.closed = 0
         self.calls: list[tuple[str, object]] = []
         self.page = PageView("https://example.com/page", "离线网页")
@@ -85,6 +108,7 @@ class OfflineDriver:
         self.policy: NavigationPolicy | None = None
 
     async def start(self) -> None:
+        self.start_count += 1
         self.start_entered.set()
         if self.block_start:
             await self.start_release.wait()
@@ -445,14 +469,23 @@ async def test_cancelled_start_and_close_observers_still_release_actual_resource
 
 
 @pytest.mark.asyncio
-async def test_partial_build_failure_closes_taken_driver(store: Store, tmp_path: Path) -> None:
+async def test_lazy_browser_failure_is_owned_until_runtime_close(
+    store: Store, tmp_path: Path
+) -> None:
     driver = OfflineDriver()
     driver.start_error = BrowserError("offline start failure")
     blueprint = plugin.make_factory(lambda _: driver).prepare("browser", {}, tmp_path)
-    with pytest.raises(BrowserError, match="start failure"):
-        await blueprint.build(
-            PluginPorts(Inputs(store), lambda: {}, EvidenceAccess(store.knowledge, 8000))
-        )
+    runtime = await blueprint.build(
+        PluginPorts(Inputs(store), lambda: {}, EvidenceAccess(store.knowledge, 8000))
+    )
+    assert driver.closed == 0
+    methods = {item.declaration.name: item for item in runtime.capabilities}
+    try:
+        with pytest.raises(BrowserError, match="start failure"):
+            await methods["status"].invoke({}, CallContext("action", "call", time.monotonic() + 10))
+    finally:
+        if runtime.close is not None:
+            await runtime.close()
     assert driver.closed == 1
 
 

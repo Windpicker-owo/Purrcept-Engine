@@ -24,13 +24,13 @@ from purrcept_engine.serialization import encode
 from purrcept_engine.values import JsonObject, JsonValue, decode_object, encode_json
 
 
-def _context(connection: sqlite3.Connection, action_id: str) -> JsonObject | None:
+def read_context(connection: sqlite3.Connection, action_id: str) -> JsonObject | None:
     """读取共用完整快照，提交复核时借用外层事务，不能提前提交评价责任。"""
     if connection.in_transaction:
-        return _read_context(connection, action_id)
+        return _target_context(connection, action_id)
     with connection:
         connection.execute("BEGIN")
-        return _read_context(connection, action_id)
+        return _target_context(connection, action_id)
 
 
 def _read_context(connection: sqlite3.Connection, action_id: str) -> JsonObject | None:
@@ -44,14 +44,94 @@ def _read_context(connection: sqlite3.Connection, action_id: str) -> JsonObject 
         "ORDER BY t.started_at DESC,t.turn_id DESC LIMIT 1",
         (action.input_id, action.created_at),
     ).fetchone()
+    unresolved: str | None = None
     if turn is None:
-        input_ids = () if action.input_id is None else (action.input_id,)
+        # 手动行动可以只有外部关联身份；没有正式输入记录不等同于损坏既有轮次。
+        exists = (
+            action.input_id is not None
+            and connection.execute(
+                "SELECT 1 FROM inputs WHERE input_id=?", (action.input_id,)
+            ).fetchone()
+            is not None
+        )
+        input_ids = (action.input_id,) if exists and action.input_id is not None else ()
+        unresolved = action.input_id if action.input_id is not None and not exists else None
     else:
         rows: list[tuple[str]] = connection.execute(
             "SELECT input_id FROM turn_inputs WHERE turn_id=? ORDER BY ordinal", turn
         ).fetchall()
         input_ids = tuple(row[0] for row in rows)
 
+    stimuli = _stimuli(connection, input_ids)
+    return {
+        "turn_id": None if turn is None else turn[0],
+        "unresolved_input_id": unresolved,
+        "stimuli": stimuli,
+        "action": decode_object(encode(action).encode()),
+        "actions": [],
+        "target": {"kind": "action", "id": action_id, "state": action.state},
+    }
+
+
+def _target_context(connection: sqlite3.Connection, identity: str) -> JsonObject | None:
+    """将行动、调用或轮次投影为同一审查契约，始终保留真实目标种类。"""
+    if identity.startswith("call:"):
+        call_id = identity.removeprefix("call:")
+        row = connection.execute(
+            "SELECT action_id,state FROM calls WHERE call_id=?", (call_id,)
+        ).fetchone()
+        if row is None:
+            return None
+        context = _read_context(connection, row[0])
+        if context is not None:
+            context["target"] = {"kind": "call", "id": call_id, "state": row[1]}
+        return context
+    if not identity.startswith("turn:"):
+        return _read_context(connection, identity)
+    turn_id = identity.removeprefix("turn:")
+    row = connection.execute(
+        "SELECT state FROM subject_turns WHERE turn_id=? AND scope='foreground'", (turn_id,)
+    ).fetchone()
+    if row is None:
+        return None
+    inputs = tuple(
+        item[0]
+        for item in connection.execute(
+            "SELECT input_id FROM turn_inputs WHERE turn_id=? ORDER BY ordinal", (turn_id,)
+        ).fetchall()
+    )
+    actions: list[JsonValue] = []
+    rows = connection.execute(
+        "SELECT DISTINCT a.action_id FROM actions a JOIN turn_inputs i ON "
+        "a.input_id=i.input_id JOIN subject_turns t ON "
+        "t.turn_id=i.turn_id WHERE i.turn_id=? AND "
+        "a.created_at>=t.started_at AND (t.finished_at IS NULL OR "
+        "a.created_at<=t.finished_at) ORDER BY a.created_at,a.action_id",
+        (turn_id,),
+    ).fetchall()
+    for (action_id,) in rows:
+        action = execution.get_action_in_transaction(connection, action_id)
+        if action is not None:
+            actions.append(decode_object(encode(action).encode()))
+    return {
+        "target": {"kind": "turn", "id": turn_id, "state": row[0]},
+        "turn_id": turn_id,
+        "stimuli": _stimuli(connection, inputs),
+        "action": None,
+        "actions": actions,
+    }
+
+
+def _target(identity: str) -> tuple[str, str]:
+    """控制目标只解析明确命名空间，普通行动身份保持原值。"""
+    for kind in ("turn", "call"):
+        if identity.startswith(kind + ":"):
+            return kind, identity.removeprefix(kind + ":")
+    return "action", identity
+
+
+def _stimuli(connection: sqlite3.Connection, input_ids: tuple[str, ...]) -> list[JsonValue]:
+    """展开明确关联的不可变输入，轮次遗漏不需要伪造行动。"""
     stimuli: list[JsonValue] = []
     for identity in input_ids:
         row: tuple[str, ...] | None = connection.execute(
@@ -82,11 +162,7 @@ def _read_context(connection: sqlite3.Connection, action_id: str) -> JsonObject 
             {"media_id": mid, "media_type": kind, "name": name} for mid, kind, name in media
         ]
         stimuli.append(stimulus)
-    return {
-        "turn_id": None if turn is None else turn[0],
-        "stimuli": stimuli,
-        "action": decode_object(encode(action).encode()),
-    }
+    return stimuli
 
 
 def _revision(context: JsonObject) -> str:
@@ -97,11 +173,9 @@ def _revision(context: JsonObject) -> str:
 def _history(connection: sqlite3.Connection, action_id: str) -> list[JsonValue]:
     """评价本身就是不可变证据，页面读取不确认前台或反思的消费责任。"""
     rows: list[tuple[str, int]] = connection.execute(
-        "SELECT evidence_id,version FROM knowledge_evidence WHERE "
-        "json_extract(payload_json,'$.kind')='human_feedback' AND "
-        "json_extract(json_extract(payload_json,'$.source_json'),'$.action_id')=? "
+        "SELECT evidence_id,version FROM human_feedback_links WHERE target_kind=? AND target_id=? "
         "ORDER BY created_at DESC,evidence_id DESC LIMIT 32",
-        (action_id,),
+        _target(action_id),
     ).fetchall()
     result: list[JsonValue] = []
     for identity, version in rows:
@@ -133,7 +207,7 @@ class HumanFeedbackLedger:
         """
         self._submit = submit
 
-    async def page(self, before: str | None = None) -> JsonObject:
+    async def page(self, before: str | None = None, *, kind: str = "action") -> JsonObject:
         """按稳定行动游标读取至多二十条历史，支持离开最近快照继续审查。
 
         Args:
@@ -147,6 +221,42 @@ class HumanFeedbackLedger:
         """
 
         def read(connection: sqlite3.Connection) -> JsonObject:
+            if kind in ("turn", "call"):
+                table, key, created = (
+                    ("subject_turns", "turn_id", "started_at")
+                    if kind == "turn"
+                    else ("calls", "call_id", "prepared_at")
+                )
+                conditions = "scope='foreground'" if kind == "turn" else "1=1"
+                parameters: tuple[object, ...] = ()
+                if before is not None:
+                    boundary = connection.execute(
+                        f"SELECT {created},{key} FROM {table} WHERE {key}=?", (before,)
+                    ).fetchone()
+                    if boundary is None:
+                        raise ControlError("审查游标不存在。", code="review_cursor")
+                    conditions += f" AND ({created},{key})<(?,?)"
+                    parameters = tuple(boundary)
+                target_rows = connection.execute(
+                    f"SELECT {key},state,{created} FROM {table} WHERE {conditions} "
+                    f"ORDER BY {created} DESC,{key} DESC LIMIT 21",
+                    parameters,
+                ).fetchall()
+                return {
+                    "items": [
+                        {
+                            "target_kind": kind,
+                            "target_id": row[0],
+                            "state": row[1],
+                            "created_at": row[2],
+                            "label": "前台轮次" if kind == "turn" else "能力调用",
+                        }
+                        for row in target_rows[:20]
+                    ],
+                    "next_cursor": target_rows[19][0] if len(target_rows) > 20 else None,
+                }
+            if kind != "action":
+                raise ControlError("未知审查目标种类。", code="review_target")
             boundary: tuple[float, str] | None = None
             if before is not None:
                 boundary = connection.execute(
@@ -166,7 +276,14 @@ class HumanFeedbackLedger:
                 action = execution.get_action(connection, identity)
                 if action is None:
                     raise StorageError("审查行动记录缺失。", code="invalid_record")
-                items.append(action_projection(action))
+                items.append(
+                    {
+                        **action_projection(action),
+                        "target_kind": "action",
+                        "target_id": action.action_id,
+                        "label": f"{len(action.calls)} 项操作",
+                    }
+                )
             return {"items": items, "next_cursor": rows[19][0] if len(rows) > 20 else None}
 
         return await self._submit(read)
@@ -182,7 +299,7 @@ class HumanFeedbackLedger:
         """
 
         def read(connection: sqlite3.Connection) -> JsonObject | None:
-            context = _context(connection, action_id)
+            context = read_context(connection, action_id)
             if context is None:
                 return None
             return {
@@ -212,14 +329,16 @@ class HumanFeedbackLedger:
             先读取材料申请真实队列字节额度，再在写事务复核版本。取消观察不
             撤销已接管事务；正式调用所有者由 PanelController 持有至收尾。
         """
-        context = await self._submit(lambda connection: _context(connection, action_id))
+        context = await self._submit(lambda connection: read_context(connection, action_id))
         if context is None:
             raise ControlError("找不到这次行动。", code="review_missing")
         prepared_revision = _revision(context)
         source: JsonObject = {
             "source": "human_feedback",
             "request_id": request_id,
-            "action_id": action_id,
+            "action_id": action_id if _target(action_id)[0] == "action" else None,
+            "target_kind": _target(action_id)[0],
+            "target_id": _target(action_id)[1],
             "revision": revision,
             "rating": value.rating,
             "comment": value.comment,
@@ -237,6 +356,8 @@ class HumanFeedbackLedger:
                     "evidence_ref": {"id": stimulus["input_id"], "version": 1},
                 }
             )
+        source["input_ids"] = [item["input_id"] for item in stimuli if isinstance(item, dict)]
+        source["turn_id"] = context["turn_id"]
         reviewed_context = {**context, "stimuli": stimulus_references}
         payload = encode_json({**source, "reviewed_context": reviewed_context}).decode()
         identity = "human-feedback:" + request_id
@@ -251,15 +372,19 @@ class HumanFeedbackLedger:
                     if existing.source_json != encode_json(source).decode():
                         raise ControlError("评价身份对应不同参数。", code="control_conflict")
                     return
-                current = _context(connection, action_id)
+                current = read_context(connection, action_id)
                 if (
                     prepared_revision != revision
                     or current is None
                     or _revision(current) != revision
                 ):
                     raise ControlError("行动材料已更新，请重新阅读后评价。", code="stale_revision")
-                action = current["action"]
-                if not isinstance(action, dict) or action["state"] == "running":
+                target = current["target"]
+                if not isinstance(target, dict) or target["state"] in (
+                    "running",
+                    "prepared",
+                    "started",
+                ):
                     raise ControlError("请等待这次行动结束后再评价。", code="review_running")
                 snapshot = EvidenceSnapshot(
                     evidence_id=identity,
@@ -271,6 +396,10 @@ class HumanFeedbackLedger:
                     summary=f"人工评价：{rating_label}。{value.comment}",
                 )
                 feedback.record_human_feedback(connection, snapshot)
+                connection.execute(
+                    "INSERT INTO human_feedback_links VALUES(?,1,?,?,?)",
+                    (identity, *_target(action_id), snapshot.occurred_at),
+                )
 
         await self._submit(write, logical_bytes=len(payload.encode()), control=True, writing=True)
 
@@ -289,7 +418,7 @@ class HumanFeedbackLedger:
         """
 
         def read(connection: sqlite3.Connection) -> tuple[bytes, str] | None:
-            context = _context(connection, action_id)
+            context = read_context(connection, action_id)
             if context is None:
                 return None
             stimuli = context["stimuli"]

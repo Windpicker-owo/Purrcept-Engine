@@ -220,6 +220,8 @@ class UsageMeter:
 
         def freeze() -> UsageAnchor:
             """请求证据是唯一材料来源，原生媒体与消息布局都参与完整指纹。"""
+            if evidence.materials_json is None:
+                raise ValueError("用量观察只能使用当前成功请求的完整材料。")
             payload = decode_object(evidence.materials_json.encode("utf-8"))["payload"]
             if not isinstance(payload, dict):
                 raise TypeError("用量锚点缺少完整 SDK payload。")

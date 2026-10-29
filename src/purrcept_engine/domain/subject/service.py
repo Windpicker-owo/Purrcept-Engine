@@ -19,6 +19,7 @@ from purrcept_core.models import (
 )
 
 from purrcept_engine.domain.execution.catalog import Catalog
+from purrcept_engine.domain.health import ComponentHealth
 from purrcept_engine.domain.inputs.models import InputRecord
 from purrcept_engine.domain.knowledge.ports import KnowledgeStore
 from purrcept_engine.domain.knowledge.service import KnowledgeService
@@ -126,6 +127,7 @@ class SubjectService:
         self.started = False
         self.closing = False
         self.failure_error: BaseException | None = None
+        self.health = ComponentHealth("subject")
         self.close_task: asyncio.Task[None] | None = None
 
         self.background: BackgroundService | None = None
@@ -240,6 +242,7 @@ class SubjectService:
         self.tasks.discard(task)
         if not task.cancelled() and (error := task.exception()) is not None:
             self.failure_error = self.failure_error or error
+            self.health.fail(error)
             self.session.interrupt(self.session.generation)
             for other in self.tasks:
                 if not other.cancelling():
@@ -289,6 +292,7 @@ class SubjectService:
         self.commits.discard(cast(asyncio.Future[object], task))
         if not task.cancelled() and (error := task.exception()) is not None:
             self.failure_error = self.failure_error or error
+            self.health.fail(error)
 
     async def close(self) -> None:
         """只建立一次实际收尾，取消等待不能使模型借用或写入失去所有者。"""

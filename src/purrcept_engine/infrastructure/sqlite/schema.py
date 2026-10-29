@@ -4,6 +4,7 @@ import sqlite3
 
 from purrcept_engine.errors import StorageError
 from purrcept_engine.infrastructure.sqlite import activities as activity_storage
+from purrcept_engine.infrastructure.sqlite import analysis_work, archive, behavior_review
 from purrcept_engine.infrastructure.sqlite import audio as audio_storage
 from purrcept_engine.infrastructure.sqlite import controls as control_storage
 from purrcept_engine.infrastructure.sqlite import execution as execution_storage
@@ -13,9 +14,8 @@ from purrcept_engine.infrastructure.sqlite import maintenance as maintenance_sto
 from purrcept_engine.infrastructure.sqlite import model_requests as model_storage
 from purrcept_engine.infrastructure.sqlite import subject as subject_storage
 from purrcept_engine.infrastructure.sqlite import time as time_storage
-from purrcept_engine.values import encode_json
 
-_FORMAT_VERSION = 15
+_FORMAT_VERSION = 16
 
 
 _APPLICATION_ID = 0x50555245
@@ -46,90 +46,12 @@ _SCHEMA = (
     *feedback_storage.SCHEMA,
     *control_storage.SCHEMA,
     *audio_storage.SCHEMA,
+    *archive.SCHEMA,
 )
-
-
-# 已知旧格式只用于一次性原子迁移，不为运行期保留旧调度接口。
-_INPUT_PROCESSING_V13 = (
-    "CREATE TABLE input_processing (input_id TEXT PRIMARY KEY REFERENCES inputs(input_id), "
-    "version INTEGER NOT NULL, stage TEXT NOT NULL, reason TEXT NOT NULL, "
-    "attention_request_id TEXT, due_at REAL, handed_off INTEGER NOT NULL DEFAULT 0, "
-    "admitted_at REAL NOT NULL)"
-)
-_MINIMUM_WAKE_V13 = (
-    "CREATE TABLE minimum_wake_assessments (input_id TEXT PRIMARY KEY REFERENCES inputs(input_id), "
-    "owner_id TEXT NOT NULL, observed_generation INTEGER NOT NULL, input_version INTEGER NOT NULL, "
-    "state TEXT NOT NULL, level TEXT, reason TEXT, request_id TEXT)",
-    "CREATE INDEX minimum_wake_pending ON minimum_wake_assessments(owner_id,state)",
-)
-
-
-def _upgrade_stimulus_inbox(connection: sqlite3.Connection, version: int) -> None:
-    """核验冻结旧结构，再原子改为提交/唤醒分离的格式14。
-
-    原始输入、媒体、真实回执、历史和模型请求保持原值。旧 defer 尚未执行，
-    转为一次保底唤醒；截止时间写入迁移原因保留。已经结案的 observe 不重放。
-    旧升级观察原样归档，不借用新进程恰好相同的生成数字。
-    """
-    rows: list[tuple[object, ...]] = connection.execute(
-        "SELECT sql FROM sqlite_master WHERE sql IS NOT NULL"
-    ).fetchall()
-    existing_sql = {_text(row[0]) for row in rows}
-    expected_schema: list[str] = []
-    for statement in _SCHEMA:
-        if statement in model_storage.USAGE_SCHEMA:
-            continue
-        if statement in subject_storage.MINIMUM_WAKE_SCHEMA:
-            continue
-        if statement == subject_storage.SCHEMA[0]:
-            statement = _INPUT_PROCESSING_V13
-        expected_schema.append(statement)
-    if version == 13:
-        expected_schema.extend(_MINIMUM_WAKE_V13)
-    if any(statement not in existing_sql for statement in expected_schema):
-        raise StorageError(f"格式{version}的数据库结构不完整或已被修改。", code="invalid_record")
-
-    if version == 13:
-        # 保存旧判断的全部字段，作为历史表而非运行期兼容路径。
-        connection.execute(
-            "ALTER TABLE minimum_wake_assessments RENAME TO minimum_wake_assessments_v13"
-        )
-        connection.execute("DROP INDEX minimum_wake_pending")
-    for statement in subject_storage.MINIMUM_WAKE_SCHEMA:
-        connection.execute(statement)
-
-    deferred: list[tuple[object, ...]] = connection.execute(
-        "SELECT input_id,reason,due_at,handed_off FROM input_processing "
-        "WHERE due_at IS NOT NULL OR handed_off<>0"
-    ).fetchall()
-    for row in deferred:
-        reason = encode_json(
-            {
-                "migration": "stimulus_inbox_v14",
-                "previous_reason": _text(row[1]),
-                "previous_due_at": row[2],
-                "previous_handed_off": row[3],
-            }
-        ).decode()
-        connection.execute(
-            "UPDATE input_processing SET reason=? WHERE input_id=?", (reason, row[0])
-        )
-    connection.execute(
-        "UPDATE input_processing SET version=version+1,stage='foreground' WHERE stage='deferred'"
-    )
-    # 旧 foreground 已经具有明确 WAKE，不能重新过滤；普通 attention 仍重新合批。
-    connection.execute("ALTER TABLE input_processing DROP COLUMN due_at")
-    connection.execute("ALTER TABLE input_processing DROP COLUMN handed_off")
-
-
-def _text(value: object) -> str:
-    if not isinstance(value, str):
-        raise StorageError("权威记录中的字符串字段无效。", code="invalid_record")
-    return value
 
 
 def initialize(connection: sqlite3.Connection) -> None:
-    """初始化空库或原子升级已知格式12/13。
+    """初始化空库或原子升级格式15；普通重开不执行全库检查。
 
     Args:
         connection: 仅在 Store 专属线程当前短事务中借用的连接，不在回调中等待设备或模型。
@@ -156,25 +78,49 @@ def initialize(connection: sqlite3.Connection) -> None:
             for statement in _SCHEMA:
                 connection.execute(statement)
             connection.execute(f"PRAGMA application_id = {_APPLICATION_ID}")
-        elif version in (12, 13) and identity == _APPLICATION_ID:
-            _upgrade_stimulus_inbox(connection, version)
-            for statement in model_storage.USAGE_SCHEMA:
+        elif version == 15 and identity == _APPLICATION_ID:
+            for statement in analysis_work.SCHEMA:
                 connection.execute(statement)
-        elif version == 14 and identity == _APPLICATION_ID:
-            # 只新增实际用量锚点，不重写原请求、响应、会话或媒体。
-            for statement in model_storage.USAGE_SCHEMA:
+            for statement in (
+                *archive.BODY_SCHEMA,
+                *archive.TOTAL_SCHEMA,
+                *archive.SCHEMA,
+                *behavior_review.SCHEMA,
+            ):
                 connection.execute(statement)
+            archive.migrate(connection)
+            pending = connection.execute(
+                "SELECT evidence_id,version FROM pending_knowledge WHERE state<>'reviewed'"
+            ).fetchall()
+            for evidence_id, evidence_version in pending:
+                if (
+                    knowledge_storage.get_evidence(
+                        connection, evidence_id, version=evidence_version
+                    )
+                    is None
+                ):
+                    raise StorageError("迁移待办缺少原文。", code="invalid_record")
+                analysis_work.register_links(connection, evidence_id, evidence_version)
+            for purpose in ("memory", "behavior"):
+                connection.execute(
+                    "INSERT INTO analysis_work(purpose,evidence_id,version,state,queued_at) "
+                    "SELECT ?,evidence_id,version,CASE WHEN state='deferred' THEN "
+                    "'waiting_evidence' ELSE 'pending' END,queued_at "
+                    "FROM pending_knowledge WHERE state<>'reviewed'",
+                    (purpose,),
+                )
         elif version != _FORMAT_VERSION or identity != _APPLICATION_ID:
             raise StorageError("数据库不是支持的 Engine 格式。", code="unsupported_format")
 
-        check: tuple[object, ...] = connection.execute("PRAGMA quick_check").fetchone()
-        if check != ("ok",):
-            raise StorageError("权威数据库完整性检查失败。", code="invalid_record")
-        broken_reference: tuple[object, ...] | None = connection.execute(
-            "PRAGMA foreign_key_check"
-        ).fetchone()
-        if broken_reference is not None:
-            raise StorageError("权威数据库包含失效引用。", code="invalid_record")
+        if version != _FORMAT_VERSION:
+            check: tuple[object, ...] = connection.execute("PRAGMA quick_check").fetchone()
+            if check != ("ok",):
+                raise StorageError("权威数据库完整性检查失败。", code="invalid_record")
+            broken_reference: tuple[object, ...] | None = connection.execute(
+                "PRAGMA foreign_key_check"
+            ).fetchone()
+            if broken_reference is not None:
+                raise StorageError("权威数据库包含失效引用。", code="invalid_record")
         # 明确读取必需列，在装配时暴露缺表/缺列，避免首次输入才触发格式失败。
         connection.execute(f"SELECT {_INPUT_COLUMNS}, dedup_key, fingerprint FROM inputs LIMIT 0")
         connection.execute("SELECT media_id, content FROM media LIMIT 0")
@@ -189,6 +135,9 @@ def initialize(connection: sqlite3.Connection) -> None:
         maintenance_storage.initialize(connection)
         time_storage.initialize(connection)
         feedback_storage.initialize(connection)
+        analysis_work.initialize(connection)
+        archive.initialize(connection)
+        behavior_review.initialize(connection)
         control_storage.initialize(connection)
         connection.execute(
             "SELECT sequence,plugin_id,identity,fact,occurred_at,payload_json "

@@ -168,6 +168,44 @@ class HostQueries:
             raise HostStateError("宿主没有可查询的权威存储。")
         return await store.get_request(request_id)
 
+    def query_health(self) -> JsonObject:
+        """读取当前处理资格和组件故障，启动未完成时也无需权威库。"""
+        state = self.state
+        owners = [state.startup_health, state.input_health, state.maintenance_health]
+        subject = state.subject
+        if subject is not None:
+            owners.extend(
+                (
+                    subject.service.health,
+                    subject.background.health,
+                    subject.background.reflection_service.health,
+                    subject.background.behavior_service.health,
+                )
+            )
+        can_process = (
+            state.phase == "running"
+            and state.startup_stage is None
+            and state.store is not None
+            and state.store.authority_available
+            and state.input_failure is None
+            and state.maintenance_failure is None
+            and (
+                subject is None
+                or (subject.service.failure is None and subject.background.failure is None)
+            )
+        )
+        components: list[JsonValue] = [owner.snapshot() for owner in owners]
+        if state.store is not None:
+            components.append(state.store.health_snapshot())
+        return {
+            "instance_id": state.instance_id,
+            "phase": state.phase,
+            "can_process": can_process,
+            "components": components,
+            "startup_stage": state.startup_failed_stage or state.startup_stage,
+            "startup_timings": dict(state.startup_timings),
+        }
+
     async def query_panel(self) -> JsonObject:
         """读取有限真实概况与设备缓存状态。
 
@@ -183,7 +221,7 @@ class HostQueries:
             多页面查询不启动模型或设备。
         """
         store, panel = self.state.store, self.state.panel
-        if store is None or panel is None:
+        if store is None or panel is None or self.state.startup_stage is not None:
             raise HostStateError("宿主面板尚未就绪或已收回。")
         facts = await store.runtime_projection()
         devices = await self.panel_devices(panel, store)
@@ -191,6 +229,7 @@ class HostQueries:
         subject = self.state.subject
         return {
             **facts,
+            "health": self.query_health(),
             "instance_id": snapshot.instance_id,
             "host_version": snapshot.version,
             "phase": snapshot.phase,
@@ -202,6 +241,17 @@ class HostQueries:
             "devices": devices,
             "foreground": None if subject is None else subject.service.session.snapshot(),
             "reflection": None if subject is None else subject.background.session.snapshot(),
+            "behavior_review": None
+            if subject is None
+            else subject.background.behavior_session.snapshot(),
+            "analysis": None
+            if subject is None
+            else {
+                "memory_enabled": subject.background.settings.memory_enabled,
+                "behavior_enabled": subject.background.settings.behavior_enabled,
+                "memory": subject.background.reflection_service.snapshot(),
+                "behavior": subject.background.behavior_service.snapshot(),
+            },
             "proactive_thinking": None if subject is None else subject.service.proactive.snapshot(),
             "knowledge": None
             if self.state.knowledge_resources is None
@@ -293,7 +343,7 @@ class HostQueries:
             )
         return result
 
-    async def query_reviews(self, before: str | None = None) -> JsonObject:
+    async def query_reviews(self, before: str | None = None, *, kind: str = "action") -> JsonObject:
         """分页读取可人工审查的真实行动，不运行模型或能力。
 
         Args:
@@ -305,7 +355,7 @@ class HostQueries:
         """
         if self.state.store is None:
             raise HostStateError("宿主没有可查询的权威存储。")
-        return await self.state.store.human_feedback.page(before)
+        return await self.state.store.human_feedback.page(before, kind=kind)
 
     async def query_review(self, action_id: str) -> JsonObject | None:
         """读取行动当轮全部刺激、原始参数和回执以及人工评价历史。

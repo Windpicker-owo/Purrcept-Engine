@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import io
+import json
 import logging
 import os
 from datetime import UTC, datetime, timedelta
@@ -40,7 +41,12 @@ def test_cli_summary_keeps_causal_identity_without_exception_or_arbitrary_extra(
         assert "outcome=unknown" in summary and "exception_type=RuntimeError" in summary
         assert "secret" not in summary
         path = owner.file_path
-        assert path is not None and path.read_text(encoding="utf-8") == summary
+        assert path is not None
+        diagnostic = path.read_text(encoding="utf-8")
+        decoded = json.loads(diagnostic)
+        assert decoded["call_id"] == "call-1"
+        assert decoded["exception"] == {"type": "RuntimeError", "frames": []}
+        assert "secret" not in diagnostic
     finally:
         owner.close()
 
@@ -82,7 +88,7 @@ def test_generated_logs_bound_file_bytes_and_total_files(tmp_path: Path) -> None
         assert len(files) == 2
         for path in files:
             assert path.stat().st_size <= 128
-            assert path.read_text(encoding="utf-8").endswith(" [truncated]\n")
+            assert json.loads(path.read_text(encoding="utf-8"))["truncated"] is True
         assert owner.cleanup_totals.capacity_files == 6
         assert owner.failure is None
     finally:
@@ -172,3 +178,73 @@ def test_logging_rejects_invalid_file_capacity(tmp_path: Path, max_bytes: int) -
     with pytest.raises(ValueError, match="64"):
         CliLogging.open(tmp_path, max_bytes=max_bytes, console=io.StringIO())
     assert not (tmp_path / "logs").exists()
+
+
+def test_diagnostic_keeps_nested_locations_without_exception_body(tmp_path: Path) -> None:
+    """异常组和原因链保留位置，正文与任意 extra 不能进入文件。"""
+    owner = CliLogging.open(tmp_path, console=io.StringIO())
+    try:
+        try:
+            try:
+                raise ValueError("secret-key")
+            except ValueError as cause:
+                raise RuntimeError("secret-response") from cause
+        except RuntimeError as failure:
+            group = ExceptionGroup("secret-group", [failure])
+            logging.getLogger("purrcept_engine.test").error(
+                "后台任务失败。", exc_info=(type(group), group, None)
+            )
+        path = owner.file_path
+        assert path is not None
+        body = path.read_text(encoding="utf-8")
+        assert "secret" not in body
+        nested = json.loads(body)["exception"]["exceptions"][0]
+        assert (
+            nested["frames"][-1]["function"]
+            == "test_diagnostic_keeps_nested_locations_without_exception_body"
+        )
+        assert nested["cause"]["type"] == "ValueError"
+    finally:
+        owner.close()
+
+
+def test_component_cause_chain_reuses_primary_fault_identity(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """不同所有者仍保留自己的失败状态，但同一原因链只报告一个主 ERROR。"""
+    from purrcept_engine.domain.health import ComponentHealth
+
+    root = OSError("private-response")
+    storage = ComponentHealth("storage")
+    storage.fail(root)
+    translated = RuntimeError("private-wrapper")
+    translated.__cause__ = root
+    subject = ComponentHealth("subject")
+    subject.fail(translated)
+    subject.fail(ValueError("later"))
+    shutdown = ComponentHealth("shutdown")
+    shutdown.fail(ExceptionGroup("private-shutdown", [translated]))
+    assert storage.error_id == subject.error_id
+    assert storage.failed_at == subject.failed_at
+    assert shutdown.error_id == storage.error_id
+    assert subject.error is translated
+    assert subject.snapshot()["can_process"] is False
+    primary = [record for record in caplog.records if record.levelno >= logging.ERROR]
+    assert len(primary) == 1
+    assert "private" not in primary[0].getMessage()
+
+
+def test_prelock_startup_timings_are_written_to_file_without_duplicate_console(
+    tmp_path: Path,
+) -> None:
+    console = io.StringIO()
+    owner = CliLogging.open(tmp_path, console=console)
+    try:
+        owner.record_startup_phase("configuration", 12.5)
+        path = owner.file_path
+        assert path is not None
+        event = json.loads(path.read_text(encoding="utf-8"))
+        assert event["stage"] == "configuration" and event["duration_ms"] == 12.5
+        assert console.getvalue() == ""
+    finally:
+        owner.close()

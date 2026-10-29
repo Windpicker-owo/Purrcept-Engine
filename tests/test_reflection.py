@@ -10,6 +10,7 @@ from collections import deque
 from collections.abc import AsyncIterator, Mapping
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Literal
 
 import pytest
 import pytest_asyncio
@@ -110,9 +111,12 @@ async def reflection(
     *,
     identity: str = "batch",
     deliveries: EvidenceDeliveries | None = None,
+    purpose: Literal["memory", "behavior"] = "memory",
 ) -> tuple[ReflectionTools, Ports, Message]:
     assert page.slice is not None
-    batch = await store.knowledge.begin_reflection(identity, (page.slice.slice_ref,))
+    batch = await store.knowledge.begin_reflection(
+        identity, (page.slice.slice_ref,), purpose=purpose
+    )
     ports = Ports(store)
     tools = ReflectionTools(store.knowledge, batch, ports, deliveries=deliveries)
     return tools, ports, await tools.initial_message((page,))
@@ -229,7 +233,6 @@ async def test_core_same_response_read_then_revise_waits_until_next_request(stor
         "recall",
         "read_evidence",
         "revise_memory",
-        "supervise",
         "finish_reflection",
     )
     assert conversation.state.turn_index == 1
@@ -740,7 +743,7 @@ async def test_async_store_abandon_keeps_pending_and_blocks_old_generation(store
 async def test_supervision_is_immediate_and_duplicate_does_not_redeliver(store: Store) -> None:
     page = await source(store, "source")
     assert page.slice is not None
-    tools, ports, initial = await reflection(store, page)
+    tools, ports, initial = await reflection(store, page, purpose="behavior")
     await store.knowledge.mark_presented("batch", 1, tools.presented_refs(ModelRequest((initial,))))
     arguments: dict[str, JsonValue] = {
         "id": "notice",
@@ -748,6 +751,8 @@ async def test_supervision_is_immediate_and_duplicate_does_not_redeliver(store: 
         "evidence": [page.slice.slice_ref],
         "suggestion": "前台核对事实",
         "level": "urgent",
+        "scope": {"adapter_id": "test"},
+        "expected_change": "前台核对事实。",
     }
     assert not (await invoke(tools, "supervise", arguments)).is_error
     assert not (await invoke(tools, "supervise", arguments)).is_error

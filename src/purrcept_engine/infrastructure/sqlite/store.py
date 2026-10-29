@@ -73,6 +73,7 @@ from purrcept_engine.domain.subject.models import (
 from purrcept_engine.domain.time.models import RestState
 from purrcept_engine.errors import StorageError
 from purrcept_engine.infrastructure.sqlite import activities as activity_storage
+from purrcept_engine.infrastructure.sqlite import archive
 from purrcept_engine.infrastructure.sqlite import execution as execution_storage
 from purrcept_engine.infrastructure.sqlite import feedback as feedback_storage
 from purrcept_engine.infrastructure.sqlite import knowledge as knowledge_storage
@@ -700,6 +701,23 @@ class Store:
         """读取同连接的有限运行概况，不消耗待办或暴露完整模型材料。"""
         return await self._submit(projection_storage.runtime)
 
+    async def expire_model_bodies(
+        self, *, before: float, now: float, max_bytes: int = 1_073_741_824
+    ) -> JsonObject:
+        """按期限及总容量淘汰有限正文，受保护材料超额时保留并明确报告。"""
+        return await self._submit(
+            lambda connection: archive.cleanup(
+                connection, before=before, now=now, max_bytes=max_bytes
+            ),
+            writing=True,
+        )
+
+    async def collect_unused_media(self, *, limit: int = 128) -> int:
+        """经全部外键所有者核验后分批回收无引用 BLOB。"""
+        return await self._submit(
+            lambda connection: archive.collect_media(connection, limit=limit), writing=True
+        )
+
     async def expire_diagnostics(
         self, *, before: float, expired_at: float, limit: int = 128
     ) -> projection_storage.JsonObject:
@@ -819,7 +837,7 @@ class Store:
             writing=True,
         )
         if not admission.duplicate:
-            _logger.info("输入已正式接管。", extra={"input_id": admission.input_id})
+            _logger.debug("输入已正式接管。", extra={"input_id": admission.input_id})
         return admission
 
     async def idle_input_state(self) -> tuple[int, bool]:
@@ -1258,6 +1276,19 @@ class Store:
             writing=True,
         )
 
+    async def get_session_state(self, scope: SessionScope) -> SessionRecord:
+        """返回会话提交版本和在途身份，检查点 None 明确表示没有读取历史。
+
+        Args:
+            scope: 独立会话用途，查询不授予接管或呈现资格。
+
+        Returns:
+            只含 CAS 版本与在途身份的元数据投影，不读取媒体正文。
+        """
+        return await self._submit(
+            lambda connection: subject_storage.session_state(connection, scope)
+        )
+
     async def get_session(self, scope: SessionScope) -> SessionRecord:
         """还原完整已提交检查点媒体，不返回丢失内容的空历史。
 
@@ -1552,7 +1583,7 @@ class Store:
             accepted_failures: 当前成功交互明确承接的先前失败轮次身份。 默认不附加此类条目。
 
         Returns:
-            会话已提交版本与完整检查点，不包含尚未提交的临时历史。
+            已提交版本和历史；两个分析用途只返回 CAS 元数据，不恢复前批检查点。
 
         Note:
             取消等待不撤销已经接管提交。
@@ -1636,10 +1667,19 @@ class Store:
             writing=True,
             logical_bytes=size,
         )
-        _logger.info(
+        _logger.debug(
             "行动意图已接管，尚不证明能力效果。",
             extra={"action_id": action_id, "input_id": input_id},
         )
+
+    def health_snapshot(self) -> JsonObject:
+        """读取原始存储故障身份，不在面板查询中重新访问连接。"""
+        return self._queue.health.snapshot()
+
+    @property
+    def authority_failure(self) -> BaseException | None:
+        """读取原始存储故障，供宿主保留诊断原因和关联身份。"""
+        return self._queue.failure
 
     @property
     def authority_available(self) -> bool:
@@ -1662,7 +1702,7 @@ class Store:
             control=True,
             writing=True,
         )
-        _logger.info(
+        _logger.debug(
             "逻辑模型请求已冻结。",
             extra={
                 "request_id": request.request_id,
@@ -1696,7 +1736,7 @@ class Store:
             control=True,
             writing=True,
         )
-        _logger.info(
+        _logger.debug(
             "模型尝试已结束。",
             extra={
                 "request_id": result.start.request_id,
@@ -1853,7 +1893,7 @@ class Store:
             writing=True,
         )
         if command is not None:
-            _logger.info(
+            _logger.debug(
                 "活动控制已入账，实际状态见确认。",
                 extra={
                     "activity_id": record.activity_id,
@@ -2020,7 +2060,7 @@ class Store:
             writing=True,
             logical_bytes=size,
         )
-        _logger.info(
+        _logger.debug(
             "能力回执已入账。",
             extra={
                 "action_id": record.action_id,
@@ -2069,7 +2109,7 @@ class Store:
             writing=True,
             logical_bytes=size,
         )
-        _logger.info(
+        _logger.debug(
             "行动已结束；逐调用回执分别保留确认、未知与失败。",
             extra={"action_id": action_id, "outcome": state},
         )

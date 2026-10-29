@@ -24,6 +24,18 @@ class SessionStore(Protocol):
     等待不能撤销已接管事务，宿主须持有提交任务直至实际结束。
     """
 
+    async def get_session_state(self, scope: SessionScope) -> SessionRecord:
+        """仅读取提交版本和在途身份，不读取或恢复检查点／媒体。
+
+        Args:
+            scope: 目标会话的独立稳定用途。
+
+        Returns:
+            checkpoint_json 明确为 None 的元数据投影；不表示原历史不存在。
+            批次会话用它核对 CAS，同时从空模型历史开始。
+        """
+        ...
+
     async def get_session(self, scope: SessionScope) -> SessionRecord:
         """还原已有权威版本。
 
@@ -96,6 +108,6 @@ class SessionStore(Protocol):
             accepted_failures: 当前成功交互明确承接的先前失败轮次身份。 默认不附加此类条目。
 
         Returns:
-            会话已提交版本与完整检查点，不包含尚未提交的临时历史。
+            已提交版本和历史；两个分析用途仅返回元数据，完整本批历史另行保存供审计。
         """
         ...

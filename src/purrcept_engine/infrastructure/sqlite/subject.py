@@ -26,6 +26,7 @@ from purrcept_engine.domain.subject.models import (
     TurnRecord,
 )
 from purrcept_engine.errors import SessionVersionChanged, StorageError
+from purrcept_engine.infrastructure.sqlite import behavior_review
 from purrcept_engine.infrastructure.sqlite.model_requests import (
     intern_core_media,
     restore_core_media,
@@ -377,6 +378,24 @@ def finish_minimum_wake_assessment(
         return True
 
 
+def session_state(connection: sqlite3.Connection, scope: SessionScope) -> SessionRecord:
+    """查询版本及活动轮次用于 CAS，不为状态核对读取完整历史或媒体。"""
+    row = connection.execute(
+        "SELECT version,active_turn FROM subject_sessions WHERE scope=?",
+        (scope,),
+    ).fetchone()
+    return (
+        SessionRecord(scope, 0, None, None)
+        if row is None
+        else SessionRecord(
+            scope,
+            _integer(row[0]),
+            None,
+            _optional_text(row[1]),
+        )
+    )
+
+
 def session(connection: sqlite3.Connection, scope: SessionScope) -> SessionRecord:
     """返回尚未建立的空版本或完整已提交历史，不以空值覆盖损坏记录。
 
@@ -432,7 +451,7 @@ def begin_turn(
     """
     with connection:
         connection.execute("BEGIN IMMEDIATE")
-        current = session(connection, scope)
+        current = session_state(connection, scope)
         if current.active_turn is not None:
             raise StorageError("会话已有在途处理。", code="session_conflict")
         if current.version != expected_version:
@@ -511,7 +530,7 @@ def finish_turn(
             raise ValueError("成功历史初始材料没有携带待承接的失败身份。")
     with connection:
         connection.execute("BEGIN IMMEDIATE")
-        current = session(connection, turn.scope)
+        current = session_state(connection, turn.scope)
         if current.version != turn.session_version or current.active_turn != turn.turn_id:
             raise StorageError("会话提交已失去原版本资格。", code="session_conflict")
         # 结案使用 begin_turn 冻结的权威来源集合，不能让调用方构造的
@@ -553,10 +572,14 @@ def finish_turn(
             connection.execute("DELETE FROM pending_inputs WHERE input_id=?", (input_id,))
         if outcome != "succeeded":
             connection.execute("INSERT INTO failed_turns(turn_id) VALUES(?)", (turn.turn_id,))
+        if turn.scope == "foreground" and outcome == "succeeded":
+            behavior_review.record_opportunities(connection, turn.turn_id)
         for failure_id in accepted_failures:
             connection.execute(
                 "UPDATE failed_turns SET presented_in=? WHERE turn_id=?", (turn.turn_id, failure_id)
             )
+    if turn.scope in ("memory_consolidation", "behavior_review"):
+        return session_state(connection, turn.scope)
     return session(connection, turn.scope)
 
 
@@ -627,7 +650,12 @@ def get_turn(connection: sqlite3.Connection, turn_id: str) -> TurnRecord | None:
         return None
     scope = _string(row[0])
     state = _string(row[3])
-    if scope not in ("foreground", "reflection") or state not in (
+    if scope not in (
+        "foreground",
+        "reflection",
+        "behavior_review",
+        "memory_consolidation",
+    ) or state not in (
         "running",
         "succeeded",
         "failed",

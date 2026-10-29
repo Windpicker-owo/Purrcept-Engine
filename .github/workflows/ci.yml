@@ -1,4 +1,4 @@
-# 从公开索引安装依赖，防止开发机同级源码或本地插件掩盖部署问题。
+# 只借用仓内冻结依赖和公开索引，不要求开发机同级仓库。
 name: Engine 离线验收
 
 on:
@@ -20,7 +20,16 @@ jobs:
       - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
         with:
           python-version: "3.12"
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version: "24"
+          package-manager-cache: false
+      - run: npm ci --prefix frontend
+      - run: npm run typecheck --prefix frontend
+      - run: npm test --prefix frontend
+      - run: npm run build --prefix frontend
       - run: uv sync --locked --all-groups --all-extras
+      - run: uv run --no-sync python frontend/node_modules/@purrcept/cel/scripts/lint_styles.py frontend/src frontend/index.html
       - run: uv run --no-sync python -m pytest -q
       - run: uv run --no-sync ruff check src tests examples scripts
       - run: uv run --no-sync ruff format --check src tests examples scripts
@@ -32,7 +41,7 @@ jobs:
         run: |
           uv venv --python 3.12 build/ci-install
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          uv pip install --python build/ci-install/Scripts/python.exe 'dist/purrcept_engine-0.1.0-py3-none-any.whl[web,qq,time,browser,voice-input,live2d]'
+          uv pip install --python build/ci-install/Scripts/python.exe --find-links vendor 'dist/purrcept_engine-0.1.0-py3-none-any.whl[web,qq,time,browser,voice-input,live2d]'
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           uv pip check --python build/ci-install/Scripts/python.exe
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

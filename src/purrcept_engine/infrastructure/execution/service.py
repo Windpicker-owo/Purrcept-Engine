@@ -12,6 +12,7 @@ ExecutionService 在脚本接管前预留 Worker 名额，结构化单次调用�
 from __future__ import annotations
 
 import asyncio
+import logging
 import math
 from collections import deque
 from collections.abc import Awaitable, Callable
@@ -122,6 +123,43 @@ class ExecutionService:
     def pending_resources(self) -> int:
         """返回行动所有者与未收尾调用数，供宿主关闭超时后报告资源状态。"""
         return len(self.actions) + self.pending_calls
+
+    async def _finish_action(
+        self,
+        action_id: str,
+        *,
+        state: ActionOutcome,
+        result_json: str | None,
+        output: str,
+        error: str | None,
+    ) -> None:
+        """提交真实终态后报告行动摘要；已有逐调用 ERROR 不在此重复升级。"""
+        await self.store.finish_action(
+            action_id, state=state, result_json=result_json, output=output, error=error
+        )
+        action = await self.store.get_action(action_id)
+        if action is None:
+            raise RuntimeError("已结束行动缺少权威结果。")
+        failures = sum(call.state == "failed" for call in action.calls)
+        unknown = sum(call.state == "unknown" for call in action.calls)
+        level = logging.ERROR if state in ("failed", "timed_out") and not failures else logging.INFO
+        if unknown and level == logging.INFO:
+            level = logging.WARNING
+        logging.getLogger(__name__).log(
+            level,
+            "行动已结束。",
+            extra={
+                "action_id": action_id,
+                "outcome": state,
+                "calls": len(action.calls),
+                "failed_calls": failures,
+                "unknown_calls": unknown,
+                "duration_ms": max(
+                    0.0, (action.finished_at or action.created_at) - action.created_at
+                )
+                * 1000,
+            },
+        )
 
     async def execute(
         self,
@@ -387,7 +425,7 @@ class ExecutionService:
                 and asyncio.get_running_loop().time() >= action.deadline
             ):
                 state = "timed_out"
-            await self.store.finish_action(
+            await self._finish_action(
                 action.action_id,
                 state=state,
                 result_json=receipt.result_json,
@@ -403,7 +441,7 @@ class ExecutionService:
             self.call_dispatcher.dispatch()
             if admitted:
                 try:
-                    await self.store.finish_action(
+                    await self._finish_action(
                         action.action_id,
                         state="failed",
                         result_json=None,
@@ -578,7 +616,7 @@ class ExecutionService:
         if action.failure is not None:
             if admitted:
                 try:
-                    await self.store.finish_action(
+                    await self._finish_action(
                         action.action_id,
                         state="failed",
                         result_json=None,
@@ -597,12 +635,12 @@ class ExecutionService:
                 state = "timed_out"
             elif action.stop_error in {"ServiceClosed", "GenerationRevoked"}:
                 state = "cancelled"
-            await self.store.finish_action(
+            await self._finish_action(
                 action.action_id, state=state, result_json=None, output="", error=action.stop_error
             )
         elif action.terminal is not None:
             terminal = action.terminal
-            await self.store.finish_action(
+            await self._finish_action(
                 action.action_id,
                 state=terminal.state,
                 result_json=terminal.result_json,

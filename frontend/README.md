@@ -1,6 +1,6 @@
 # 本机面板源码
 
-产品入口是 `src/main.tsx`，外壳是 `src/App.tsx`（玻璃导航岛 + 主舞台面板 + Inspector 面板，
+产品入口是 `src/main.tsx`，外壳是 `src/App.tsx`（纯色导航轨 + 主舞台面板 + Inspector 面板，
 窄屏为底部标签栏与 Sheet）。`contracts.ts` 在真实 HTTP 与浏览器恢复入口校验数据，`client.ts` 持有观察
 与稳定请求身份；React 只呈现这些事实，不拥有设备或业务状态。快照断线后仍可阅读，
 但控制关闭并注明过期。刷新只查询状态，不连接或启动任何设备。
@@ -25,15 +25,20 @@
 
 ## 构建与检查
 
-开发期从兄弟 `purrcept_design/react/src` 引用真实 Cel 参考组件和 Token，使用该仓库
-已经安装的冻结 Node 依赖。不会修改 Design 的 node_modules。重新构建要求两仓库相邻、
-Design 的 `dist`/`react/src/generated` 已生成、Node 与 Design 依赖已经安装。
+前端依赖由本目录的 `package.json` 和 `package-lock.json` 独立声明。Node 24 下先运行
+`npm ci`，再运行 `npm run typecheck`、`npm test`、`npm run styles` 和 `npm run build`。
+Cel 来自仓内 `vendor/purrcept-cel.tgz`，包含已提交 Design 版本的组件、Token 和类型；
+来源提交、许可证状态及 SHA-256 见 `vendor/README.md`。普通构建无需 Design 仓库。
+更新上游快照用根目录 `scripts/vendor_design.py --source <仓库> --revision <提交>`；
+脚本只读取 Git 对象，不取用或覆盖上游未提交修改。
 
-在本目录运行 `npm run typecheck`、`npm test`、`npm run build`。样式检查运行
-`python ../../purrcept_design/scripts/lint_styles.py src index.html`。构建脚本是
-`../scripts/build_web.mjs`，输出到 `src/purrcept_engine/app/static` 的 `index.html`、
-`panel.js`、`panel.css`、`purrcept.css`。产物包含 React、Cel 和所有依赖，不使用 CDN、
-网络字体或开发服务器；安装 Engine 后无需 Node 和 Design 目录。
+构建脚本为 `../scripts/build_web.mjs`，输出到 `src/purrcept_engine/app/static` 的
+`index.html`、`panel.js`、`panel.css`、`purrcept.css`。wheel 包含完整静态产物，运行时
+无需 Node、开发服务器或同级源码。CI 独立运行 npm 安装、类型检查、测试和构建。
+
+启动期间先查询 `/api/health` 显示阶段；业务操作等待宿主就绪。运行中主体停止
+派发时显示故障，不将空闲会话误判为安静待命。系统页显示各组件故障关联 ID、
+后台合批／冷却／额度／容量／证据等待原因，以及最近维护统计和建议观察状态。
 
 “系统 → 她的思考”提供主动思考开关，状态、控制版本和空闲间隔均取自宿主。
 无新刺激或主脑未激活达到间隔时，由宿主在主脑空闲后唤起，暂存输入一起处理；
@@ -64,9 +69,8 @@ Edge）。它只启动回环静态服务并提供内存合成数据，不加载 
   借鉴运行过程与所选对象详情联动。落实为可筛选的记录、固定 Inspector 与手机 Sheet，
   不引入编辑执行状态或重放行动的功能。
 
-外壳遵循 Cel 0.2 的岛屿式三层结构：canvas 与背景美术在底层，玻璃导航岛、主舞台中的
-面板与 Inspector 面板浮在其上，以 island-gap 分开；面板之间不画线、不嵌套，面板内的
-对象使用平涂色阶。窄屏时导航岛移到底部，成为只保留图标的玻璃标签栏。
+外壳遵循仓内固定的 Cel 0.2 岛屿式三层结构：canvas 与背景美术在底层，玻璃导航岛、
+主舞台中的面板与 Inspector 面板浮在其上，以 island-gap 分开；面板之间不画线、不嵌套，面板内的对象使用平涂色阶。交互使用品牌“猫眼蓝”，“运行中”状态为青色。窄屏时导航岛移到底部，成为只保留图标的玻璃标签栏。
 
 首页保持吉祥物为唯一视觉中心及持续运动源；状态舞台面板与行动路径组成完整首屏区域。
 下方左列为近期记录与持续目标两块面板，右列为待处理与设备两块面板，窄屏沿阅读顺序
@@ -74,16 +78,16 @@ Edge）。它只启动回环静态服务并提供内存合成数据，不加载 
 浮起对象卡。时间线搜索只匹配当前已取得记录的
 内容标题与结果文案，清除筛选不会改变已选择的回执或发起业务控制。
 
-同级页面与桌面 Inspector 内容直接替换，不保留退场页或使用透明入场；导航选中项的
-文字与背景同帧切换，避免颜色过渡造成短暂不可读。窄屏 Sheet 使用 Design 的 snap 弹簧保留
+同级页面与桌面 Inspector 使用 Cel 的 `pc-enter`：旧内容立即移除、不保留退场页，新面板以 arrive 弹簧升起并错峰，透明度从 0.4 起步避免白闪；导航当前项指示块以 move 弹簧滑向新位置，
+文字与指示块同帧切换，避免颜色过渡造成短暂不可读。减少动效时内容直接出现。窄屏 Sheet 使用 Design 的 snap 弹簧保留
 进出层级方向。首次连接等待不展示断线警告，取得失败结果后才显示恢复入口。
 
 ## 控制与结果
 
-“行为审查”从 `/api/reviews` 按行动游标分页，不限于快照的最近 12 次行动。
-详情读取 `/api/reviews/{action_id}` 的完整刺激、调用参数、回执和历史评价，
+“行为审查”从 `/api/reviews?kind=action|turn|call` 按真实目标游标分页，不限于快照的最近 12 次行动。
+没有行动的轮次仍可评价遗漏回应，不创建行动。详情读取 `/api/reviews/{target}` 的完整刺激、调用参数、回执和历史评价，
 原始图片/音频从该审查实际关联的同库媒体读取；普通快照继续只提供预览。
-评价通过原客户端提交 `action:{id} / review`，arguments 含 good/bad 的 rating
+评价通过原客户端提交 `action:{id}`、`turn:{id}` 或 `call:{id}` 的 `review` 操作，arguments 含 good/bad 的 rating
 及可选 comment，expected_revision 是实际读到的材料摘要。网络未知时查询或
 原样重传同一请求；断线、未结束行动和旧材料均不能提交新的评价。页面明确区分
 “评价已保存”和模型后续采用，反馈原文及两个消费者的责任由后端持久持有。

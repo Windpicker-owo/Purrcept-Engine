@@ -1,9 +1,9 @@
 /*
  * Engine 的页面空间：岛屿式三层结构。canvas 与背景美术在最底层；玻璃导航轨、主舞台里的
  * 各块面板与 Inspector 面板浮在其上，彼此以 island-gap 分开；面板内的对象用平涂色阶。
- * 所有视觉值来自 Cel，状态映射与运动由 Design 组件拥有。本文件不重定义 Token。
+ * 所有视觉值来自仓内固定的 Cel 0.2，状态映射与运动由 Design 组件拥有。本文件不重定义 Token。
  */
-@import "../../../purrcept_design/react/src/styles/index.css";
+@import "@purrcept/cel/styles.css";
 
 html { scrollbar-gutter: stable; }
 body { margin: 0; min-height: 100vh; }
@@ -39,7 +39,11 @@ pre, .excerpt { font: var(--pc-font-mono); background: var(--pc-color-surface-su
 .nav-item { flex: none; position: relative; box-sizing: border-box; text-decoration: none; color: var(--pc-nav-item-color); background: var(--pc-nav-item-background); border-radius: var(--pc-nav-item-radius); min-height: var(--pc-nav-item-size); width: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: var(--pc-space-xxs); padding: var(--pc-space-xs) 0; font: var(--pc-font-caption); }
 .nav-item:last-child { margin-top: auto; }
 .nav-item:hover { background: var(--pc-color-surface-sunken); color: var(--pc-color-ink); }
-.nav-item[aria-current="page"] { background: var(--pc-nav-item-current-background); color: var(--pc-nav-item-current-color); }
+/* 当前项：文字色同帧切换；底色由滑动的指示块提供，图标与文字叠在指示块之上。 */
+.nav-item[aria-current="page"] { color: var(--pc-nav-item-current-color); }
+.nav-item[aria-current="page"]:hover { background: var(--pc-nav-item-background); }
+.nav-indicator { position: absolute; inset: 0; border-radius: var(--pc-nav-item-radius); background: var(--pc-nav-item-current-background); }
+.nav-item > svg, .nav-item > span:not(.nav-count):not(.nav-indicator) { position: relative; }
 /* 待处理数量用墨色数字徽标，不使用状态色。 */
 .nav-count { position: absolute; top: var(--pc-space-xxs); right: var(--pc-space-xxs); min-width: var(--pc-space-md); padding: 0 var(--pc-space-xxs); border: 2px solid var(--pc-color-surface); border-radius: var(--pc-radius-full); background: var(--pc-color-ink); color: var(--pc-color-on-ink); font: var(--pc-font-caption); text-align: center; font-variant-numeric: tabular-nums; }
 
@@ -75,6 +79,9 @@ pre, .excerpt { font: var(--pc-font-mono); background: var(--pc-color-surface-su
 .item-list { display: flex; flex-direction: column; }
 .page > .item-list { padding: var(--pc-space-xs); }
 .item-row { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: var(--pc-space-sm); min-width: 0; width: 100%; padding: var(--pc-space-sm); border: 0; border-radius: var(--pc-radius-md); background: transparent; color: var(--pc-color-ink); text-align: left; }
+/* 没有前导图标的行（例如行为审查）：正文占满，状态固定在右侧，不随标题长短漂移。 */
+.item-row:not(:has(> .item-icon)) { grid-template-columns: minmax(0, 1fr) auto; }
+.item-row[aria-current="true"] { background: var(--pc-color-surface-selected); }
 .item-row[data-interactive="true"] { cursor: pointer; transition: background-color var(--pc-motion-color-duration) var(--pc-motion-color-easing); }
 .item-row[data-interactive="true"]:hover { background: var(--pc-color-surface-sunken); }
 .item-icon { flex: none; display: inline-flex; align-items: center; justify-content: center; width: var(--pc-space-touch-target); height: var(--pc-space-touch-target); border-radius: var(--pc-radius-md); background: var(--pc-color-surface-sunken); color: var(--pc-color-ink-secondary); }
@@ -122,6 +129,14 @@ pre, .excerpt { font: var(--pc-font-mono); background: var(--pc-color-surface-su
 .filter:has(:focus-visible) { outline: 2px solid var(--pc-color-focus-ring); outline-offset: 2px; }
 .filter:hover { color: var(--pc-color-ink); }
 .filter[data-selected="true"] { background: var(--pc-color-brand-container); color: var(--pc-color-on-brand-container); }
+/* 带可见说明的单选组：说明在上，选项是一排独立胶囊；不把说明塞进胶囊边框里。 */
+.toolbar:has(> legend:not(.visually-hidden)) { padding: 0; border: 0; background: transparent; box-shadow: none; align-items: center; }
+.toolbar > legend:not(.visually-hidden) { float: left; width: 100%; padding: 0; margin-bottom: var(--pc-space-xs); font: var(--pc-font-caption); color: var(--pc-color-ink-muted); }
+.toolbar:has(> legend:not(.visually-hidden)) > .filter { border: 1px solid var(--pc-color-outline-subtle); background: var(--pc-color-surface); box-shadow: var(--pc-shadow-control-surface); }
+.toolbar:has(> legend:not(.visually-hidden)) > .filter[data-selected="true"] { border-color: transparent; background: var(--pc-color-brand-container); box-shadow: none; }
+.toolbar:disabled > .filter { color: var(--pc-color-ink-disabled); cursor: not-allowed; }
+/* 页面工具行：单选组与按钮对齐到同一条底线。 */
+.page > .actions { align-items: flex-end; margin-top: 0; padding: 0 var(--pc-space-xs); }
 .search-field { display: flex; flex-direction: column; gap: var(--pc-space-xs); font: var(--pc-font-caption); color: var(--pc-color-ink-secondary); max-width: 100%; }
 /* 输入框是微微下沉的凹槽。 */
 .search-field input, select { min-height: var(--pc-input-height); width: 100%; min-width: 0; box-sizing: border-box; border: 1px solid var(--pc-input-outline); border-radius: var(--pc-input-radius); padding: var(--pc-input-padding); background: var(--pc-input-background); color: var(--pc-input-color); font: var(--pc-input-font); box-shadow: var(--pc-shadow-well); }
@@ -185,6 +200,10 @@ select:disabled { color: var(--pc-color-ink-muted); background: var(--pc-color-s
 .inspector-empty h2 { margin-top: var(--pc-space-xs); }
 .detail { display: flex; flex-direction: column; align-items: flex-start; gap: var(--pc-space-sm); }
 .detail > .tech-details, .detail > .actions { align-self: stretch; }
+/* 详情里的分组、表单与状态说明占满 Inspector 宽度；表单里的按钮保持自身宽度。 */
+.detail > section, .detail > form, .detail > [role="status"] { align-self: stretch; }
+.review-form > .pc-button { align-self: flex-start; }
+.review-form > h3 { margin-top: var(--pc-space-md); }
 .call-group { align-self: stretch; margin-top: var(--pc-space-lg); }
 .call-item { display: flex; flex-direction: column; align-items: flex-start; gap: var(--pc-space-xxs); margin-bottom: var(--pc-space-md); }
 .call-item > .tech-details { align-self: stretch; margin-top: 0; }
@@ -199,7 +218,7 @@ select:disabled { color: var(--pc-color-ink-muted); background: var(--pc-color-s
   .wordmark { display: none; }
   .nav-item { flex: 1 1 0; min-width: 0; width: auto; padding: var(--pc-space-xxs) 0; }
   .nav-item:last-child { margin-top: 0; }
-  .nav-item > span:not(.nav-count) { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+  .nav-item > span:not(.nav-count):not(.nav-indicator) { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
   .nav-count { top: 0; right: 0; }
   .topbar { padding: var(--pc-space-xs) var(--pc-space-sm); gap: var(--pc-space-xs); }
   .topbar-status { gap: var(--pc-space-xs); }
@@ -215,6 +234,7 @@ select:disabled { color: var(--pc-color-ink-muted); background: var(--pc-color-s
   .home-path-heading { flex-direction: row; flex-wrap: wrap; align-items: center; justify-content: space-between; }
   .home-copy h1 { overflow-wrap: anywhere; }
   .item-row { grid-template-columns: auto minmax(0, 1fr); }
+  .item-row:not(:has(> .item-icon)) { grid-template-columns: minmax(0, 1fr) auto; }
   .item-trailing { grid-column: 2; justify-content: flex-start; }
   .data-head { display: none; }
   .data-row { grid-template-columns: minmax(0, 1fr) auto; gap: var(--pc-space-xs); padding: var(--pc-space-md) var(--pc-space-xs); }

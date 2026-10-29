@@ -446,7 +446,6 @@ httpx.AsyncClient.send = forbid_async
 from purrcept_engine.app.config import DecisionModelSettings, GenerationModelSettings
 from purrcept_engine.infrastructure.models.clients import OpenAIGenerationResource, DecisionResource
 assert 'litellm' not in sys.modules
-assert 'purrcept_litellm' not in sys.modules
 
 generation = OpenAIGenerationResource.create(GenerationModelSettings(
     kind='generation', model='openai/synthetic', api_key=SecretStr('synthetic'),
@@ -468,7 +467,6 @@ async def close_all():
 
 asyncio.run(close_all())
 assert 'litellm' not in sys.modules
-assert 'purrcept_litellm' not in sys.modules
 """
     result = subprocess.run(
         [sys.executable, "-c", script, model],

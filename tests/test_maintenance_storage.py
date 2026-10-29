@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import sqlite3
 import time
 from collections.abc import Iterator
@@ -210,8 +211,15 @@ def test_atomic_install_keeps_complete_archive_and_source_and_candidate_media(
         "FROM summary_attempts"
     ).fetchone()
     assert row is not None
-    assert restore_checkpoint(connection, row[0]) == source.checkpoint
-    assert restore_checkpoint(connection, row[1]) == candidate.candidate
+    assert row[0] == "null" and row[1] is None
+    body = connection.execute(
+        "SELECT content_json FROM model_bodies WHERE kind='summary'"
+    ).fetchone()[0]
+    archived = json.loads(body)
+    assert restore_checkpoint(connection, archived["source_checkpoint_json"]) == source.checkpoint
+    assert (
+        restore_checkpoint(connection, archived["candidate_checkpoint_json"]) == candidate.candidate
+    )
     assert row[2] == candidate.summary_request_id
     assert candidate.candidate.history.turn_index == 2
     assert candidate.candidate.history.continuation == source.checkpoint.history.continuation

@@ -35,6 +35,10 @@ from purrcept_engine.values import ActionProtocolError, JsonObject, decode_objec
 class PanelHost(Protocol):
     """服务借用的有限宿主端口；不授予任意行动、数据库或模型调用。"""
 
+    def query_health(self) -> JsonObject:
+        """读取无需权威库的启动和组件健康。"""
+        ...
+
     async def query_panel(self) -> JsonObject:
         """读取真实运行状态。
 
@@ -43,7 +47,7 @@ class PanelHost(Protocol):
         """
         ...
 
-    async def query_reviews(self, before: str | None = None) -> JsonObject:
+    async def query_reviews(self, before: str | None = None, *, kind: str = "action") -> JsonObject:
         """读取有限历史行动和下一页游标，不确认业务待办。
 
         Args:
@@ -132,10 +136,15 @@ def create_app(host: PanelHost, *, port: int, token: str) -> ASGIApp:
         使用同一已装配宿主和本机请求边界的 ASGI 应用。
     """
 
+    async def health(request: Request) -> Response:
+        """启动中也可读取的处理资格，不授予控制会话。"""
+        del request
+        return _json(host.query_health())
+
     async def session(request: Request) -> Response:
         """返回本机面板当前实例与控制凭据。"""
         del request
-        state = await host.query_panel()
+        state = host.query_health()
         return _json({"token": token, "instance_id": state["instance_id"]})
 
     async def snapshot(request: Request) -> Response:
@@ -166,7 +175,11 @@ def create_app(host: PanelHost, *, port: int, token: str) -> ASGIApp:
 
     async def reviews(request: Request) -> Response:
         """历史查询复用本机来源边界，不主动采集或执行世界操作。"""
-        return _json(await host.query_reviews(request.query_params.get("before")))
+        return _json(
+            await host.query_reviews(
+                request.query_params.get("before"), kind=request.query_params.get("kind", "action")
+            )
+        )
 
     async def review(request: Request) -> Response:
         """按行动身份展开完整原始材料，缺失不伪造空刺激。"""
@@ -254,6 +267,7 @@ def create_app(host: PanelHost, *, port: int, token: str) -> ASGIApp:
 
     app = Starlette(
         routes=[
+            Route("/api/health", health),
             Route("/api/session", session),
             Route("/api/snapshot", snapshot),
             Route("/api/controls", submit, methods=["POST"]),

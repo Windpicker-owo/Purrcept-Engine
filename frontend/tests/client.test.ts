@@ -11,6 +11,22 @@ function memory(initial: string | null = null): { getItem: () => string | null; 
 function json(value: unknown, status = 200): Response { return new Response(JSON.stringify(value), { status, headers: { "Content-Type": "application/json" } }); }
 
 describe("只读观察与稳定身份", () => {
+  it.each(["starting", "running"])("启动期间轻量健康可读，503快照不冒充断线或就绪（%s）", async (phase) => {
+    let ready = false;
+    const client = new PanelClient(async (path) => {
+      if (path === "/api/snapshot") return ready ? json(host()) : json({ error: "host_not_ready" }, 503);
+      if (path === "/api/health") return json({ ...host().health, phase, can_process: false, startup_stage: "sqlite" });
+      return json({ instance_id: "host-1", token: "token" });
+    }, memory(), () => "r");
+    await client.refresh();
+    expect(client.getState().startup?.startup_stage).toBe("sqlite");
+    expect(client.getState().error).toBeNull();
+    expect(client.getState().snapshot).toBeNull();
+    ready = true;
+    await client.refresh();
+    expect(client.getState().startup).toBeNull();
+    expect(client.getState().online).toBe(true);
+  });
   it("数据库重建后旧实例的 16 条缺失回执退出等待，新操作可以提交且不会重放旧请求", async () => {
     const saved = Array.from({ length: 16 }, (_, i) => ({
       request: { request_id: `old-${i}`, instance_id: "old-host", target: "voice", operation: "stop", expected_revision: "1", arguments: {} }, title: "停止收音",

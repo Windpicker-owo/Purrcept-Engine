@@ -2,9 +2,28 @@
   "name": "purrcept-engine-panel",
   "private": true,
   "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
   "scripts": {
     "build": "node ../scripts/build_web.mjs",
-    "typecheck": "node ../../purrcept_design/react/node_modules/typescript/bin/tsc -p tsconfig.json",
-    "test": "node run-tests.mjs"
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "node run-tests.mjs",
+    "styles": "python node_modules/@purrcept/cel/scripts/lint_styles.py src index.html"
+  },
+  "dependencies": {
+    "@purrcept/cel": "file:vendor/purrcept-cel.tgz",
+    "motion": "14.0.0",
+    "react": "19.3.0",
+    "react-dom": "19.3.0"
+  },
+  "devDependencies": {
+    "@types/node": "26.6.4",
+    "@types/react": "19.3.0",
+    "@types/react-dom": "19.3.0",
+    "playwright-core": "1.63.0",
+    "typescript": "7.0.2",
+    "vite": "8.3.2",
+    "vitest": "5.0.3"
   }
 }

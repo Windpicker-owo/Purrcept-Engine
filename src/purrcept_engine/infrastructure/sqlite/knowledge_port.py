@@ -8,12 +8,13 @@ KnowledgeLedger 是认识子系统的异步端口。SQL 和业务校验在 knowl
 import hashlib
 import sqlite3
 from collections.abc import Awaitable, Callable
-from typing import Protocol
+from typing import Literal, Protocol
 
 from purrcept_core.models import ContentBlock, Message
 
 import purrcept_engine.domain.knowledge.models as knowledge_models
 from purrcept_engine.domain.inputs.models import MediaAsset, MediaReference
+from purrcept_engine.domain.model_requests.service import prepare_off_loop
 from purrcept_engine.infrastructure.sqlite import knowledge as sql
 from purrcept_engine.serialization import encode
 
@@ -261,6 +262,8 @@ class KnowledgeLedger:
         batch_id: str,
         required_slice_refs: tuple[str, ...],
         findings: tuple[knowledge_models.OperationalFinding, ...] = (),
+        *,
+        purpose: Literal["memory", "behavior"] = "memory",
     ) -> knowledge_models.ReflectionBatch:
         """冻结原文范围及程序异常，重复等待沿同一批次身份核验。
 
@@ -274,7 +277,7 @@ class KnowledgeLedger:
         """
         return await self._submit(
             lambda connection: sql.begin_reflection(
-                connection, batch_id, required_slice_refs, findings
+                connection, batch_id, required_slice_refs, findings, purpose=purpose
             ),
             logical_bytes=_bytes(
                 batch_id,
@@ -615,9 +618,37 @@ class KnowledgeLedger:
         Returns:
             按相关性排列的确切版本引用，使用前仍须复查权威资格。
         """
+        if not 1 <= limit <= 100:
+            raise ValueError("语义候选上限必须在1到100之间。")
+        ranked: tuple[tuple[float, str, str, int, knowledge_models.KnowledgeReference], ...] = ()
+        after: tuple[str, str, int] | None = None
+        while True:
+            cursor = after
+            rows = await self._submit(
+                lambda connection, cursor=cursor: sql.vector_candidates(connection, model, cursor)
+            )
+            if not rows:
+                break
+            last = rows[-1][0]
+            after = (last.kind, last.id, last.version)
+            qualified = await self._submit(
+                lambda connection, rows=rows: tuple(
+                    item for item in rows if sql.get_candidate(connection, item[0]) is not None
+                )
+            )
+            previous = ranked
+            ranked = await prepare_off_loop(
+                lambda qualified=qualified, previous=previous: sql.rank_vectors(
+                    vector, qualified, previous, limit
+                )
+            )
+        references = tuple(item[-1] for item in sorted(ranked, reverse=True))
         return await self._submit(
-            lambda connection: sql.semantic_search(connection, vector, model, limit=limit),
-            logical_bytes=_bytes(vector, model),
+            lambda connection: tuple(
+                reference
+                for reference in references
+                if sql.get_candidate(connection, reference) is not None
+            )
         )
 
     async def supervise(

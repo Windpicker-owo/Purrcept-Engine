@@ -1,6 +1,7 @@
 """串行借用 Core 连续会话，冻结整轮预算并在权威提交后采用新历史。
 
-每轮创建一个借用相同模型资源的新 facade，恢复唯一已提交检查点；Core 仍
+每轮创建一个借用相同模型资源的新 facade。continuous 策略恢复已提交检查点，
+batch 策略仅保留提交版本而从空历史开始，也不维护前批历史摘要；Core 仍
 独占工具循环和完整轮次边界。前台只读取唤醒时冻结的输入快照，运行中不接管
 新刺激，整轮预算不重置。失败或取消丢弃临时 facade，真实行动和
 模型尝试已经独立入账。动态尾部由同步 ReminderSource 投影内存值，在实际
@@ -17,7 +18,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass, field, replace
-from typing import Protocol
+from typing import Literal, Protocol
 
 from purrcept_core import AgentDriver, InlineExecutor
 from purrcept_core.models import (
@@ -353,6 +354,7 @@ class ContinuousSession:
         *,
         compiler: MaterialCompiler,
         can_start: Callable[[], None],
+        history_policy: Literal["continuous", "batch"] = "continuous",
     ) -> None:
         """保存有限账本和宿主资格，不在构造时打开库或调用模型。
 
@@ -361,10 +363,14 @@ class ContinuousSession:
             scope: 目标连续会话，foreground 与 reflection 拥有独立历史。
             compiler: 按实际 SDK 布局冻结完整请求材料的纯编译器。
             can_start: 实际派发前重新检查的资格回调，等待后仍须复核。
+            history_policy: continuous 恢复已提交历史；batch 只读取 CAS 版本且每批从空历史开始。
         """
         self.compiler = compiler
         self.store = store
         self.scope: SessionScope = scope
+        if history_policy not in ("continuous", "batch"):
+            raise ValueError("会话历史策略必须明确为 continuous 或 batch。")
+        self.history_policy = history_policy
         self.can_start = can_start
         self._generation = 0
         self._interrupted_generation = 0
@@ -438,6 +444,12 @@ class ContinuousSession:
                 for budget in self._budgets
             ],
         }
+
+    async def _previous(self) -> SessionRecord:
+        """批次策略只读取 CAS 身份，不先恢复上批检查点再把它丢弃。"""
+        if self.history_policy == "batch":
+            return await self.store.get_session_state(self.scope)
+        return await self.store.get_session(self.scope)
 
     async def run(
         self,
@@ -563,7 +575,7 @@ class ContinuousSession:
         turn: TurnRecord | None = None
         turn_timeout: asyncio.Timeout | None = None
         try:
-            previous = await self.store.get_session(self.scope)
+            previous = await self._previous()
             budget.check()
             # 材料展开属于主动处理时间。接入交来的不可变引用在已接管批次内
             # 展开，不能先花完组装时间再启动一份全新的 600 秒预算。
@@ -573,7 +585,7 @@ class ContinuousSession:
             while True:
                 budget.check()
                 dynamic = await refresh(budget)
-                if prepare_history is not None:
+                if prepare_history is not None and self.history_policy == "continuous":
                     # Ordering: 摘要只安装空闲的权威会话；正式 begin_turn 之后不能
                     # 替换 Core 正在使用的历史，也不能重启已经发生工具效果的循环。
                     previous = await prepare_history(
@@ -595,7 +607,7 @@ class ContinuousSession:
                     # 或工具效果，只重新读取和预检；输入组装、轮次身份、生成代次
                     # 及绝对截止均保持原值。已有在途轮次等其它冲突继续明确失败。
                     budget.check()
-                    previous = await self.store.get_session(self.scope)
+                    previous = await self._previous()
                     continue
                 break
             wrapped = ModelGenerationBackend(
@@ -683,7 +695,7 @@ class ContinuousSession:
                 # 准备失败也要结束已接管输入，不能留在 foreground 让固定工作器
                 # 无限重做同一准备。这里只写失败身份，不调用模型或任何世界能力。
                 try:
-                    current = await self.store.get_session(self.scope)
+                    current = await self._previous()
                     turn = await self.store.begin_turn(
                         turn_id, self.scope, current.version, generation, input_ids
                     )
@@ -704,7 +716,7 @@ class ContinuousSession:
                 # 新反思。单请求/工具自己的 TimeoutError 不继承这个类别。
                 failure["category"] = "budget_exhausted"
             try:
-                current = await self.store.get_session(self.scope)
+                current = await self._previous()
                 if current.active_turn == turn.turn_id:
                     await self._commit(
                         self.store.finish_turn(

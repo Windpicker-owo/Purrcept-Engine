@@ -6,7 +6,7 @@ import type { ControlRequest } from "../src/contracts";
 import { host, receipt } from "./fixtures";
 
 function material() {
-  return { revision: "frozen-version", turn_id: "turn", stimuli: [{ input_id: "input", adapter_id: "test", display_name: "审查样本", text: "原文".repeat(600), occurred_at: "2026-10-28T00:00:00Z", received_at: "2026-10-28T00:00:01Z", media: [] }],
+  return { target: { kind: "action", id: "action-1", state: "completed" }, actions: [], revision: "frozen-version", turn_id: "turn", stimuli: [{ input_id: "input", adapter_id: "test", display_name: "审查样本", text: "原文".repeat(600), occurred_at: "2026-10-28T00:00:00Z", received_at: "2026-10-28T00:00:01Z", media: [] }],
     action: { action_id: "action-1", state: "completed", source: "await me.send()", output: "", error: null, result_json: null,
       calls: [{ call_id: "call", path: "me.send", state: "confirmed", arguments_json: '{"text":"完整参数"}', result_json: '{"sent":true}', error: null }] },
     feedback: [{ evidence_id: "human-feedback:old", request_id: "old", revision: "frozen-version", rating: "bad", comment: "请等待回应。", created_at: 1 }] };
@@ -57,5 +57,5 @@ it("评价重传保留评分、留言、所见版本与身份，不重新发出�
 
 it("完整审查返回另一行动时拒绝采用", async () => {
   const client = new PanelClient(async () => json(material()), { getItem: () => null, setItem: () => {} }, () => "id");
-  await expect(client.review("another-action")).rejects.toThrow("review.action_id");
+  await expect(client.review("another-action")).rejects.toThrow("review.target_id");
 });

@@ -15,7 +15,7 @@ dependencies = [
   "openai==2.49.0",
   "pillow==12.3.0",
   "purrcept_core>=0.6.0,<0.7",
-  "purrcept_litellm>=0.2.0,<0.3",
+  "purrcept_litellm>=0.2.1,<0.3",
   "pydantic==2.13.4",
 ]
 
@@ -46,11 +46,21 @@ dev = [
   "ruff==0.16.0",
 ]
 
+[tool.uv.sources]
+purrcept-litellm = { path = "vendor/purrcept_litellm-0.2.1-py3-none-any.whl" }
+
 [tool.uv]
 environments = ["sys_platform == 'win32'"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/purrcept_engine"]
+
+[tool.hatch.build.targets.sdist]
+# 明确发行输入，避免扫描工作区历史临时库或把开发依赖带入源码包。
+only-include = [
+  "src", "frontend", "scripts", "tests", "examples", "docs", "vendor", "assets",
+  ".github", "README.md", "CONTRIBUTING.md", "AGENTS.md", "uv.lock",
+]
 
 [tool.hatch.build]
 exclude = [
@@ -62,6 +72,8 @@ exclude = [
   "/.validation",
   "/.pytest_cache",
   "/.ruff_cache",
+  "/frontend/node_modules",
+  "/frontend/.test-tmp",
   "**/__pycache__",
   "**/*.pyc",
 ]

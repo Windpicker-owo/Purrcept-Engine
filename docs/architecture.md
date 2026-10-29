@@ -129,7 +129,9 @@ base64 不算正文；Pillow/PyAV 仅同步读取内存原件，准备在线程�
 Store、模型资源和插件实例，连接活动与执行器，再通过
 [build_subject](../src/purrcept_engine/app/subject.py) 装配认识、上下文和主体。
 取得的资源立即记入 EngineState，部分启动失败也有完整收尾事实。
-插件开始接入以前，目录、执行器和主体必须已经就绪。
+插件开始接入以前，目录、执行器和主体实例必须已完成装配。主动插件启动期间可以
+先持久接管输入；全部插件 start 返回后再开启主体任务和公开业务，WebUI 通过
+轻量健康查询显示真实阶段，不以生命周期 running 代替完整就绪。
 
 配置发现留在 app；插件 `prepare` 只给声明，`build` 才借用有限端口。
 替换模型或执行器在 Host 构造时显式注入，不改变领域服务的选择逻辑。
@@ -251,17 +253,19 @@ Bootstrap 与 IPC，独立入口绕过顶层包初始化，不加载插件、SDK
 
 ## 路径三：反馈、反思与认识
 
-[BackgroundService](../src/purrcept_engine/domain/subject/background.py) 连接
-FeedbackService 和 ReflectionService，持有独立反思会话及共享后台事实。
-SubjectService 启动它；Host 分别等待主体与后台实际关闭。
+[BackgroundService](../src/purrcept_engine/domain/subject/background.py) 拥有可靠反馈、
+行为评审和记忆整理三个固定任务。两个分析任务分别持有队列、开关、健康和会话；
+每批从空历史开始，仍保存请求、工具交付和真实呈现资格，不恢复前批检查点或维护其摘要。
+单个分析崩溃不停止其他分析或可靠反馈；权威存储与可靠反馈故障仍阻止依赖它们的派发。
 
-FeedbackService 交接真实回执、计划和监管；ReflectionService 冻结反思批次，
-在原预算内串行推进连续会话。反思可以修订认识，没有世界执行工具。
-人工行为审查由应用 PanelController 接管，HumanFeedbackLedger 沿同一 Store
-读取当轮刺激和完整行动，在保存前核验所见回执摘要。人工原文复用既有
-knowledge_evidence，不新增存储格式；其优先反思来源和前台 outbox 同事务
-写入，继续由原 FeedbackService 和 ReflectionService 分别消费。人工意见
-不冒充反思模型签发的 SupervisionNotice，也不取得模型原文已阅资格。
+领取按用途、来源版本和证据范围持久化。epoch 仅表示观察边界，完成只能依据真实
+复核覆盖前缀续页。来源减量及合法缩页须先经过 Core 首发预览和公开 SDK 编译容量检查，
+不能以领取代替理解。重试、证据等待、容量阻塞与完成分开，传输额度由尝试账本原子核验。
+
+PanelController 和 HumanFeedbackLedger 接管行动、轮次、能力调用三个真实目标的评价。
+材料 revision 核验、评价原文、索引关联和可靠投递同事务提交，不创建虚构行动。
+Behavior Review 只有取证、召回、监管和结案工具；Memory Consolidation 只有取证、召回、
+记忆修订和来源结案工具。来源互不代领，详细状态与保留策略见 [运行治理](governance.md)。
 认识的读取与检索经过
 [KnowledgeService](../src/purrcept_engine/domain/knowledge/service.py)；索引工作器
 与可选向量后端分别拥有任务和连接，具体资源由 app/knowledge_resources 装配关闭。
@@ -275,7 +279,7 @@ EvidenceDeliveries/Store 核验，不自动补全、删去或替换模型给错�
 FinishSubmission 保存到结案回执。无法识别错误引用指向的范围时，延期保守覆盖
 本批必需范围。工具参数在 Core 解析前已被拒绝的调用未进入此意图登记；普通
 参数错误仍按 Core 回执纠正，不伪造已发生写入。
-此状态仅归当前批次，不新增持久调度器或重试预算。取消、关闭或预算结束导致
+写入意图仅归当前批次，持久来源领取和重试预算由分析账本单独拥有。取消、关闭或预算结束导致
 未结案时，原批次中断且未复核证据仍由账本保留；新批次重新取得已读资格。
 模型仍可因真实噪声、重复材料或无关碎片不写入；平淡生活不自动等于无记忆价值。
 
@@ -290,9 +294,8 @@ FinishSubmission 保存到结案回执。无法识别错误引用指向的范围
 固定过期文字。ContinuousSession 恢复、HistoryPreparation 预览和摘要请求组装
 共用此规则；摘要资格及归档仍核对完整原来源，不能用投影视图冒充原检查点。
 投影后的历史随正常成功轮次提交，失败不安装；没有新数据库模式或独立写入者。
-前台、反思分别按自己的轮次计算窗口。client_managed 继续由 Core 抑制服务端
-continuation，避免隐藏服务端历史绕过实际请求中的媒体窗口。原输入及当时的
-请求/回执继续保存原件，过期不生成 ASR、OCR 或图像描述，也不把占位当成
+前台按连续轮次计算窗口，分析会话只保留当前批次。client_managed 继续由 Core 抑制服务端
+continuation，避免隐藏服务端历史绕过实际请求中的媒体窗口。原输入和业务回执继续保存，诊断请求正文另受保留策略约束。媒体窗口过期不生成 ASR、OCR 或图像描述，也不把占位当成
 已理解媒体内容的证明。工具协议和隐藏推理仍按原协议保留。
 严格 JSON、模型可见材料编码、Core 检查点和 IPC 帧各有边界，不能合并其接受范围。
 

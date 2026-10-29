@@ -102,7 +102,9 @@ def make_factory(
             _Apply,
             10.0,
             'result = await {path}(intent={"valence": 0.4, "gesture": "nod"})',
-            "数值valence/gaze为[-1,1]，arousal/tension为[0,1]；gesture为none/nod/shake/tilt。缺省数值为0、手势为none。宿主分配身份，独立意图初值4秒；accepted不等于VTS已采用，恢复不补演。说话姿态可直接给speak(body=...)，不需要先创建表达句柄。",
+            "数值valence/gaze为[-1,1]，arousal/tension为[0,1]；gesture为none/nod/shak"
+            "e/tilt。缺省数值为0、手势为none。宿主分配身份，独立意图初值4秒；accepted不等于VTS已采用，恢复不补演。说话姿"
+            "态可直接给speak(body=...)，不需要先创建表达句柄。",
             concurrency="parallel",
         )
         profile_path, token_path = (

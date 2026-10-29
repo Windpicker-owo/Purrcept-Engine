@@ -22,6 +22,16 @@ class Host:
     def __init__(self) -> None:
         self.requests: list[ControlRequest] = []
 
+    def query_health(self) -> JsonObject:
+        """提供无需 Store 的启动状态替身。"""
+        return {
+            "instance_id": "current",
+            "phase": "starting",
+            "can_process": False,
+            "startup_stage": "sqlite",
+            "components": [],
+        }
+
     async def query_panel(self) -> JsonObject:
         return {"instance_id": "current", "phase": "running"}
 
@@ -43,7 +53,7 @@ class Host:
     async def query_control(self, request_id: str) -> JsonObject | None:
         return {"request_id": request_id, "state": "admitted"} if request_id == "one" else None
 
-    async def query_reviews(self, before: str | None = None) -> JsonObject:
+    async def query_reviews(self, before: str | None = None, *, kind: str = "action") -> JsonObject:
         return {"items": [], "next_cursor": before}
 
     async def query_review(self, action_id: str) -> JsonObject | None:

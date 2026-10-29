@@ -6,8 +6,10 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Literal
+
+from purrcept_core.models import ModelRateLimitError
 
 RequestKind = Literal["generation", "decision"]
 
@@ -16,6 +18,18 @@ RequestOutcome = Literal["succeeded", "failed", "timed_out", "cancelled", "inter
 
 
 AttemptOutcome = Literal["succeeded", "failed", "timed_out", "cancelled", "interrupted"]
+
+
+@dataclass(frozen=True, slots=True)
+class BodyStatus:
+    """正文的可用性与原始摘要；过期仍保留大小、时间及明确原因。"""
+
+    available: bool
+    digest: str
+    original_bytes: int
+    expired_at: float | None = None
+    reason: str | None = None
+    summary: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -51,7 +65,7 @@ class RequestEvidence:
         scope: 冻结的请求因果身份、轮次和来源引用。
         kind: 此业务值所属的稳定种类。
         model: 本次调用使用的显式模型名，不在领域层推断替代模型。
-        materials_json: 按实际 SDK 布局冻结的公开请求材料，不包含秘密传输字段。
+        materials_json: 按 SDK 布局冻结的公开材料；淘汰查询为 None，由 materials_status 说明原因。
         compiler: 按实际 SDK 布局冻结完整请求材料的纯编译器。
         attempts: 按真实开始顺序保存的传输尝试，不创建新逻辑请求。
         attempt_seconds: 单次传输尝试的秒数上限。
@@ -72,7 +86,7 @@ class RequestEvidence:
     scope: RequestScope
     kind: RequestKind
     model: str
-    materials_json: str
+    materials_json: str | None
     compiler: str
     attempts: int
     attempt_seconds: float
@@ -150,6 +164,8 @@ class AttemptEvidence:
         的可用事件，diagnostic_events_json 保存有限预览。诊断超限只更新覆盖标记，
         不删除响应或改变其业务结论。diagnostics_expired_at 单独说明正文淘汰；
         diagnostics_unavailable 表示诊断保存/读取缺口，两者不改原采集覆盖。
+        响应和参数正文也可按保留策略淘汰，此时 body_status 明确标记缺失、原始摘要与
+        大小；None 不代表空响应。usage_json 独立长期保留真实用量，不能重建正文。
         timed_out 不证明服务端已经停止计算。
     """
 
@@ -157,7 +173,7 @@ class AttemptEvidence:
     state: AttemptOutcome
     response_json: str | None
     failure: FailureEvidence | None
-    argument_events_json: str
+    argument_events_json: str | None
     diagnostic_events_json: str
     diagnostics_complete: bool
     omitted_events: int
@@ -165,6 +181,8 @@ class AttemptEvidence:
     retry_wait_seconds: float | None = None
     diagnostics_expired_at: float | None = None
     diagnostics_unavailable: bool = False
+    body_status: BodyStatus | None = field(default=None, compare=False)
+    usage_json: str | None = field(default=None, compare=False)
 
 
 @dataclass(frozen=True, slots=True)
@@ -207,3 +225,14 @@ class RequestRecord:
     created_at: float
     finished_at: float | None
     attempts: tuple[AttemptRecord, ...]
+    materials_status: BodyStatus | None = None
+
+
+class BackgroundBudgetExceeded(ModelRateLimitError):
+    """后台真实派发额度已用尽；属于可观察的等待，不是存储故障。"""
+
+    def __init__(self, retry_after_seconds: float) -> None:
+        """报告额度恢复时间，调用者保留待办且不得绕过同一持久门槛。"""
+        super().__init__(
+            "后台小时派发额度已耗尽。", provider="engine", retry_after_seconds=retry_after_seconds
+        )

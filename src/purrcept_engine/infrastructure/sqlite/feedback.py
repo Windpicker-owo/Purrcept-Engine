@@ -13,6 +13,7 @@ import math
 import sqlite3
 import time
 from datetime import UTC, datetime
+from typing import Literal
 
 from pydantic import ValidationError
 
@@ -33,37 +34,38 @@ from purrcept_engine.domain.subject.feedback_models import (
 )
 from purrcept_engine.domain.subject.models import TurnRecord
 from purrcept_engine.errors import StorageError
-from purrcept_engine.infrastructure.sqlite import activities, execution, knowledge
+from purrcept_engine.infrastructure.sqlite import activities, analysis_work, execution, knowledge
 from purrcept_engine.infrastructure.sqlite.time import AdmitInput
 from purrcept_engine.serialization import encode
 from purrcept_engine.values import decode_object
 
 SCHEMA = (
-    "CREATE TABLE feedback_deliveries (kind TEXT NOT NULL,identity TEXT NOT NULL,"
-    "payload_json TEXT NOT NULL,occurred_at REAL NOT NULL,"
-    "input_id TEXT REFERENCES inputs(input_id),"
-    "PRIMARY KEY(kind,identity))",
-    "CREATE TABLE feedback_sources (evidence_id TEXT NOT NULL,version INTEGER NOT NULL,"
-    "priority INTEGER NOT NULL CHECK(priority IN(0,1)),PRIMARY KEY(evidence_id,version),"
-    "FOREIGN KEY(evidence_id,version) REFERENCES knowledge_evidence(evidence_id,version))",
-    "CREATE TABLE feedback_failed_turns (turn_id TEXT PRIMARY KEY "
-    "REFERENCES subject_turns(turn_id))",
-    "CREATE TABLE feedback_delivery_media(kind TEXT NOT NULL,identity TEXT NOT NULL,"
-    "ordinal INTEGER NOT NULL,media_id TEXT NOT NULL REFERENCES media(media_id),"
-    "media_type TEXT NOT NULL,name TEXT,PRIMARY KEY(kind,identity,ordinal),"
-    "FOREIGN KEY(kind,identity) REFERENCES feedback_deliveries(kind,identity))",
+    "CREATE TABLE feedback_deliveries (kind TEXT NOT NULL,identity TEXT NOT "
+    "NULL,payload_json TEXT NOT NULL,occurred_at REAL NOT NULL,input_id TEXT "
+    "REFERENCES inputs(input_id),PRIMARY KEY(kind,identity))",
+    "CREATE TABLE feedback_sources (evidence_id TEXT NOT NULL,version INTEGER NOT "
+    "NULL,priority INTEGER NOT NULL CHECK(priority IN(0,1)),PRIMARY "
+    "KEY(evidence_id,version),FOREIGN KEY(evidence_id,version) REFERENCES "
+    "knowledge_evidence(evidence_id,version))",
+    "CREATE TABLE feedback_failed_turns (turn_id TEXT PRIMARY KEY REFERENCES "
+    "subject_turns(turn_id))",
+    "CREATE TABLE feedback_delivery_media(kind TEXT NOT NULL,identity TEXT NOT "
+    "NULL,ordinal INTEGER NOT NULL,media_id TEXT NOT NULL REFERENCES "
+    "media(media_id),media_type TEXT NOT NULL,name TEXT,PRIMARY "
+    "KEY(kind,identity,ordinal),FOREIGN KEY(kind,identity) REFERENCES "
+    "feedback_deliveries(kind,identity))",
     "CREATE TABLE feedback_supervision_signals(identity TEXT PRIMARY KEY "
-    "REFERENCES knowledge_supervision(id),observed_generation INTEGER NOT NULL,"
-    "notified INTEGER NOT NULL CHECK(notified IN(0,1)))",
-    "CREATE TABLE feedback_reflection_attempts (batch_id TEXT NOT NULL,slice_ref TEXT NOT NULL "
-    "REFERENCES knowledge_slices(slice_ref),epoch INTEGER NOT NULL,"
-    "successful_turns INTEGER NOT NULL,PRIMARY KEY(slice_ref,epoch))",
-    "CREATE TABLE feedback_reflection_epochs(epoch INTEGER PRIMARY KEY,batch_id TEXT NOT NULL,"
-    "successful_turns INTEGER NOT NULL)",
-    "CREATE TABLE feedback_reflection_cursors (evidence_id TEXT NOT NULL,version INTEGER NOT NULL,"
-    "epoch INTEGER NOT NULL,cursor TEXT,exhausted INTEGER NOT NULL CHECK(exhausted IN(0,1)),"
-    "PRIMARY KEY(evidence_id,version),FOREIGN KEY(evidence_id,version) "
-    "REFERENCES knowledge_evidence(evidence_id,version))",
+    "REFERENCES knowledge_supervision(id),observed_generation INTEGER NOT "
+    "NULL,notified INTEGER NOT NULL CHECK(notified IN(0,1)))",
+    "CREATE TABLE feedback_reflection_attempts (batch_id TEXT NOT NULL,slice_ref "
+    "TEXT NOT NULL REFERENCES knowledge_slices(slice_ref),epoch INTEGER NOT "
+    "NULL,successful_turns INTEGER NOT NULL,PRIMARY KEY(slice_ref,epoch))",
+    "CREATE TABLE feedback_reflection_epochs(epoch INTEGER PRIMARY KEY,batch_id "
+    "TEXT NOT NULL,successful_turns INTEGER NOT NULL)",
+    "CREATE TABLE feedback_reflection_cursors (evidence_id TEXT NOT NULL,version "
+    "INTEGER NOT NULL,epoch INTEGER NOT NULL,cursor TEXT,exhausted INTEGER NOT "
+    "NULL CHECK(exhausted IN(0,1)),PRIMARY KEY(evidence_id,version),FOREIGN "
+    "KEY(evidence_id,version) REFERENCES knowledge_evidence(evidence_id,version))",
 )
 
 
@@ -116,10 +118,12 @@ def prepare(connection: sqlite3.Connection, *, now: float, limit: int = 16) -> F
     foreground = activities.pending_activity_feedback(connection, "foreground", limit=limit)
     merged = {item.feedback_id: item for item in (*activity, *foreground)}
     rows: list[tuple[object, ...]] = connection.execute(
-        "SELECT t.turn_id,t.scope,t.session_version,t.generation,t.state,t.started_at,"
-        "t.finished_at,t.error_json FROM subject_turns t WHERE t.scope='foreground' AND "
-        "t.state IN('failed','cancelled','interrupted') AND NOT EXISTS(SELECT 1 FROM "
-        "feedback_failed_turns f WHERE f.turn_id=t.turn_id) ORDER BY t.started_at LIMIT ?",
+        "SELECT "
+        "t.turn_id,t.scope,t.session_version,t.generation,t.state,t.started_at,"
+        "t.finished_at,t.error_json FROM subject_turns t WHERE "
+        "t.scope='foreground' AND t.state IN('failed','cancelled',"
+        "'interrupted') AND NOT EXISTS(SELECT 1 FROM feedback_failed_turns f "
+        "WHERE f.turn_id=t.turn_id) ORDER BY t.started_at LIMIT ?",
         (limit,),
     ).fetchall()
     failures: list[TurnRecord] = []
@@ -146,15 +150,15 @@ def prepare(connection: sqlite3.Connection, *, now: float, limit: int = 16) -> F
     plan_rows: list[tuple[object, ...]] = connection.execute(
         "SELECT payload_json FROM knowledge_plans p WHERE "
         "json_extract(payload_json,'$.state')='pending' AND "
-        "json_extract(payload_json,'$.due')<=? AND NOT EXISTS(SELECT 1 FROM feedback_deliveries d "
-        "WHERE d.kind='plan' AND d.identity=p.id) ORDER BY json_extract(payload_json,'$.due'),id "
-        "LIMIT ?",
+        "json_extract(payload_json,'$.due')<=? AND NOT EXISTS(SELECT 1 FROM "
+        "feedback_deliveries d WHERE d.kind='plan' AND d.identity=p.id) ORDER BY "
+        "json_extract(payload_json,'$.due'),id LIMIT ?",
         (now, limit),
     ).fetchall()
     notice_cursor = connection.execute(
         "SELECT id FROM knowledge_supervision s WHERE state='open' AND NOT EXISTS "
-        "(SELECT 1 FROM feedback_deliveries d WHERE d.kind='supervision' AND d.identity=s.id) "
-        "ORDER BY created_at,id"
+        "(SELECT 1 FROM feedback_deliveries d WHERE d.kind='supervision' AND "
+        "d.identity=s.id) ORDER BY created_at,id"
     )
     notices: list[knowledge_models.SupervisionRecord] = []
     while notice_rows := notice_cursor.fetchmany(32):
@@ -183,10 +187,25 @@ def prepare(connection: sqlite3.Connection, *, now: float, limit: int = 16) -> F
 
 
 def _source(
-    connection: sqlite3.Connection, snapshot: knowledge_models.EvidenceSnapshot, *, priority: bool
+    connection: sqlite3.Connection,
+    snapshot: knowledge_models.EvidenceSnapshot,
+    *,
+    priority: bool,
+    related_input_id: str | None = None,
 ) -> None:
     """正式证据与宿主异常优先级一起接管，派生唤醒不会再次增加事实代次。"""
+    exists = (
+        connection.execute(
+            "SELECT 1 FROM knowledge_evidence WHERE evidence_id=? AND version=?",
+            (snapshot.evidence_id, snapshot.version),
+        ).fetchone()
+        is not None
+    )
     knowledge.put_evidence_in_transaction(connection, snapshot)
+    if not exists and related_input_id is not None:
+        analysis_work.relate_input(
+            connection, snapshot.evidence_id, snapshot.version, related_input_id
+        )
     connection.execute(
         "INSERT OR IGNORE INTO feedback_sources VALUES(?,?,?)",
         (snapshot.evidence_id, snapshot.version, int(priority)),
@@ -241,8 +260,8 @@ def _admit_deliveries(
 ) -> FeedbackBridge:
     """接管和投递身份同事务提交；额度满只保留 outbox，不丢另一反思责任。"""
     rows: list[tuple[object, ...]] = connection.execute(
-        "SELECT kind,identity,payload_json,occurred_at FROM feedback_deliveries "
-        "WHERE input_id IS NULL ORDER BY occurred_at,kind,identity LIMIT ?",
+        "SELECT kind,identity,payload_json,occurred_at FROM feedback_deliveries WHERE "
+        "input_id IS NULL ORDER BY occurred_at,kind,identity LIMIT ?",
         (limit,),
     ).fetchall()
     result: list[str] = []
@@ -275,8 +294,9 @@ def _admit_deliveries(
                 continue
         stamp = datetime.fromtimestamp(_number(row[3]), UTC)
         media_rows: list[tuple[object, ...]] = connection.execute(
-            "SELECT m.content,d.media_type,d.name,d.media_id FROM feedback_delivery_media d "
-            "LEFT JOIN media m USING(media_id) WHERE kind=? AND identity=? ORDER BY ordinal",
+            "SELECT m.content,d.media_type,d.name,d.media_id FROM feedback_delivery_media "
+            "d LEFT JOIN media m USING(media_id) WHERE kind=? AND identity=? ORDER BY "
+            "ordinal",
             (kind, identity),
         ).fetchall()
         media: list[MediaAsset] = []
@@ -314,11 +334,13 @@ def _admit_deliveries(
         connection.execute(
             "DELETE FROM pending_knowledge WHERE evidence_id=? AND version=1", (admission.input_id,)
         )
+        connection.execute(
+            "DELETE FROM analysis_work WHERE evidence_id=? AND version=1", (admission.input_id,)
+        )
         result.append(admission.input_id)
         if kind == "supervision":
             signal = connection.execute(
-                "SELECT observed_generation FROM "
-                "feedback_supervision_signals WHERE identity=? "
+                "SELECT observed_generation FROM feedback_supervision_signals WHERE identity=? "
                 "AND notified=0",
                 (identity,),
             ).fetchone()
@@ -389,6 +411,7 @@ def bridge(
                     media=call.media,
                 ),
                 priority=call.state in ("failed", "unknown"),
+                related_input_id=None if row[0] is None else _text(row[0]),
             )
             if call.receipt_revision > 1:
                 _delivery(connection, "late_call", identity, payload, call.finished_at, call.media)
@@ -421,8 +444,8 @@ def bridge(
             if row is not None and row[0] == 1:
                 _delivery(connection, "activity", identity, payload, item.occurred_at)
             connection.execute(
-                "UPDATE pending_activity_feedback SET reflection=0,foreground=0 "
-                "WHERE feedback_id=?",
+                "UPDATE pending_activity_feedback SET reflection=0,foreground=0 WHERE "
+                "feedback_id=?",
                 (item.feedback_id,),
             )
             connection.execute(
@@ -585,8 +608,7 @@ def dispatch_supervision(
         ).fetchone()
         if existing is not None and row is not None and row[0] is not None:
             signal = connection.execute(
-                "SELECT observed_generation FROM "
-                "feedback_supervision_signals WHERE identity=? "
+                "SELECT observed_generation FROM feedback_supervision_signals WHERE identity=? "
                 "AND notified=0",
                 (record.notice.id,),
             ).fetchone()
@@ -601,70 +623,95 @@ def dispatch_supervision(
         return result
 
 
-def reflection_state(connection: sqlite3.Connection) -> ReflectionState:
-    """按独立原文行序与真正成功轮次计算节奏，不把读取/监管回应当新事实。
-
-    Args:
-        connection: 仅在 Store 专属线程当前短事务中借用的连接，不在回调中等待设备或模型。
-
-    Returns:
-        反思来源序号与实际成功前台轮数。
-    """
-    row = connection.execute(
-        "SELECT coalesce(max(e.rowid),0),min(CASE WHEN p.state='pending' AND e.rowid>"
-        "(SELECT coalesce(max(epoch),0) FROM feedback_reflection_epochs) "
-        "THEN p.queued_at END) "
-        "FROM knowledge_evidence e JOIN pending_knowledge p USING(evidence_id,version) "
-        "WHERE e.valid=1"
-    ).fetchone()
-    count = connection.execute(
+def reflection_state(
+    connection: sqlite3.Connection, *, purpose: Literal["memory", "behavior"] = "memory"
+) -> ReflectionState:
+    """观察当前用途的可领取来源、冷却和全局额度，不以队列水位吞掉溢出。"""
+    now = time.time()
+    epoch = connection.execute("SELECT coalesce(max(rowid),0) FROM knowledge_evidence").fetchone()[
+        0
+    ]
+    turns = connection.execute(
         "SELECT count(*) FROM subject_turns WHERE scope='foreground' AND state='succeeded'"
-    ).fetchone()
+    ).fetchone()[0]
     taken = connection.execute(
-        "SELECT coalesce(max(successful_turns),0) FROM feedback_reflection_epochs"
+        "SELECT coalesce(max(successful_turns),0) FROM analysis_claims WHERE purpose=?", (purpose,)
+    ).fetchone()[0]
+    oldest, priority = connection.execute(
+        "SELECT min(w.queued_at),coalesce(max(f.priority),0) FROM analysis_work w JOIN "
+        "knowledge_evidence e USING(evidence_id,version) LEFT JOIN feedback_sources f "
+        "USING(evidence_id,version) WHERE w.purpose=? AND e.valid=1 AND w.state "
+        "IN('pending','retry_wait') AND w.next_attempt_at<=?",
+        (purpose, now),
     ).fetchone()
-    priority = (
+    retry_at = connection.execute(
+        "SELECT min(w.next_attempt_at) FROM analysis_work w JOIN knowledge_evidence e "
+        "USING(evidence_id,version) WHERE w.purpose=? AND e.valid=1 AND "
+        "w.state='retry_wait' AND w.next_attempt_at>?",
+        (purpose, now),
+    ).fetchone()[0]
+    blocked, capacity_blocked, waiting_evidence = connection.execute(
+        "SELECT count(*),coalesce(sum(state='capacity_blocked'),0),"
+        "coalesce(sum(w.state='waiting_evidence'),0) FROM analysis_work w "
+        "JOIN knowledge_evidence e USING(evidence_id,version) WHERE w.purpose=? AND e.valid=1 "
+        "AND w.state IN('capacity_blocked','waiting_evidence')",
+        (purpose,),
+    ).fetchone()
+    plan = connection.execute(
+        "SELECT min(json_extract(payload_json,'$.due')) FROM knowledge_plans p WHERE "
+        "json_extract(payload_json,'$.state')='pending' AND NOT EXISTS(SELECT 1 FROM "
+        "feedback_deliveries d WHERE d.kind='plan' AND d.identity=p.id)"
+    ).fetchone()[0]
+    continuation = (
         connection.execute(
-            "SELECT 1 FROM feedback_sources f JOIN pending_knowledge p "
-            "USING(evidence_id,version) WHERE priority=1 "
-            "AND p.state='pending' "
-            "AND EXISTS(SELECT 1 FROM knowledge_evidence e WHERE "
-            "e.evidence_id=f.evidence_id AND e.version=f.version AND e.rowid>"
-            "(SELECT coalesce(max(epoch),0) FROM feedback_reflection_epochs)) "
-            "LIMIT 1"
+            "SELECT 1 FROM analysis_work w JOIN knowledge_evidence e "
+            "USING(evidence_id,version) WHERE w.purpose=? AND e.valid=1 AND w.state "
+            "IN('pending','retry_wait') AND w.next_attempt_at<=? AND (w.state='retry_wait' "
+            "OR e.rowid<=(SELECT coalesce(max(epoch),0) FROM analysis_claims WHERE "
+            "purpose=?)) LIMIT 1",
+            (purpose, now, purpose),
         ).fetchone()
         is not None
     )
-    plan = connection.execute(
-        "SELECT min(json_extract(payload_json,'$.due')) FROM "
-        "knowledge_plans p WHERE "
-        "json_extract(payload_json,'$.state')='pending' "
-        "AND NOT EXISTS(SELECT 1 FROM feedback_deliveries d WHERE "
-        "d.kind='plan' AND d.identity=p.id)"
-    ).fetchone()
+    remaining, reset = analysis_work.model_budget(connection, now)
     return ReflectionState(
-        _integer(row[0]),
-        _integer(count[0]),
-        _integer(taken[0]),
-        None if row[1] is None else _number(row[1]),
-        priority,
-        None if plan[0] is None else _number(plan[0]),
+        epoch,
+        turns,
+        taken,
+        oldest,
+        bool(priority),
+        plan,
+        retry_at,
+        remaining,
+        reset,
+        blocked,
+        continuation,
+        capacity_blocked,
+        waiting_evidence,
     )
 
 
-def _resume_cursor(connection: sqlite3.Connection, evidence_id: str, version: int) -> str | None:
+def _resume_cursor(
+    connection: sqlite3.Connection,
+    evidence_id: str,
+    version: int,
+    *,
+    purpose: Literal["memory", "behavior"] = "memory",
+) -> str | None:
     """从真实已复核范围的连续前缀续读；失败或暂缓的尝试不能跳过原页。
 
-    reserve 保存的 next_cursor 表示取得位置，不能表示理解。只采用完成回执中
+    领取记录只表示取得位置，不能表示理解。只采用当前用途完成回执中
     当前有效的 reviewed 范围；之前 read_evidence 已原子创建每个分页边界游标。
     媒体没有完成复核时仍从首段开始，以便下个有新事实的批次获得完整媒体。
     """
     rows: list[tuple[object, ...]] = connection.execute(
-        "SELECT r.slice_ref,r.state FROM knowledge_review_ranges r JOIN knowledge_slices s "
-        "USING(slice_ref) JOIN reflection_batches b ON r.batch_id=b.batch_id AND "
-        "r.batch_version=b.version WHERE s.evidence_id=? AND s.version=? AND "
-        "b.state='completed' ORDER BY json_extract(b.receipt_json,'$.completed_at')",
-        (evidence_id, version),
+        "SELECT r.slice_ref,r.state FROM knowledge_review_ranges r JOIN "
+        "knowledge_slices s USING(slice_ref) JOIN reflection_batches b ON "
+        "r.batch_id=b.batch_id AND r.batch_version=b.version WHERE s.evidence_id=? AND "
+        "s.version=? AND b.state='completed' AND "
+        "coalesce(json_extract(b.payload_json,'$.purpose'),'memory')=? ORDER BY "
+        "json_extract(b.receipt_json,'$.completed_at')",
+        (evidence_id, version, purpose),
     ).fetchall()
     effective = {_text(row[0]): _text(row[1]) for row in rows}
     fragments: list[knowledge_models.EvidenceSlice] = []
@@ -697,8 +744,8 @@ def _resume_cursor(connection: sqlite3.Connection, evidence_id: str, version: in
     if frontier == 0:
         return None
     row = connection.execute(
-        "SELECT cursor FROM knowledge_cursors WHERE evidence_id=? AND version=? AND start=? "
-        "AND kind='evidence' ORDER BY page_chars,cursor LIMIT 1",
+        "SELECT cursor FROM knowledge_cursors WHERE evidence_id=? AND version=? AND "
+        "start=? AND kind='evidence' ORDER BY page_chars,cursor LIMIT 1",
         (evidence_id, version, frontier),
     ).fetchone()
     if row is None:
@@ -707,42 +754,43 @@ def _resume_cursor(connection: sqlite3.Connection, evidence_id: str, version: in
 
 
 def reflection_sources(
-    connection: sqlite3.Connection, *, epoch: int, limit: int = 32, after: int = 0
+    connection: sqlite3.Connection,
+    *,
+    epoch: int,
+    limit: int = 32,
+    after: int = 0,
+    purpose: Literal["memory", "behavior"] = "memory",
 ) -> tuple[ReflectionSource, ...]:
-    """新 epoch 可选旧未覆盖来源，扫描和分页不会自行开启另一个批次预算。
-
-    Args:
-        connection: 仅在 Store 专属线程当前短事务中借用的连接，不在回调中等待设备或模型。
-        epoch: 后台可靠来源的已提交单调序号，不等同于模型输出次数。
-        limit: 本次读取或更新的最大条目数。 默认 32。
-        after: 已观察的变更序号。 默认 0。
-
-    Returns:
-        条目集合：待复核来源的确切版本与可靠游标。
-    """
-    if (
-        connection.execute(
-            "SELECT 1 FROM feedback_reflection_epochs WHERE epoch=?", (epoch,)
-        ).fetchone()
-        is not None
-    ):
-        return ()
-    rows: list[tuple[object, ...]] = connection.execute(
-        "SELECT e.rowid,e.evidence_id,e.version,p.queued_at,"
-        "coalesce(f.priority,0) FROM knowledge_evidence e JOIN pending_knowledge p "
-        "USING(evidence_id,version) LEFT JOIN feedback_reflection_cursors c "
-        "USING(evidence_id,version) LEFT JOIN feedback_sources f USING(evidence_id,version) "
-        "WHERE e.valid=1 AND p.state IN('pending','deferred') AND e.rowid>? AND e.rowid<=? "
-        "ORDER BY coalesce(f.priority,0) DESC,(c.epoch IS NOT NULL),e.rowid LIMIT ?",
-        (after, epoch, limit),
+    """优先人工材料并为普通来源保留一席；失败范围只在持久冷却后重试。"""
+    rows = connection.execute(
+        "SELECT e.rowid,e.evidence_id,e.version,w.queued_at,coalesce(f.priority,0) "
+        "FROM analysis_work w JOIN knowledge_evidence e USING(evidence_id,version) "
+        "LEFT JOIN feedback_sources f USING(evidence_id,version) WHERE w.purpose=? AND "
+        "e.valid=1 AND w.state IN('pending','retry_wait') AND w.next_attempt_at<=? AND "
+        "e.rowid>? AND e.rowid<=? ORDER BY "
+        "(json_extract(e.payload_json,'$.kind')='human_feedback') DESC,coalesce(f.priority,0) "
+        "DESC,w.attempts,w.queued_at,e.rowid LIMIT ?",
+        (purpose, time.time(), after, epoch, limit),
     ).fetchall()
+    if len(rows) == limit and limit > 1 and all(row[4] for row in rows):
+        ordinary = connection.execute(
+            "SELECT e.rowid,e.evidence_id,e.version,w.queued_at,0 FROM analysis_work w "
+            "JOIN knowledge_evidence e USING(evidence_id,version) LEFT JOIN "
+            "feedback_sources f USING(evidence_id,version) WHERE w.purpose=? AND e.valid=1 "
+            "AND coalesce(f.priority,0)=0 AND w.state IN('pending','retry_wait') AND "
+            "w.next_attempt_at<=? AND e.rowid>? AND e.rowid<=? ORDER BY "
+            "w.queued_at,e.rowid LIMIT 1",
+            (purpose, time.time(), after, epoch),
+        ).fetchone()
+        if ordinary is not None:
+            rows[-1] = ordinary
     return tuple(
         ReflectionSource(
             _integer(row[0]),
             _text(row[1]),
             _integer(row[2]),
             _number(row[3]),
-            _resume_cursor(connection, _text(row[1]), _integer(row[2])),
+            _resume_cursor(connection, _text(row[1]), _integer(row[2]), purpose=purpose),
             bool(row[4]),
         )
         for row in rows
@@ -756,66 +804,36 @@ def reserve_reflection(
     epoch: int,
     pages: tuple[knowledge_models.EvidencePage, ...],
     successful_turns: int,
+    purpose: Literal["memory", "behavior"] = "memory",
 ) -> bool:
-    """在首次派发前保存覆盖尝试与下一页。
-
-    Args:
-        connection: 仅在 Store 专属线程当前短事务中借用的连接，不在回调中等待设备或模型。
-        batch_id: 独立反思批次的身份，须与批次版本配对使用。
-        epoch: 后台可靠来源的已提交单调序号，不等同于模型输出次数。
-        pages: 当前批次实际取得的完整原文页面。
-        successful_turns: 已提交成功的前台轮数，用于后台调度判断。
-
-    Raises:
-        ValueError: 反思只能接管真实原文片段。
-        AssertionError: 已核对原文片段。
-
-    Note:
-        失败不撤销接管，也不确认理解。
-    """
+    """原子领取实际页面；相同观察水位仍可领取未尝试的其他来源或下一页。"""
     with connection:
         connection.execute("BEGIN IMMEDIATE")
-        if (
-            connection.execute(
-                "SELECT 1 FROM feedback_reflection_epochs WHERE epoch=?", (epoch,)
-            ).fetchone()
-            is not None
-        ):
-            return False
+        now = time.time()
         for page in pages:
             fragment = page.slice
             if fragment is None:
                 raise ValueError("反思只能接管真实原文片段。")
-            duplicate = connection.execute(
-                "SELECT 1 FROM feedback_reflection_attempts WHERE slice_ref=? AND epoch=?",
-                (fragment.slice_ref, epoch),
+            row = connection.execute(
+                "SELECT state,next_attempt_at FROM analysis_work WHERE purpose=? AND "
+                "evidence_id=? AND version=?",
+                (purpose, fragment.evidence_id, fragment.version),
             ).fetchone()
-            if duplicate is not None:
+            if row is None or row[0] not in ("pending", "retry_wait") or row[1] > now:
                 return False
         for page in pages:
             fragment = page.slice
-            if fragment is None:
-                raise AssertionError("已核对原文片段。")
+            assert fragment is not None
             connection.execute(
-                "INSERT INTO feedback_reflection_attempts VALUES(?,?,?,?)",
-                (batch_id, fragment.slice_ref, epoch, successful_turns),
+                "UPDATE analysis_work SET "
+                "state='processing',slice_ref=?,batch_id=?,attempts=attempts+1,reason=NULL "
+                "WHERE purpose=? AND evidence_id=? AND version=?",
+                (fragment.slice_ref, batch_id, purpose, fragment.evidence_id, fragment.version),
             )
             connection.execute(
-                "INSERT INTO feedback_reflection_cursors VALUES(?,?,?,?,?) "
-                "ON CONFLICT(evidence_id,version) DO UPDATE SET "
-                "epoch=excluded.epoch,cursor=excluded.cursor,exhausted=excluded.exhausted",
-                (
-                    fragment.evidence_id,
-                    fragment.version,
-                    epoch,
-                    page.next_cursor,
-                    int(page.next_cursor is None),
-                ),
+                "INSERT INTO analysis_claims VALUES(?,?,?,?,?,?)",
+                (batch_id, fragment.slice_ref, purpose, epoch, successful_turns, now),
             )
-        connection.execute(
-            "INSERT INTO feedback_reflection_epochs VALUES(?,?,?)",
-            (epoch, batch_id, successful_turns),
-        )
         return True
 
 

@@ -370,6 +370,7 @@ async def test_summary_preserves_configured_output_through_sdk_and_capacity(
     assert measured and all(payload["max_tokens"] == output_tokens for payload in measured)
     records = await store.requests_for_turn("foreground", "summary:" + source.coverage_id)
     assert len(records) == 1 and records[0].state == "succeeded"
+    assert records[0].request.materials_json is not None
     sdk = decode_object(records[0].request.materials_json.encode("utf-8"))
     payload = sdk["payload"]
     assert isinstance(payload, dict) and payload["max_tokens"] == output_tokens

@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import importlib.util
 from collections.abc import Callable, Mapping
+from pathlib import Path
 from types import MappingProxyType
 from uuid import uuid4
 
@@ -26,6 +27,7 @@ from purrcept_engine.domain.execution.ports import ActionExecutor
 from purrcept_engine.domain.execution.providers import (
     CallOutcome,
 )
+from purrcept_engine.domain.health import ComponentHealth
 from purrcept_engine.domain.inputs.models import (
     Admission,
 )
@@ -54,6 +56,7 @@ class EngineState:
         decision_backends: Mapping[str, DecisionBackend] | None = None,
         embedding_provider: EmbeddingProvider | None = None,
         reranker: Reranker | None = None,
+        on_data_dir_acquired: Callable[[Path], None] | None = None,
     ) -> None:
         """保存配置并核验纯声明。
 
@@ -66,6 +69,7 @@ class EngineState:
             decision_backends: 按配置名注入的判断后端，由嵌入调用者负责最终关闭。
             embedding_provider: 嵌入调用者注入的向量 Provider；None 按显式配置装配。
             reranker: 可选重排器，只能对给定候选排序。 None 表示不重排。
+            on_data_dir_acquired: 取得目录锁后同步调用的应用诊断入口；None 不调用。
 
         Raises:
             HostStateError: 创建宿主前必须显式解析数据目录。
@@ -104,6 +108,13 @@ class EngineState:
             settings = config.models.get(name)
             if settings is None or isinstance(settings, GenerationModelSettings):
                 raise ConfigError("判断后端必须绑定已声明的判断配置名。")
+        self.on_data_dir_acquired = on_data_dir_acquired
+        self.startup_stage: str | None = None
+        self.startup_failed_stage: str | None = None
+        self.startup_timings: dict[str, float] = {}
+        self.startup_health = ComponentHealth("startup")
+        self.input_health = ComponentHealth("input_handoff")
+        self.maintenance_health = ComponentHealth("maintenance")
         self.instance_id = str(uuid4())
         self.phase: HostPhase = "new"
         self.version = 0

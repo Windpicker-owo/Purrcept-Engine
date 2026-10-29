@@ -1,9 +1,10 @@
-"""独立反思的五个 Core 工具及实际材料呈现追踪，不另写模型循环。
+"""按分析用途选择 Core 工具及追踪实际材料呈现，不另写模型循环。
 
 工具创建原文片段与请求实际呈现分开：read_evidence 只登记完整工具候选，
 容量 Gate 选择交付后，成功门槛通过 presented_refs 对照真实 ModelRequest，再由 Store
 mark_presented 提交资格。同一响应先读后修订不能引用尚未送入下一请求的片段。
-认识和监管逐次生效，批次完成只由 finish_reflection 的原子提交确认。
+记忆整理提供修订与来源结案；行为评审提供监管与结构化评审结案。两者都能
+取证和读取相关记忆，但不能代替对方结案。认识和监管逐次生效。
 每个工具实例还拥有本批写入失败的处置门槛：成功修正、明确延期或具名放弃后
 才能结案。失败意图不授予来源资格；预算耗尽/关闭仍由批次所有者保留未复核待办。
 """
@@ -13,7 +14,7 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import dataclass
-from typing import Annotated, Protocol
+from typing import Annotated, Literal, Protocol
 
 from purrcept_core.models import (
     AudioBlock,
@@ -38,6 +39,7 @@ from purrcept_engine.domain.context.delivery import (
 from purrcept_engine.domain.inputs.models import MediaReference
 from purrcept_engine.domain.knowledge.models import (
     AbandonedMemoryWrite,
+    BehaviorConclusion,
     Deferred,
     EvidenceDelivery,
     EvidencePage,
@@ -48,6 +50,8 @@ from purrcept_engine.domain.knowledge.models import (
     MemoryConflictTarget,
     MemoryKind,
     MemoryPatch,
+    ObservationAssessment,
+    ObservationScope,
     ReflectionBatch,
     Review,
     SupervisionNotice,
@@ -56,19 +60,30 @@ from purrcept_engine.domain.knowledge.models import (
 )
 from purrcept_engine.domain.knowledge.ports import KnowledgeStore
 from purrcept_engine.domain.knowledge.service import KnowledgeService, recall_payload
-from purrcept_engine.domain.subject.prompts import HUMAN_FEEDBACK_PROMPT, REFLECTION_PROMPT
+from purrcept_engine.domain.subject.prompts import (
+    BEHAVIOR_REVIEW_PROMPT,
+    HUMAN_FEEDBACK_PROMPT,
+    MEMORY_CONSOLIDATION_PROMPT,
+)
+from purrcept_engine.values import JsonObject
 
 Nonnegative = Annotated[int, Field(ge=0, strict=True)]
 Positive = Annotated[int, Field(gt=0, strict=True)]
 
 
-def reflection_instructions() -> tuple[SystemInstruction, ...]:
-    """构造独立反思的固定规则，完成确认属于工具，原文仍是 user 材料。
+def reflection_instructions(
+    purpose: Literal["memory", "behavior"] = "memory",
+) -> tuple[SystemInstruction, ...]:
+    """构造当前分析用途的固定规则，完成确认属于工具，原文仍是 user 材料。
+
+    Args:
+        purpose: 决定记忆修订或行为建议的独立职责，不能混用工具权限。
 
     Returns:
         按固定顺序组成 system 前缀的完整指令与能力目录。
     """
-    return (REFLECTION_PROMPT.instruction(), HUMAN_FEEDBACK_PROMPT.instruction())
+    prompt = MEMORY_CONSOLIDATION_PROMPT if purpose == "memory" else BEHAVIOR_REVIEW_PROMPT
+    return (prompt.instruction(), HUMAN_FEEDBACK_PROMPT.instruction())
 
 
 class ReflectionPorts(Protocol):
@@ -126,7 +141,7 @@ class _FailedMemoryWrite:
 
 
 class EvidenceDeliveries:
-    """会话所有者持有的完整材料候选登记，连续反思批次可共享同一实例。
+    """批次所有者持有的完整材料候选登记；同批工具请求复用，下一批重新建立。
 
     只登记 Engine 真正创建的初始 Message 和 read_evidence ToolResult。对照
     完整 block 值而非字符串标记；普通外部文字、不同 tool_call_id、缺媒体或
@@ -278,7 +293,7 @@ def _input_error(
 
 
 class ReflectionTools:
-    """宿主为当前批次创建的工具实例，Core ToolSet 按固定五项顺序装配。
+    """宿主为当前用途和批次创建的工具实例，Core 按用途装配四项工具。
 
     批次身份与版本由宿主绑定，不要求模型复述。后端在有效响应、容量及权威
     请求提交完成之后调用 presented_refs，再提交 mark_presented，最后才将
@@ -296,7 +311,7 @@ class ReflectionTools:
         deliveries: EvidenceDeliveries | None = None,
         delivery: ToolDeliveryGate | None = None,
     ) -> None:
-        """借用账本和外围端口，连续会话应复用同一个材料登记实例。
+        """借用账本和外围端口，材料登记仅在当前批次的请求间复用。
 
         Args:
             store: 应用借出的领域存储端口，实际连接和关闭归资源所有者。
@@ -305,7 +320,7 @@ class ReflectionTools:
             page_chars: 本实例统一的正文分页字符上限。 默认 8000。
             knowledge: 原文展开与召回服务；None 创建同一账本上的 KnowledgeService。 None
                 表示未借入认识服务。
-            deliveries: 连续反思会话复用的完整材料登记；None 创建本实例登记。
+            deliveries: 当前批次复用的完整材料登记；None 创建本实例登记。
             delivery: 本轮工具原文交付门槛；None 不执行候选交付替换。
         """
         self.store = store
@@ -318,18 +333,19 @@ class ReflectionTools:
         # 未结案时原文待办仍由账本保留，新批次重新复核，不依赖内存继续旧预算。
         self._source_catalog: dict[str, tuple[str, int]] = {}
         self._failed_writes: dict[str, _FailedMemoryWrite] = {}
-        self._toolset = ToolSet(
-            (
-                FunctionTool(self.recall),
-                FunctionTool(self.read_evidence),
-                FunctionTool(self.revise_memory),
-                FunctionTool(self.supervise),
-                FunctionTool(self.finish_reflection),
+        operations = [FunctionTool(self.recall), FunctionTool(self.read_evidence)]
+        if batch.purpose == "behavior":
+            operations.extend(
+                (FunctionTool(self.supervise), FunctionTool(self.submit_behavior_review))
             )
-        )
+        else:
+            operations.extend(
+                (FunctionTool(self.revise_memory), FunctionTool(self.finish_reflection))
+            )
+        self._toolset = ToolSet(tuple(operations))
 
     def toolset(self) -> ToolSet:
-        """返回固定五工具，不包含世界行动、手动压缩或旧 complete_review。
+        """返回当前用途的四项工具，不包含世界行动或跨用途写入。
 
         Returns:
             当前会话按固定顺序装配的 Core 工具集合。
@@ -347,7 +363,13 @@ class ReflectionTools:
         """
         return self.deliveries.presented_refs(request)
 
-    async def initial_message(self, pages: tuple[EvidencePage, ...]) -> Message:
+    async def initial_message(
+        self,
+        pages: tuple[EvidencePage, ...],
+        *,
+        record: bool = True,
+        context: JsonObject | None = None,
+    ) -> Message:
         """组装本批原文及完整媒体，只登记候选而不提前声明模型已读。
 
         Args:
@@ -369,6 +391,19 @@ class ReflectionTools:
                 )
             )
         ]
+        if context is not None:
+            blocks.append(
+                TextBlock(
+                    _json(
+                        {
+                            "related_context": context,
+                            "qualification": (
+                                "关联背景不代替原文片段；新增结论仍须引用真实呈现范围。"
+                            ),
+                        }
+                    )
+                )
+            )
         references: list[str] = []
         for page in pages:
             content = await self._page_content(page)
@@ -388,7 +423,7 @@ class ReflectionTools:
                 "reflection_batch": self.batch.batch_id,
             },
         )
-        if references:
+        if references and record:
             await self.store.record_delivery(
                 self.batch.batch_id,
                 self.batch.version,
@@ -398,6 +433,48 @@ class ReflectionTools:
             )
             self.deliveries.register_initial(message, tuple(references))
         return message
+
+    async def submit_behavior_review(
+        self,
+        decision: Literal["no_intervention", "suggestion", "insufficient_evidence"],
+        conclusion: str,
+        evidence: tuple[str, ...],
+        observations: tuple[ObservationAssessment, ...] = (),
+    ) -> str | ToolResult:
+        """提交局部评审结果；suggestion 必须已有本批实际保存的监管建议。
+
+        证据必须真实呈现，未覆盖材料仍需逐项明确复核；意见是否接受与后续行为是否改善分别保存。
+        """
+        try:
+            behavior = BehaviorConclusion(
+                decision=decision,
+                conclusion=conclusion,
+                evidence=evidence,
+                observations=observations,
+            )
+            submission = FinishSubmission(
+                reviews=(
+                    Review(
+                        issue="局部行为评审",
+                        evidence=evidence,
+                        conclusion=conclusion,
+                        memory_decision="no_change",
+                        reason=decision,
+                    ),
+                ),
+                deferred=(),
+                findings=tuple(
+                    FindingAssessment(id=item.id, status="uncertain", reason=conclusion)
+                    for item in self.batch.findings
+                ),
+                behavior=behavior,
+            )
+            receipt = await self.store.finish_reflection(
+                self.batch.batch_id, self.batch.version, submission
+            )
+            return _json(receipt.model_dump(mode="json"))
+        except (KnowledgeInputError, ValidationError) as error:
+            return _input_error(error)
 
     async def _page_content(self, page: EvidencePage) -> tuple[ContentBlock, ...]:
         """来源 JSON 与实际原生媒体共同构成一份不可拆的交付资格。"""
@@ -728,6 +805,9 @@ class ReflectionTools:
         activity_id: Text | None = None,
         activity_version: Nonnegative | None = None,
         expires_at: Finite | None = None,
+        scope: ObservationScope | None = None,
+        expected_change: Text | None = None,
+        generalized: bool = False,
     ) -> str | ToolResult:
         """向前台提交有据监管意见，纠偏客服腔、未履行的约定或认知冲突。
         urgent 仅请求重新思考当前轮次，不代替前台做世界决定，也不直接调用世界能力。
@@ -743,6 +823,9 @@ class ReflectionTools:
                     "activity_id": activity_id,
                     "activity_version": activity_version,
                     "expires_at": expires_at,
+                    "scope": scope,
+                    "expected_change": expected_change,
+                    "generalized": generalized,
                 }
             )
             observed_generation = self.ports.foreground_generation()
