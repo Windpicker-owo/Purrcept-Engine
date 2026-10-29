@@ -1,39 +1,57 @@
-/* 调音室只引用 Purrcept Cel Token，状态颜色在这一处语义映射。 */
+/* 调音室只引用 Purrcept Cel Token，状态颜色在这一处语义映射。
+   版式遵循 Cel 0.2：背景美术打底，两块工作面板与预设面板浮在其上；交互使用品牌色。 */
 * { box-sizing: border-box; }
-body { margin: 0; background: var(--pc-color-canvas); color: var(--pc-color-ink); font: var(--pc-font-body); }
-header { display: flex; justify-content: space-between; gap: var(--pc-space-md); padding: var(--pc-space-lg) var(--pc-space-xl); }
-a { color: var(--pc-color-ink); font-weight: 600; text-decoration: none; }
-main { max-width: 1200px; margin: auto; padding: var(--pc-space-xl); }
-h1 { margin: 0; font: var(--pc-font-headline); }
+body { margin: 0; min-height: 100vh; background-color: var(--pc-color-canvas); background-image: var(--pc-gradient-atmosphere); background-attachment: fixed; color: var(--pc-color-ink); font: var(--pc-font-body); -webkit-font-smoothing: antialiased; }
+/* 顶栏是一条玻璃导航岛。 */
+header { position: sticky; top: var(--pc-space-island-gap); z-index: 1; display: flex; justify-content: space-between; align-items: center; gap: var(--pc-space-md); max-width: 1200px; margin: var(--pc-space-island-gap) auto 0; padding: var(--pc-space-sm) var(--pc-space-lg); border: 1px solid var(--pc-color-outline-subtle); border-radius: var(--pc-radius-full); background: var(--pc-material-glass-background); -webkit-backdrop-filter: var(--pc-material-glass-filter); backdrop-filter: var(--pc-material-glass-filter); box-shadow: var(--pc-shadow-panel); }
+@media (prefers-reduced-transparency: reduce) { header { background: var(--pc-color-surface); -webkit-backdrop-filter: none; backdrop-filter: none; } }
+a { color: var(--pc-color-brand); font-weight: 600; text-decoration: none; }
+main { max-width: 1200px; margin: auto; padding: var(--pc-space-xl) 0; }
+h1 { margin: 0; font: var(--pc-font-display); letter-spacing: var(--pc-font-display-letter-spacing); }
 h2 { margin: 0 0 var(--pc-space-lg); font: var(--pc-font-title); }
 p, header span { color: var(--pc-color-ink-secondary); }
-.intro { margin-bottom: var(--pc-space-xl); }
-.workspace { display: grid; grid-template-columns: 1fr 1fr; gap: var(--pc-space-xl); }
-section { padding: var(--pc-space-xl); background: var(--pc-color-surface); border-radius: var(--pc-radius-lg); }
-.upload { display: grid; gap: var(--pc-space-sm); padding: var(--pc-space-lg); background: var(--pc-color-surface-sunken); border-radius: var(--pc-radius-md); }
+header span { font: var(--pc-font-caption); }
+.intro { margin-bottom: var(--pc-space-xl); padding: 0 var(--pc-space-lg); }
+.intro p { margin: var(--pc-space-sm) 0 0; font: var(--pc-font-body-long); }
+.workspace { display: grid; grid-template-columns: 1fr 1fr; gap: var(--pc-space-md); }
+/* 每个区域是一块面板：surface + 柔和墨影，面板之间靠间隙分开。 */
+section { padding: var(--pc-panel-padding); background: var(--pc-panel-background); border-radius: var(--pc-panel-radius); box-shadow: var(--pc-shadow-panel); }
+/* 上传区是面板里的对象瓦片。 */
+.upload { display: grid; gap: var(--pc-space-sm); padding: var(--pc-space-lg); background: var(--pc-object-surface-background); border-radius: var(--pc-object-surface-radius); cursor: pointer; }
 .actions { display: flex; align-items: center; gap: var(--pc-space-sm); flex-wrap: wrap; margin-top: var(--pc-space-md); }
-button, .file-button { min-height: var(--pc-space-touch-target); border: 1px solid var(--pc-color-outline); border-radius: var(--pc-radius-md); padding: var(--pc-space-xs) var(--pc-space-md); font: inherit; color: var(--pc-color-ink); background: var(--pc-color-surface); cursor: pointer; }
-button:hover, .file-button:hover { background: var(--pc-color-surface-selected); }
-button.primary { background: var(--pc-color-ink); color: var(--pc-color-on-ink); border-color: var(--pc-color-ink); }
-button.primary:hover { background: var(--pc-color-ink-hover); }
-button[aria-pressed="true"] { border-color: var(--pc-color-ink); background: var(--pc-color-surface-selected); }
-button:disabled { color: var(--pc-color-ink-muted); cursor: default; }
-button.primary:disabled { background: var(--pc-color-surface-sunken); border-color: var(--pc-color-outline); }
+button, .file-button { min-height: var(--pc-button-secondary-height); border: 1px solid var(--pc-button-secondary-outline); border-radius: var(--pc-button-secondary-radius); padding: var(--pc-button-secondary-padding); font: var(--pc-button-secondary-font); color: var(--pc-button-secondary-color); background: var(--pc-button-secondary-background); box-shadow: var(--pc-shadow-control-surface); cursor: pointer; transition: background-color var(--pc-motion-color-duration) var(--pc-motion-color-easing), transform var(--pc-motion-snap-duration) var(--pc-motion-snap-easing); }
+.file-button { display: inline-flex; align-items: center; gap: var(--pc-space-xs); }
+button:hover, .file-button:hover { background: var(--pc-color-surface-sunken); }
+button:active:not(:disabled) { transform: scale(0.97); }
+button.primary { background: var(--pc-button-primary-background); color: var(--pc-button-primary-color); border-color: transparent; box-shadow: var(--pc-shadow-control); }
+button.primary:hover { background: var(--pc-color-brand-hover); }
+button.primary:active { background: var(--pc-color-brand-pressed); }
+/* A / B 对比是用户的选择：品牌色容器。 */
+button[aria-pressed="true"] { border-color: transparent; background: var(--pc-color-brand-container); color: var(--pc-color-on-brand-container); box-shadow: none; }
+button:disabled, button.primary:disabled { color: var(--pc-color-ink-disabled); background: var(--pc-color-surface-sunken); border-color: transparent; box-shadow: none; cursor: default; }
 :focus-visible { outline: 2px solid var(--pc-color-focus-ring); outline-offset: 2px; }
 audio { width: 100%; margin-top: var(--pc-space-lg); }
-input { accent-color: var(--pc-color-ink); }
-input[type="number"] { width: 100px; min-height: var(--pc-space-touch-target); padding: var(--pc-space-xs); border: 1px solid var(--pc-color-outline); border-radius: var(--pc-radius-sm); background: var(--pc-color-surface); color: var(--pc-color-ink); font: inherit; }
+input { accent-color: var(--pc-color-brand); }
+input[type="number"] { width: 100px; min-height: var(--pc-input-height); padding: var(--pc-space-xs) var(--pc-space-sm); border: 1px solid var(--pc-input-outline); border-radius: var(--pc-input-radius); background: var(--pc-input-background); color: var(--pc-input-color); font: inherit; box-shadow: var(--pc-shadow-well); }
 .switch { display: flex; justify-content: space-between; align-items: center; min-height: var(--pc-space-touch-target); }
 .parameter { display: grid; grid-template-columns: 1fr 100px; align-items: center; gap: var(--pc-space-sm); margin: var(--pc-space-md) 0; }
 .parameter input[type="range"] { width: 100%; grid-column: 1 / -1; }
 .status { display: flex; align-items: baseline; gap: var(--pc-space-xs); min-height: 2em; }
-.status::before { content: "●"; color: var(--pc-color-ink); }
+.status::before { content: "●"; color: var(--pc-color-ink-muted); }
 .status[data-state="active"]::before { color: var(--pc-color-active); }
 .status[data-state="completed"]::before { color: var(--pc-color-success); }
 .status[data-state="failed"]::before { content: "!"; font-weight: 700; color: var(--pc-color-failed); }
 .status[data-state="waiting-user"]::before { content: "?"; color: var(--pc-color-waiting); }
-.preset { margin-top: var(--pc-space-xl); }
+.preset { margin-top: var(--pc-space-md); }
 .file-button input { max-width: 200px; }
-#waveform { display: flex; align-items: center; height: 120px; gap: 2px; margin-top: var(--pc-space-lg); background: var(--pc-color-surface-sunken); }
-#waveform i { display: block; flex: 1; background: var(--pc-color-ink-secondary); }
-@media (max-width: 760px) { .workspace { grid-template-columns: 1fr; } main { padding: var(--pc-space-md); } section { padding: var(--pc-space-lg); } header { flex-wrap: wrap; padding: var(--pc-space-lg); } }
+/* 波形是面板里的下沉瓦片；柱高编码真实音量。 */
+#waveform { display: flex; align-items: center; height: 120px; gap: 2px; margin-top: var(--pc-space-lg); padding: 0 var(--pc-space-sm); background: var(--pc-color-surface-sunken); border-radius: var(--pc-radius-lg); overflow: hidden; }
+#waveform i { display: block; flex: 1; border-radius: var(--pc-radius-full); background: var(--pc-color-ink-secondary); }
+@media (max-width: 760px) {
+  .workspace { grid-template-columns: 1fr; }
+  main { padding: var(--pc-space-lg) var(--pc-space-xs); }
+  section { padding: var(--pc-space-md); }
+  header { flex-wrap: wrap; margin: var(--pc-space-xs) var(--pc-space-xs) 0; top: var(--pc-space-xs); border-radius: var(--pc-radius-xl); }
+  h1 { font: var(--pc-font-headline); letter-spacing: var(--pc-font-headline-letter-spacing); }
+  .intro { padding: 0 var(--pc-space-sm); }
+}

@@ -31,6 +31,7 @@ from purrcept_engine.domain.subject.prompts import (
     CHARACTER_DETAIL_PROMPT,
     CHARACTER_NOTES_PROMPT,
     FOREGROUND_PROMPT,
+    HUMAN_FEEDBACK_PROMPT,
 )
 from purrcept_engine.serialization import encode
 from purrcept_engine.values import decode_object
@@ -108,6 +109,7 @@ def foreground_instructions(
     return (
         FOREGROUND_PROMPT.instruction({"profile": format_character_card(character)}),
         CATALOG_INSTRUCTION_PROMPT.instruction({"catalog": catalog.instructions}),
+        HUMAN_FEEDBACK_PROMPT.instruction(),
     )
 
 

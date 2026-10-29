@@ -11,6 +11,10 @@ ReplaceFileW 或成功后的备份清理失败时保留恢复文件和观测状�
 正文不进入固定能力前缀。首读完整保存 EvidenceSnapshot，续读只通过宿主游标，
 没有插件分页缓存。原始读取与模型实际交付由宿主分别记录。
 
+局部编辑通过 edit 精确替换已读取版本中的文字，仅传入旧/新片段，不重复输出
+整篇文件。匹配检查和结果字节额度先于原子发布；串行所有权、最终版本复核与
+发布未知的恢复语义沿用完整写入路径。
+
 原文件下载使用独立字节和时间预算，完整接收后才在 attachments/ 原子新建。
 附件目录只展示文件元信息，外来 Markdown 不自动成为技能。HTTP 客户端按需
 创建并由 Notebook 关闭，网络与磁盘发布共用串行所有权，二进制不进入 Worker。
@@ -776,6 +780,74 @@ class _Files:
             return {**observed, "state": "unavailable", "code": error.code, "error": str(error)}
         return {**observed, "state": "stable", "version": note.version, "bytes": note.byte_count}
 
+    def edit(
+        self, raw: str, old_text: str, new_text: str, expected: str, *, replace_all: bool
+    ) -> JsonObject:
+        """在明确版本内精确替换片段，再借用完整写入的原子发布边界。
+
+        Args:
+            raw: 已存在 Markdown 的精确相对路径，不解析技能别名。
+            old_text: 非空的逐字匹配片段，包含需要保留的空白和换行。
+            new_text: 替换正文；空字符串表示删除匹配片段。
+            expected: 调用者从读取或上次修改回执取得的原文件版本。
+            replace_all: 是否替换全部非重叠匹配；False 要求只有一个可能的匹配位置。
+
+        Returns:
+            文件元信息、新版本和实际修改处数，不回传全文；相同替换返回 changed=False。
+
+        Raises:
+            NotebookError: 文件、版本、匹配、编码或结果字节额度不满足要求。
+            NotebookPublicationError: 原子发布结果未知，须核对回执的恢复文件。
+
+        Note:
+            调用者须通过 Notebook._io 同时拥有读取和发布的串行资格。外部编辑
+            仍由 write 的最终版本核验拒绝，不宣称跨编辑器的原子 CAS。
+        """
+        if not old_text:
+            raise NotebookError(
+                "旧片段不能为空；插入文字请替换一段包含插入位置的原文。", code="edit_empty"
+            )
+        target = self.target(raw, note=True)
+        if not target.is_file():
+            raise NotebookError("要编辑的 Markdown 文件不存在。", code="file_missing")
+        note = self.read_target(target)
+        if note.version != expected:
+            raise NotebookError("文件版本已变化，须重新读取后编辑。", code="version_conflict")
+
+        first = note.content.find(old_text)
+        if first < 0:
+            raise NotebookError("旧片段与文件原文不匹配，请核对空白和换行。", code="edit_missing")
+        # 默认也拒绝重叠位置，例如 aaa 中的 aa；不能因非重叠计数为一就猜测位置。
+        if not replace_all and note.content.find(old_text, first + 1) >= 0:
+            raise NotebookError(
+                "旧片段有多个匹配位置，请补充上下文或显式设置 replace_all。", code="edit_ambiguous"
+            )
+        replacements = note.content.count(old_text) if replace_all else 1
+
+        try:
+            size_delta = len(new_text.encode("utf-8")) - len(old_text.encode("utf-8"))
+        except UnicodeEncodeError as error:
+            raise NotebookError("替换片段包含无效 UTF-8 字符。", code="invalid_encoding") from error
+        # 在展开重复替换前核验 UTF-8 字节，避免短片段的大量替换先分配超额全文。
+        if note.byte_count + replacements * size_delta > self.max_bytes:
+            raise NotebookError("编辑后的正文超过配置字节上限。", code="file_too_large")
+        if old_text == new_text:
+            return {
+                "path": note.path,
+                "name": note.name,
+                "skill": note.skill,
+                "description": note.description,
+                "version": note.version,
+                "bytes": note.byte_count,
+                "created": False,
+                "changed": False,
+                "replacements": 0,
+            }
+
+        content = note.content.replace(old_text, new_text, -1 if replace_all else 1)
+        written = self.write(raw, content, expected)
+        return {**written, "replacements": replacements}
+
     def write(self, raw: str, content: str, expected: str | None) -> JsonObject:
         """完整临时文件落盘后发布。
 
@@ -1251,6 +1323,41 @@ class Notebook:
         """
         return await self._io(lambda: self._files.write(path, content, expected_version))
 
+    async def edit(
+        self,
+        path: str,
+        old_text: str,
+        new_text: str,
+        *,
+        expected_version: str,
+        replace_all: bool = False,
+    ) -> JsonObject:
+        """仅提供待修改片段，在已读取版本中进行精确文本替换。
+
+        Args:
+            path: 已存在 Markdown 的精确相对路径，不支持技能别名。
+            old_text: 非空旧片段，逐字保留空白和换行；默认必须唯一匹配。
+            new_text: 新片段；空字符串删除旧片段，包含原片段可在其前后插入内容。
+            expected_version: read、write 或 edit 回执返回的文件版本，防止覆盖外部修改。
+            replace_all: True 替换全部非重叠匹配；默认 False 拒绝多个可能位置。
+
+        Returns:
+            新版本、文件元信息及 replacements，不返回完整正文；无改动时 changed=False。
+
+        Raises:
+            NotebookError: 路径、版本、匹配、编码或结果大小不满足要求。
+            NotebookPublicationError: 发布结果未知，须核对恢复文件。
+            HostStateError: 插件已进入关闭流程。
+
+        Note:
+            单次编辑共用原文件操作锁和线程所有者，取消等待不撤销已开始的发布。
+        """
+        return await self._io(
+            lambda: self._files.edit(
+                path, old_text, new_text, expected_version, replace_all=replace_all
+            )
+        )
+
     async def mkdir(self, path: str) -> JsonObject:
         """创建笔记分类目录，不能改变根目录或覆盖已有文件。
 
@@ -1316,6 +1423,16 @@ class _Write(_Parameters):
     path: str
     content: str
     expected_version: str | None = None
+
+
+class _Edit(_Parameters):
+    """局部编辑的封闭参数；版本必填，禁止用空片段隐式选择插入位置。"""
+
+    path: str
+    old_text: str = Field(min_length=1)
+    new_text: str
+    expected_version: str = Field(min_length=1)
+    replace_all: bool = False
 
 
 class _Mkdir(_Parameters):
@@ -1397,14 +1514,27 @@ def _declare(instance_id: str, settings: NotebookSettings, base_dir: Path) -> Pl
         _Read,
         "读取指定笔记的稳定版本与原文片段。",
         'await me.notebook.read(path="how-to-rest.md")',
-        "path 保留唯一 name/stem 别名；cursor 续读同一已存快照，不重新取文件。",
+        "path 保留唯一 name/stem 别名；cursor 续读同一已存快照，不重新取文件。"
+        "修改局部内容使用 edit，仅提交所需片段和本次返回的 version。",
     )
     write = declaration(
         "write",
         _Write,
         "新建或按已读取版本更新完整 Markdown 笔记。",
         'await me.notebook.write(path="ideas.md", content="# 想法\\n")',
-        "已有文件须 expected_version，冲突重新读取；不要同时与外部编辑器写同一路径。",
+        "已有文件须 expected_version，冲突重新读取；局部修改优先用 edit，避免重输全文。"
+        "不要同时与外部编辑器写同一路径。",
+    )
+    edit = declaration(
+        "edit",
+        _Edit,
+        "按已读取版本精确替换 Markdown 的局部片段，无需重输全文。",
+        'await me.notebook.edit(path="ideas.md", old_text="旧片段", new_text="新片段", '
+        'expected_version="读取的版本")',
+        "先 read 获取 version 和待改原文；path 使用精确路径。old_text 非空且逐字匹配，"
+        "默认多个位置即拒绝，可补充上下文或显式 replace_all=True 替换全部非重叠匹配。"
+        "new_text 为空表示删除；保留原片段并追加文字可插入内容。"
+        "空白和换行不自动归一化；冲突重新读取。返回新 version、replacements 和元信息，不返回全文。",
     )
     mkdir = declaration(
         "mkdir",
@@ -1496,6 +1626,19 @@ def _declare(instance_id: str, settings: NotebookSettings, base_dir: Path) -> Pl
             del context
             return await outcome(notebook.mkdir(parameters.path))
 
+        async def run_edit(parameters: _Edit, context: CallContext) -> CallOutcome:
+            """局部替换与完整写入共用同一所有者、版本核验及未知发布回执。"""
+            del context
+            return await outcome(
+                notebook.edit(
+                    parameters.path,
+                    parameters.old_text,
+                    parameters.new_text,
+                    expected_version=parameters.expected_version,
+                    replace_all=parameters.replace_all,
+                )
+            )
+
         async def run_move(parameters: _Move, context: CallContext) -> CallOutcome:
             """核对源文件版本后移动到明确的目标路径。"""
             del context
@@ -1519,6 +1662,7 @@ def _declare(instance_id: str, settings: NotebookSettings, base_dir: Path) -> Pl
                 FunctionCapability(file_info, run_file_info),
                 FunctionCapability(read, run_read),
                 FunctionCapability(write, run_write),
+                FunctionCapability(edit, run_edit),
                 FunctionCapability(mkdir, run_mkdir),
                 FunctionCapability(move, run_move),
                 FunctionCapability(delete, run_delete),
@@ -1529,7 +1673,7 @@ def _declare(instance_id: str, settings: NotebookSettings, base_dir: Path) -> Pl
 
     return PluginBlueprint(
         (ObjectDeclaration(object_id, "notebook", "笔记本", "subject"),),
-        (tree, read, write, mkdir, move, delete, save_file, file_info),
+        (tree, read, write, edit, mkdir, move, delete, save_file, file_info),
         build,
     )
 

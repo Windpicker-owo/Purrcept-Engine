@@ -62,6 +62,7 @@ from purrcept_engine.domain.knowledge.service import KnowledgeService
 from purrcept_engine.domain.model_requests.service import RequestBudget
 from purrcept_engine.domain.subject.background import BackgroundService
 from purrcept_engine.domain.subject.background_ports import BackgroundSettings
+from purrcept_engine.domain.subject.human_feedback import HumanFeedback
 from purrcept_engine.domain.subject.models import TurnOutcome
 from purrcept_engine.domain.subject.session import ContinuousSession, DynamicState
 from purrcept_engine.domain.subject.settings import SubjectModel
@@ -337,6 +338,42 @@ async def test_first_receipt_reflects_only_and_late_version_wakes_once(store: St
     assert (await store.knowledge.get_evidence("call:call:1")) == raw
     pending = await store.knowledge.pending_reflection()
     assert {item.evidence_id for item in pending} == {"call:call:1", "call:call:2"}
+
+
+async def test_human_review_reaches_real_reflection_request_and_keeps_foreground_delivery(
+    store: Store,
+) -> None:
+    """人工意见优先进入真实 Core 反思材料，反思结案不能替主脑消费评价。"""
+    await _call(store)
+    await _result(store, "call", "confirmed")
+    await store.finish_action(
+        "action:call", state="completed", result_json=None, output="", error=None
+    )
+    detail = await store.human_feedback.detail("action:call")
+    assert detail is not None and isinstance(detail["revision"], str)
+    await store.human_feedback.submit(
+        "review-to-reflect",
+        "action:call",
+        detail["revision"],
+        HumanFeedback(rating="bad", comment="对方说正在忙，先等待回应，不要连续发送。"),
+    )
+    backend = Backend(store)
+    async with AsyncExitStack() as stack:
+        background = await _background(store, stack, backend, seconds=600)
+        await background.start()
+        await _wait_for(lambda: _finished(store, backend))
+        text = "\n".join(
+            block.text
+            for message in backend.requests[0].messages
+            for block in message.content
+            if isinstance(block, TextBlock)
+        )
+        assert "human_feedback" in text
+        assert "对方说正在忙，先等待回应，不要连续发送。" in text
+        inputs = await store.pending()
+        delivered = [record for record in inputs if record.source.event_kind == "human_feedback"]
+        assert len(delivered) == 1 and delivered[0].context.minimum_wake
+        assert '"rating":"bad"' in delivered[0].text
 
 
 async def test_receipt_media_is_real_same_blob_for_evidence_and_foreground(store: Store) -> None:

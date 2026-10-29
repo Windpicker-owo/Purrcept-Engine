@@ -28,6 +28,48 @@ export interface Action {
   action_id: string; state: string; created_at: number; finished_at: number | null;
   error: PreviewText | null; calls: Call[];
 }
+/** 人工审查展开完整原文，区别于快照的有界预览。 */
+export interface Review {
+  revision: string; turn_id: string | null;
+  stimuli: { input_id: string; adapter_id: string; display_name: string | null; text: string; occurred_at: string; received_at: string; media: { media_id: string; media_type: string; name: string | null }[] }[];
+  action: { action_id: string; state: string; source: string; output: string; error: string | null; result_json: string | null;
+    calls: { call_id: string; path: string; state: string; arguments_json: string; result_json: string | null; error: string | null }[] };
+  feedback: { evidence_id: string; request_id: string; revision: string; rating: "good" | "bad"; comment: string; created_at: number }[];
+}
+
+/** 校验完整审查材料，不把缺失原文或未知评分补成成功。 */
+export function review(value: unknown): Review {
+  const v = object(value, "review");
+  const a = object(v.action, "review.action");
+  return {
+    revision: text(v.revision, "revision"), turn_id: nullable(v.turn_id, "turn_id", text),
+    action: {
+      action_id: text(a.action_id, "action_id"), state: text(a.state, "state"), source: text(a.source, "source"), output: text(a.output, "output"),
+      error: nullable(a.error, "error", text), result_json: nullable(a.result_json, "result_json", text),
+      calls: list(a.calls, "calls", (entry, at) => { const c = object(entry, at); return {
+        call_id: text(c.call_id, at), path: text(c.path, at), state: text(c.state, at), arguments_json: text(c.arguments_json, at),
+        result_json: nullable(c.result_json, at, text), error: nullable(c.error, at, text),
+      }; }),
+    },
+    stimuli: list(v.stimuli, "stimuli", (entry, at) => { const s = object(entry, at); return {
+      input_id: text(s.input_id, at), adapter_id: text(s.adapter_id, at), display_name: nullable(s.display_name, at, text),
+      text: text(s.text, at), occurred_at: text(s.occurred_at, at), received_at: text(s.received_at, at),
+      media: list(s.media, at, (entry, field) => { const m = object(entry, field); return { media_id: text(m.media_id, field), media_type: text(m.media_type, field), name: nullable(m.name, field, text) }; }),
+    }; }),
+    feedback: list(v.feedback, "feedback", (entry, at) => {
+      const f = object(entry, at);
+      if (f.rating !== "good" && f.rating !== "bad") throw new ContractError(`${at}.rating`);
+      return { evidence_id: text(f.evidence_id, at), request_id: text(f.request_id, at), revision: text(f.revision, at), rating: f.rating,
+        comment: text(f.comment, at), created_at: number(f.created_at, at) };
+    }),
+  };
+}
+
+/** 历史审查用服务端游标分页，不以本页记录条数推测还有多少历史。 */
+export function reviewPage(value: unknown): { items: Action[]; next_cursor: string | null } {
+  const v = object(value, "review_page");
+  return { items: list(v.items, "items", action), next_cursor: nullable(v.next_cursor, "next_cursor", text) };
+}
 /** 权威活动版本、预算与恢复要求，页面不自行推进运行累计。 */
 export interface Activity {
   activity_id: string; definition: string; goal: string; state: string; version: number;

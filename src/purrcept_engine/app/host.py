@@ -470,6 +470,47 @@ class EngineHost:
         """
         return self._queries.query_preview(target)
 
+    async def query_reviews(self, before: str | None = None) -> JsonObject:
+        """读取按时间倒序排列的有限历史审查列表。
+
+        Args:
+            before: 前页返回的行动游标；None 从最新记录开始。
+
+        Raises:
+            HostStateError: 权威库尚未取得。
+            ControlError: 历史游标不存在。
+        """
+        return await self._queries.query_reviews(before)
+
+    async def query_review(self, action_id: str) -> JsonObject | None:
+        """读取行动所见刺激、完整执行材料和人工评价，不确认消费。
+
+        Args:
+            action_id: 需要人工审查的真实行动身份。
+
+        Returns:
+            版本化的完整材料；找不到行动时返回 None。
+
+        Raises:
+            HostStateError: 权威库尚未取得。
+        """
+        return await self._queries.query_review(action_id)
+
+    async def query_review_media(self, action_id: str, media_id: str) -> tuple[bytes, str] | None:
+        """只读审查关联的原始媒体，不触发设备或网络采集。
+
+        Args:
+            action_id: 被审查的真实行动身份。
+            media_id: 所见刺激的原始媒体身份。
+
+        Returns:
+            原始字节与媒体类型；未关联时返回 None。
+
+        Raises:
+            HostStateError: 权威存储尚未取得。
+        """
+        return await self._queries.query_review_media(action_id, media_id)
+
     def query(self) -> HostSnapshot:
         """返回生命周期快照，不触发存储读取、设备或模型调用。
 

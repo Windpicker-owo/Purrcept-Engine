@@ -94,6 +94,18 @@ def test_reflection_attention_and_summary_system_text_match_frozen_material() ->
     assert message.metadata["source_version"] == 3
 
 
+def test_both_brains_receive_human_feedback_contract_separate_from_existing_persona() -> None:
+    """人工评价指导与评分语义同时交给两个消费者，原人格正文仍按固定样本核验。"""
+    foreground = foreground_instructions({}, Catalog((ObjectDeclaration("me", "me", "主体"),), ()))
+    reflection = reflection_instructions()
+    assert foreground[-1].content == reflection[-1].content
+    block = reflection[-1].content[0]
+    assert isinstance(block, TextBlock)
+    assert "rating=good" in block.text and "rating=bad" in block.text
+    assert "独立反思应优先" in block.text
+    assert "单次评分不自动成为普遍规律" in block.text
+
+
 def test_material_templates_keep_arbitrary_text_and_reminder_placement() -> None:
     samples = baseline()
     payload: JsonObject = {

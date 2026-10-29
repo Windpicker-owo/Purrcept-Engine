@@ -43,6 +43,19 @@ class Host:
     async def query_control(self, request_id: str) -> JsonObject | None:
         return {"request_id": request_id, "state": "admitted"} if request_id == "one" else None
 
+    async def query_reviews(self, before: str | None = None) -> JsonObject:
+        return {"items": [], "next_cursor": before}
+
+    async def query_review(self, action_id: str) -> JsonObject | None:
+        return {"action_id": action_id, "stimuli": []} if action_id == "one" else None
+
+    async def query_review_media(self, action_id: str, media_id: str) -> tuple[bytes, str] | None:
+        if action_id == "one" and media_id == "image":
+            return b"original-image", "image/png"
+        if action_id == "one" and media_id == "unsafe":
+            return b"<script>untrusted</script>", "text/html"
+        return None
+
     def query_preview(self, target: str) -> PreviewFrame | None:
         return PreviewFrame(b"cached-image", "image/jpeg", 1.0) if target == "computer" else None
 
@@ -96,6 +109,14 @@ async def test_read_query_and_preview_have_finite_current_facts() -> None:
         ).status_code == 304
         assert (await client.get("/api/preview/missing")).status_code == 204
         assert (await client.get("/api/controls/missing")).status_code == 404
+        assert (await client.get("/api/reviews?before=older")).json()["next_cursor"] == "older"
+        assert (await client.get("/api/reviews/one")).json()["action_id"] == "one"
+        assert (await client.get("/api/reviews/missing")).status_code == 404
+        assert (await client.get("/api/reviews/one/media/image")).content == b"original-image"
+        assert (await client.get("/api/reviews/one/media/missing")).status_code == 404
+        unsafe = await client.get("/api/reviews/one/media/unsafe")
+        assert unsafe.headers["content-type"] == "application/octet-stream"
+        assert unsafe.headers["content-disposition"].startswith("attachment")
         assert host.requests == []
 
 

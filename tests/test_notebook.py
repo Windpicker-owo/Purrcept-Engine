@@ -12,6 +12,7 @@ import os
 import sqlite3
 import stat
 import subprocess
+import tempfile
 import threading
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
@@ -78,6 +79,7 @@ def test_factory_is_pure_and_declares_notebook_and_attachment_paths(tmp_path: Pa
         "me.notebook.tree",
         "me.notebook.read",
         "me.notebook.write",
+        "me.notebook.edit",
         "me.notebook.mkdir",
         "me.notebook.move",
         "me.notebook.delete",
@@ -85,6 +87,13 @@ def test_factory_is_pure_and_declares_notebook_and_attachment_paths(tmp_path: Pa
         "me.notebook.file_info",
     }
     assert '"expected_version"' in catalog.bindings["me.notebook.write"].schema_json
+    edit = catalog.bindings["me.notebook.edit"].declaration.parameters
+    with pytest.raises(ValidationError):
+        edit.model_validate({"path": "note.md", "old_text": "old", "new_text": "new"})
+    with pytest.raises(ValidationError):
+        edit.model_validate(
+            {"path": "note.md", "old_text": "", "new_text": "new", "expected_version": "version"}
+        )
     with pytest.raises(ValidationError):
         factory.prepare("notes", {"notebook_dir": "notes", "unknown": True}, tmp_path)
 
@@ -105,6 +114,133 @@ async def test_write_uses_real_hash_and_rejects_existing_and_external_edit(
         await notes.write("note.md", "过期覆盖", expected_version=_text(second, "version"))
     assert rejected.value.code == "version_conflict"
     assert (fixture.root / "note.md").read_text(encoding="utf-8") == "外部编辑"
+    assert list(fixture.root.glob(".purrcept-*.tmp")) == []
+
+
+async def test_edit_changes_only_exact_fragment_and_keeps_original_evidence(
+    fixture: _Fixture,
+) -> None:
+    """局部更新保留 BOM、CRLF 及未编辑正文，旧原文证据不会被新文件覆盖。"""
+    notes = fixture.notebook
+    content = "\ufeff# 长笔记\r\n" + "保留正文。\r\n" * 100 + "旧片段\r\n结尾\r\n"
+    written = await notes.write("note.md", content)
+    page = await notes.read("note.md", max_chars=10000)
+    edited = await notes.edit(
+        "note.md", "旧片段", "新片段", expected_version=_text(page, "version")
+    )
+    expected = content.replace("旧片段", "新片段")
+    assert (fixture.root / "note.md").read_bytes() == expected.encode("utf-8")
+    assert edited["version"] == hashlib.sha256(expected.encode("utf-8")).hexdigest()
+    assert edited["version"] != written["version"] and edited["replacements"] == 1
+    assert edited["changed"] is True and "content" not in edited and "body" not in edited
+    assert len(str(edited)) < len(content)
+    old = await fixture.evidence.read_evidence(_text(page, "evidence_ref"), max_chars=10000)
+    assert old.text == content
+
+
+@pytest.mark.parametrize("content,old_text", [("旧段 / 旧段", "旧段"), ("aaa", "aa")])
+async def test_edit_rejects_ambiguous_positions_without_changing_file(
+    fixture: _Fixture, content: str, old_text: str
+) -> None:
+    """多个可能位置含重叠匹配都需明确选择，不能默默修改第一个位置。"""
+    written = await fixture.notebook.write("note.md", content)
+    with pytest.raises(NotebookError) as rejected:
+        await fixture.notebook.edit(
+            "note.md", old_text, "new", expected_version=_text(written, "version")
+        )
+    assert rejected.value.code == "edit_ambiguous"
+    assert (fixture.root / "note.md").read_bytes() == content.encode()
+    assert list(fixture.root.glob(".purrcept-*.tmp")) == []
+
+
+async def test_edit_allows_explicit_replace_all_delete_and_insert(fixture: _Fixture) -> None:
+    """多次局部编辑通过回执版本串联，删除和锚点插入无需重发全文。"""
+    notes = fixture.notebook
+    written = await notes.write("note.md", "a / a\n尾部\n")
+    all_ = await notes.edit(
+        "note.md", "a", "中", expected_version=_text(written, "version"), replace_all=True
+    )
+    assert all_["replacements"] == 2
+    deleted = await notes.edit("note.md", "中 / ", "", expected_version=_text(all_, "version"))
+    await notes.edit(
+        "note.md", "尾部\n", "尾部\n新增一行\n", expected_version=_text(deleted, "version")
+    )
+    assert (fixture.root / "note.md").read_text(encoding="utf-8") == "中\n尾部\n新增一行\n"
+
+
+async def test_edit_no_change_does_not_publish_file(
+    fixture: _Fixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """相同替换只核验已有版本，不刷新文件或消耗原子发布步骤。"""
+    written = await fixture.notebook.write("note.md", "原文")
+
+    def unexpected_sync(fd: int) -> None:
+        raise AssertionError("无改动编辑不应写暂存文件。")
+
+    monkeypatch.setattr(os, "fsync", unexpected_sync)
+    result = await fixture.notebook.edit(
+        "note.md", "原文", "原文", expected_version=_text(written, "version")
+    )
+    assert result["changed"] is False and result["replacements"] == 0
+    assert result["version"] == written["version"]
+
+
+@pytest.mark.parametrize("old_text,code", [("", "edit_empty"), ("不存在", "edit_missing")])
+async def test_edit_missing_or_empty_match_keeps_file(
+    fixture: _Fixture, old_text: str, code: str
+) -> None:
+    """空片段与未找到的原文都明确拒绝，文件和发布暂存保持原值。"""
+    written = await fixture.notebook.write("note.md", "原文\r\n")
+    with pytest.raises(NotebookError) as rejected:
+        await fixture.notebook.edit(
+            "note.md", old_text, "new", expected_version=_text(written, "version")
+        )
+    assert rejected.value.code == code
+    assert (fixture.root / "note.md").read_bytes() == "原文\r\n".encode()
+
+
+async def test_edit_rejects_stale_version_invalid_utf8_and_excess_result(fixture: _Fixture) -> None:
+    """版本、编码及替换后 UTF-8 额度在发布之前核验，拒绝不损坏源文件。"""
+    written = await fixture.notebook.write("note.md", "a" * 1000)
+    version = _text(written, "version")
+    for old_text, new_text, expected, code in (
+        ("a", "b", "stale", "version_conflict"),
+        ("a", "\ud800", version, "invalid_encoding"),
+        ("a", "中" * 30, version, "file_too_large"),
+    ):
+        with pytest.raises(NotebookError) as rejected:
+            await fixture.notebook.edit(
+                "note.md", old_text, new_text, expected_version=expected, replace_all=True
+            )
+        assert rejected.value.code == code
+    assert (fixture.root / "note.md").read_bytes() == b"a" * 1000
+    assert list(fixture.root.glob(".purrcept-*.tmp")) == []
+    with pytest.raises(NotebookError) as missing:
+        await fixture.notebook.edit("missing.md", "old", "new", expected_version=version)
+    assert missing.value.code == "file_missing"
+    with pytest.raises(NotebookError) as escaped:
+        await fixture.notebook.edit("../outside.md", "old", "new", expected_version=version)
+    assert escaped.value.code == "invalid_path"
+
+
+async def test_edit_rechecks_external_change_before_publication(
+    fixture: _Fixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """在初始稳定读取后插入外部编辑，最终发布核验仍须保护外部新文。"""
+    written = await fixture.notebook.write("note.md", "old")
+    original = tempfile.mkstemp
+
+    def changed_before_staging(*, prefix: str, suffix: str, dir: Path) -> tuple[int, str]:
+        (fixture.root / "note.md").write_bytes(b"external change")
+        return original(prefix=prefix, suffix=suffix, dir=dir)
+
+    monkeypatch.setattr(tempfile, "mkstemp", changed_before_staging)
+    with pytest.raises(NotebookError) as rejected:
+        await fixture.notebook.edit(
+            "note.md", "old", "new", expected_version=_text(written, "version")
+        )
+    assert rejected.value.code == "version_conflict"
+    assert (fixture.root / "note.md").read_bytes() == b"external change"
     assert list(fixture.root.glob(".purrcept-*.tmp")) == []
 
 
@@ -328,9 +464,11 @@ async def test_external_junction_is_rejected_without_reading_body(fixture: _Fixt
         linked.rmdir()
 
 
+@pytest.mark.parametrize("operation", ["write", "edit"])
 async def test_cancelled_file_waiter_keeps_thread_until_close(
-    fixture: _Fixture, monkeypatch: pytest.MonkeyPatch
+    fixture: _Fixture, monkeypatch: pytest.MonkeyPatch, operation: str
 ) -> None:
+    written = await fixture.notebook.write("late.md", "编辑前") if operation == "edit" else None
     entered, release = threading.Event(), threading.Event()
     original = os.fsync
 
@@ -340,7 +478,14 @@ async def test_cancelled_file_waiter_keeps_thread_until_close(
         original(fd)
 
     monkeypatch.setattr(os, "fsync", delayed_sync)
-    writing = asyncio.create_task(fixture.notebook.write("late.md", "实际线程正文"))
+    if written is None:
+        writing = asyncio.create_task(fixture.notebook.write("late.md", "实际线程正文"))
+    else:
+        writing = asyncio.create_task(
+            fixture.notebook.edit(
+                "late.md", "编辑前", "实际线程正文", expected_version=_text(written, "version")
+            )
+        )
     assert await asyncio.to_thread(entered.wait, 5)
     writing.cancel()
     await asyncio.sleep(0)
@@ -357,6 +502,27 @@ async def test_cancelled_file_waiter_keeps_thread_until_close(
     assert (fixture.root / "late.md").read_text(encoding="utf-8") == "实际线程正文"
     with pytest.raises(HostStateError):
         await fixture.notebook.tree()
+
+
+async def test_edit_updates_skill_metadata_and_requires_exact_path(fixture: _Fixture) -> None:
+    """编辑技能说明会反映在下一请求目录，修改入口不猜测读取别名。"""
+    written = await fixture.notebook.write(
+        "skill.md", "---\nname: tea\ndescription: old\n---\n正文"
+    )
+    edited = await fixture.notebook.edit(
+        "skill.md",
+        "description: old",
+        "description: new",
+        expected_version=_text(written, "version"),
+    )
+    assert edited["description"] == "new" and edited["skill"] is True
+    catalog = await fixture.notebook.prepare_request()
+    assert "new" in str(catalog) and "description: old" not in str(catalog)
+    with pytest.raises(NotebookError) as rejected:
+        await fixture.notebook.edit(
+            "tea", "正文", "新文", expected_version=_text(edited, "version")
+        )
+    assert rejected.value.code == "invalid_path"
 
 
 def _config(directory: Path) -> EngineConfig:
@@ -385,6 +551,53 @@ def _config(directory: Path) -> EngineConfig:
         },
         base_dir=directory,
     )
+
+
+async def test_real_worker_edits_fragment_and_retains_unknown_publication_recovery(
+    tmp_path: Path,
+) -> None:
+    """真实 Worker 只传片段并持久化新版本；发布未知仍保留原生恢复回执。"""
+    host = EngineHost(_config(tmp_path), plugin_factories={"fixture-notebook": factory})
+    await host.start()
+    try:
+        action = await host.execute(
+            "from world import me\n"
+            "written = await me.notebook.write(path='note.md', content='# 笔记\\n旧段\\n尾部')\n"
+            "return await me.notebook.edit(path='note.md', old_text='旧段', new_text='新段', "
+            "expected_version=written.version)"
+        )
+        assert action.state == "completed" and action.result_json is not None
+        assert [call.path for call in action.calls] == ["me.notebook.write", "me.notebook.edit"]
+        assert all(call.state == "confirmed" for call in action.calls)
+        result = decode_object(action.result_json.encode())
+        assert result["replacements"] == 1 and "content" not in result
+        target = tmp_path / "notebook/note.md"
+        assert target.read_text(encoding="utf-8") == "# 笔记\n新段\n尾部"
+        target.chmod(stat.S_IREAD)
+        try:
+            uncertain = await host.execute(
+                "from world import me\n"
+                "return await me.notebook.edit(path='note.md', "
+                "old_text='新段', new_text='待恢复段', "
+                f"expected_version='{result['version']}')"
+            )
+            receipt = uncertain.calls[0]
+            assert receipt.state == "unknown" and receipt.result_json is not None
+            recovery = decode_object(receipt.result_json.encode())
+            assert recovery["code"] == "publication_unknown"
+            staged = recovery["staged"]
+            assert isinstance(staged, dict) and staged["state"] == "stable"
+            staged_path = Path(_text(staged, "path"))
+            assert staged_path.is_relative_to(tmp_path / "notebook")
+            assert (
+                await asyncio.to_thread(staged_path.read_text, encoding="utf-8")
+                == "# 笔记\n待恢复段\n尾部"
+            )
+            assert target.read_text(encoding="utf-8") == "# 笔记\n新段\n尾部"
+        finally:
+            target.chmod(stat.S_IWRITE)
+    finally:
+        await host.close()
 
 
 async def test_real_host_worker_notebook_call_and_persistent_evidence(tmp_path: Path) -> None:

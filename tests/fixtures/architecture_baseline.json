@@ -130,6 +130,24 @@
       "returns": "Name(id='HostSnapshot', ctx=Load())",
       "async": true,
       "decorators": []
+    },
+    "query_reviews": {
+      "arguments": "arguments(posonlyargs=[], args=[arg(arg='self'), arg(arg='before', annotation=BinOp(left=Name(id='str', ctx=Load()), op=BitOr(), right=Constant(value=None)))], kwonlyargs=[], kw_defaults=[], defaults=[Constant(value=None)])",
+      "returns": "Name(id='JsonObject', ctx=Load())",
+      "async": true,
+      "decorators": []
+    },
+    "query_review": {
+      "arguments": "arguments(posonlyargs=[], args=[arg(arg='self'), arg(arg='action_id', annotation=Name(id='str', ctx=Load()))], kwonlyargs=[], kw_defaults=[], defaults=[])",
+      "returns": "BinOp(left=Name(id='JsonObject', ctx=Load()), op=BitOr(), right=Constant(value=None))",
+      "async": true,
+      "decorators": []
+    },
+    "query_review_media": {
+      "arguments": "arguments(posonlyargs=[], args=[arg(arg='self'), arg(arg='action_id', annotation=Name(id='str', ctx=Load())), arg(arg='media_id', annotation=Name(id='str', ctx=Load()))], kwonlyargs=[], kw_defaults=[], defaults=[])",
+      "returns": "BinOp(left=Subscript(value=Name(id='tuple', ctx=Load()), slice=Tuple(elts=[Name(id='bytes', ctx=Load()), Name(id='str', ctx=Load())], ctx=Load()), ctx=Load()), op=BitOr(), right=Constant(value=None))",
+      "async": true,
+      "decorators": []
     }
   },
   "root_exports": [

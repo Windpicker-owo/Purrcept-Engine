@@ -43,6 +43,51 @@ class PanelHost(Protocol):
         """
         ...
 
+    async def query_reviews(self, before: str | None = None) -> JsonObject:
+        """读取有限历史行动和下一页游标，不确认业务待办。
+
+        Args:
+            before: 前页签发的行动游标；None 从最新记录开始。
+
+        Returns:
+            items 为行动预览，next_cursor 为后续游标或 None。
+
+        Raises:
+            ControlError: 游标不存在。
+            HostStateError: 宿主尚未取得存储。
+        """
+        ...
+
+    async def query_review(self, action_id: str) -> JsonObject | None:
+        """读取所选行动的完整审查材料及历史评价。
+
+        Args:
+            action_id: 所选真实行动的身份。
+
+        Returns:
+            当轮刺激、完整行动、材料摘要和近期评价；不存在时返回 None。
+
+        Raises:
+            HostStateError: 宿主尚未取得存储。
+        """
+        ...
+
+    async def query_review_media(self, action_id: str, media_id: str) -> tuple[bytes, str] | None:
+        """只读审查刺激关联的原始媒体，不授予任意文件访问。
+
+        Args:
+            action_id: 所选真实行动的身份。
+            media_id: 审查刺激实际关联的媒体身份。
+
+        Returns:
+            原始字节和媒体类型；未关联时返回 None。
+
+        Raises:
+            HostStateError: 宿主尚未取得存储。
+            StorageError: 原字节缺失或损坏。
+        """
+        ...
+
     async def submit_control(self, request: ControlRequest) -> ControlRecord:
         """持久接管明确快捷操作，观察取消不撤销已受理工作。
 
@@ -119,6 +164,42 @@ def create_app(host: PanelHost, *, port: int, token: str) -> ASGIApp:
         record = await host.query_control(request.path_params["request_id"])
         return _json({"error": "control_missing"}, 404) if record is None else _json(record)
 
+    async def reviews(request: Request) -> Response:
+        """历史查询复用本机来源边界，不主动采集或执行世界操作。"""
+        return _json(await host.query_reviews(request.query_params.get("before")))
+
+    async def review(request: Request) -> Response:
+        """按行动身份展开完整原始材料，缺失不伪造空刺激。"""
+        record = await host.query_review(request.path_params["action_id"])
+        return _json({"error": "review_missing"}, 404) if record is None else _json(record)
+
+    async def review_media(request: Request) -> Response:
+        """只呈现已关联的安全原生类型，其他附件作为二进制下载。"""
+        value = await host.query_review_media(
+            request.path_params["action_id"], request.path_params["media_id"]
+        )
+        if value is None:
+            return Response(status_code=404)
+        content, kind = value
+        native = kind in {
+            "image/png",
+            "image/jpeg",
+            "image/gif",
+            "image/webp",
+            "audio/wav",
+            "audio/x-wav",
+            "audio/mpeg",
+            "audio/ogg",
+            "audio/webm",
+            "audio/mp4",
+        }
+        headers = {"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"}
+        if not native:
+            headers["Content-Disposition"] = 'attachment; filename="stimulus.bin"'
+        return Response(
+            content, media_type=kind if native else "application/octet-stream", headers=headers
+        )
+
     async def preview(request: Request) -> Response:
         """读取已有设备画面，缺失时返回明确的不可用响应。"""
         frame = host.query_preview(request.path_params["target"])
@@ -177,6 +258,9 @@ def create_app(host: PanelHost, *, port: int, token: str) -> ASGIApp:
             Route("/api/snapshot", snapshot),
             Route("/api/controls", submit, methods=["POST"]),
             Route("/api/controls/{request_id}", result),
+            Route("/api/reviews", reviews),
+            Route("/api/reviews/{action_id}", review),
+            Route("/api/reviews/{action_id}/media/{media_id}", review_media),
             Route("/api/preview/{target}", preview),
             Route("/", static),
             Route("/assets/{name}", static),

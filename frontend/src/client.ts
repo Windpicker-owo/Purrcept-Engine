@@ -3,7 +3,8 @@
  * GET 轮询不打开设备；连接状态只来自成功校验的快照。POST 被浏览器中断后仍由
  * Host 拥有工作，页面保留原请求并提供查询/原样重传。令牌与业务事实分开保存。
  */
-import { controlRequest, controlResult, credentials, snapshot, ContractError } from "./contracts";
+import { controlRequest, controlResult, credentials, snapshot, review, reviewPage, ContractError } from "./contracts";
+import type { Review, Action } from "./contracts";
 import type { ControlRequest, ControlResult, ObjectValue, Snapshot } from "./contracts";
 
 /** 本标签页持有的原控制与观察进度，业务所有权仍归宿主。 */
@@ -73,6 +74,17 @@ export class PanelClient {
   }
   /** React 获取不可变顶层展示快照；业务缓存不在组件内重建。 */
   getState = (): PanelState => this.state;
+
+  /** 历史审查只读取材料，失败交给对应区域显示，不能伪装空列表。 */
+  reviews = async (before: string | null = null): Promise<{ items: Action[]; next_cursor: string | null }> =>
+    reviewPage(await responseJson(await this.get(`/api/reviews${before === null ? "" : `?before=${encodeURIComponent(before)}`}`)));
+
+  /** 完整材料必须仍属于用户选择的行动，防止并发查询串用评价目标。 */
+  review = async (actionId: string): Promise<Review> => {
+    const result = review(await responseJson(await this.get(`/api/reviews/${encodeURIComponent(actionId)}`)));
+    if (result.action.action_id !== actionId) throw new ContractError("review.action_id");
+    return result;
+  };
   /** 返回解除订阅，不借用设备或服务资源。 */
   subscribe = (listener: () => void): (() => void) => { this.listeners.add(listener); return () => this.listeners.delete(listener); };
 

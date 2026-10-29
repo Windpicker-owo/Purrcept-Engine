@@ -1,8 +1,9 @@
 """本机面板的有限控制所有者，借用真实宿主调用与同库身份账本。
 
-页面只提交显式快捷操作，不能发送 Python、聊天文本或模型参数。控制身份先
+页面提交显式快捷操作或针对真实行动的人工评价，不能发送 Python 或模型参数。控制身份先
 持久接管，再交到原能力、活动或主体选项所有者；断开/取消等待不撤销已接受工作。
-世界回执仍由执行器和活动服务保存。主体选项只改变本次运行的调度，不伪造行动回执。
+世界回执仍由执行器和活动服务保存。人工评价只交给可靠反馈，不改写执行状态；
+主体选项只改变本次运行的调度，不伪造行动回执。
 面板保存控制关联及观察终态，不拥有模型或空闲计时。
 """
 
@@ -12,7 +13,7 @@ import asyncio
 from collections.abc import Callable, Mapping
 from typing import Protocol, cast
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from purrcept_engine.domain.activities.contracts import ActivityError
 from purrcept_engine.domain.activities.service import ActivityService
@@ -21,9 +22,11 @@ from purrcept_engine.domain.execution.catalog import Catalog
 from purrcept_engine.domain.execution.errors import ExecutionBusy, ExecutionLimitError
 from purrcept_engine.domain.execution.models import ActionRecord
 from purrcept_engine.domain.execution.providers import CapabilityInputError
+from purrcept_engine.domain.subject.human_feedback import HumanFeedback
 from purrcept_engine.domain.subject.proactive import ProactiveThinking
 from purrcept_engine.errors import HostStateError
 from purrcept_engine.infrastructure.sqlite.controls import ControlLedger
+from purrcept_engine.infrastructure.sqlite.human_feedback import HumanFeedbackLedger
 from purrcept_engine.plugin_system.contracts import PluginRuntime
 from purrcept_engine.plugin_system.panels import PanelControl, PreviewFrame
 from purrcept_engine.values import JsonObject, JsonValue, encode_json
@@ -88,6 +91,7 @@ class PanelController:
         invoke: _Invoke,
         activities: ActivityService,
         proactive: ProactiveThinking,
+        human_feedback: HumanFeedbackLedger,
     ) -> None:
         """绑定已构造插件及原业务端口，不另建能力表、设备连接或数据库。
 
@@ -99,6 +103,7 @@ class PanelController:
             invoke: 借用共享目录与执行器调用单能力的有限入口。
             activities: 此宿主唯一的活动状态提交服务。
             proactive: 主体拥有的空闲思考开关，不取得模型或世界能力。
+            human_feedback: 同库人工评价端口，复用原反馈与反思消费者。
 
         Raises:
             ControlError: 插件面板重复操作或借用了其他插件能力；
@@ -108,6 +113,7 @@ class PanelController:
         self.plugins, self.ledger = plugins, ledger
         self.invoke, self.activities = invoke, activities
         self.proactive = proactive
+        self.human_feedback = human_feedback
         self._tasks: dict[str, tuple[str, asyncio.Task[ControlRecord]]] = {}
         self._closing = False
         paths = {item.declaration.capability_id: item for item in catalog.bindings.values()}
@@ -237,6 +243,19 @@ class PanelController:
                     raise ControlError("主动思考开关必须是布尔值。")
                 await self.proactive.set_enabled(
                     enabled, expected_revision=request.expected_revision
+                )
+            elif request.target.startswith("action:"):
+                if request.operation != "review":
+                    raise ControlError("行动审查只允许提交评价。", code="control_target")
+                try:
+                    value = HumanFeedback.model_validate(request.arguments)
+                except ValidationError as error:
+                    raise ControlError("评价须选择好或坏，留言最多 4000 字。") from error
+                await self.human_feedback.submit(
+                    request.request_id,
+                    request.target.removeprefix("action:"),
+                    request.expected_revision,
+                    value,
                 )
             elif request.target.startswith("activity:"):
                 await self._activity(request)

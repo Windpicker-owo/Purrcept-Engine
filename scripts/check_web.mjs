@@ -1,6 +1,6 @@
 /**
  * 使用真实打包产物验收 WebUI，HTTP 只返回内存中的合成宿主投影。
- * 不启动 Engine、不读取配置或凭据；只在开关专测阶段接受内存模拟控制，其他写入和外网请求失败。
+ * 不启动 Engine、不读取配置或凭据；开关和人工评价专测接受内存模拟控制，其他写入和外网请求失败。
  * 先运行 frontend 的 build，再执行本文件；截图写入 ignored .validation/webui。
  * 浏览器与服务由本脚本拥有，失败也会关闭；使用 Design 已安装的 Playwright 与系统 Edge。
  */
@@ -38,6 +38,18 @@ let disconnected = false;
 const firstSnapshot = Promise.withResolvers();
 const writes = [];
 let proactiveControls = false;
+let reviewControls = false;
+const reviewRequests = [];
+const reviewMaterial = {
+  revision: 'review-v1', turn_id: 'example-turn',
+  stimuli: [
+    { input_id: 'stimulus-one', adapter_id: 'test', display_name: '审查样本', text: '我正在忙，稍后再聊。', occurred_at: '2026-10-28T10:00:00+08:00', received_at: '2026-10-28T10:00:01+08:00', media: [] },
+    { input_id: 'stimulus-two', adapter_id: 'test', display_name: '审查样本', text: '请先不要发消息。', occurred_at: '2026-10-28T10:00:02+08:00', received_at: '2026-10-28T10:00:03+08:00', media: [] },
+  ],
+  action: { action_id: 'uncertain', state: 'failed', source: 'await me.qq.send(text="再聊聊吧")', output: '', result_json: null, error: null,
+    calls: [{ call_id: 'sent', path: 'me.qq.send', state: 'unknown', arguments_json: '{"text":"再聊聊吧"}', result_json: null, error: '平台尚未确认' }] },
+  feedback: [],
+};
 const proactiveRequests = [];
 const vadRequests = [];
 const proactiveResults = new Map();
@@ -50,8 +62,33 @@ const assets = new Map(await Promise.all([...files].map(async ([route, [name, ty
   body: await readFile(new URL(`../src/purrcept_engine/app/static/${name}`, import.meta.url)), type,
 }])));
 const server = createServer(async (req, res) => {
+  if (req.method === 'GET' && req.url === '/api/reviews') {
+    res.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify({ items: example.recent_actions, next_cursor: null }));
+    return;
+  }
+  if (req.method === 'GET' && req.url === '/api/reviews/uncertain') {
+    res.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify(reviewMaterial));
+    return;
+  }
   if (req.method === 'GET' && proactiveResults.has(req.url)) {
     res.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify(proactiveResults.get(req.url)));
+    return;
+  }
+  if (reviewControls && req.method === 'POST' && req.url === '/api/controls') {
+    let body = '';
+    for await (const chunk of req) body += chunk;
+    const command = JSON.parse(body);
+    assert.equal(command.target, 'action:uncertain');
+    assert.equal(command.operation, 'review');
+    assert.equal(command.expected_revision, reviewMaterial.revision);
+    assert.ok(['good', 'bad'].includes(command.arguments.rating));
+    reviewRequests.push(command);
+    reviewMaterial.feedback.unshift({ ...command.arguments, request_id: command.request_id, evidence_id: `human-feedback:${command.request_id}`, revision: command.expected_revision, created_at: now });
+    const result = { request_id: command.request_id, instance_id: snapshot.instance_id,
+      request: { target: command.target, operation: command.operation, expected_revision: command.expected_revision, arguments: command.arguments },
+      state: 'finished', admitted_at: now, finished_at: now, action_id: null, command_id: null, error_code: null, error: null };
+    proactiveResults.set(`/api/controls/${command.request_id}`, result);
+    res.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify(result));
     return;
   }
   if (proactiveControls && req.method === 'POST' && req.url === '/api/controls') {
@@ -126,6 +163,13 @@ try {
   // 在真实动效设置下逐帧观察快速来回切页，覆盖旧页面并存、白闪和位置拖尾。
   const transitionFrames = await page.evaluate(async () => {
     const routes = ['devices', 'home', 'timeline', 'system', 'activities', 'attention', 'home'];
+    // 选中项的终值取自 Cel 组件变量，逐帧比较可发现颜色过渡造成的中间帧。
+    const probe = document.createElement('span');
+    probe.style.background = 'var(--pc-nav-item-current-background)';
+    probe.style.color = 'var(--pc-nav-item-current-color)';
+    document.body.append(probe);
+    const expected = { background: getComputedStyle(probe).backgroundColor, color: getComputedStyle(probe).color };
+    probe.remove();
     const samples = [];
     for (const route of routes) {
       document.querySelector(`.nav-item[href="#/${route}"]`).click();
@@ -134,19 +178,19 @@ try {
         const pages = document.querySelectorAll('main .page');
         const style = pages[0] ? getComputedStyle(pages[0]) : null;
         const selected = getComputedStyle(document.querySelector('.nav-item[aria-current="page"]'));
-        // 选中项使用完整反白，不能让字色和底色分两次到达终值。
+        // 选中项的底色与字色必须同帧到达终值，不能分两次切换。
         samples.push({ count: pages.length, opacity: style?.opacity, transform: style?.transform,
-          navigationReady: selected.backgroundColor === getComputedStyle(document.querySelector('.main-column')).backgroundColor });
+          navigationReady: selected.backgroundColor === expected.background && selected.color === expected.color });
       }
     }
     return samples;
   });
   for (const frame of transitionFrames) assert.deepEqual(frame, { count: 1, opacity: '1', transform: 'none', navigationReady: true });
 
-  // 六页在桌面、中等宽度与手机上均不能产生横向溢出。
+  // 七页在桌面、中等宽度与手机上均不能产生横向溢出。
   for (const width of [1440, 1024, 768, 390, 320]) {
     await page.setViewportSize({ width, height: 960 });
-    for (const route of ['home', 'attention', 'timeline', 'devices', 'activities', 'system']) {
+    for (const route of ['home', 'attention', 'timeline', 'reviews', 'devices', 'activities', 'system']) {
       await openPage(route);
       await page.evaluate(() => document.fonts.ready);
       const overflow = await page.evaluate(() => document.documentElement.scrollWidth > innerWidth);
@@ -253,8 +297,43 @@ try {
   await page.waitForFunction(() => document.querySelector('[aria-label="VAD 自动停播"]')?.getAttribute('aria-disabled') === 'true');
   await vad.click({ force: true });
   assert.equal(vadRequests.length, 2, '断线不能修改 VAD 自动停播');
+
+  // 人工审查复用真实打包表单与控制客户端，写入仅进入本脚本的内存替身。
+  disconnected = false;
+  reviewControls = true;
+  await page.setViewportSize({ width: 1440, height: 960 });
+  await openPage('reviews');
+  await page.locator('.item-row').filter({ hasText: '3 项操作' }).click();
+  await page.getByText('我正在忙，稍后再聊。', { exact: true }).waitFor();
+  await page.getByText('请先不要发消息。', { exact: true }).waitFor();
+  await page.getByRole('radio', { name: '坏', exact: true }).check();
+  await page.getByRole('textbox', { name: '留言（可选）' }).fill('对方已经说明正在忙，等待她主动回应后再继续。');
+  await page.getByRole('button', { name: '提交评价', exact: true }).click();
+  await page.getByText('评价已保存，已加入主脑与反思的可靠待办。', { exact: true }).waitFor();
+  assert.equal(reviewRequests.length, 1);
+  assert.equal(reviewRequests[0].arguments.rating, 'bad');
+  await page.screenshot({ path: `${output}/reviews-1440.png`, fullPage: true });
+  await page.setViewportSize({ width: 390, height: 960 });
+  await page.getByRole('dialog').waitFor();
+  await page.getByRole('radio', { name: '好', exact: true }).check();
+  await page.getByRole('textbox', { name: '留言（可选）' }).fill('补充评价：有克制地等待时值得保持。');
+  await page.getByRole('button', { name: '提交评价', exact: true }).click();
+  await page.waitForFunction(() => document.querySelectorAll('.review-detail section:last-of-type article').length === 2);
+  await page.getByRole('button', { name: '提交评价', exact: true }).waitFor();
+  await page.waitForFunction(() => !document.querySelector('.review-form button[type="submit"]')?.disabled);
+  assert.equal(reviewRequests.length, 2);
+  assert.notEqual(reviewRequests[0].request_id, reviewRequests[1].request_id);
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
+  await page.screenshot({ path: `${output}/reviews-390.png`, fullPage: true });
+  disconnected = true;
+  await page.keyboard.press('Escape');
+  await page.getByRole('button', { name: '立即重试', exact: true }).click();
+  await page.locator('.item-row').filter({ hasText: '3 项操作' }).click();
+  await page.getByRole('radio', { name: '坏', exact: true }).check();
+  assert.equal(await page.getByRole('button', { name: '提交评价', exact: true }).isDisabled(), true);
+  assert.equal(reviewRequests.length, 2);
   assert.deepEqual(failures, [], '浏览器不应报错或访问外网');
-  console.log(`通过：28 个快速切换帧、30 个页面/视口组合、搜索、键盘过滤、部分失败详情、窄屏关闭、断线控制、主动思考与 VAD 开关、当前行动、减少动效与空状态。截图：${output}`);
+  console.log(`通过：28 个快速切换帧、35 个页面/视口组合、搜索、键盘过滤、部分失败详情、窄屏关闭、断线控制、主动思考与 VAD 开关、人工好坏评价与留言、当前行动、减少动效与空状态。截图：${output}`);
 } catch (error) {
   if (page) {
     await page.screenshot({ path: `${output}/failure.png`, fullPage: true });

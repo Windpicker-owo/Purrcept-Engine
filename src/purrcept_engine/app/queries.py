@@ -293,6 +293,53 @@ class HostQueries:
             )
         return result
 
+    async def query_reviews(self, before: str | None = None) -> JsonObject:
+        """分页读取可人工审查的真实行动，不运行模型或能力。
+
+        Args:
+            before: 前页返回的行动游标；None 从最新记录开始。
+
+        Raises:
+            HostStateError: 权威库尚未取得。
+            ControlError: 历史游标不存在。
+        """
+        if self.state.store is None:
+            raise HostStateError("宿主没有可查询的权威存储。")
+        return await self.state.store.human_feedback.page(before)
+
+    async def query_review(self, action_id: str) -> JsonObject | None:
+        """读取行动当轮全部刺激、原始参数和回执以及人工评价历史。
+
+        Args:
+            action_id: 所选真实行动的稳定身份。
+
+        Returns:
+            带版本摘要的完整审查材料；未找到行动时返回 None。
+
+        Raises:
+            HostStateError: 权威库尚未取得。
+        """
+        if self.state.store is None:
+            raise HostStateError("宿主没有可查询的权威存储。")
+        return await self.state.store.human_feedback.detail(action_id)
+
+    async def query_review_media(self, action_id: str, media_id: str) -> tuple[bytes, str] | None:
+        """读取所选审查实际关联的原媒体；不重新采集或转写内容。
+
+        Args:
+            action_id: 当前审查的行动身份。
+            media_id: 当前刺激中展示的原始媒体身份。
+
+        Returns:
+            原字节和媒体类型；未关联该材料时返回 None。
+
+        Raises:
+            HostStateError: 权威存储尚未取得。
+        """
+        if self.state.store is None:
+            raise HostStateError("宿主没有可查询的权威存储。")
+        return await self.state.store.human_feedback.media(action_id, media_id)
+
     def query_preview(self, target: str) -> PreviewFrame | None:
         """只读已取得画面。
 

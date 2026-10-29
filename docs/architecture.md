@@ -257,6 +257,11 @@ SubjectService 启动它；Host 分别等待主体与后台实际关闭。
 
 FeedbackService 交接真实回执、计划和监管；ReflectionService 冻结反思批次，
 在原预算内串行推进连续会话。反思可以修订认识，没有世界执行工具。
+人工行为审查由应用 PanelController 接管，HumanFeedbackLedger 沿同一 Store
+读取当轮刺激和完整行动，在保存前核验所见回执摘要。人工原文复用既有
+knowledge_evidence，不新增存储格式；其优先反思来源和前台 outbox 同事务
+写入，继续由原 FeedbackService 和 ReflectionService 分别消费。人工意见
+不冒充反思模型签发的 SupervisionNotice，也不取得模型原文已阅资格。
 认识的读取与检索经过
 [KnowledgeService](../src/purrcept_engine/domain/knowledge/service.py)；索引工作器
 与可选向量后端分别拥有任务和连接，具体资源由 app/knowledge_resources 装配关闭。

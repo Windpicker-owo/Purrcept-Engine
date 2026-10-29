@@ -135,6 +135,43 @@ async def test_snapshot_preview_and_repeated_query_do_not_open_devices(tmp_path:
         await host.close()
 
 
+async def test_human_review_uses_control_identity_without_replaying_action(tmp_path: Path) -> None:
+    """真实 Worker 行动只执行一次；评价持久化与控制重传使用同一宿主。"""
+    host, calls, _, _ = _host(tmp_path)
+    await host.start()
+    try:
+        actual = await host.execute("from world import me\nawait me.test.control()")
+        assert actual.state == "completed" and len(actual.calls) == 1, actual
+        detail = await host.query_review(actual.action_id)
+        assert detail is not None and isinstance(detail["revision"], str)
+        request = ControlRequest(
+            request_id="human-review",
+            instance_id=host.query().instance_id,
+            target="action:" + actual.action_id,
+            operation="review",
+            expected_revision=detail["revision"],
+            arguments={"rating": "bad", "comment": "先询问，再操作。"},
+        )
+        saved = await host.submit_control(request)
+        assert saved.state == "finished" and saved.error is None
+        assert await host.submit_control(request) == saved
+        reviewed = await host.query_review(actual.action_id)
+        assert reviewed is not None and isinstance(reviewed["feedback"], list)
+        assert len(reviewed["feedback"]) == 1
+        assert len(calls) == 1
+        invalid = await host.submit_control(
+            request.model_copy(
+                update={
+                    "request_id": "invalid-rating",
+                    "arguments": {"rating": "unknown"},
+                }
+            )
+        )
+        assert invalid.state == "rejected"
+    finally:
+        await host.close()
+
+
 async def test_disconnect_of_observer_does_not_repeat_or_cancel_control(tmp_path: Path) -> None:
     release = asyncio.Event()
     host, calls, _, entered = _host(tmp_path, release=release)

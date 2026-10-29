@@ -22,6 +22,7 @@ import { Devices } from "./pages/Devices";
 import { Home } from "./pages/Home";
 import { System } from "./pages/System";
 import { Timeline } from "./pages/Timeline";
+import { Reviews, ReviewDetail } from "./pages/Reviews";
 import { activityReason, deviceMark, mark } from "./semantics";
 import { BrandMark, duration, StateMark, TechDetails, Unavailable } from "./ui/common";
 import { ActionDetail, ControlDetail } from "./ui/details";
@@ -45,11 +46,12 @@ function Selection({ route, state, client, go }: { route: Route; state: PanelSta
   const s = state.snapshot;
   const id = route.id;
   if (id === null) return null;
+  if (route.page === "reviews") return <ReviewDetail key={`${state.snapshot?.instance_id}:${id}`} actionId={id} state={state} client={client} />;
   if (route.page === "timeline") {
     const entry = state.entries.find((item) => controlId(item) === id);
     if (entry) return <ControlDetail entry={entry} client={client} state={state} open={(actionId) => go({ page: "timeline", id: actionId })} />;
     const action = s?.recent_actions.find((item) => item.action_id === id) ?? state.entries.find((item) => item.result?.action?.action_id === id)?.result?.action ?? undefined;
-    return action ? <ActionDetail action={action} snapshot={s} /> : <Unavailable>这条记录已经不在最近的列表中。</Unavailable>;
+    return action ? <><Button variant="secondary" onClick={() => go({ page: "reviews", id })}>审查刺激与行动</Button><ActionDetail action={action} snapshot={s} /></> : <Unavailable>这条记录已经不在最近的列表中。</Unavailable>;
   }
   if (route.page === "devices") {
     const device = s?.devices.find((item) => item.instance_id === id);
@@ -79,6 +81,7 @@ function PageBody({ page, state, client, agent, attention, route, go }: { page: 
     case "home": return <Home state={state} agent={agent} attention={attention} go={go} />;
     case "attention": return <Attention items={attention} go={go} />;
     case "timeline": return <Timeline state={state} selected={route.id} go={go} />;
+    case "reviews": return <Reviews client={client} state={state} selected={route.id} go={go} />;
     case "devices": return <Devices client={client} state={state} selected={route.id} go={go} />;
     case "activities": return <Activities client={client} state={state} selected={route.id} go={go} />;
     case "system": return <System state={state} client={client} go={go} />;
@@ -116,7 +119,7 @@ export function App({ client }: { client: PanelClient }): ReactElement {
   const current = PAGES.find((item) => item.id === route.page);
   const age = state.receivedAt === null ? null : Math.floor((Date.now() - state.receivedAt) / 1000);
   const freshness = age !== null ? `更新于 ${age} 秒前` : connecting ? "正在取得状态" : "尚未取得状态";
-  const inspectable = ["timeline", "devices", "activities"].includes(route.page);
+  const inspectable = ["timeline", "reviews", "devices", "activities"].includes(route.page);
   const hasSelection = route.id !== null && inspectable;
   const close = (): void => go({ page: route.page, id: null });
 
@@ -174,8 +177,8 @@ export function App({ client }: { client: PanelClient }): ReactElement {
               <Selection key={route.id} route={route} state={state} client={client} go={go} />
             </> : <div className="inspector-empty">
               <span className="item-icon" aria-hidden="true"><Icon name={current?.icon ?? "home"} /></span>
-              <h2>查看{route.page === "timeline" ? "行动结果" : route.page === "devices" ? "设备状态" : "活动进展"}</h2>
-              <p className="muted">{route.page === "timeline" ? "选择一条记录，查看每项操作的实际结果。" : route.page === "devices" ? "选择“查看详情”，查看设备的全部状态。" : "选择“查看详情”，查看活动的完整记录。"}</p>
+              <h2>查看{route.page === "reviews" ? "刺激与行动" : route.page === "timeline" ? "行动结果" : route.page === "devices" ? "设备状态" : "活动进展"}</h2>
+              <p className="muted">{route.page === "reviews" ? "选择一次行动，阅读完整材料并留下评价。" : route.page === "timeline" ? "选择一条记录，查看每项操作的实际结果。" : route.page === "devices" ? "选择“查看详情”，查看设备的全部状态。" : "选择“查看详情”，查看活动的完整记录。"}</p>
             </div>}
           </aside> : null
         ) : (

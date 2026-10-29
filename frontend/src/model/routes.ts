@@ -4,7 +4,7 @@
  */
 import type { IconName } from "@purrcept/cel";
 
-export type Page = "home" | "attention" | "timeline" | "devices" | "activities" | "system";
+export type Page = "home" | "attention" | "timeline" | "reviews" | "devices" | "activities" | "system";
 /** 已知页面和可选对象身份，仅定位观察内容，不附带业务执行资格。 */
 export interface Route { page: Page; id: string | null }
 
@@ -13,6 +13,7 @@ export const PAGES: readonly { id: Page; label: string; icon: IconName; descript
   { id: "home", label: "首页", icon: "home", description: "她现在在做什么" },
   { id: "attention", label: "待处理", icon: "inbox", description: "需要你看一下的事" },
   { id: "timeline", label: "时间线", icon: "timeline", description: "最近发生了什么" },
+  { id: "reviews", label: "行为审查", icon: "inbox", description: "查看刺激与行动，留下好坏评价和建议" },
   { id: "devices", label: "设备", icon: "device", description: "连接与感官" },
   { id: "activities", label: "活动", icon: "activity", description: "持续进行的目标" },
   { id: "system", label: "系统", icon: "settings", description: "运行状况与工具" },

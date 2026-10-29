@@ -421,30 +421,54 @@ def get_action(connection: sqlite3.Connection, action_id: str) -> ActionRecord |
     """
     with connection:
         connection.execute("BEGIN")
-        row: tuple[object, ...] | None = connection.execute(
-            f"SELECT {_ACTION_COLUMNS} FROM actions WHERE action_id=?", (action_id,)
-        ).fetchone()
-        if row is None:
-            return None
-        state = row[3]
-        if state not in ("running", "completed", "failed", "timed_out", "cancelled"):
-            raise StorageError("行动状态无效。", code="invalid_record")
-        call_rows: list[tuple[object, ...]] = connection.execute(
-            f"SELECT {_CALL_COLUMNS} FROM calls WHERE action_id=? ORDER BY sequence", (action_id,)
-        ).fetchall()
-        return ActionRecord(
-            _text(row[0]),
-            _text(row[1]),
-            _text(row[2]),
-            state,
-            _number(row[4]),
-            None if row[5] is None else _number(row[5]),
-            _text(row[6]),
-            _json(row[7]),
-            _optional_text(row[8]),
-            tuple(_call(connection, item) for item in call_rows),
-            _optional_text(row[9]),
-        )
+        return get_action_in_transaction(connection, action_id)
+
+
+def get_action_in_transaction(
+    connection: sqlite3.Connection, action_id: str
+) -> ActionRecord | None:
+    """在调用者事务中读取行动与全部回执，不提交或结束外层原子操作。
+
+    Args:
+        connection: Store 线程中已开始事务的唯一连接。
+        action_id: 要查询的真实行动身份。
+
+    Returns:
+        与 get_action 相同的完整记录；行动不存在时返回 None。
+
+    Raises:
+        RuntimeError: 调用者未持有事务。
+        StorageError: 行动或逐次回执损坏。
+
+    Note:
+        人工评价必须在保存前复核当前回执，不能调用会自行结束事务的读取入口。
+    """
+    if not connection.in_transaction:
+        raise RuntimeError("行动快照读取需要调用者持有事务。")
+    row: tuple[object, ...] | None = connection.execute(
+        f"SELECT {_ACTION_COLUMNS} FROM actions WHERE action_id=?", (action_id,)
+    ).fetchone()
+    if row is None:
+        return None
+    state = row[3]
+    if state not in ("running", "completed", "failed", "timed_out", "cancelled"):
+        raise StorageError("行动状态无效。", code="invalid_record")
+    call_rows: list[tuple[object, ...]] = connection.execute(
+        f"SELECT {_CALL_COLUMNS} FROM calls WHERE action_id=? ORDER BY sequence", (action_id,)
+    ).fetchall()
+    return ActionRecord(
+        _text(row[0]),
+        _text(row[1]),
+        _text(row[2]),
+        state,
+        _number(row[4]),
+        None if row[5] is None else _number(row[5]),
+        _text(row[6]),
+        _json(row[7]),
+        _optional_text(row[8]),
+        tuple(_call(connection, item) for item in call_rows),
+        _optional_text(row[9]),
+    )
 
 
 def pending_call_receipts(connection: sqlite3.Connection, limit: int) -> tuple[CallRecord, ...]:

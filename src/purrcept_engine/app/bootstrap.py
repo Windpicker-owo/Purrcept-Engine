@@ -238,6 +238,7 @@ class EngineAssembly:
                 self.host.invoke,
                 self.state.activities,
                 self.state.subject.service.proactive,
+                self.state.store.human_feedback,
             )
 
             # Ordering: 目录、实现和输入端口就绪后才放行外部 start；同步输入

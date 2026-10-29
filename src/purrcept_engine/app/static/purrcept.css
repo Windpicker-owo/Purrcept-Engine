@@ -1,23 +1,30 @@
 /* 由 scripts/export_tokens.py 从 DESIGN.md 生成，请勿手动修改。 */
-/* Purrcept Cel 0.1.0 */
+/* Purrcept Cel 0.2.0 */
 
 :root {
   /* colors */
-  --pc-color-canvas: #FFFFFF;
+  --pc-color-canvas: #F4F1EE;
+  --pc-color-atmosphere-rose: #FBE6EE;
+  --pc-color-atmosphere-peach: #FCEEE2;
   --pc-color-surface: #FFFFFF;
-  --pc-color-surface-sunken: #F2F3F5;
-  --pc-color-surface-selected: #E6E8EC;
+  --pc-color-surface-sunken: #F5F2EF;
+  --pc-color-surface-selected: #EEE9E4;
+  --pc-color-glass: rgba(255, 255, 255, 0.78);
   --pc-color-ink: #15171A;
   --pc-color-ink-secondary: #484D55;
-  --pc-color-ink-muted: #61666E;
+  --pc-color-ink-muted: #5E636B;
   --pc-color-ink-disabled: #A3A7AD;
   --pc-color-on-ink: #FFFFFF;
-  --pc-color-ink-hover: #2B2E33;
-  --pc-color-ink-pressed: #000000;
-  --pc-color-outline: #CED2D9;
-  --pc-color-outline-subtle: #E0E3E8;
-  --pc-color-focus-ring: #15171A;
-  --pc-color-scrim: rgba(21, 23, 26, 0.40);
+  --pc-color-outline: #D6D1CC;
+  --pc-color-outline-subtle: #E8E4E0;
+  --pc-color-focus-ring: #B82A69;
+  --pc-color-scrim: rgba(21, 23, 26, 0.32);
+  --pc-color-brand: #B82A69;
+  --pc-color-brand-hover: #A02259;
+  --pc-color-brand-pressed: #861C4B;
+  --pc-color-on-brand: #FFFFFF;
+  --pc-color-brand-container: #FCE4EF;
+  --pc-color-on-brand-container: #7E1747;
   --pc-color-active: #1460CC;
   --pc-color-active-container: #E5EEFC;
   --pc-color-on-active-container: #0E3F86;
@@ -61,11 +68,11 @@
 
   /* rounded */
   --pc-radius-none: 0px;
-  --pc-radius-xs: 4px;
-  --pc-radius-sm: 6px;
-  --pc-radius-md: 8px;
-  --pc-radius-lg: 12px;
-  --pc-radius-xl: 16px;
+  --pc-radius-xs: 6px;
+  --pc-radius-sm: 8px;
+  --pc-radius-md: 12px;
+  --pc-radius-lg: 16px;
+  --pc-radius-xl: 24px;
   --pc-radius-full: 9999px;
 
   /* spacing */
@@ -81,14 +88,28 @@
   --pc-space-4xl: 96px;
   --pc-space-gutter: 32px;
   --pc-space-gutter-narrow: 16px;
-  --pc-space-sidebar: 64px;
+  --pc-space-island-gap: 12px;
+  --pc-space-sidebar: 72px;
   --pc-space-inspector: 360px;
   --pc-space-content-max: 1600px;
   --pc-space-touch-target: 40px;
 
-  /* elevation：只用于 Overlay 层 */
-  --pc-shadow-overlay: 0 4px 12px rgba(21, 23, 26, 0.10);
-  --pc-shadow-dialog: 0 12px 32px rgba(21, 23, 26, 0.16);
+  /* elevation：外阴影只用墨色，inset 只用墨色或纯白受光边 */
+  --pc-shadow-control: 0 1px 2px rgba(21, 23, 26, 0.16), inset 0 1px 0 rgba(255, 255, 255, 0.22);
+  --pc-shadow-control-surface: 0 1px 2px rgba(21, 23, 26, 0.06);
+  --pc-shadow-well: inset 0 1px 2px rgba(21, 23, 26, 0.06);
+  --pc-shadow-panel: 0 1px 2px rgba(21, 23, 26, 0.04), 0 8px 24px rgba(21, 23, 26, 0.06), inset 0 1px 0 rgba(255, 255, 255, 0.9);
+  --pc-shadow-lifted: 0 2px 4px rgba(21, 23, 26, 0.05), 0 12px 32px rgba(21, 23, 26, 0.10), inset 0 1px 0 rgba(255, 255, 255, 0.9);
+  --pc-shadow-overlay: 0 2px 6px rgba(21, 23, 26, 0.06), 0 16px 40px rgba(21, 23, 26, 0.14), inset 0 1px 0 rgba(255, 255, 255, 0.7);
+  --pc-shadow-dialog: 0 4px 12px rgba(21, 23, 26, 0.08), 0 24px 64px rgba(21, 23, 26, 0.20);
+
+  /* gradients：只给背景美术 */
+  --pc-gradient-atmosphere: radial-gradient(60% 55% at 0% 0%, var(--pc-color-atmosphere-rose) 0%, transparent 100%), radial-gradient(55% 50% at 100% 0%, var(--pc-color-atmosphere-peach) 0%, transparent 100%);
+  --pc-gradient-stage: linear-gradient(115deg, var(--pc-color-surface) 40%, var(--pc-color-atmosphere-rose) 100%);
+
+  /* materials：只给导航轨与浮层 */
+  --pc-material-glass-background: var(--pc-color-glass);
+  --pc-material-glass-filter: blur(24px) saturate(160%);
 
   /* motion：弹簧的 CSS 回退不可打断，可打断的位移请使用 motion.js */
   --pc-motion-snap-duration: 318ms;
@@ -110,47 +131,50 @@
   --pc-motion-stagger-max-items: 6;
 
   /* components */
-  --pc-button-primary-background: var(--pc-color-ink);
-  --pc-button-primary-color: var(--pc-color-on-ink);
+  --pc-button-primary-background: var(--pc-color-brand);
+  --pc-button-primary-color: var(--pc-color-on-brand);
   --pc-button-primary-font: var(--pc-font-label);
-  --pc-button-primary-radius: var(--pc-radius-md);
+  --pc-button-primary-radius: var(--pc-radius-full);
   --pc-button-primary-height: 36px;
-  --pc-button-primary-padding: 0 14px;
+  --pc-button-primary-padding: 0 16px;
   --pc-button-secondary-background: var(--pc-color-surface);
   --pc-button-secondary-color: var(--pc-color-ink);
   --pc-button-secondary-outline: var(--pc-color-outline);
   --pc-button-secondary-font: var(--pc-font-label);
-  --pc-button-secondary-radius: var(--pc-radius-md);
+  --pc-button-secondary-radius: var(--pc-radius-full);
   --pc-button-secondary-height: 36px;
-  --pc-button-secondary-padding: 0 14px;
+  --pc-button-secondary-padding: 0 16px;
   --pc-button-ghost-background: transparent;
   --pc-button-ghost-color: var(--pc-color-ink-secondary);
   --pc-button-ghost-font: var(--pc-font-label);
-  --pc-button-ghost-radius: var(--pc-radius-md);
+  --pc-button-ghost-radius: var(--pc-radius-full);
   --pc-button-ghost-height: 36px;
-  --pc-button-ghost-padding: 0 10px;
+  --pc-button-ghost-padding: 0 12px;
   --pc-button-destructive-background: var(--pc-color-failed);
   --pc-button-destructive-color: var(--pc-color-on-ink);
   --pc-button-destructive-font: var(--pc-font-label);
-  --pc-button-destructive-radius: var(--pc-radius-md);
+  --pc-button-destructive-radius: var(--pc-radius-full);
   --pc-button-destructive-height: 36px;
-  --pc-button-destructive-padding: 0 14px;
+  --pc-button-destructive-padding: 0 16px;
   --pc-input-background: var(--pc-color-surface);
   --pc-input-color: var(--pc-color-ink);
   --pc-input-outline: var(--pc-color-outline);
   --pc-input-font: var(--pc-font-body);
   --pc-input-radius: var(--pc-radius-md);
-  --pc-input-height: 36px;
+  --pc-input-height: 40px;
   --pc-input-padding: 0 12px;
   --pc-nav-item-background: transparent;
   --pc-nav-item-color: var(--pc-color-ink-muted);
   --pc-nav-item-radius: var(--pc-radius-md);
-  --pc-nav-item-size: 40px;
-  --pc-nav-item-current-background: var(--pc-color-surface-selected);
-  --pc-nav-item-current-color: var(--pc-color-ink);
+  --pc-nav-item-size: 44px;
+  --pc-nav-item-current-background: var(--pc-color-brand-container);
+  --pc-nav-item-current-color: var(--pc-color-on-brand-container);
   --pc-nav-item-current-radius: var(--pc-radius-md);
-  --pc-nav-item-current-size: 40px;
-  --pc-object-surface-background: var(--pc-color-surface);
+  --pc-nav-item-current-size: 44px;
+  --pc-panel-background: var(--pc-color-surface);
+  --pc-panel-radius: var(--pc-radius-xl);
+  --pc-panel-padding: var(--pc-space-lg);
+  --pc-object-surface-background: var(--pc-color-surface-sunken);
   --pc-object-surface-radius: var(--pc-radius-lg);
   --pc-object-surface-padding: var(--pc-space-md);
   --pc-stage-field-background: var(--pc-color-surface);

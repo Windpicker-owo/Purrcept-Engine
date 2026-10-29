@@ -215,6 +215,27 @@ def _delivery(
     )
 
 
+def record_human_feedback(
+    connection: sqlite3.Connection, snapshot: knowledge_models.EvidenceSnapshot
+) -> None:
+    """在调用方事务中接管人工原文、优先反思和前台可靠投递。
+
+    Args:
+        connection: Store 线程中已开始事务的唯一连接。
+        snapshot: kind 为 human_feedback 的完整评价及所见行动材料。
+
+    Note:
+        人工意见不伪装成反思模型签发的监管，不要求模型阅读资格。前台沿既有
+        outbox 唤起而不抢占进行中的行动；反思持有独立责任，前台处理不能将其确认。
+    """
+    if snapshot.kind != "human_feedback":
+        raise ValueError("人工反馈入口只接收人工评价证据。")
+    _source(connection, snapshot, priority=True)
+    _delivery(
+        connection, "human_feedback", snapshot.evidence_id, snapshot.text, snapshot.occurred_at
+    )
+
+
 def _admit_deliveries(
     connection: sqlite3.Connection, admit: AdmitInput, *, now: float, limit: int
 ) -> FeedbackBridge:

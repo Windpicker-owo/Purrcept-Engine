@@ -85,6 +85,7 @@ from purrcept_engine.infrastructure.sqlite import time as time_storage
 from purrcept_engine.infrastructure.sqlite.audio_port import AudioLedger
 from purrcept_engine.infrastructure.sqlite.controls import ControlLedger
 from purrcept_engine.infrastructure.sqlite.feedback_port import FeedbackLedger
+from purrcept_engine.infrastructure.sqlite.human_feedback import HumanFeedbackLedger
 from purrcept_engine.infrastructure.sqlite.knowledge_port import KnowledgeLedger
 from purrcept_engine.infrastructure.sqlite.queue import SqliteExecutor
 from purrcept_engine.infrastructure.sqlite.time_port import TimeLedger
@@ -431,20 +432,21 @@ def _protected_inputs(
     监管保护同时包含已投递的派生输入及原文片段关联的真实来源。意见已回应
     或失效即不再授予保护，未知调用则须由新的真实回执改变状态。
     """
-    selection = (
-        "SELECT input_id FROM inputs" if selected is None else "SELECT value FROM json_each(?)"
-    )
+    # 从仍未解决的业务事实出发，再按输入主键核验身份。若先遍历全部 inputs，
+    # 再逐条关联没有 input_id 索引的 turn_inputs，历史增长会形成近似平方扫描；
+    # 这会占住唯一提交线程，让本来很快的 WebUI 快照也排队超时。
+    selection = "" if selected is None else " WHERE i.input_id IN (SELECT value FROM json_each(?))"
     rows: list[tuple[object, ...]] = connection.execute(
-        "WITH selected(id) AS (" + selection + ") "
-        "SELECT DISTINCT s.id FROM selected s WHERE "
-        "EXISTS(SELECT 1 FROM actions a JOIN calls c ON c.action_id=a.action_id "
-        "WHERE a.input_id=s.id AND c.state IN ('prepared','started','unknown')) OR "
-        "EXISTS(SELECT 1 FROM actions a JOIN calls c ON c.action_id=a.action_id "
+        "WITH unresolved(input_id) AS ("
+        "SELECT a.input_id FROM calls c JOIN actions a ON a.action_id=c.action_id "
+        "WHERE c.state IN ('prepared','started','unknown') UNION "
+        "SELECT a.input_id FROM actions a JOIN calls c ON c.action_id=a.action_id "
         "JOIN activity_commands cmd ON cmd.command_id=c.call_id "
         "JOIN activities act ON act.activity_id=cmd.activity_id "
-        "WHERE a.input_id=s.id AND act.state NOT IN ('ended','completed')) OR "
-        "EXISTS(SELECT 1 FROM failed_turns f JOIN turn_inputs i ON i.turn_id=f.turn_id "
-        "WHERE i.input_id=s.id AND f.presented_in IS NULL)",
+        "WHERE act.state NOT IN ('ended','completed') UNION "
+        "SELECT t.input_id FROM failed_turns f JOIN turn_inputs t ON t.turn_id=f.turn_id "
+        "WHERE f.presented_in IS NULL) "
+        "SELECT i.input_id FROM unresolved u JOIN inputs i ON i.input_id=u.input_id" + selection,
         () if selected is None else (json.dumps(selected),),
     ).fetchall()
     protected = {_text(row[0]) for row in rows}
@@ -683,6 +685,11 @@ class Store:
     def controls(self) -> ControlLedger:
         """借出同连接的页面控制身份账本，不增加设备执行入口。"""
         return ControlLedger(self._submit)
+
+    @property
+    def human_feedback(self) -> HumanFeedbackLedger:
+        """借出同库人工审查端口，评价复用原证据及双消费者反馈账本。"""
+        return HumanFeedbackLedger(self._submit)
 
     @property
     def audio(self) -> AudioLedger:

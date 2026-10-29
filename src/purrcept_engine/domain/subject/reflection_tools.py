@@ -56,7 +56,7 @@ from purrcept_engine.domain.knowledge.models import (
 )
 from purrcept_engine.domain.knowledge.ports import KnowledgeStore
 from purrcept_engine.domain.knowledge.service import KnowledgeService, recall_payload
-from purrcept_engine.domain.subject.prompts import REFLECTION_PROMPT
+from purrcept_engine.domain.subject.prompts import HUMAN_FEEDBACK_PROMPT, REFLECTION_PROMPT
 
 Nonnegative = Annotated[int, Field(ge=0, strict=True)]
 Positive = Annotated[int, Field(gt=0, strict=True)]
@@ -68,7 +68,7 @@ def reflection_instructions() -> tuple[SystemInstruction, ...]:
     Returns:
         按固定顺序组成 system 前缀的完整指令与能力目录。
     """
-    return (REFLECTION_PROMPT.instruction(),)
+    return (REFLECTION_PROMPT.instruction(), HUMAN_FEEDBACK_PROMPT.instruction())
 
 
 class ReflectionPorts(Protocol):
