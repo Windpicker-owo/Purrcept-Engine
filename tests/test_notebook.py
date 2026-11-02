@@ -540,7 +540,7 @@ def _config(directory: Path) -> EngineConfig:
                     "max_output_tokens": 1000,
                 }
             },
-            "subject": {"foreground": "local", "reflection": "local", "summary": "local"},
+            "subject": {"foreground": "local", "reflection": "local"},
             "plugins": [
                 {
                     "instance_id": "notes",

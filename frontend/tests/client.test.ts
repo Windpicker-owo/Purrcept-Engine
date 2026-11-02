@@ -1,6 +1,7 @@
 /** 页面传输替身核验双击、网络不确定与刷新恢复；没有真实 HTTP/设备副作用。 */
 import { describe, expect, it } from "vitest";
-import { PanelClient } from "../src/client";
+import { PanelClient, isSnapshotDelayed } from "../src/client";
+import { blocked } from "../src/model/controls";
 import { controlRequest } from "../src/contracts";
 import { host, result } from "./fixtures";
 
@@ -11,6 +12,42 @@ function memory(initial: string | null = null): { getItem: () => string | null; 
 function json(value: unknown, status = 200): Response { return new Response(JSON.stringify(value), { status, headers: { "Content-Type": "application/json" } }); }
 
 describe("只读观察与稳定身份", () => {
+  it("快照超时但健康可达时保留旧状态并暂停控制，后续刷新恢复且不重投", async () => {
+    let mode = "ready";
+    let posts = 0;
+    const client = new PanelClient(async (path, init) => {
+      if (init?.method === "POST") { posts++; return json({}); }
+      if (path === "/api/session") return json({ instance_id: "host-1", token: "token" });
+      if (path === "/api/health") {
+        if (mode === "offline") throw new TypeError("offline");
+        return json(host().health);
+      }
+      if (mode !== "ready") throw new DOMException("synthetic timeout", "TimeoutError");
+      return json(host());
+    }, memory(), () => "r");
+    await client.refresh();
+    const previous = client.getState().snapshot;
+    mode = "slow";
+    await client.refresh();
+    expect(client.getState().snapshot).toBe(previous);
+    expect(client.getState().online).toBe(false);
+    expect(client.getState().observedHealth?.phase).toBe("running");
+    expect(isSnapshotDelayed(client.getState())).toBe(true);
+    expect(blocked(client.getState())).toContain("等待最新状态");
+    expect(client.getState().startup).toBeNull();
+    await client.submit("computer", "connect", "1", {}, "连接");
+    expect(posts).toBe(0);
+    mode = "offline";
+    await client.refresh();
+    expect(client.getState().observedHealth).toBeNull();
+    expect(isSnapshotDelayed(client.getState())).toBe(false);
+    mode = "ready";
+    await client.refresh();
+    expect(client.getState().online).toBe(true);
+    expect(client.getState().observedHealth).toBeNull();
+    expect(client.getState().error).toBeNull();
+    expect(posts).toBe(0);
+  });
   it.each(["starting", "running"])("启动期间轻量健康可读，503快照不冒充断线或就绪（%s）", async (phase) => {
     let ready = false;
     const client = new PanelClient(async (path) => {

@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import hashlib
+from bisect import bisect_right
 from collections.abc import Iterable
 from dataclasses import dataclass, replace
 from typing import Literal, Protocol
@@ -26,12 +27,13 @@ class SummaryError(EngineError):
 
 @dataclass(frozen=True, slots=True)
 class SummarySource:
-    """一个所有者/版本的完整冻结来源，end_turn/end_message 为排他覆盖边界。
+    """一个所有者/版本的完整冻结来源，覆盖一个连续、无保护材料的完整轮次区间。
 
     Attributes:
         owner_id: 发起本次工作并持有提交资格的所有者身份。
         source_version: 冻结来源的会话版本，安装摘要前必须仍然匹配。
         checkpoint: 完整冻结的源检查点，提交摘要时同时归档并核验保护范围。
+        start_turn: 覆盖的首个完整轮次下标，保留此前消息；零表示从历史开头开始。
         end_turn: 摘要覆盖的轮次排他上界。
         end_message: 摘要覆盖的消息排他上界。
         coverage_id: 摘要实际覆盖范围的稳定关联身份。
@@ -43,7 +45,7 @@ class SummarySource:
 
         coverage_id 只散列这次真正覆盖的消息与边界，不包含实时版本或提醒，避免
         状态变化却没有新增可压缩历史时重复摘要。checkpoint 仍完整保留，供事务
-        归档与保护核验；messages 是摘要模型允许读取的旧完整轮次前缀。
+        归档与保护核验；messages 是摘要模型允许读取的旧完整轮次区间。
     """
 
     owner_id: str
@@ -54,11 +56,24 @@ class SummarySource:
     coverage_id: str
     protected_turns: int = 2
     protected_message_indices: tuple[int, ...] = ()
+    start_turn: int = 0
+
+    @property
+    def start_message(self) -> int:
+        """返回覆盖起点；轮次零包含历史开头尚无独立边界的摘要占位。"""
+        return (
+            self.checkpoint.history.turn_boundaries[self.start_turn - 1] if self.start_turn else 0
+        )
+
+    @property
+    def turn_count(self) -> int:
+        """返回真实覆盖轮数，缩小摘要输入和限制请求数量都使用区间长度。"""
+        return self.end_turn - self.start_turn
 
     @property
     def messages(self) -> tuple[Message, ...]:
-        """返回覆盖前缀，近期、当前和显式未决材料没有混入可改写来源。"""
-        return self.checkpoint.history.messages[: self.end_message]
+        """返回选定区间，近期、当前和显式未决材料没有混入可改写来源。"""
+        return self.checkpoint.history.messages[self.start_message : self.end_message]
 
 
 @dataclass(frozen=True, slots=True)
@@ -149,7 +164,7 @@ def freeze_summary_source(
     protected_turns: int = 2,
     protected_message_indices: Iterable[int] = (),
 ) -> SummarySource | None:
-    """冻结最长可压缩完整前缀。
+    """冻结最长连续可压缩轮次区间，等长时优先较早区间。
 
     Args:
         checkpoint: 完整 Core 检查点；None 表示尚无已提交历史。
@@ -166,11 +181,11 @@ def freeze_summary_source(
         ValueError: 摘要来源需要明确所有者及非负版本；保护轮数不能为负。
 
     Note:
-        未决保护会提前截断，不能跨过它补压缩。
+        未决保护保留其所在的整个真实轮次，不阻断其后的独立历史区间。
 
         Core turn_boundaries 只表示真实完整轮次，当前未提交后缀自然排除。调用方
         从实际未决记录给出受保护消息位置，不靠正文猜测完成或退役。没有旧完整
-        前缀返回 None；能否开始由权威 reserve_summary 的同覆盖/版本/idle 判定。
+        区间返回 None；能否开始由权威 reserve_summary 的同覆盖/版本/idle 判定。
     """
     if not owner_id or isinstance(source_version, bool) or source_version < 0:
         raise ValueError("摘要来源需要明确所有者及非负版本。")
@@ -178,31 +193,38 @@ def freeze_summary_source(
         raise ValueError("保护轮数不能为负。")
     history = checkpoint.history
     protected_positions = tuple(protected_message_indices)
-    cutoff = _eligible_turns(checkpoint, protected_turns, protected_positions)
-    if cutoff == 0:
+    ranges = _eligible_ranges(checkpoint, protected_turns, protected_positions)
+    if not ranges:
         return None
-    end_message = history.turn_boundaries[cutoff - 1]
-    coverage = _coverage_id(checkpoint, cutoff, end_message)
+    start_turn, end_turn = max(ranges, key=lambda bounds: bounds[1] - bounds[0])
+    end_message = history.turn_boundaries[end_turn - 1]
+    coverage = _coverage_id(checkpoint, start_turn, end_turn)
     return SummarySource(
         owner_id,
         source_version,
         checkpoint,
-        cutoff,
+        end_turn,
         end_message,
         coverage,
         protected_turns,
         protected_positions,
+        start_turn,
     )
 
 
-def _eligible_turns(
+def _eligible_ranges(
     checkpoint: ConversationCheckpoint,
     protected_turns: int,
     positions: tuple[int, ...],
-) -> int:
-    """保护材料把可压缩前缀提前截止，消息位置不改变完整轮次的计数。"""
+) -> tuple[tuple[int, int], ...]:
+    """按完整轮次切开保护位置，返回近期轮次之前的全部可压缩连续区间。
+
+    消息位置只能保护其所在的整个轮次，不能拆开工具调用和回执。当前未提交
+    后缀不属于任何完整轮次；前置旧摘要随其后的首轮一起选择或保留。
+    """
     history = checkpoint.history
     cutoff = max(0, len(history.turn_boundaries) - protected_turns)
+    blocked: set[int] = set()
     for position in positions:
         if (
             isinstance(position, bool)
@@ -210,25 +232,40 @@ def _eligible_turns(
             or not 0 <= position < len(history.messages)
         ):
             raise ValueError("未决保护位置不属于冻结历史。")
-        for index, end in enumerate(history.turn_boundaries):
-            if position < end:
-                cutoff = min(cutoff, index)
-                break
-    return cutoff
+        blocked.add(bisect_right(history.turn_boundaries, position))
+
+    ranges: list[tuple[int, int]] = []
+    start = 0
+    for index in sorted(blocked):
+        if index >= cutoff:
+            break
+        if start < index:
+            ranges.append((start, index))
+        start = index + 1
+    if start < cutoff:
+        ranges.append((start, cutoff))
+    return tuple(ranges)
 
 
-def _coverage_id(checkpoint: ConversationCheckpoint, end_turn: int, end_message: int) -> str:
+def _coverage_id(checkpoint: ConversationCheckpoint, start_turn: int, end_turn: int) -> str:
+    """身份覆盖确切区间、消息与边界；不因来源版本或动态提醒变化而重算身份。"""
+    history = checkpoint.history
+    start = history.turn_boundaries[start_turn - 1] if start_turn else 0
+    end = history.turn_boundaries[end_turn - 1]
     encoded = encode(
         {
-            "messages": checkpoint.history.messages[:end_message],
-            "turn_boundaries": checkpoint.history.turn_boundaries[:end_turn],
+            "start_turn": start_turn,
+            "messages": history.messages[start:end],
+            "turn_boundaries": tuple(
+                bound - start for bound in history.turn_boundaries[start_turn:end_turn]
+            ),
         }
     )
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
 def shorten_summary_source(source: SummarySource, end_turn: int) -> SummarySource:
-    """在原保护范围内缩短到旧完整轮次前缀，未选历史仍保留在原检查点。
+    """在原冻结区间内缩短结尾，覆盖起点和区间外的原文始终保持不变。
 
     Args:
         source: 已冻结的历史范围及所属会话版本。
@@ -244,19 +281,19 @@ def shorten_summary_source(source: SummarySource, end_turn: int) -> SummarySourc
         只改变本次摘要覆盖及其身份，不截断消息或工具配对，也不扩大允许压缩范围。
         调用方在模型派发前按实际摘要容量选择，候选安装仍须核验整个主脑请求。
     """
-    if isinstance(end_turn, bool) or not 0 < end_turn <= source.end_turn:
+    if isinstance(end_turn, bool) or not source.start_turn < end_turn <= source.end_turn:
         raise ValueError("摘要只能缩短到原覆盖内的正整数轮次。")
     end_message = source.checkpoint.history.turn_boundaries[end_turn - 1]
     return replace(
         source,
         end_turn=end_turn,
         end_message=end_message,
-        coverage_id=_coverage_id(source.checkpoint, end_turn, end_message),
+        coverage_id=_coverage_id(source.checkpoint, source.start_turn, end_turn),
     )
 
 
 def candidate_checkpoint(source: SummarySource, summary: Message) -> ConversationCheckpoint:
-    """用一条文本摘要替换覆盖前缀，完整保留受保护后缀、提醒和 continuation。
+    """在原位置用文本摘要替换冻结区间，完整保留区间外消息、提醒与 continuation。
 
     Args:
         source: 已冻结的历史范围及所属会话版本。
@@ -279,26 +316,38 @@ def candidate_checkpoint(source: SummarySource, summary: Message) -> Conversatio
         raise SummaryError("空摘要不能替换旧历史。")
     history = source.checkpoint.history
     if (
-        not 0 < source.end_turn <= len(history.turn_boundaries)
+        isinstance(source.start_turn, bool)
+        or not isinstance(source.start_turn, int)
+        or not 0 <= source.start_turn < source.end_turn <= len(history.turn_boundaries)
         or history.turn_boundaries[source.end_turn - 1] != source.end_message
     ):
         raise SummaryError("摘要覆盖不是冻结来源的完整轮次边界。")
     if (
         source.protected_turns < 0
-        or source.end_turn
-        > _eligible_turns(
-            source.checkpoint, source.protected_turns, source.protected_message_indices
+        or not any(
+            start <= source.start_turn < source.end_turn <= end
+            for start, end in _eligible_ranges(
+                source.checkpoint, source.protected_turns, source.protected_message_indices
+            )
         )
-        or source.coverage_id
-        != _coverage_id(source.checkpoint, source.end_turn, source.end_message)
+        or source.coverage_id != _coverage_id(source.checkpoint, source.start_turn, source.end_turn)
     ):
         raise SummaryError("摘要来源覆盖身份或保护条件被改变。")
+
+    # Ordering: 摘要回到原区间位置，不能移到受保护轮次之前或打断工具配对。
+    # 它不新增真实轮次，前置保留轮次的边界不变，后置边界只按消息差量平移。
+    shift = source.start_message + 1 - source.end_message
     current = ConversationState(
-        (summary, *history.messages[source.end_message :]),
+        (
+            *history.messages[: source.start_message],
+            summary,
+            *history.messages[source.end_message :],
+        ),
         continuation=history.continuation,
-        turn_index=history.turn_index - source.end_turn,
-        turn_boundaries=tuple(
-            1 + end - source.end_message for end in history.turn_boundaries[source.end_turn :]
+        turn_index=history.turn_index - source.turn_count,
+        turn_boundaries=(
+            *history.turn_boundaries[: source.start_turn],
+            *(end + shift for end in history.turn_boundaries[source.end_turn :]),
         ),
     )
     return ConversationCheckpoint(current, source.checkpoint.reminders)

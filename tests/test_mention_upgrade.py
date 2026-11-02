@@ -154,7 +154,6 @@ async def _running(
             "subject": {
                 "foreground": "main",
                 "reflection": "reflection",
-                "summary": "reflection",
                 "attention": "attention" if attention else None,
                 "attention_batch_seconds": coalesce_seconds,
                 "character": character or {},

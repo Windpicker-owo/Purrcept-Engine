@@ -10,6 +10,7 @@ import type { Activity, ControlResult, Device, Json } from "./contracts";
 /** 从原始业务事实推导的 Cel 形状与可读状态词，不反向修改业务状态。 */
 export interface Mark { state: AgentState; label: string }
 const STATES: Readonly<Record<string, Mark>> = {
+  ready: { state: "completed", label: "已就绪" },
   new: { state: "warning", label: "尚未启动" }, starting: { state: "waiting-external", label: "正在启动" },
   running: { state: "acting", label: "运行中" }, closing: { state: "waiting-external", label: "正在收尾" }, closed: { state: "paused", label: "已关闭" },
   online: { state: "completed", label: "在线" }, waiting: { state: "waiting-external", label: "等待对方连入" }, recovering: { state: "waiting-external", label: "正在重新连接" },

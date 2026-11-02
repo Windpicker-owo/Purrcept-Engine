@@ -254,7 +254,6 @@ def _config(
         "subject": {
             "foreground": "main",
             "reflection": "main",
-            "summary": "main",
         },
         "plugins": [{"instance_id": identity, "entry": identity} for identity in plugins],
     }

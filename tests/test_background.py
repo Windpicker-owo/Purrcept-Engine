@@ -497,11 +497,40 @@ async def test_due_plan_once_foreground_does_not_resolve_plan(store: Store) -> N
     await _source(store, "source")
     plan = WakeupPlan(id="plan", due=time.time() + 0.01, reason="独立后续约定", evidence="source")
     await store.knowledge.plan_wakeup(plan)
+    assert await store.feedback.next_plan_at() == plan.due
     assert not (await store.feedback.bridge(now=plan.due - 1)).foreground_ids
     actual = await store.feedback.bridge(now=plan.due)
     assert len(actual.foreground_ids) == 1
+    assert await store.feedback.next_plan_at() is None
     assert await store.knowledge.pending_plans() == (plan,)
     assert not (await store.feedback.bridge(now=plan.due + 100)).foreground_ids
+
+
+async def test_feedback_worker_does_not_query_analysis_statistics(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """单独运行可靠交接，不允许它借计划计时触发分析和模型额度统计。"""
+
+    def forbidden(*args: object, **kwargs: object) -> None:
+        raise AssertionError("可靠交接不应读取分析统计。")
+
+    monkeypatch.setattr(feedback_sql, "reflection_state", forbidden)
+    await _call(store)
+    await _result(store, "call", "confirmed")
+    async with AsyncExitStack() as stack:
+        background = await _background(store, stack, Backend(store))
+        task = background.feedback_service.start()
+        background.tasks.add(task)
+
+        async def delivered() -> bool:
+            if task.done():
+                task.result()
+            return not await store.pending_call_receipts(limit=1)
+
+        await _wait_for(delivered)
+        # 让工作器走完无待办分支，计划计时仍应保持正常等待而不是内部崩溃。
+        await store.runtime_projection()
+        assert not task.done()
 
 
 async def test_supervision_scan_does_not_steal_original_urgent_generation(store: Store) -> None:

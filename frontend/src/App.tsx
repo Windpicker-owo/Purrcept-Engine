@@ -8,6 +8,7 @@ import type { ReactElement } from "react";
 import { motion } from "motion/react";
 import { Button, CelProvider, Feedback, Icon, Sheet, transitions } from "@purrcept/cel";
 import type { PanelClient, PanelState } from "./client";
+import { isSnapshotDelayed } from "./client";
 import { agentView } from "./model/agent";
 import type { AgentView } from "./model/agent";
 import { attentionItems } from "./model/attention";
@@ -116,7 +117,12 @@ export function App({ client }: { client: PanelClient }): ReactElement {
   // 首次查询尚未失败时只表达连接中，不能先闪出断线警告再立刻移除。
   const connecting = state.snapshot === null && state.error === null;
   const currentAgent = agentView(state.snapshot, state.online || connecting, attention);
-  const agent = state.snapshot === null && state.startup ? { state: state.startup.phase === "failed" ? "failed" as const : "waiting-external" as const, headline: state.startup.phase === "failed" ? "启动失败" : "Engine 正在启动", detail: state.startup.phase === "failed" ? "请查看诊断日志定位失败阶段。" : ({ sqlite:"正在打开本机数据。", models:"正在准备模型请求服务。", execution:"正在准备行动服务。", subject_restore:"正在恢复主体状态。", subject_start:"正在启用主体工作。" } as Record<string,string>)[state.startup.startup_stage ?? ""] ?? (state.startup.startup_stage?.startsWith("plugin_") ? "正在准备输入与设备插件。" : "配置与设备准备完成后即可接收新的工作。"), focus: null } : currentAgent;
+  const snapshotDelayed = isSnapshotDelayed(state);
+  const agent = snapshotDelayed ? {
+    state: state.observedHealth?.can_process ? "warning" as const : "failed" as const,
+    headline: state.observedHealth?.can_process ? "状态更新延迟" : "主体已停止处理",
+    detail: "本机服务仍可响应，等待最新状态。", focus: null,
+  } : state.snapshot === null && state.startup ? { state: state.startup.phase === "failed" ? "failed" as const : "waiting-external" as const, headline: state.startup.phase === "failed" ? "启动失败" : "Engine 正在启动", detail: state.startup.phase === "failed" ? "请查看诊断日志定位失败阶段。" : ({ sqlite:"正在打开本机数据。", models:"正在准备模型请求服务。", execution:"正在准备行动服务。", subject_restore:"正在恢复主体状态。", subject_start:"正在启用主体工作。" } as Record<string,string>)[state.startup.startup_stage ?? ""] ?? (state.startup.startup_stage?.startsWith("plugin_") ? "正在准备输入与设备插件。" : "配置与设备准备完成后即可接收新的工作。"), focus: null } : currentAgent;
   useEffect(() => { document.title = `${agent.headline} · Purrcept`; }, [agent.headline]);
   const current = PAGES.find((item) => item.id === route.page);
   const age = state.receivedAt === null ? null : Math.floor((Date.now() - state.receivedAt) / 1000);
@@ -153,8 +159,8 @@ export function App({ client }: { client: PanelClient }): ReactElement {
           </header>
           {!state.online && !connecting ? (
             <Feedback state="warning" scope="system" urgency="passive" persistence="until-resolved"
-              title={state.snapshot ? "与本机服务的连接中断" : "正在等待本机服务"}>
-              {state.snapshot ? "页面显示的是断开前的状态，操作已暂停。" : "确认 Engine 正在运行。"}她已经接手的工作不会因页面断开而取消。{state.error ? ` ${state.error}` : ""}
+              title={snapshotDelayed ? "本机服务可连接，状态更新延迟" : state.snapshot ? "与本机服务的连接中断" : "正在等待本机服务"}>
+              {snapshotDelayed ? "正在重试读取状态；取得最新状态前操作暂停。" : state.snapshot ? "页面显示的是断开前的状态，操作已暂停。" : "确认 Engine 正在运行。"}她已经接手的工作不会因页面断开而取消。{state.error ? ` ${state.error}` : ""}
             </Feedback>
           ) : null}
 

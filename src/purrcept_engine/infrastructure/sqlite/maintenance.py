@@ -2,7 +2,7 @@
 
 reserve_summary 在模型派发前保存完整冻结来源及媒体关系；失败只归还临时
 占位，真实请求与响应仍归模型账本。install_summary 复核原版本、空闲条件、真实成功
-模型响应、受保护后缀与完整请求缩小，候选、归档关联和会话版本同事务生效。
+模型响应、区间外的受保护消息与完整请求缩小，候选、归档关联和会话版本同事务生效。
 失败或过期不删除旧历史，不产生另一连接、自动迁移或重新计算摘要。
 """
 
@@ -80,6 +80,8 @@ def _source_identity(source: SummarySource) -> str:
         {
             "owner_id": source.owner_id,
             "source_version": source.source_version,
+            "start_turn": source.start_turn,
+            "start_message": source.start_message,
             "end_turn": source.end_turn,
             "end_message": source.end_message,
             "coverage_id": source.coverage_id,

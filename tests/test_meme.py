@@ -456,7 +456,7 @@ async def test_actual_host_worker_can_search_read_and_favorite_without_computer_
                     "max_output_tokens": 1000,
                 }
             },
-            "subject": {"foreground": "test", "reflection": "test", "summary": "test"},
+            "subject": {"foreground": "test", "reflection": "test"},
             "plugins": [
                 {"instance_id": "computer", "entry": "computer"},
                 {

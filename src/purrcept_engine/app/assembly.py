@@ -24,6 +24,7 @@ from purrcept_engine.app.console import console_blueprint
 from purrcept_engine.domain.execution.catalog import Catalog, ObjectDeclaration
 from purrcept_engine.errors import ConfigError
 from purrcept_engine.plugin_system.contracts import PluginBlueprint, PluginFactory
+from purrcept_engine.plugins.audio_files import audio_files_blueprint
 from purrcept_engine.plugins.images import images_blueprint
 
 _BUILTIN_ENTRIES = {
@@ -86,6 +87,8 @@ def prepare_plugins(
         raise ConfigError("插件路径解析必须提供绝对基准目录。")
     if any(item.enabled and item.instance_id == "image" for item in settings):
         raise ConfigError("plugins: image实例身份已由主体默认看图能力占用。")
+    if any(item.enabled and item.instance_id == "audio_file" for item in settings):
+        raise ConfigError("plugins: audio_file实例身份已由主体默认音频读取能力占用。")
     if console_output is not None and any(
         item.enabled and item.instance_id == "console" for item in settings
     ):
@@ -94,7 +97,10 @@ def prepare_plugins(
         ObjectDeclaration("subject", "me", "持续主体"),
         ObjectDeclaration("world", "world", "已装配环境"),
     ]
-    blueprints: list[tuple[str, PluginBlueprint]] = [("image", images_blueprint(base_dir))]
+    blueprints: list[tuple[str, PluginBlueprint]] = [
+        ("image", images_blueprint(base_dir)),
+        ("audio_file", audio_files_blueprint(base_dir)),
+    ]
     if console_output is not None:
         console = console_blueprint(console_output)
         objects.extend(console.objects)

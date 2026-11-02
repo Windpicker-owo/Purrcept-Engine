@@ -1,7 +1,8 @@
 /**
  * 页面观察寿命与稳定控制身份的所有者。
- * GET 轮询不打开设备；连接状态只来自成功校验的快照。POST 被浏览器中断后仍由
- * Host 拥有工作，页面保留原请求并提供查询/原样重传。令牌与业务事实分开保存。
+ * GET 轮询不打开设备；完整快照决定控制资格，独立健康观察区分延迟与断线。
+ * POST 被浏览器中断后仍由 Host 拥有工作，页面保留原请求并提供查询/原样重传。
+ * 令牌与业务事实分开保存。
  */
 import { controlRequest, controlResult, credentials, snapshot, review, reviewPage, reviewTargets, health, ContractError } from "./contracts";
 import type { Review, Action, Health } from "./contracts";
@@ -15,12 +16,19 @@ export interface Entry {
 /** 页面单一观察者发布的状态，发布后以新顶层快照替换，不在组件内改写。 */
 export interface PanelState {
   startup?: Health | null;
+  /** 快照读取失败后的独立健康观察；不能授予旧快照操作资格。 */
+  observedHealth?: Health | null;
   snapshot: Snapshot | null; online: boolean; receivedAt: number | null; error: string | null;
   entries: Entry[]; storageError: string | null; controlError: string | null;
 }
 interface StoragePort { getItem(key: string): string | null; setItem(key: string, value: string): void }
 type FetchPort = (input: string, init?: RequestInit) => Promise<Response>;
 const STORAGE_KEY = "purrcept-panel-controls-v1";
+
+/** 健康可连接而快照未刷新时，只改变等待文案，不授予旧状态控制资格。 */
+export function isSnapshotDelayed(state: PanelState): boolean {
+  return !state.online && state.observedHealth?.phase === "running" && state.observedHealth.startup_stage === null;
+}
 
 /** HTTP 业务拒绝可以解释，网络/解析故障保留“受理未知”。 */
 export class HttpError extends Error {
@@ -151,19 +159,25 @@ export class PanelClient {
         this.session = credentials(await responseJson(await this.get("/api/session")));
         if (current.instance_id !== this.session.instance_id) throw new ContractError("instance_id");
       }
-      this.publish({ snapshot: current, online: true, receivedAt: Date.now(), error: null, startup: null });
+      this.publish({ snapshot: current, online: true, receivedAt: Date.now(), error: null, startup: null, observedHealth: null });
       // 查询原身份不会重投。未知回执也周期复查，因为迟到事实可能澄清原结果。
       await Promise.all(this.state.entries.map((entry) => this.observe(entry.request.request_id)));
     } catch (error: unknown) {
       this.session = null;
-      if (this.state.snapshot === null && error instanceof HttpError && error.status === 503) {
-        try {
-          const starting = health(await responseJson(await this.get("/api/health")));
-          this.publish({ online: false, startup: starting, error: starting.phase === "starting" || starting.phase === "new" || (starting.phase === "running" && starting.startup_stage !== null) ? null : message(error) });
-        } catch (healthError: unknown) {
-          this.publish({ online: false, error: message(healthError), startup: null });
-        }
-      } else this.publish({ online: false, error: message(error), startup: null });
+      // 快照可能在存储队列中超时；独立健康探测区分服务不可达与状态更新延迟。
+      // 即使服务仍在线，旧快照也不恢复控制资格；只有下一次完整刷新才恢复。
+      try {
+        const observed = health(await responseJson(await this.get("/api/health")));
+        const starting = observed.phase === "starting" || observed.phase === "new"
+          || (observed.phase === "running" && observed.startup_stage !== null);
+        const failure = observed.phase === "running" && !starting
+          && !(error instanceof ContractError || error instanceof HttpError)
+          ? "状态读取未完成，正在重试。" : message(error);
+        this.publish({ online: false, observedHealth: observed, startup: starting || observed.phase === "failed" ? observed : null,
+          error: starting && this.state.snapshot === null ? null : failure });
+      } catch {
+        this.publish({ online: false, error: message(error), startup: null, observedHealth: null });
+      }
     }
   }
 

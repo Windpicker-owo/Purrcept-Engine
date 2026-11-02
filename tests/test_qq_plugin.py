@@ -40,7 +40,7 @@ def config(directory: Path, *, call_timeout: float = 15.0, page_chars: int = 800
                     "max_output_tokens": 1000,
                 }
             },
-            "subject": {"foreground": "local", "reflection": "local", "summary": "local"},
+            "subject": {"foreground": "local", "reflection": "local"},
             "plugins": [
                 {
                     "instance_id": "qq",

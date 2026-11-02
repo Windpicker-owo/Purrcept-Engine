@@ -25,6 +25,7 @@ from purrcept_engine.domain.context.maintenance import (
     candidate_checkpoint,
     freeze_summary_source,
     install_summary,
+    shorten_summary_source,
     validate_summary_proposal,
 )
 from purrcept_engine.errors import StorageError
@@ -89,7 +90,7 @@ def proposal() -> SummaryProposal:
 
 
 def test_recent_complete_turns_current_suffix_and_unresolved_material_are_protected() -> None:
-    """保护两轮真实边界及当前输入，旧未决材料进一步限制可压缩前缀。"""
+    """保护两轮真实边界及当前输入，旧未决材料只保护其所在的完整轮次。"""
     original = checkpoint()
     frozen = source()
     assert frozen.end_turn == 4 and frozen.end_message == 8
@@ -98,12 +99,57 @@ def test_recent_complete_turns_current_suffix_and_unresolved_material_are_protec
         original, owner_id="foreground", source_version=3, protected_message_indices=(5,)
     )
     assert pinned is not None and pinned.end_turn == 2 and pinned.end_message == 4
-    assert (
-        freeze_summary_source(
-            original, owner_id="foreground", source_version=3, protected_message_indices=(0,)
-        )
-        is None
+    after_pending = freeze_summary_source(
+        original, owner_id="foreground", source_version=3, protected_message_indices=(0,)
     )
+    assert after_pending is not None and after_pending.start_turn == 1
+    assert after_pending.end_turn == 4 and after_pending.messages == original.history.messages[2:8]
+
+
+@pytest.mark.parametrize(
+    "positions,expected", [((0,), (1, 4)), ((0, 4), (1, 2)), ((0, 2, 4, 6), None)]
+)
+def test_pending_turns_split_history_without_blocking_other_complete_ranges(
+    positions: tuple[int, ...], expected: tuple[int, int] | None
+) -> None:
+    """多项待办只切开对应轮次；等长区间按原时间顺序选择，全部受保护才停止。"""
+    original = checkpoint()
+    frozen = freeze_summary_source(
+        original, owner_id="foreground", source_version=3, protected_message_indices=positions
+    )
+    if expected is None:
+        assert frozen is None
+        return
+    assert frozen is not None and (frozen.start_turn, frozen.end_turn) == expected
+    summary = Message.user("区间摘要")
+    candidate = candidate_checkpoint(frozen, summary)
+    assert candidate.history.messages == (
+        *original.history.messages[: frozen.start_message],
+        summary,
+        *original.history.messages[frozen.end_message :],
+    )
+    assert candidate.history.turn_index == 6 - frozen.turn_count
+    assert candidate.history.continuation == original.history.continuation
+    assert candidate.reminders == original.reminders
+    for position in positions:
+        assert original.history.messages[position] in candidate.history.messages
+
+
+def test_middle_range_shortening_keeps_its_start_and_cannot_cross_pending_turn() -> None:
+    """摘要容量不足时只缩短已选择区间，不能退回去覆盖受保护的第一轮。"""
+    frozen = freeze_summary_source(
+        checkpoint(), owner_id="foreground", source_version=3, protected_message_indices=(0,)
+    )
+    assert frozen is not None
+    shorter = shorten_summary_source(frozen, 2)
+    assert shorter.start_turn == 1 and shorter.turn_count == 1
+    assert shorter.messages == frozen.checkpoint.history.messages[2:4]
+    assert shorter.coverage_id != frozen.coverage_id
+    with pytest.raises(ValueError):
+        shorten_summary_source(frozen, 1)
+    forged = replace(frozen, start_turn=0)
+    with pytest.raises(SummaryError, match="保护"):
+        candidate_checkpoint(forged, Message.user("越界摘要"))
 
 
 def test_summary_occupies_no_fake_turn_and_preserves_all_other_state() -> None:

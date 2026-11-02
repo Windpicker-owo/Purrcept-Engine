@@ -27,11 +27,12 @@ from purrcept_core.models import (
 from purrcept_engine.app.config import ContextSettings, RetrySettings
 from purrcept_engine.domain.context.capacity import (
     CapacityAssessment,
+    CapacityError,
     GenerationCapacity,
     assess_capacity,
     check_capacity,
 )
-from purrcept_engine.domain.context.checkpoints import encode_checkpoint
+from purrcept_engine.domain.context.checkpoints import decode_checkpoint, encode_checkpoint
 from purrcept_engine.domain.context.history import HistoryMaintenance
 from purrcept_engine.domain.context.history_preparation import HistoryPreparation, preview_request
 from purrcept_engine.domain.inputs.models import InputContext, InputSource, InputSubmission
@@ -42,7 +43,7 @@ from purrcept_engine.domain.subject.session import ContinuousSession, DynamicSta
 from purrcept_engine.infrastructure.models.compiler import compile_materials
 from purrcept_engine.infrastructure.sqlite.store import Store
 from purrcept_engine.serialization import encode
-from purrcept_engine.values import JsonObject
+from purrcept_engine.values import JsonObject, decode_object
 
 
 class Backend:
@@ -213,16 +214,19 @@ async def test_history_preview_uses_actual_tool_tail_projection(store: Store) ->
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("pending", [False, True])
 async def test_idle_summary_is_installed_before_begin_turn_and_real_core_adopts_it(
     store: Store,
+    pending: bool,
 ) -> None:
     messages: list[Message] = []
     boundaries: list[int] = []
+    protected_identity: str | None = None
     for index in range(5):
-        identity = await admit(store, str(index), "原始输入" + "x" * 5000)
+        identity = await admit(store, str(index), "原始输入" + "x" * 6500)
         messages.extend(
             (
-                Message.user("原始输入" + "x" * 5000, metadata={"evidence": (identity,)}),
+                Message.user("原始输入" + "x" * 6500, metadata={"evidence": (identity,)}),
                 Message.assistant("完整结束"),
             )
         )
@@ -237,6 +241,16 @@ async def test_idle_summary_is_installed_before_begin_turn_and_real_core_adopts_
             "old" + str(index), "foreground", index, index + 1, (identity,)
         )
         await store.finish_turn(turn, "succeeded", checkpoint_json=encode_checkpoint(checkpoint))
+        if index == 0 and pending:
+            protected_identity = identity
+            await store.knowledge.plan_wakeup(
+                WakeupPlan(
+                    id="pending", due=time.time() + 3600, reason="尚未到期", evidence=identity
+                )
+            )
+    stored = await store.get_session("foreground")
+    assert stored.checkpoint_json is not None
+    original = decode_checkpoint(stored.checkpoint_json)
     generation = Backend("本轮结束")
     summary = Backend('{"summary":"保留旧来源与结果"}')
     maintenance = HistoryMaintenance(
@@ -266,6 +280,23 @@ async def test_idle_summary_is_installed_before_begin_turn_and_real_core_adopts_
         compiler=compile_materials,
     )
     current = await admit(store, "current", "本轮完整输入")
+    initial = preview_request(
+        generation,
+        "openai/main",
+        original,
+        Message.user("本轮完整输入"),
+        instructions=(SystemInstruction.from_text("稳定前缀" + "z" * 4000),),
+        tools=ToolSet(),
+        settings=ModelSettings(max_output_tokens=100),
+        dynamic=DynamicState("已提交来源状态与当前预算"),
+        max_requests=8,
+    )
+    materials, _ = compile_materials(initial, model="openai/main")
+    payload = decode_object(materials.encode())["payload"]
+    assert isinstance(payload, dict)
+    with pytest.raises(CapacityError) as blocked:
+        check(payload)
+    assert blocked.value.code == "over_capacity"
     try:
         result = await session.run(
             Message.user("本轮完整输入"),
@@ -286,11 +317,26 @@ async def test_idle_summary_is_installed_before_begin_turn_and_real_core_adopts_
             prepare_history=preparation,
         )
         assert len(summary.requests) == len(generation.requests) == 1
+        assert summary.requests[0].instructions == generation.requests[0].instructions
         assert summary.requests[0].tools == ()
-        assert "本轮完整输入" not in summary.requests[0].messages[0].text
-        assert "保留旧来源与结果" in generation.requests[0].messages[0].text
+        assert summary.requests[0].messages[-1].role is MessageRole.USER
+        assert "【系统内部上下文压缩指令】" in summary.requests[0].messages[-1].text
+        assert all("本轮完整输入" not in msg.text for msg in summary.requests[0].messages)
+        summary_index = 2 if pending else 0
+        assert "保留旧来源与结果" in generation.requests[0].messages[summary_index].text
+        if pending:
+            assert generation.requests[0].messages[:2] == original.history.messages[:2]
+            assert summary.requests[0].messages[:-1] == original.history.messages[2:6]
+            assert (await store.knowledge.pending_plans())[0].id == "pending"
+            assert protected_identity is not None
+            assert await store.protected_input_ids((protected_identity,)) == frozenset(
+                (protected_identity,)
+            )
+            saved = await store.get_session("foreground")
+            assert saved.checkpoint_json is not None
+            assert decode_checkpoint(saved.checkpoint_json) == result.checkpoint
         assert result.turn.session_version == 6 and result.session.version == 7
-        assert result.checkpoint.history.turn_index == 3
+        assert result.checkpoint.history.turn_index == (4 if pending else 3)
         assert generation.requests[0].messages[-1].text == "本轮完整输入"
     finally:
         await session.close()

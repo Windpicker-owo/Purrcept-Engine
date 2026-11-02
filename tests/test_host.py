@@ -44,7 +44,7 @@ def _config(directory: Path, *, close_seconds: float = 30.0) -> EngineConfig:
                     "max_output_tokens": 1000,
                 }
             },
-            "subject": {"foreground": "test", "reflection": "test", "summary": "test"},
+            "subject": {"foreground": "test", "reflection": "test"},
         }
     )
 

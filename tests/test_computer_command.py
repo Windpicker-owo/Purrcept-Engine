@@ -271,7 +271,7 @@ def _host(tmp_path: Path) -> EngineHost:
                     "max_output_tokens": 1000,
                 }
             },
-            "subject": {"foreground": "test", "reflection": "test", "summary": "test"},
+            "subject": {"foreground": "test", "reflection": "test"},
             "plugins": [{"instance_id": "computer", "entry": "computer-fixture"}],
         },
         base_dir=tmp_path,

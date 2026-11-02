@@ -59,7 +59,6 @@ def _config(
             "subject": {
                 "foreground": "main",
                 "reflection": "main",
-                "summary": "main",
                 "attention": "attention" if attention else None,
                 "attention_batch_seconds": 0.01,
                 "proactive_thinking": enabled,

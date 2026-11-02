@@ -7,6 +7,7 @@ import { useEffect, useState } from "react";
 import type { ReactElement } from "react";
 import { Button, isLive } from "@purrcept/cel";
 import type { PanelClient, PanelState } from "../client";
+import { isSnapshotDelayed } from "../client";
 import type { Device, DeviceControl, Json, ObjectValue } from "../contracts";
 import { deviceMark } from "../semantics";
 import { targetReason } from "../model/controls";
@@ -130,7 +131,8 @@ export function Devices({ client, state, selected, go }: { client: PanelClient; 
     <PageHeading title="设备">她的连接与感官。打开或刷新这个页面不会启动任何设备。</PageHeading>
     {devices.length === 0 ? <EmptyState icon="device" title="还没有启用设备">在配置文件的 plugins 中启用 QQ、收音、语音输出等插件，重启后会出现在这里。</EmptyState>
       : <div className="object-grid">{devices.map((device) => {
-        const status = state.online ? deviceMark(device) : { state: "warning" as const, label: `连接中断 · 断开前${deviceMark(device).label}` };
+        const status = state.online ? deviceMark(device) : { state: "warning" as const,
+          label: `${isSnapshotDelayed(state) ? "状态已过期 · 最近" : "连接中断 · 断开前"}${deviceMark(device).label}` };
         const note = deviceNote(device);
         return <article className="device-object" key={device.instance_id} aria-current={selected === device.instance_id ? "true" : undefined}>
           <div className="object-header"><h2>{deviceName(device)}</h2><StateMark {...status} live={device.instance_id === liveId} /></div>

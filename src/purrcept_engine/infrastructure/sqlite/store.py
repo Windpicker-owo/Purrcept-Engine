@@ -1331,8 +1331,9 @@ class Store:
         """
 
         def query(connection: sqlite3.Connection) -> JsonObject:
-            """枚举原生捕获库报告的输入设备及默认采样率。"""
-            session = subject_storage.session(connection, "foreground")
+            """按当前未决关系组装工作事实，来源索引定位后再核验完整回执。"""
+            # 工作投影只需要 CAS 版本和活动轮次，不恢复连续历史或媒体正文。
+            session = subject_storage.session_state(connection, "foreground")
             turn = (
                 None
                 if session.active_turn is None

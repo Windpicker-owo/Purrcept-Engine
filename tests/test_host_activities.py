@@ -172,7 +172,7 @@ def _config(directory: Path, *, close_seconds: float = 30.0) -> EngineConfig:
                     "max_output_tokens": 1000,
                 },
             },
-            "subject": {"foreground": "local", "reflection": "local", "summary": "local"},
+            "subject": {"foreground": "local", "reflection": "local"},
             "plugins": [
                 {"instance_id": "fixture", "entry": "local-fixture", "config": empty_settings}
             ],

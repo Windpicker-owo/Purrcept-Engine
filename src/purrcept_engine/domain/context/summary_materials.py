@@ -29,6 +29,6 @@ def summary_message(source: SummarySource, summary: str) -> Message:
     references.update((reference, None) for reference in summary_references(source))
     return SUMMARY_MESSAGE_PROMPT.message(
         MessageRole.USER,
-        {"end_turn": source.end_turn, "summary": summary},
+        {"start_turn": source.start_turn + 1, "end_turn": source.end_turn, "summary": summary},
         metadata={"evidence": tuple(references), "source_version": source.source_version},
     )

@@ -299,14 +299,19 @@ async def test_history_uses_one_real_recorded_request_no_tools_and_full_candidat
         await maintenance.close()
     assert result.installed_version == 2 and result.proposal is not None
     assert len(backend.requests) == 1 and backend.requests[0].tools == ()
-    assert (
-        len(backend.requests[0].messages) == 1
-        and backend.requests[0].messages[0].role is MessageRole.USER
+    assert backend.requests[0].messages[:-1] == source.messages
+    assert backend.requests[0].messages[-1].role is MessageRole.USER
+    assert "【系统内部上下文压缩指令】" in backend.requests[0].messages[-1].text
+    assert isinstance(backend.requests[0].messages[1].content[1], ToolCallBlock)
+    assert backend.requests[0].messages[1].content[1].arguments == {
+        "action_code": "historical only"
+    }
+    assert isinstance(backend.requests[0].messages[2].content[0], ToolResultBlock)
+    assert backend.requests[0].messages[2].content[0].content == (TextBlock("confirmed past"),)
+    assert all(
+        "source-3:" not in msg.text and "source-4:" not in msg.text
+        for msg in backend.requests[0].messages
     )
-    material = backend.requests[0].messages[0].text
-    assert "historical only" in material and "confirmed past" in material
-    assert "hidden-provider-reasoning" not in material and "provider_reasoning_omitted" in material
-    assert "source-3:" not in material and "source-4:" not in material
     records = await store.requests_for_turn("foreground", "summary:" + source.coverage_id)
     assert len(records) == 1 and records[0].state == "succeeded"
     assert records[0].request.scope.material_refs == ("summary:" + source.coverage_id,)
@@ -455,11 +460,22 @@ async def test_summary_rewrite_can_replace_observed_input_with_new_layout_estima
     assert result.proposal.after.estimate.method == "multimodal-heuristic-v1"
 
 
+@pytest.mark.parametrize("protected_first", [False, True])
 async def test_server_context_rejection_reduces_prefix_with_one_original_deadline(
     store: Store,
+    protected_first: bool,
 ) -> None:
     """本地低估导致超窗后缩小完整范围，旧失败和新请求都保留，预算不重置。"""
     source = await saved_source(store)
+    if protected_first:
+        selected = freeze_summary_source(
+            source.checkpoint,
+            owner_id="foreground",
+            source_version=source.source_version,
+            protected_message_indices=(0,),
+        )
+        assert selected is not None
+        source = selected
     backend = Backend(
         (
             ModelContextWindowError("input too long"),
@@ -480,8 +496,14 @@ async def test_server_context_rejection_reduces_prefix_with_one_original_deadlin
         await maintenance.close()
     assert len(backend.requests) == 2 and result.installed_version == 2
     assert result.proposal is not None and result.proposal.source.end_turn < source.end_turn
-    assert "source-0:" in backend.requests[1].messages[0].text
-    assert "source-1:" not in backend.requests[1].messages[0].text
+    start = 1 if protected_first else 0
+    assert f"source-{start}:" in backend.requests[1].messages[0].text
+    assert all(f"source-{start + 1}:" not in msg.text for msg in backend.requests[1].messages)
+    if protected_first:
+        assert result.proposal.source.start_turn == 1 and result.proposal.source.turn_count == 1
+        assert (
+            result.proposal.candidate.history.messages[:4] == source.checkpoint.history.messages[:4]
+        )
     failed = await store.requests_for_turn("foreground", "summary:" + source.coverage_id)
     succeeded = await store.requests_for_turn(
         "foreground", "summary:" + result.proposal.source.coverage_id
@@ -764,7 +786,7 @@ async def test_cancelled_summary_retains_coverage_and_real_cancelled_attempt(sto
 
 
 def test_summary_media_remain_native_and_nested_receipts_keep_their_association() -> None:
-    """媒体不能变成JSON里的base64文字，附件位置仍对应原消息与工具回执。"""
+    """媒体不能变成JSON里的base64文字，原生消息与工具回执在压缩请求中保持原位。"""
     image = ImageBlock(ImageBytes(b"image-content", "image/png"), alt_text="画面")
     audio = AudioBlock(AudioBytes(b"audio-content"), alt_text="原始声音")
     checkpoint = ConversationCheckpoint(
@@ -791,28 +813,43 @@ def test_summary_media_remain_native_and_nested_receipts_keep_their_association(
     )
     assert source is not None
     request = summary_request(source, 4096)
-    content = request.messages[0].content
-    assert content[2] is image and content[4] is audio
-    assert isinstance(content[0], TextBlock)
-    archive = json.loads(content[0].text)
-    messages = archive["turns"][0]["messages"]
-    assert messages[0]["content"][1]["attachment"] == 1
-    assert messages[2]["content"][0]["tool_call_id"] == "receipt"
-    assert messages[2]["content"][0]["content"][1]["attachment"] == 2
-    assert "base64" not in request.messages[0].text
-    assert "真实回执" in request.messages[0].text
+    assert request.messages[:-1] == checkpoint.history.messages
+    assert request.messages[0].content[1] is image
+    tool_result = request.messages[2].content[0]
+    assert isinstance(tool_result, ToolResultBlock)
+    assert tool_result.tool_call_id == "receipt"
+    assert tool_result.content == (TextBlock("真实回执"), audio)
+    assert request.messages[-1].role is MessageRole.USER
+    assert "base64" not in request.messages[-1].text
     materials, _ = compile_materials(request, model="openai/offline")
-    blocks = json.loads(materials)["payload"]["messages"][1]["content"]
-    assert [block["type"] for block in blocks if block["type"] != "text"] == [
-        "image_url",
-        "input_audio",
-    ]
+    compiled_messages = json.loads(materials)["payload"]["messages"]
+    assert [
+        block["type"] for block in compiled_messages[0]["content"] if block["type"] != "text"
+    ] == ["image_url"]
+    assert compiled_messages[2]["role"] == "tool" and compiled_messages[2]["content"] == "真实回执"
+    assert compiled_messages[3]["role"] == "user"
+    assert [
+        block["type"] for block in compiled_messages[3]["content"] if block["type"] != "text"
+    ] == ["input_audio"]
+    assert compiled_messages[-1]["role"] == "user"
 
 
 @pytest.mark.asyncio
-async def test_oversized_history_summarizes_one_fitting_prefix_and_keeps_the_rest(store: Store):
+@pytest.mark.parametrize("protected_first", [False, True])
+async def test_oversized_history_summarizes_one_fitting_prefix_and_keeps_the_rest(
+    store: Store, protected_first: bool
+):
     """一次摘要恢复容量；没有选择的旧轮次、近期轮次和回执保持原样。"""
     source = await saved_source(store)
+    if protected_first:
+        selected = freeze_summary_source(
+            source.checkpoint,
+            owner_id="foreground",
+            source_version=source.source_version,
+            protected_message_indices=(0,),
+        )
+        assert selected is not None
+        source = selected
     # 模拟旧版本把未派发的超额来源登记为已尝试；新选择不能被此覆盖永久堵住。
     assert await store.reserve_summary(source) == "reserved"
     backend = Backend((ModelResponse(Message.assistant('{"summary":"旧交互与真实回执。"}')),))
@@ -837,12 +874,21 @@ async def test_oversized_history_summarizes_one_fitting_prefix_and_keeps_the_res
     assert selected.end_turn < source.end_turn
     assert len(backend.requests) == 1
     assert (
-        result.proposal.candidate.history.messages[1:]
+        result.proposal.candidate.history.messages[selected.start_message + 1 :]
         == source.checkpoint.history.messages[selected.end_message :]
     )
     assert selected.checkpoint == source.checkpoint
     assert selected.protected_turns == source.protected_turns
-    assert "confirmed past" in backend.requests[0].messages[0].text
+    if protected_first:
+        assert selected.start_turn == 1
+        assert (
+            result.proposal.candidate.history.messages[:4] == source.checkpoint.history.messages[:4]
+        )
+        assert "source-1:" in backend.requests[0].messages[0].text
+    else:
+        tool_result = backend.requests[0].messages[2].content[0]
+        assert isinstance(tool_result, ToolResultBlock)
+        assert tool_result.content == (TextBlock("confirmed past"),)
 
 
 @pytest.mark.asyncio

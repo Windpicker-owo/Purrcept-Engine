@@ -101,7 +101,7 @@ async def test_cancelled_admission_observer_still_stops_audio_and_delivers_next_
                     "max_output_tokens": 1000,
                 }
             },
-            "subject": {"foreground": "main", "reflection": "main", "summary": "main"},
+            "subject": {"foreground": "main", "reflection": "main"},
             "plugins": [{"instance_id": "audio", "entry": "synthetic"}],
         },
         base_dir=tmp_path,

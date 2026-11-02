@@ -78,6 +78,34 @@ def test_cli_logging_restores_package_config_and_leaves_root_untouched(tmp_path:
     assert not console.closed
 
 
+def test_storage_latency_fields_survive_structured_logging(tmp_path: Path) -> None:
+    """队列与执行耗时可定位本机阻塞，业务参数仍被白名单排除。"""
+    owner = CliLogging.open(tmp_path, console=io.StringIO())
+    try:
+        logging.getLogger("purrcept_engine.infrastructure.sqlite.queue").warning(
+            "存储操作等待或执行较慢。",
+            extra={
+                "operation": "FeedbackLedger.bridge.<locals>.<lambda>",
+                "queue": "control",
+                "queue_wait_ms": 1200.0,
+                "execution_ms": 1500.0,
+                "sql": "secret-query",
+                "arguments": "secret-arguments",
+            },
+        )
+        path = owner.file_path
+        assert path is not None
+        diagnostic = path.read_text(encoding="utf-8")
+        record = json.loads(diagnostic)
+        assert record["operation"] == "FeedbackLedger.bridge.<locals>.<lambda>"
+        assert record["queue"] == "control"
+        assert record["queue_wait_ms"] == 1200.0
+        assert record["execution_ms"] == 1500.0
+        assert "secret" not in diagnostic
+    finally:
+        owner.close()
+
+
 def test_generated_logs_bound_file_bytes_and_total_files(tmp_path: Path) -> None:
     owner = CliLogging.open(tmp_path, max_bytes=128, max_files=2, console=io.StringIO())
     try:

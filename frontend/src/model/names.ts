@@ -12,8 +12,10 @@ export const DEVICE_NAMES: Readonly<Record<string, string>> = {
 const NAMESPACES: Readonly<Record<string, string>> = {
   ...DEVICE_NAMES,
   browser: "浏览器", notebook: "笔记", time: "时钟", clock: "时钟", skills: "技能", activity: "活动",
-  activities: "活动", qzone: "QQ 空间", phone: "手机", view_image: "看图", rest: "休息", leave: "结束休息",
+  activities: "活动", qzone: "QQ 空间", phone: "手机", view_image: "看图", listen_audio: "听音频", rest: "休息", leave: "结束休息",
 };
+/** 应用保留的主体资源身份，不属于用户可配置的设备类别。 */
+const SUBJECT_RESOURCES: Readonly<Record<string, string>> = { image: "图片读取", audio_file: "音频读取" };
 const STAGES: Readonly<Record<string, string>> = {
   attention: "等待判断", priority: "等待提交", assessing: "正在判断", submitted: "已收下，等待后续思考", claimed: "正在准备处理", foreground: "等待回应", processing: "正在处理",
   processed: "已处理", failed: "处理失败",
@@ -23,10 +25,10 @@ const STAGES: Readonly<Record<string, string>> = {
  * 将已装配设备映射为用户可识别名称。
  *
  * @param device 含实例身份与插件类别的设备声明。
- * @returns 已知类别的人话名称；未知类别保留实例身份。
+ * @returns 已知类别或应用保留资源的人话名称；其他对象保留实例身份。
  */
 export function deviceName(device: Device): string {
-  return DEVICE_NAMES[device.kind ?? ""] ?? device.instance_id;
+  return DEVICE_NAMES[device.kind ?? ""] ?? SUBJECT_RESOURCES[device.instance_id] ?? device.instance_id;
 }
 /**
  * 从完整能力路径确定操作所属对象的名称。

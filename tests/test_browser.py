@@ -626,7 +626,7 @@ async def test_real_host_worker_all_browser_paths_and_native_receipts(tmp_path: 
                 "max_output_tokens": 1000,
             }
         },
-        "subject": {"foreground": "test", "reflection": "test", "summary": "test"},
+        "subject": {"foreground": "test", "reflection": "test"},
         "plugins": [
             {"instance_id": "computer", "entry": "computer", "config": {}},
             {"instance_id": "browser", "entry": "offline_browser", "config": {}},

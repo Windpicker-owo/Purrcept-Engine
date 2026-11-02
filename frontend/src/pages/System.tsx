@@ -6,6 +6,7 @@
 import type { ReactElement } from "react";
 import { Button } from "@purrcept/cel";
 import type { PanelClient, PanelState } from "../client";
+import { isSnapshotDelayed } from "../client";
 import { targetReason } from "../model/controls";
 import type { ObjectValue, Session, Snapshot } from "../contracts";
 import { deviceMark, mark } from "../semantics";
@@ -54,7 +55,7 @@ export function System({ state, client, go }: { state: PanelState; client: Panel
     <PageHeading title="系统">Engine 的运行状况与辅助工具。</PageHeading>
 
     <Section id="system-health" title="运行状况">
-      <div className="setting-row"><div><h3>Engine</h3><p className="muted">关闭浏览器不会影响 Engine 和她正在做的事。</p></div><StateMark {...(state.online ? mark(s.phase) : { state: "warning", label: "连接中断" })} /></div>
+      <div className="setting-row"><div><h3>Engine</h3><p className="muted">关闭浏览器不会影响 Engine 和她正在做的事。</p></div><StateMark {...(state.online ? mark(s.phase) : { state: "warning", label: isSnapshotDelayed(state) ? "状态读取延迟" : "连接中断" })} /></div>
       <div className="setting-row"><div><h3>数据保存</h3><p className="muted">消息、记忆和行动记录都保存在本机数据目录。</p></div><StateMark {...(s.authority_available ? { state: "completed", label: "正常" } : { state: "failed", label: "无法保存" })} /></div>
       {s.pending_resources.length > 0 ? <div className="setting-row"><div><h3>正在释放的资源</h3></div><p>{s.pending_resources.join("、")}</p></div> : null}
     </Section>

@@ -86,7 +86,6 @@ class EngineAssembly:
             model_names = {
                 self.state.config.subject.foreground,
                 self.state.config.subject.reflection,
-                self.state.config.subject.summary,
             }
             if self.state.config.subject.attention is not None:
                 model_names.add(self.state.config.subject.attention)

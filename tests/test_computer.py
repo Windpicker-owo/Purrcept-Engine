@@ -693,7 +693,7 @@ async def test_actual_host_worker_persists_native_screenshot_receipt(
                 "max_output_tokens": 1000,
             }
         },
-        "subject": {"foreground": "test", "reflection": "test", "summary": "test"},
+        "subject": {"foreground": "test", "reflection": "test"},
         "plugins": [
             {
                 "instance_id": "computer",

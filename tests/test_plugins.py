@@ -43,6 +43,7 @@ def _factory(
     *,
     release: asyncio.Event | None = None,
     entered: asyncio.Event | None = None,
+    stopped: asyncio.Event | None = None,
 ) -> PluginFactory:
     def declare(instance_id: str, settings: _Settings, base_dir: Path) -> PluginBlueprint:
         del base_dir
@@ -77,6 +78,8 @@ def _factory(
 
             async def stop_inputs() -> None:
                 events.append("stop_inputs")
+                if stopped is not None:
+                    stopped.set()
 
             async def close() -> None:
                 events.append("close")
@@ -109,7 +112,7 @@ def _config(tmp_path: Path, *, console: bool = False, close_seconds: float = 30)
                     "max_output_tokens": 1000,
                 }
             },
-            "subject": {"foreground": "test", "reflection": "test", "summary": "test"},
+            "subject": {"foreground": "test", "reflection": "test"},
             "plugins": [{"instance_id": "local", "entry": "fixture", "config": {"prefix": "x:"}}],
         },
         base_dir=tmp_path,
@@ -141,7 +144,7 @@ def test_pure_declaration_does_not_build_and_config_is_an_immutable_snapshot(
 def test_disabled_plugin_is_not_imported_and_bad_settings_are_sanitized(tmp_path: Path) -> None:
     disabled = PluginSettings(instance_id="unused", entry="does.not.exist:factory", enabled=False)
     catalog = prepare_plugins((disabled,), base_dir=tmp_path, factories={}).catalog
-    assert set(catalog.bindings) == {"me.activity", "me.view_image"}
+    assert set(catalog.bindings) == {"me.activity", "me.view_image", "me.listen_audio"}
     invalid = PluginSettings.model_validate(
         {"instance_id": "bad", "entry": "fixture", "config": {"prefix": 2, "secret": "hidden"}}
     )
@@ -198,22 +201,32 @@ async def test_plugin_resource_is_not_closed_while_a_started_call_borrows_it(
     events: list[str] = []
     release = asyncio.Event()
     entered = asyncio.Event()
+    stopped = asyncio.Event()
     host = EngineHost(
         _config(tmp_path, close_seconds=0.02),
-        plugin_factories={"fixture": _factory(events, release=release, entered=entered)},
+        plugin_factories={
+            "fixture": _factory(events, release=release, entered=entered, stopped=stopped)
+        },
     )
     await host.start()
     action = asyncio.create_task(
         host.execute('from world import me\nawait me.test.echo(text="hi")')
     )
-    async with asyncio.timeout(5):
-        await entered.wait()
-    snapshot = await host.close()
-    assert snapshot.phase == "closing"
-    assert "stop_inputs" in events and "close" not in events
-    release.set()
-    await action
-    assert (await host.wait_closed(wait_seconds=5)).phase == "closed"
+    try:
+        async with asyncio.timeout(5):
+            await entered.wait()
+        snapshot = await host.close()
+        assert snapshot.phase == "closing"
+        # 关闭观察期限不保证停接入已经完成。等待真实阶段，避免把 Windows
+        # 的20毫秒排程抖动误判为资源顺序错误；能力仍持有 release 门闩。
+        async with asyncio.timeout(5):
+            await stopped.wait()
+        assert "close" not in events
+    finally:
+        release.set()
+        await action
+        await host.close()
+        assert (await host.wait_closed(wait_seconds=5)).phase == "closed"
     assert events.index("effect") < events.index("close")
 
 

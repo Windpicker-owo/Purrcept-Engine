@@ -614,7 +614,7 @@ async def test_actual_host_keeps_plugin_store_lock_and_activity_until_real_relea
                     "max_output_tokens": 1000,
                 }
             },
-            "subject": {"foreground": "local", "reflection": "local", "summary": "local"},
+            "subject": {"foreground": "local", "reflection": "local"},
             "plugins": [{"instance_id": "local", "entry": "fixture", "config": empty_settings}],
         },
         base_dir=tmp_path,

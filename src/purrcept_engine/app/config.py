@@ -214,7 +214,6 @@ class SubjectSettings(_Settings):
 
     foreground: NonEmptyString
     reflection: NonEmptyString
-    summary: NonEmptyString
     attention: NonEmptyString | None = None
     foreground_retry: RetrySettings = Field(default_factory=RetrySettings)
     reflection_retry: RetrySettings = Field(default_factory=RetrySettings)
@@ -388,7 +387,6 @@ class EngineConfig(_Settings):
         generation_references = (
             ("foreground", self.subject.foreground),
             ("reflection", self.subject.reflection),
-            ("summary", self.subject.summary),
         )
         for purpose, name in generation_references:
             model = self.models.get(name)

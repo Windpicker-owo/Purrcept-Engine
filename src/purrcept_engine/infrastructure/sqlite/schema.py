@@ -20,6 +20,21 @@ _FORMAT_VERSION = 16
 
 _APPLICATION_ID = 0x50555245
 
+# 索引只派生已有字段，不改变业务记录格式。旧格式16库在取得目录锁后首次
+# 构建，随后启动仅检查存在性；与恢复检查共用事务，失败不能留下部分更新。
+_QUERY_INDEXES = (
+    "CREATE INDEX IF NOT EXISTS knowledge_evidence_cause ON knowledge_evidence("
+    "json_extract(payload_json,'$.kind'),"
+    "json_extract(json_extract(payload_json,'$.source_json'),'$.action_id'),"
+    "json_extract(json_extract(payload_json,'$.source_json'),'$.call_id'),"
+    "json_extract(json_extract(payload_json,'$.source_json'),'$.receipt_revision'),"
+    "created_at,evidence_id,version) WHERE valid=1",
+    "CREATE INDEX IF NOT EXISTS knowledge_slices_source ON "
+    "knowledge_slices(evidence_id,version,slice_ref)",
+    "CREATE INDEX IF NOT EXISTS knowledge_cursors_source ON "
+    "knowledge_cursors(evidence_id,version,start,kind,page_chars,cursor)",
+)
+
 
 _SCHEMA = (
     "CREATE TABLE media (media_id TEXT PRIMARY KEY, content BLOB NOT NULL)",
@@ -60,7 +75,8 @@ def initialize(connection: sqlite3.Connection) -> None:
         StorageError: 权威记录缺失、版本不一致、载荷无效或提交条件不成立。
 
     Note:
-        未知格式和完整性故障保留原库。
+        格式16旧库首次重开时补齐派生查询索引，后续只检查存在性。
+        索引、恢复和升级共用事务；未知格式或后置检查失败保留原库。
     """
     connection.execute("PRAGMA foreign_keys = ON")
     version_row: tuple[object, ...] = connection.execute("PRAGMA user_version").fetchone()
@@ -111,6 +127,11 @@ def initialize(connection: sqlite3.Connection) -> None:
                 )
         elif version != _FORMAT_VERSION or identity != _APPLICATION_ID:
             raise StorageError("数据库不是支持的 Engine 格式。", code="unsupported_format")
+
+        # 原文反查必须先定位来源再核验正文；不能在每次前台刷新或每条续页时
+        # 扫描全库 JSON 和范围关系。派生索引同样覆盖格式15升级后的真实历史。
+        for statement in _QUERY_INDEXES:
+            connection.execute(statement)
 
         if version != _FORMAT_VERSION:
             check: tuple[object, ...] = connection.execute("PRAGMA quick_check").fetchone()

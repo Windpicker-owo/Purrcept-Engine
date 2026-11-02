@@ -1,36 +1,32 @@
-"""计算一次无工具历史摘要并在目标空闲事务中安装，不推进连续会话。
+"""在目标会话自身上下文历史中计算一次历史摘要并在目标空闲事务中安装，不推进连续会话。
 
-HistoryMaintenance 借用命名模型及权威账本。先按容量选择旧完整轮次前缀，保留
-冻结覆盖后再按维护提示提交一个逻辑请求；唯一传输重试仍由
-ModelGenerationBackend 提供。完整候选用目标会话同一请求布局/计量分母复查，
-事务确认后才返回新版本。仅服务端明确超窗时缩小完整前缀，失败归还占位；
-所有原历史及实际响应证据继续保留，不切换模型或裁剪轮内正文。
-摘要实际读取的材料遵守与前台相同的媒体窗口；来源冻结与归档仍保留原检查点。
+HistoryMaintenance 借用目标会话模型及权威账本。先按容量选择旧完整轮次区间，保留
+原会话的 system 指令、工具声明与区间内原生消息，并在末尾追加专用
+user 压缩提示词提交一个逻辑请求；唯一传输重试仍由 ModelGenerationBackend 提供。
+完整候选用目标会话同一请求布局/计量分母复查，事务确认后才返回新版本。仅服务端
+明确超窗时缩小完整区间，失败归还占位；所有原历史及实际响应证据继续保留，不切换
+模型或裁剪轮内正文。摘要实际读取的材料遵守与前台相同的媒体窗口；来源冻结与归档
+仍保留原检查点。
 """
 
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass, fields, is_dataclass, replace
-from enum import Enum
+from collections.abc import Callable
+from dataclasses import dataclass, replace
 from functools import partial
-from typing import cast
 
 from purrcept_core.models import (
-    AudioBlock,
-    ContentBlock,
     ConversationCheckpoint,
     FinishReason,
-    ImageBlock,
-    Message,
     MessageRole,
     ModelBackend,
     ModelContextWindowError,
     ModelRequest,
     ModelSettings,
-    ReasoningBlock,
-    TextBlock,
+    SystemInstruction,
+    ToolSet,
+    ToolSpec,
 )
 
 from purrcept_engine.domain.context.capacity import CapacityAssessment, CapacityError
@@ -46,10 +42,7 @@ from purrcept_engine.domain.context.maintenance import (
 )
 from purrcept_engine.domain.context.media_history import expire_history_media
 from purrcept_engine.domain.context.summary_materials import summary_message
-from purrcept_engine.domain.context.templates import (
-    SUMMARY_ATTACHMENT_PROMPT,
-    SUMMARY_SYSTEM_PROMPT,
-)
+from purrcept_engine.domain.context.templates import SUMMARY_PROMPT
 from purrcept_engine.domain.model_requests.models import (
     AttemptEvidence,
     AttemptStart,
@@ -149,71 +142,39 @@ class _RequestCapture:
         await self.sink.finish_request(request_id, state)
 
 
-def _public_history(value: object, media: list[ImageBlock | AudioBlock]) -> object:
-    """保留历史结构与回执，将媒体投影为同请求原生附件的明确序号。
-
-    只有实际Core ReasoningBlock会被占位，外界JSON字段或文字中的同名标签
-    不被解释。媒体原字节进入原生块，不将base64作为文字要求模型阅读；嵌套
-    工具结果也沿相同路径提取。旧调用只作为历史资料，不成为可执行的新工具。
-    """
-    if isinstance(value, ReasoningBlock):
-        return {"kind": "provider_reasoning_omitted"}
-    if isinstance(value, (ImageBlock, AudioBlock)):
-        media.append(value)
-        return {"kind": type(value).__name__, "attachment": len(media), "alt_text": value.alt_text}
-    if isinstance(value, Enum):
-        return value.value
-    if value is None or isinstance(value, (str, bool, int, float)):
-        return value
-    if isinstance(value, Mapping):
-        return {
-            key: _public_history(item, media)
-            for key, item in cast(Mapping[str, object], value).items()
-        }
-    if isinstance(value, Sequence):
-        if isinstance(value, bytes):
-            raise TypeError("摘要二进制必须属于明确的媒体内容块。")
-        return [_public_history(item, media) for item in cast(Sequence[object], value)]
-    if is_dataclass(value) and not isinstance(value, type):
-        return {
-            field.name: _public_history(getattr(value, field.name), media)
-            for field in fields(value)
-        }
-    raise TypeError("摘要历史包含不支持的运行对象。")
-
-
-def summary_request(source: SummarySource, output_tokens: int) -> ModelRequest:
-    """把完整可压缩轮次包为历史资料，不携近期/当前后缀或任何可调用工具。
+def summary_request(
+    source: SummarySource,
+    output_tokens: int,
+    *,
+    instructions: tuple[SystemInstruction, ...] = (),
+    tools: ToolSet | tuple[ToolSpec, ...] = (),
+) -> ModelRequest:
+    """在目标会话的原生可压缩历史区间后追加专用压缩提示，复用静态与历史缓存。
 
     Args:
         source: 已冻结的历史范围及所属会话版本。
         output_tokens: 摘要模型配置声明的最大输出 token 数，包含提供方计入输出的推理。
+        instructions: 目标会话的稳定 system 指令序列，保持与原会话一致以复用缓存。
+        tools: 目标会话声明的工具集合或规格，保持静态前缀一致；提示词中严禁实际调用。
 
     Returns:
-        按实际消息顺序构造的完整 Core 请求。
+        按原会话消息顺序追加压缩指令的完整 Core 请求。
 
     Note:
-        提示全文及JSON分组表达沿用已有维护路径，媒体通过attachment序号关联原生
-        附件。调用方先选择能容纳的完整前缀，仍只派发一次逻辑请求，不重置预算。
+        直接沿用原会话的多轮消息结构、工具调用记录与媒体窗口视图，不把历史二次转码为
+        JSON 文本档案，避免结构转换导致信息丢失。静态材料仍可复用前缀缓存；调用方先选择
+        能容纳的完整区间，仍只派发一次逻辑请求，不重置预算。
     """
-    turns: list[dict[str, object]] = []
-    media: list[ImageBlock | AudioBlock] = []
     # 来源和归档仍是原检查点；只对摘要实际读取的视图应用媒体窗口。
     # 否则正式请求已移除的旧媒体会在维护路径重新大量上传。
-    visible = expire_history_media(source.checkpoint).history.messages
-    start = 0
-    for index, end in enumerate(source.checkpoint.history.turn_boundaries[: source.end_turn]):
-        turns.append({"turn": index + 1, "messages": _public_history(visible[start:end], media)})
-        start = end
-    text = encode(
-        {"archive": "summary:" + source.coverage_id, "session": source.owner_id, "turns": turns}
-    )
-    content: list[ContentBlock] = [TextBlock(text)]
-    for index, block in enumerate(media, start=1):
-        content.extend((TextBlock(SUMMARY_ATTACHMENT_PROMPT.render({"index": index})), block))
+    visible = expire_history_media(source.checkpoint).history.messages[
+        source.start_message : source.end_message
+    ]
+    specs = tools.specs if isinstance(tools, ToolSet) else tuple(tools)
     return ModelRequest(
-        (Message(MessageRole.USER, tuple(content)),),
-        instructions=(SUMMARY_SYSTEM_PROMPT.instruction(),),
+        (*visible, SUMMARY_PROMPT.message(MessageRole.USER)),
+        instructions=instructions,
+        tools=specs,
         # 输出预算由模型配置拥有。推理模型可能先消耗大量输出 token，不能在
         # 摘要路径另设隐藏上限，否则配置与容量预检都无法表达真实生成预算。
         settings=ModelSettings(max_output_tokens=output_tokens),
@@ -241,8 +202,10 @@ async def prepare_summary_request(
     capacity: CapacityCheck,
     check_budget: Callable[[], None],
     compiler: MaterialCompiler,
+    instructions: tuple[SystemInstruction, ...] = (),
+    tools: ToolSet | tuple[ToolSpec, ...] = (),
 ) -> tuple[SummarySource, ModelRequest]:
-    """派发前有界选择可容纳的旧完整前缀，不消费模型请求或修改存储。
+    """派发前有界选择可容纳的旧完整区间，不消费模型请求或修改存储。
 
     Args:
         source: 已冻结的历史范围及所属会话版本。
@@ -251,9 +214,11 @@ async def prepare_summary_request(
         capacity: 对完整实际请求执行容量核验的函数。
         check_budget: 在准备和等待边界复核原批次预算的函数。
         compiler: 按实际 SDK 布局冻结完整请求材料的纯编译器。
+        instructions: 目标会话的稳定 system 指令序列。
+        tools: 目标会话声明的工具集合或规格。
 
     Returns:
-        冻结的摘要来源及按摘要模型实际布局构造的完整请求。
+        冻结的摘要来源及按目标会话实际布局构造的完整请求。
 
     Raises:
         SummaryError: 最早一个完整历史轮次超过摘要输入预算，原文保持不变。
@@ -265,7 +230,15 @@ async def prepare_summary_request(
     """
     while True:
         check_budget()
-        request = await prepare_off_loop(partial(summary_request, source, output_tokens))
+        request = await prepare_off_loop(
+            partial(
+                summary_request,
+                source,
+                output_tokens,
+                instructions=instructions,
+                tools=tools,
+            )
+        )
         try:
             measured = await prepare_off_loop(
                 partial(_assessment, request, model, capacity, compiler)
@@ -279,10 +252,12 @@ async def prepare_summary_request(
             return source, replace(
                 request, metadata={**request.metadata, "engine.capacity": encode(measured)}
             )
-        if source.end_turn == 1:
+        if source.turn_count == 1:
             raise SummaryError("最早一个完整历史轮次超过摘要输入预算，原文保持不变。")
         source = await prepare_off_loop(
-            partial(shorten_summary_source, source, max(1, source.end_turn // 2))
+            partial(
+                shorten_summary_source, source, source.start_turn + max(1, source.turn_count // 2)
+            )
         )
 
 
@@ -368,7 +343,7 @@ class HistoryMaintenance:
         source_capacity: CapacityCheck,
         deadline: float,
     ) -> HistoryResult:
-        """在原截止内维护完整旧前缀，服务端超窗时减半重试。
+        """在原截止内维护完整旧区间，服务端超窗时减半重试。
 
         Args:
             source: 已冻结的历史范围及所属会话版本。
@@ -394,9 +369,10 @@ class HistoryMaintenance:
             raise HostStateError("同一历史维护所有者已有计算在途。")
         self._active = True
         try:
-            # 每次超窗只把完整前缀减半；逻辑请求总数由可缩小次数约束，所有
+            # 每次超窗只把完整区间减半；逻辑请求总数由可缩小次数约束，所有
             # 传输重试、准备和候选校验仍共用调用方已经冻结的绝对截止。
-            budget = RequestBudget(max_requests=source.end_turn.bit_length(), deadline=deadline)
+            budget = RequestBudget(max_requests=source.turn_count.bit_length(), deadline=deadline)
+            base = await prepare_off_loop(partial(source_layout, source.checkpoint))
             while True:
                 budget.check()
                 source, request = await prepare_summary_request(
@@ -406,6 +382,8 @@ class HistoryMaintenance:
                     capacity=self.summary_capacity,
                     check_budget=budget.check,
                     compiler=self.compiler,
+                    instructions=base.instructions,
+                    tools=base.tools,
                 )
                 try:
                     return await self._attempt(
@@ -417,10 +395,14 @@ class HistoryMaintenance:
                         source_capacity=source_capacity,
                     )
                 except ModelContextWindowError:
-                    if source.end_turn == 1:
+                    if source.turn_count == 1:
                         raise
                     source = await prepare_off_loop(
-                        partial(shorten_summary_source, source, max(1, source.end_turn // 2))
+                        partial(
+                            shorten_summary_source,
+                            source,
+                            source.start_turn + max(1, source.turn_count // 2),
+                        )
                     )
         finally:
             self._active = False

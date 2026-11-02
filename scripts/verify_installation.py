@@ -1,7 +1,7 @@
 """核对非 editable 安装的 SDK、包内资源、统一容量预检与真实 Worker。
 
 由待验收环境的 Python 以 -I 执行；临时目录由本脚本创建并在真实关闭后删除。
-合成图片和控制台显示替身不接触用户数据、设备或真实消息，模型后端禁止调用。
+合成图片、音频和控制台显示替身不接触用户数据、设备或真实消息，模型后端禁止调用。
 SDK 导入使用调用者明确选择的本地价格表模式，不请求在线元数据。
 """
 
@@ -43,7 +43,7 @@ def installed_packages() -> dict[str, str]:
 
     expected = {
         "purrcept_core": "0.6.0",
-        "purrcept_litellm": "0.2.1",
+        "purrcept_litellm": "0.2.2",
         "purrcept_engine": "0.1.0",
         "litellm": "1.105.0",
     }
@@ -75,11 +75,24 @@ async def verify_host(directory: Path) -> dict[str, object]:
         不替换执行器或存储，不调用真实模型、消息或设备。
     """
     from PIL import Image
-    from purrcept_core.models import ModelEventSink, ModelRequest, ModelResponse
+    from purrcept_core.models import (
+        AudioBlock,
+        AudioBytes,
+        Message,
+        MessageRole,
+        ModelEventSink,
+        ModelRequest,
+        ModelResponse,
+        ModelSettings,
+        TextBlock,
+        ToolCallBlock,
+        ToolResultBlock,
+    )
 
     from purrcept_engine import EngineConfig, EngineHost
     from purrcept_engine.domain.context.capacity import GenerationCapacity, check_capacity
     from purrcept_engine.infrastructure.audio.wav import encode_wav
+    from purrcept_engine.infrastructure.models.compiler import compile_materials
     from purrcept_engine.infrastructure.sqlite.store import Store
     from purrcept_engine.serialization import encode
 
@@ -111,7 +124,7 @@ async def verify_host(directory: Path) -> dict[str, object]:
                     "max_output_tokens": 1000,
                 }
             },
-            "subject": {"foreground": "main", "reflection": "main", "summary": "main"},
+            "subject": {"foreground": "main", "reflection": "main"},
         },
         base_dir=directory,
     )
@@ -144,6 +157,34 @@ async def verify_host(directory: Path) -> dict[str, object]:
     assert measured.payload_sha256 == hashlib.sha256(encode(payload).encode()).hexdigest()
     assert importlib.util.find_spec("purrcept_engine.infrastructure.models.capacity") is None
 
+    # 非 editable 安装也必须使用修复后的公开编译器；只检查 Core 原生块会漏掉
+    # 将音频留在 tool 消息的传输缺陷。这里仍不发起模型或网关请求。
+    tool_request = ModelRequest(
+        (
+            Message(MessageRole.ASSISTANT, (ToolCallBlock("audio", "listen"),)),
+            Message(
+                MessageRole.TOOL,
+                (
+                    ToolResultBlock(
+                        "audio",
+                        content=(TextBlock("loaded"), AudioBlock(AudioBytes(audio, "audio/wav"))),
+                    ),
+                ),
+            ),
+        ),
+        settings=ModelSettings(max_output_tokens=100),
+    )
+    compiled, _ = compile_materials(tool_request, model="openai/never-called")
+    tool_payload = json.loads(compiled)["payload"]
+    assert [message["role"] for message in tool_payload["messages"]] == [
+        "assistant",
+        "tool",
+        "user",
+    ]
+    assert tool_payload["messages"][1]["content"] == "loaded"
+    assert tool_payload["messages"][2]["content"][-1]["type"] == "input_audio"
+    assert check_capacity(tool_payload, GenerationCapacity(10_000, 100)).estimate.input_units < 3000
+
     shown: list[str] = []
     host = EngineHost(
         config, generation_backends={"main": OfflineBackend()}, console_output=shown.append
@@ -151,6 +192,7 @@ async def verify_host(directory: Path) -> dict[str, object]:
     await host.start()
     try:
         assert host.query().phase == "running" and "me.view_image" in host.catalog.bindings
+        assert "me.listen_audio" in host.catalog.bindings
         assert (await host.query_panel())["authority_available"] is True
         action = await host.execute(
             'from world import me\nawait me.console.output(text="installed-worker")'
@@ -164,6 +206,13 @@ async def verify_host(directory: Path) -> dict[str, object]:
         reference = call.media[0]
         assert reference.media_id == hashlib.sha256(pixels).hexdigest()
         assert reference.byte_length == len(pixels) and reference.media_type == "image/png"
+        source_audio = directory / "audio.wav"
+        source_audio.write_bytes(audio)
+        audio_action = await host.invoke("me.listen_audio", {"source": str(source_audio)})
+        assert audio_action.state == "completed" and audio_action.calls[0].state == "confirmed"
+        audio_reference = audio_action.calls[0].media[0]
+        assert audio_reference.media_type == "audio/wav"
+        assert audio_reference.media_id == hashlib.sha256(audio).hexdigest()
     finally:
         assert (await host.close()).phase == "closed"
 
@@ -173,6 +222,7 @@ async def verify_host(directory: Path) -> dict[str, object]:
         saved = await store.get_action(image_action.action_id)
         assert saved is not None and saved.calls[0].media == call.media
         assert await store.get_media(reference.media_id) == pixels
+        assert await store.get_media(audio_reference.media_id) == audio
     finally:
         await store.close()
     reopened = EngineHost(
@@ -186,6 +236,8 @@ async def verify_host(directory: Path) -> dict[str, object]:
     return {
         "worker": "confirmed",
         "image": "pixels-and-reference-reopened",
+        "audio_file": "original-bytes-and-reference-reopened",
+        "audio_transport": "text-tool-and-native-user-media",
         "capacity": measured.estimate.method,
         "models_called": 0,
     }

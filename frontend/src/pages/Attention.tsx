@@ -1,9 +1,11 @@
 /**
  * 待处理：全部 until-resolved 事项的唯一汇总，每项说明发生了什么、影响和下一步。
  * 事项从快照推导，条件消失即退出；页面不提供“全部忽略”之类会掩盖事实的操作。
+ * 解决的事项只淡出，其余事项以 Cel 的 move 弹簧补位，不跳位（Cel · Motion · 空间拓扑）。
  */
 import type { ReactElement } from "react";
-import { Button, Feedback } from "@purrcept/cel";
+import { AnimatePresence, motion } from "motion/react";
+import { Button, Feedback, transitions } from "@purrcept/cel";
 import type { AttentionItem } from "../model/attention";
 import type { Route } from "../model/routes";
 import { EmptyState, PageHeading } from "../ui/common";
@@ -21,10 +23,15 @@ export function Attention({ items, go }: { items: readonly AttentionItem[]; go: 
     {items.length === 0 ? <EmptyState title="一切正常" action={<Button variant="secondary" onClick={() => go({ page: "home", id: null })}>回到首页</Button>}>
       设备故障、结果未知的操作和中断的活动会出现在这里。
     </EmptyState> : <div className="attention-list">
-      {items.map((item) => <Feedback key={item.id} state={item.state} scope="object" urgency="actionable" persistence="until-resolved"
-        title={item.title} actions={<Button variant="secondary" onClick={() => go(item.route)}>{item.next}</Button>}>
-        {item.impact}
-      </Feedback>)}
+      {/* popLayout：退出的事项立即让出位置，留下的事项以 layout 动画补位。 */}
+      <AnimatePresence mode="popLayout" initial={false}>
+        {items.map((item) => <motion.div key={item.id} layout transition={transitions.move} exit={{ opacity: 0, transition: transitions.exit }}>
+          <Feedback state={item.state} scope="object" urgency="actionable" persistence="until-resolved"
+            title={item.title} actions={<Button variant="secondary" onClick={() => go(item.route)}>{item.next}</Button>}>
+            {item.impact}
+          </Feedback>
+        </motion.div>)}
+      </AnimatePresence>
     </div>}
   </>;
 }

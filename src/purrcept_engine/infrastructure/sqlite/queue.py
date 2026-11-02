@@ -2,12 +2,15 @@
 
 Store 借用 submit；事务成功后才通知观察者。关闭排空已接管任务，取消等待
 不能让连接失主。业务错误保留原类型，权威失败撤销后续写入资格。
+慢操作结束时分别记录排队与执行耗时，只暴露代码身份，不记录 SQL 或业务正文。
 """
 
 import asyncio
+import logging
 import os
 import sqlite3
 import threading
+import time
 from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -24,6 +27,9 @@ from purrcept_engine.domain.health import ComponentHealth
 from purrcept_engine.domain.model_requests.models import BackgroundBudgetExceeded
 from purrcept_engine.errors import StorageError
 from purrcept_engine.infrastructure.sqlite.schema import initialize
+
+_logger = logging.getLogger(__name__)
+_SLOW_OPERATION_SECONDS = 1.0
 
 
 class _QueuedJob(Protocol):
@@ -65,13 +71,15 @@ class _QueuedJob(Protocol):
 
 @dataclass(slots=True)
 class _Job[Result]:
-    """保留操作与等待者的精确结果类型，不将连接交给异步调用者。"""
+    """保留操作、入队时刻与等待者；诊断只记录代码身份，不记录闭包或 SQL。"""
 
     operation: Callable[[sqlite3.Connection], Result]
     future: asyncio.Future[Result]
     loop: asyncio.AbstractEventLoop
     logical_bytes: int
     writing: bool
+    enqueued_at: float
+    control: bool
 
     def run(self, connection: sqlite3.Connection) -> Callable[[], None]:
         """冻结事务结果，延迟公开到队列名额实际归还后。
@@ -82,7 +90,27 @@ class _Job[Result]:
         Returns:
             将已完成结果交回原事件循环的动作，在线程归还队列名额后调用。
         """
-        result = self.operation(connection)
+        began = time.monotonic()
+        try:
+            result = self.operation(connection)
+        finally:
+            elapsed = time.monotonic() - began
+            queued = began - self.enqueued_at
+            if max(elapsed, queued) >= _SLOW_OPERATION_SECONDS:
+                # 不展开 callable、SQL、参数或异常正文，避免把提示和凭据写入诊断。
+                name = getattr(self.operation, "__qualname__", None)
+                operation = name if isinstance(name, str) else type(self.operation).__qualname__
+                owner = getattr(self.operation, "__module__", None)
+                module = owner if isinstance(owner, str) else type(self.operation).__module__
+                _logger.warning(
+                    "存储操作等待或执行较慢。",
+                    extra={
+                        "operation": f"{module}.{operation}",
+                        "queue": "control" if self.control else "ordinary",
+                        "queue_wait_ms": round(queued * 1000, 3),
+                        "execution_ms": round(elapsed * 1000, 3),
+                    },
+                )
 
         def publish() -> None:
             """在所属事件循环公开已完成的结果，线程不直接修改 Future。"""
@@ -251,7 +279,7 @@ class SqliteExecutor:
         self._check_loop()
         future: asyncio.Future[Result] = self._loop.create_future()
         future.add_done_callback(_observe_result)
-        job = _Job(operation, future, self._loop, logical_bytes, writing)
+        job = _Job(operation, future, self._loop, logical_bytes, writing, time.monotonic(), control)
         with self._condition:
             if self._connection_closing or (self._closing and writing):
                 raise StorageError("存储已开始关闭。", code="store_closed")

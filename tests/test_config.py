@@ -44,7 +44,6 @@ def _configuration() -> dict[str, object]:
         "subject": {
             "foreground": "local",
             "reflection": "local",
-            "summary": "local",
             "attention": "gate",
         },
     }
@@ -98,7 +97,7 @@ def test_programmatic_construction_requires_explicit_relative_base(tmp_path: Pat
     config = EngineConfig(
         host=HostSettings(data_dir=Path("state")),
         models={"local": model},
-        subject=SubjectSettings(foreground="local", reflection="local", summary="local"),
+        subject=SubjectSettings(foreground="local", reflection="local"),
     )
     with pytest.raises(ConfigError, match="base_dir"):
         config.resolve()
@@ -116,8 +115,9 @@ def test_programmatic_construction_requires_explicit_relative_base(tmp_path: Pat
         {"execution": {"max_calls": -1}},
         {"context": {"summary_trigger": 0.5, "summary_target": 0.8}},
         {"activities": {"initial_seconds": 3601, "max_remaining_seconds": 3600}},
-        {"subject": {"foreground": "missing", "reflection": "local", "summary": "local"}},
-        {"subject": {"foreground": "gate", "reflection": "local", "summary": "local"}},
+        {"subject": {"foreground": "missing", "reflection": "local"}},
+        {"subject": {"foreground": "gate", "reflection": "local"}},
+        {"subject": {"foreground": "local", "reflection": "local", "summary": "local"}},
         {"unrecognized": True},
         {"plugins": [{"id": "unknown", "entrypoint": "unknown:plugin", "enabled": True}]},
     ],

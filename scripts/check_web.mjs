@@ -34,6 +34,7 @@ const example = {
 };
 let snapshot = structuredClone(example);
 let disconnected = false;
+let snapshotDelayed = false;
 // 首次快照由测试显式放行，可靠覆盖慢连接下不应闪出故障横幅的阶段。
 const firstSnapshot = Promise.withResolvers();
 const writes = [];
@@ -123,9 +124,17 @@ const server = createServer(async (req, res) => {
     return;
   }
   if (req.method !== 'GET') { writes.push(req.url); res.writeHead(405).end(); return; }
+  if (req.url === '/api/health') {
+    res.writeHead(disconnected ? 503 : 200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(disconnected ? {} : snapshot.health));
+    return;
+  }
   if (req.url === '/api/session' || req.url === '/api/snapshot') {
     if (req.url === '/api/snapshot') await firstSnapshot.promise;
     if (disconnected) { res.writeHead(503, { 'Content-Type': 'application/json' }).end('{}'); return; }
+    if (snapshotDelayed && req.url === '/api/snapshot') {
+      res.writeHead(503, { 'Content-Type': 'application/json' }).end('{}'); return;
+    }
     res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
     res.end(JSON.stringify(req.url === '/api/session' ? { token: 'synthetic-only', instance_id: snapshot.instance_id } : snapshot));
     return;
@@ -242,6 +251,16 @@ try {
   await page.getByText('收音设备：测试麦克风', { exact: true }).waitFor();
   assert.equal(await page.getByRole('option', { name: '直接听原声', exact: true }).count(), 0);
   await page.getByRole('button', { name: '重新连接 QQ', exact: true }).waitFor();
+  // 健康可读但快照迟延时保留旧事实，不报连接中断，也不开放旧版本控制。
+  snapshotDelayed = true;
+  await page.getByText('本机服务可连接，状态更新延迟', { exact: true }).waitFor();
+  assert.equal(await page.getByText('与本机服务的连接中断', { exact: true }).count(), 0);
+  assert.equal(await page.locator('.object-grid').getByText('连接中断', { exact: false }).count(), 0);
+  assert.equal(await page.getByRole('button', { name: '重新连接 QQ', exact: true }).isDisabled(), true);
+  await page.screenshot({ path: `${output}/snapshot-delayed-390.png`, fullPage: true });
+  snapshotDelayed = false;
+  await page.getByText('本机服务可连接，状态更新延迟', { exact: true }).waitFor({ state: 'hidden' });
+  assert.equal(await page.getByRole('button', { name: '重新连接 QQ', exact: true }).isDisabled(), false);
   disconnected = true;
   await page.getByRole('banner').getByText('与本机服务的连接中断', { exact: true }).waitFor();
   assert.equal(await page.getByRole('button', { name: '重新连接 QQ', exact: true }).isDisabled(), true);

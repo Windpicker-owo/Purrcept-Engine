@@ -74,7 +74,9 @@ me.bed.rest(...)  # 睡觉：普通刺激只记历史
 | `voice_input` | 收音、VAD 与 ASR | `voice-input` |
 | `live2d` | VTube Studio 身体表达（`me.live2d.*`） | `live2d` |
 
-看图能力 `me.view_image` 由宿主默认装配。外部插件通过已安装包的 `module:attribute`
+看图能力 `me.view_image` 与音频文件读取 `me.listen_audio` 由宿主默认装配。
+音频读取支持本地路径或 HTTP(S) WAV/MP3，最多20 MiB、10分钟，模型端点须支持音频输入。
+外部插件通过已安装包的 `module:attribute`
 或配置目录下的 `local/包名:factory` 显式加载。根目录 `plugins/` 是使用者自己的
 插件工作区，不入库、不随包分发；`src/purrcept_engine/plugins/` 中的内置插件随包提供。
 
@@ -109,7 +111,7 @@ uv sync --locked
 | `[models.名称]` | `model` 填 `openai/实际模型名`，`api_base` 填服务端的完整兼容地址，`api_key` 填明确凭据；不会自动选择环境中的替代端点。 |
 | `context_window` / `max_output_tokens` | 填端点真实窗口和输出上限；输出必须小于总窗口，模板值只是示例。 |
 | `supports_contents` | 按实际传输能力声明文字、图片和音频；统一估算文本 token、图片尺寸和音频时长，无需配置计量规则。 |
-| `[subject]` | `foreground`、`reflection`、`summary` 引用已声明的生成模型名称；`attention` 可引用同一个生成模型，或独立专用判断模型。 |
+| `[subject]` | `foreground`、`reflection` 引用已声明的生成模型名称；`attention` 可引用同一个生成模型，或独立专用判断模型。 |
 | `console = true` | 开启终端输入和 `me.console.output` 能力。每行文字作为刺激接管，主体自行决定是否表达。 |
 | `[host] data_dir` | 保存 `engine.sqlite3`、媒体和日志，相对配置文件目录解析；同目录不能同时启动两个实例。 |
 | `[[plugins]]` | 显式启用能力。添加数组表前删除模板顶层 `plugins = []`；安装 extra 不等于启用插件。 |

@@ -180,7 +180,7 @@ async def rig(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[
                     "max_output_tokens": 1000,
                 }
             },
-            "subject": {"foreground": "main", "reflection": "main", "summary": "main"},
+            "subject": {"foreground": "main", "reflection": "main"},
             "plugins": [{"instance_id": "probe", "entry": "shutdown-probe"}],
         },
         base_dir=tmp_path,

@@ -127,6 +127,9 @@
   --pc-motion-hit-duration: 80ms;
   --pc-motion-pulse-duration: 1600ms;
   --pc-motion-pulse-scale: 1.25;
+  --pc-motion-defer-duration: 300ms;
+  --pc-motion-linger-duration: 400ms;
+  --pc-motion-resist-factor: 0.08;
   --pc-motion-stagger: 30ms;
   --pc-motion-stagger-max-items: 6;
 

@@ -19,7 +19,6 @@ from purrcept_core.models import (
     ModelBackend,
     ModelError,
     ModelSettings,
-    ToolSet,
 )
 
 from purrcept_engine.app.config import DecisionModelSettings, EngineConfig, GenerationModelSettings
@@ -31,6 +30,7 @@ from purrcept_engine.domain.context.capacity import (
     assess_capacity,
     check_capacity,
 )
+from purrcept_engine.domain.context.delivery import ToolDeliveryGate
 from purrcept_engine.domain.context.history import HistoryMaintenance
 from purrcept_engine.domain.context.history_preparation import HistoryPreparation
 from purrcept_engine.domain.context.maintenance import SummaryError
@@ -43,7 +43,9 @@ from purrcept_engine.domain.model_requests.service import RequestBudget, prepare
 from purrcept_engine.domain.subject.attention import AttentionModel
 from purrcept_engine.domain.subject.background import BackgroundService
 from purrcept_engine.domain.subject.background_ports import BackgroundSettings
+from purrcept_engine.domain.subject.foreground_service import ForegroundBinding
 from purrcept_engine.domain.subject.foreground_tools import (
+    ForegroundTools,
     foreground_instructions,
     format_character_card,
 )
@@ -125,14 +127,10 @@ async def build_subject(
     """
     foreground_name = config.subject.foreground
     foreground_settings = config.models[foreground_name]
-    summary_name = config.subject.summary
-    summary_settings = config.models[summary_name]
     reflection_name = config.subject.reflection
     reflection_settings = config.models[reflection_name]
-    if (
-        not isinstance(foreground_settings, GenerationModelSettings)
-        or not isinstance(summary_settings, GenerationModelSettings)
-        or not isinstance(reflection_settings, GenerationModelSettings)
+    if not isinstance(foreground_settings, GenerationModelSettings) or not isinstance(
+        reflection_settings, GenerationModelSettings
     ):
         raise TypeError("已校验主体用途没有生成模型声明。")
 
@@ -210,18 +208,18 @@ async def build_subject(
     async def history_for(
         name: str, settings: GenerationModelSettings, owner: str, usage: UsageMeter
     ) -> HistoryPreparation:
-        """各维护用途独占在途状态，底层借用相同摘要资源与权威 CAS。"""
-        summary_usage = await usage_for(summary_name, "summary:" + owner)
+        """各维护用途独占在途状态，底层直接复用目标会话自身的模型配置与权威 CAS。"""
+        summary_usage = await usage_for(name, "summary:" + owner)
         return HistoryPreparation(
             store,
             HistoryMaintenance(
                 store,
                 store,
-                generation[summary_name],
-                model=summary_settings.model,
-                summary_capacity=capacity_for(summary_settings, enforce=True, usage=summary_usage),
+                generation[name],
+                model=settings.model,
+                summary_capacity=capacity_for(settings, enforce=True, usage=summary_usage),
                 retry=config.subject.summary_retry,
-                output_tokens=summary_settings.max_output_tokens,
+                output_tokens=settings.max_output_tokens,
                 observe_usage=summary_usage.observe,
                 diagnostic_bytes=diagnostic_bytes,
                 can_start=can_start,
@@ -312,11 +310,25 @@ async def build_subject(
             }
         )
 
+    sleep_tools = ForegroundTools(
+        knowledge,
+        ledger,
+        ForegroundBinding(
+            execute,
+            native,
+            wakeup_committed,
+            "",
+            lambda: False,
+            ToolDeliveryGate(compiler=compile_materials),
+        ),
+        check=can_start,
+    ).tools
+
     async def compact_sleep_history() -> None:
         """在主脑空闲时尝试一次旧历史摘要，实际安装仍遵守原保护与版本门槛。
 
-        此布局只用于睡眠维护前后容量比较，不提交新的主脑输入，不借行动工具。
-        下一次真实唤醒仍以完整工具目录和实际新输入再次预检，不能借此绕过容量。
+        此布局携带与前台一致的固定指令与工具声明以复用前缀缓存，但不赋予任何行动资格，
+        也不提交新的主脑输入。下一次真实唤醒仍以完整工具目录和实际新输入再次预检。
         """
         budget = RequestBudget(
             max_requests=1,
@@ -329,7 +341,7 @@ async def build_subject(
                 session,
                 SLEEP_HISTORY_PREVIEW_PROMPT.message(MessageRole.USER),
                 instructions=foreground_instructions(config.subject.character.record(), catalog),
-                tools=ToolSet(),
+                tools=sleep_tools,
                 settings=ModelSettings(max_output_tokens=foreground_settings.max_output_tokens),
                 dynamic=dynamic,
                 budget=budget,

@@ -165,7 +165,6 @@ async def test_late_stimulus_is_dated_before_previous_reply_and_clock_refreshes(
             "subject": {
                 "foreground": "main",
                 "reflection": "background",
-                "summary": "background",
                 "attention_batch_seconds": 0.0,
             },
             "plugins": [{"instance_id": "test", "entry": "test"}],

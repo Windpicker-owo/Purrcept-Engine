@@ -136,7 +136,7 @@ async def test_action_native_media_reaches_core_without_creating_a_second_input(
                     "max_output_tokens": 1000,
                 }
             },
-            "subject": {"foreground": "main", "reflection": "main", "summary": "main"},
+            "subject": {"foreground": "main", "reflection": "main"},
             "plugins": [PluginSettings(instance_id="capture", entry="capture")],
         },
         base_dir=tmp_path,

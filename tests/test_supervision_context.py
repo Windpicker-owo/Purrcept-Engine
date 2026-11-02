@@ -142,7 +142,7 @@ async def assembly(
                     "max_output_tokens": 1000,
                 }
             },
-            "subject": {"foreground": "main", "reflection": "main", "summary": "main"},
+            "subject": {"foreground": "main", "reflection": "main"},
         }
     )
 

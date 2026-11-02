@@ -54,6 +54,18 @@ class FeedbackPort(Protocol):
         """
         ...
 
+    async def next_plan_at(self) -> float | None:
+        """读取尚未投递计划的最早到期时间，无计划时返回 None。
+
+        Returns:
+            未投递计划的最早 Unix 到期时间；None 表示等待下一次提交通知。
+
+        Note:
+            可靠反馈工作器用它安排等待；不统计分析队列、成功轮次或模型额度。
+            查询与等待之间仍以 Store 变更序号防止遗漏新计划。
+        """
+        ...
+
     async def reflection_state(
         self, *, purpose: Literal["memory", "behavior"] = "memory"
     ) -> subject_feedback_models.ReflectionState:

@@ -240,10 +240,12 @@ def postpone_preparation(
 def model_budget(connection: sqlite3.Connection, now: float) -> tuple[int, float | None]:
     """观察过去一小时的真实后台尝试；持久记录使重启不能刷新额度。"""
     count, oldest = connection.execute(
-        "SELECT count(*),min(a.created_at) FROM model_attempts a JOIN model_requests r "
-        "USING(request_id) WHERE a.created_at>? AND "
+        # 先按时间索引限定真实尝试，再逐项核验用途。直接 JOIN 会让 SQLite
+        # 优先遍历用途索引中的全部历史请求，使每次调度观察的成本随历史增长。
+        "SELECT count(*),min(a.created_at) FROM model_attempts a WHERE a.created_at>? "
+        "AND EXISTS(SELECT 1 FROM model_requests r WHERE r.request_id=a.request_id AND "
         "json_extract(r.evidence_json,'$.scope.owner_id') "
-        "IN('reflection','behavior_review','memory_consolidation')",
+        "IN('reflection','behavior_review','memory_consolidation'))",
         (now - 3600,),
     ).fetchone()
     return max(0, 32 - count), None if oldest is None else float(oldest) + 3600

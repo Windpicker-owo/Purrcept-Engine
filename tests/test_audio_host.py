@@ -143,7 +143,7 @@ async def test_host_assembles_once_then_real_worker_speak_links_independent_body
                 "max_output_tokens": 1000,
             }
         },
-        "subject": {"foreground": "offline", "reflection": "offline", "summary": "offline"},
+        "subject": {"foreground": "offline", "reflection": "offline"},
         "plugins": plugins,
     }
     host = EngineHost(

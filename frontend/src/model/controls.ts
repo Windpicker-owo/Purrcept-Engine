@@ -2,7 +2,7 @@
  * 控制资格：全局写入条件与同一操作的合并。只决定按钮是否可用及原因，
  * 最终是否接管由宿主核验；页面不据此改写设备或活动状态。
  */
-import { awaiting } from "../client";
+import { awaiting, isSnapshotDelayed } from "../client";
 import type { PanelState } from "../client";
 
 /**
@@ -12,7 +12,7 @@ import type { PanelState } from "../client";
  * @returns 阻止新控制的原因；undefined 表示全局条件允许。
  */
 export function blocked(state: PanelState): string | undefined {
-  if (!state.online) return "与本机服务的连接中断，恢复后才能操作。";
+  if (!state.online) return isSnapshotDelayed(state) ? "正在等待最新状态，更新后才能操作。" : "与本机服务的连接中断，恢复后才能操作。";
   if (!state.snapshot?.authority_available) return "数据无法保存，暂时不能发起新操作。";
   if (state.snapshot.phase !== "running") return "Engine 尚未就绪或正在关闭。";
   if (!state.snapshot.health.can_process) return "主体组件发生故障，新的操作已暂停。";

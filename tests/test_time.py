@@ -449,7 +449,7 @@ def host_config(tmp_path: Path) -> EngineConfig:
                 "max_output_tokens": 1000,
             }
         },
-        "subject": {"foreground": "test", "reflection": "test", "summary": "test"},
+        "subject": {"foreground": "test", "reflection": "test"},
         "plugins": [
             {"instance_id": "clock", "entry": "clock", "config": {"timezone": "UTC"}},
             {"instance_id": "bed", "entry": "bed", "config": {}},

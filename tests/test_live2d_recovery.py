@@ -470,7 +470,7 @@ async def test_actual_host_can_close_during_plugin_native_authorization(tmp_path
                     "max_output_tokens": 1000,
                 }
             },
-            "subject": {"foreground": "test", "reflection": "test", "summary": "test"},
+            "subject": {"foreground": "test", "reflection": "test"},
             "plugins": [
                 {
                     "instance_id": "body",

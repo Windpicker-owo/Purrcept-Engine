@@ -234,11 +234,58 @@ def test_atomic_install_keeps_complete_archive_and_source_and_candidate_media(
         connection.execute("DELETE FROM media WHERE media_id=?", (old_media,))
 
 
+def test_middle_summary_reopens_with_protected_original_media_and_exact_order(
+    connection: sqlite3.Connection,
+) -> None:
+    """区间摘要正式安装后重开库，前置保护轮次、原媒体和近期历史保持可恢复。"""
+    original = saved_source(connection)
+    source = freeze_summary_source(
+        original.checkpoint,
+        owner_id="foreground",
+        source_version=original.source_version,
+        protected_message_indices=(0,),
+    )
+    assert source is not None and source.start_turn == 1
+    assert maintenance.reserve_summary(connection, source) == "reserved"
+    candidate = proposal(connection, source)
+    assert maintenance.install_summary(connection, candidate) == 4
+    database = connection.execute("PRAGMA database_list").fetchone()[2]
+    with sqlite3.connect(database) as reopened:
+        current = subject.session(reopened, "foreground")
+        assert current.checkpoint_json is not None
+        checkpoint = decode_checkpoint(current.checkpoint_json)
+        assert checkpoint == candidate.candidate
+        assert (
+            checkpoint.history.messages[: source.start_message]
+            == source.checkpoint.history.messages[: source.start_message]
+        )
+        assert (
+            checkpoint.history.messages[source.start_message + 1 :]
+            == source.checkpoint.history.messages[source.end_message :]
+        )
+        assert checkpoint.history.turn_boundaries == (3, 6, 9)
+        assert checkpoint.history.turn_index == 3
+        assert reopened.execute("SELECT count(*) FROM session_media").fetchone() == (2,)
+        assert "旧轮次 2–4" in checkpoint.history.messages[source.start_message].text
+
+
 @pytest.mark.parametrize("change", ("stale", "busy"))
+@pytest.mark.parametrize("middle", (False, True))
 def test_reserve_and_install_version_and_idle_are_real_database_gates(
-    connection: sqlite3.Connection, change: str
+    connection: sqlite3.Connection,
+    change: str,
+    middle: bool,
 ) -> None:
     source = saved_source(connection)
+    if middle:
+        selected = freeze_summary_source(
+            source.checkpoint,
+            owner_id="foreground",
+            source_version=source.source_version,
+            protected_message_indices=(0,),
+        )
+        assert selected is not None and selected.start_turn == 1
+        source = selected
     with connection:
         if change == "stale":
             connection.execute("UPDATE subject_sessions SET version=4")

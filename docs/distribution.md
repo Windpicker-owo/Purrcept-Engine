@@ -4,10 +4,12 @@ Engine 构建和安装不需要同级 Core、LiteLLM 或 Design 源码。目前�
 Windows x64、Python 3.12。前端依赖、Cel 快照与 npm 锁文件都由 Engine 独立持有；
 面板和调音室静态资源包含在 wheel 内，运行时无需 Node。
 
-本轮适配库 0.2.1 尚未发布到 PyPI。开发锁文件通过 `[tool.uv.sources]` 指向仓内
-`vendor/purrcept_litellm-0.2.1-py3-none-any.whl`；普通发行依赖仍为版本约束。
+本轮适配库 0.2.2 尚未发布到 PyPI。开发锁文件通过 `[tool.uv.sources]` 指向仓内
+`vendor/purrcept_litellm-0.2.2-py3-none-any.whl`；普通发行依赖仍为版本约束。
 独立安装应同时交付该 wheel，并用 `--find-links vendor` 安装。其来源及校验值见
 `vendor/README.md`。确认适配库公开发布并完成公开索引安装验收后才能移除该覆盖。
+0.2.2 修复工具音频的消息角色：图片和音频均随用户媒体消息交付，工具回执保留
+文字。编译器身份随实现变化，旧容量锚点自动失效；不得只更新 Engine 而继续使用0.2.1。
 
 ## 开发环境
 
@@ -22,7 +24,7 @@ uv run python -m compileall -q src tests examples scripts
 ```
 
 `uv.lock` 固定仓内适配库产物与公开依赖组合。Core 至少为 0.6.0，
-Purrcept LiteLLM 至少为 0.2.1。官方 LiteLLM 精确固定为 1.105.0：
+Purrcept LiteLLM 至少为 0.2.2。官方 LiteLLM 精确固定为 1.105.0：
 判断传输借用其编译、签名、提供商转换和错误映射接缝，由 Engine 的 HTTPX
 客户端发送一次请求，不进入 SDK 默认 handler 的隐式连接重发或全局客户端缓存。
 升级该版本须重跑 `test_sdk_boundary.py` 和 `test_model_requests.py`，核验真实

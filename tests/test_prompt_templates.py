@@ -11,10 +11,13 @@ from purrcept_core.models import (
     ConversationCheckpoint,
     ConversationState,
     Message,
+    MessageRole,
     PromptStability,
     ReminderPlacement,
     ReminderState,
+    SystemInstruction,
     TextBlock,
+    ToolSet,
 )
 from pydantic import BaseModel
 
@@ -74,7 +77,7 @@ def test_persona_and_foreground_match_frozen_material(case: str) -> None:
     assert instructions[1].content == (TextBlock(catalog.instructions),)
 
 
-def test_attention_and_summary_system_text_match_frozen_material() -> None:
+def test_attention_and_summary_prompt_text_match_frozen_material() -> None:
     samples = baseline()
     assert ATTENTION_QUESTION.instructions == samples["attention"]
     checkpoint = ConversationCheckpoint(
@@ -86,8 +89,14 @@ def test_attention_and_summary_system_text_match_frozen_material() -> None:
         ReminderState(),
     )
     source = SummarySource("foreground", 3, checkpoint, 1, 2, "coverage")
-    request = summary_request(source, 1024)
-    assert request.instructions[0].content == (TextBlock(str(samples["history"])),)
+    instructions = (SystemInstruction.from_text("固定系统指令"),)
+    tools = ToolSet()
+    request = summary_request(source, 1024, instructions=instructions, tools=tools)
+    assert request.instructions == instructions
+    assert request.tools == tools.specs
+    assert request.messages[:-1] == checkpoint.history.messages
+    assert request.messages[-1].role is MessageRole.USER
+    assert request.messages[-1].content == (TextBlock(str(samples["history"])),)
     message = summary_message(source, " 摘要 {profile}\n尾部\n")
     assert message.text == samples["summary_message"]
     assert message.metadata["source_version"] == 3

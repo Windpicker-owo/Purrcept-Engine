@@ -71,11 +71,10 @@ def _config(path: Path, *, proactive: bool = False) -> EngineConfig:
     }
     raw: dict[str, object] = {
         "host": {"data_dir": path},
-        "models": {name: model for name in ("main", "attention", "summary")},
+        "models": {name: model for name in ("main", "attention")},
         "subject": {
             "foreground": "main",
             "reflection": "main",
-            "summary": "summary",
             "attention": "attention",
             "attention_batch_seconds": 0.0,
             "proactive_thinking": proactive,
@@ -140,7 +139,6 @@ async def test_sleep_pauses_attention_and_proactive_priority_wakes_and_leave_res
 ) -> None:
     main = _Backend()
     attention = _Backend(response='{"attention":"wake"}')
-    summary = _Backend(response='{"summary":"历史摘要。"}')
     config = _config(tmp_path, proactive=True)
     config = config.model_copy(
         update={"execution": config.execution.model_copy(update={"max_pending_inputs": 256})}
@@ -150,7 +148,6 @@ async def test_sleep_pauses_attention_and_proactive_priority_wakes_and_leave_res
         generation_backends={
             "main": main,
             "attention": attention,
-            "summary": summary,
         },
     )
     await host.start()
@@ -166,7 +163,7 @@ async def test_sleep_pauses_attention_and_proactive_priority_wakes_and_leave_res
             await _processed(host, ordinary.input_id)
             ordinary_ids.append(ordinary.input_id)
         await asyncio.sleep(0.35)
-        assert not main.requests and not attention.requests and not summary.requests
+        assert not main.requests and not attention.requests
         options = (await host.query_panel())["proactive_thinking"]
         assert isinstance(options, dict) and options["enabled"] is True
         priority = await host.submit(_input("high-priority"))
@@ -200,48 +197,57 @@ async def test_bed_tool_compacts_after_turn_once_and_claim_survives_restart(
 ) -> None:
     release = asyncio.Event()
     main = _Backend(blocks={5: release})
-    summary = _Backend(
-        response='{"summary":"已有三次日常交流，保留事实。"}' if valid else "无效摘要"
-    )
     config = _config(tmp_path)
-    backends = {"main": main, "attention": _Backend(), "summary": summary}
+    backends = {"main": main, "attention": _Backend()}
     host = EngineHost(config, generation_backends=backends)
     await host.start()
     try:
         await _seed(host)
-        main.script.append(
-            ModelResponse(
-                Message(
-                    MessageRole.ASSISTANT,
-                    (
-                        ToolCallBlock(
-                            "sleep-action",
-                            "play_action",
-                            arguments={
-                                "action_code": (
-                                    "from world import me\n"
-                                    "await me.bed.rest(expected_duration_minutes=30)"
-                                ),
-                            },
+        main.script.extend(
+            (
+                ModelResponse(
+                    Message(
+                        MessageRole.ASSISTANT,
+                        (
+                            ToolCallBlock(
+                                "sleep-action",
+                                "play_action",
+                                arguments={
+                                    "action_code": (
+                                        "from world import me\n"
+                                        "await me.bed.rest(expected_duration_minutes=30)"
+                                    ),
+                                },
+                            ),
                         ),
-                    ),
-                )
+                    )
+                ),
+                ModelResponse(Message.assistant("内部结束。")),
+                ModelResponse(
+                    Message.assistant(
+                        '{"summary":"已有三次日常交流，保留事实。"}' if valid else "无效摘要"
+                    )
+                ),
             )
         )
         admitted = await host.submit(_input("go-to-bed"))
         for _ in range(5):
             await asyncio.wait_for(main.arrivals.get(), 5)
         await asyncio.sleep(0.1)
-        assert not summary.requests
+        assert len(main.requests) == 5
         release.set()
         await _processed(host, admitted.input_id)
-        await asyncio.wait_for(summary.arrivals.get(), 5)
+        await asyncio.wait_for(main.arrivals.get(), 5)
         await asyncio.sleep(0.15)
         assert (
             await host.invoke("me.bed.rest", {"expected_duration_minutes": 60})
         ).state == "completed"
         await asyncio.sleep(0.1)
-        assert len(summary.requests) == 1 and not summary.requests[0].tools
+        assert len(main.requests) == 6
+        assert main.requests[5].instructions == main.requests[4].instructions
+        assert main.requests[5].tools == main.requests[4].tools
+        assert main.requests[5].messages[-1].role is MessageRole.USER
+        assert "【系统内部上下文压缩指令】" in main.requests[5].messages[-1].text
     finally:
         release.set()
         await host.close()
@@ -255,12 +261,12 @@ async def test_bed_tool_compacts_after_turn_once_and_claim_survives_restart(
         assert len(checkpoint.history.turn_boundaries) == (2 if valid else 4)
     finally:
         await store.close()
-    restarted_summary = _Backend()
-    restarted = EngineHost(config, generation_backends={**backends, "summary": restarted_summary})
+    restarted_main = _Backend()
+    restarted = EngineHost(config, generation_backends={**backends, "main": restarted_main})
     await restarted.start()
     try:
         await asyncio.sleep(0.2)
-        assert not restarted_summary.requests
+        assert not restarted_main.requests
     finally:
         await restarted.close()
 
@@ -276,7 +282,6 @@ async def test_entering_sleep_cancels_inflight_attention_without_waking_main(
         generation_backends={
             "main": main,
             "attention": attention,
-            "summary": _Backend(),
         },
     )
     await host.start()
@@ -295,28 +300,34 @@ async def test_entering_sleep_cancels_inflight_attention_without_waking_main(
 
 async def test_priority_and_shutdown_do_not_wait_for_sleep_summary(tmp_path: Path) -> None:
     release = asyncio.Event()
-    main = _Backend()
-    summary = _Backend(response='{"summary":"简短历史。"}', blocks={1: release})
+    main = _Backend(blocks={4: release})
     host = EngineHost(
         _config(tmp_path),
         generation_backends={
             "main": main,
             "attention": _Backend(),
-            "summary": summary,
         },
     )
     await host.start()
     try:
         await _seed(host)
+        for _ in range(3):
+            await asyncio.wait_for(main.arrivals.get(), 5)
+        main.script.extend(
+            (
+                ModelResponse(Message.assistant('{"summary":"简短历史。"}')),
+                ModelResponse(Message.assistant("内部结束。")),
+            )
+        )
         await host.invoke("me.bed.rest", {"expected_duration_minutes": 30})
-        await asyncio.wait_for(summary.arrivals.get(), 5)
+        await asyncio.wait_for(main.arrivals.get(), 5)
         priority = await host.submit(_input("wake-during-summary"))
         await _processed(host, priority.input_id)
-        assert len(main.requests) == 4 and not release.is_set()
+        assert len(main.requests) == 5 and not release.is_set()
     finally:
         assert (await asyncio.wait_for(host.close(), 5)).phase == "closed"
         release.set()
-    assert summary.cancelled.is_set()
+    assert main.cancelled.is_set()
 
 
 async def test_sleep_policy_records_old_wake_and_idle_but_preserves_trusted_priority(
@@ -409,7 +420,6 @@ async def test_sleep_admission_invalidates_snapshot_without_stopping_coordinator
         generation_backends={
             "main": main,
             "attention": attention,
-            "summary": _Backend(),
         },
     )
     await host.start()

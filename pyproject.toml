@@ -15,7 +15,7 @@ dependencies = [
   "openai==2.49.0",
   "pillow==12.3.0",
   "purrcept_core>=0.6.0,<0.7",
-  "purrcept_litellm>=0.2.1,<0.3",
+  "purrcept_litellm>=0.2.2,<0.3",
   "pydantic==2.13.4",
 ]
 
@@ -47,7 +47,7 @@ dev = [
 ]
 
 [tool.uv.sources]
-purrcept-litellm = { path = "vendor/purrcept_litellm-0.2.1-py3-none-any.whl" }
+purrcept-litellm = { path = "vendor/purrcept_litellm-0.2.2-py3-none-any.whl" }
 
 [tool.uv]
 environments = ["sys_platform == 'win32'"]

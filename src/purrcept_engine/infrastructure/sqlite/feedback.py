@@ -623,6 +623,26 @@ def dispatch_supervision(
         return result
 
 
+def next_plan_at(connection: sqlite3.Connection) -> float | None:
+    """读取尚未进入可靠投递账本的最近计划，供反馈工作器安排唤醒。
+
+    Args:
+        connection: Store 数据库线程借出的同库连接，不自行开启或提交事务。
+
+    Returns:
+        未投递计划的最早 Unix 到期时间；不存在时返回 None。
+
+    Note:
+        已投递计划不再触发计时；新计划仍通过同库提交通知唤醒等待者。
+        不借用分析统计，避免每次真实回执都扫描分析队列和模型历史。
+    """
+    return connection.execute(
+        "SELECT min(json_extract(payload_json,'$.due')) FROM knowledge_plans p WHERE "
+        "json_extract(payload_json,'$.state')='pending' AND NOT EXISTS(SELECT 1 FROM "
+        "feedback_deliveries d WHERE d.kind='plan' AND d.identity=p.id)"
+    ).fetchone()[0]
+
+
 def reflection_state(
     connection: sqlite3.Connection, *, purpose: Literal["memory", "behavior"] = "memory"
 ) -> ReflectionState:
@@ -657,11 +677,7 @@ def reflection_state(
         "AND w.state IN('capacity_blocked','waiting_evidence')",
         (purpose,),
     ).fetchone()
-    plan = connection.execute(
-        "SELECT min(json_extract(payload_json,'$.due')) FROM knowledge_plans p WHERE "
-        "json_extract(payload_json,'$.state')='pending' AND NOT EXISTS(SELECT 1 FROM "
-        "feedback_deliveries d WHERE d.kind='plan' AND d.identity=p.id)"
-    ).fetchone()[0]
+    plan = next_plan_at(connection)
     continuation = (
         connection.execute(
             "SELECT 1 FROM analysis_work w JOIN knowledge_evidence e "

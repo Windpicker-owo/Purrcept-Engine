@@ -86,7 +86,7 @@ def _host(tmp_path: Path, *, release: asyncio.Event | None = None, instance_id: 
                     "max_output_tokens": 1000,
                 }
             },
-            "subject": {"foreground": "model", "reflection": "model", "summary": "model"},
+            "subject": {"foreground": "model", "reflection": "model"},
             "plugins": [{"instance_id": instance_id, "entry": "local"}],
         },
         base_dir=tmp_path,

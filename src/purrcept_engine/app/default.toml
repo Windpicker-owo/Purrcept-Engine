@@ -45,7 +45,6 @@ supports_contents = ["text"] # decision 协议当前最多交付 text、image。
 [subject]
 foreground = "foreground"
 reflection = "foreground"
-summary = "foreground"
 attention = "attention"
 attention_batch_seconds = 0.1
 attention_batch_size = 8

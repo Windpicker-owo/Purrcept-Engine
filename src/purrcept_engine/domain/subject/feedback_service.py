@@ -60,8 +60,7 @@ class FeedbackService:
                 # 额度满时自己的 outbox 写通知不是新的重试原因。后续前台结案
                 # 或新的外部提交才唤醒；可靠身份仍保留在同一权威库中。
                 revision = self.runtime.store.change_revision
-            state = await self.runtime.feedback.reflection_state()
-            seconds = (
-                None if state.next_plan_at is None else max(0, state.next_plan_at - time.time())
-            )
+            # 反馈只需要计划计时，不能为每次回执执行两个分析任务的队列和额度统计。
+            next_plan_at = await self.runtime.feedback.next_plan_at()
+            seconds = None if next_plan_at is None else max(0, next_plan_at - time.time())
             await self.runtime.wait(revision, seconds)

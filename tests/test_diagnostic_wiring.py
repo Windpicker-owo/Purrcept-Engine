@@ -86,7 +86,7 @@ async def test_host_retention_clears_old_diagnostics_and_keeps_authority_after_r
                     "max_output_tokens": 1000,
                 }
             },
-            "subject": {"foreground": "main", "reflection": "main", "summary": "main"},
+            "subject": {"foreground": "main", "reflection": "main"},
         }
     )
     host = EngineHost(config)

@@ -139,6 +139,14 @@ class FeedbackLedger:
             writing=True,
         )
 
+    async def next_plan_at(self) -> float | None:
+        """只读取未投递计划的最早到期时间，不查询分析状态或模型额度。
+
+        Returns:
+            未投递计划的最早 Unix 到期时间；不存在时返回 None。
+        """
+        return await self._submit(sql.next_plan_at)
+
     async def reflection_state(
         self, *, purpose: Literal["memory", "behavior"] = "memory"
     ) -> subject_feedback_models.ReflectionState:

@@ -138,7 +138,7 @@ class HistoryPreparation:
         budget: RequestBudget,
         force: bool = False,
     ) -> SessionRecord:
-        """按容量阈值或明确睡眠机会摘要旧前缀，返回实际权威版本。
+        """按容量阈值或明确睡眠机会摘要旧区间，返回实际权威版本。
 
         Args:
             session: 当前已提交会话版本及完整检查点。
@@ -200,7 +200,7 @@ class HistoryPreparation:
             return session
 
         # 未决保护来自数据库中的因果关系；外界正文或工具 JSON 同名字段不能
-        # 授予保护或完成资格。保护命中前缀时只缩短覆盖，不越过它挑后面的轮次。
+        # 授予保护或完成资格。保护所在的完整轮次原样保留，其后的独立旧区间仍可压缩。
         identities: list[str] = []
         sources: list[tuple[str, ...]] = []
         for item in checkpoint.history.messages:
