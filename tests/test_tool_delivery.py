@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import io
 import time
@@ -67,6 +68,7 @@ from purrcept_engine.domain.subject.session import (
     SessionResult,
 )
 from purrcept_engine.errors import StorageError
+from purrcept_engine.infrastructure.audio.wav import encode_wav
 from purrcept_engine.infrastructure.models.compiler import compile_materials
 from purrcept_engine.infrastructure.sqlite.store import Store
 from purrcept_engine.serialization import encode
@@ -969,3 +971,53 @@ async def test_current_tail_does_not_duplicate_or_bypass_frozen_action_delivery(
         assert after.count('"mode": > full_tool_message') == 1
         assert after.count('"mode": > reference_only') == 2
         assert "platform-late-99" in encode(receipt_transport.payloads[1]["messages"])
+
+
+async def test_legacy_audio_receipt_is_projected_before_sdk_delivery_and_original_stays_readable(
+    store: Store,
+) -> None:
+    """真实工具、SDK、检查点和分页都只显示音频引用，权威回执保留完整字节编码。"""
+    encoded = base64.b64encode(encode_wav(bytes(32000), 16000)).decode()
+    await store.begin_action("legacy-audio", catalog_version="catalog", source="generated locally")
+    await store.begin_call(
+        "legacy-call",
+        action_id="legacy-audio",
+        sequence=0,
+        path="me.microphone.record",
+        target_id="microphone",
+        arguments_json="{}",
+    )
+    await store.mark_call_started("legacy-call")
+    await store.record_call_result(
+        "legacy-call", state="confirmed", result_json=encode(encoded), error_type=None, error=None
+    )
+    await store.finish_action(
+        "legacy-audio", state="completed", result_json=encode(encoded), output="", error=None
+    )
+    original = await store.get_action("legacy-audio")
+    assert original is not None
+
+    class LegacyPorts(Ports):
+        async def play_action(self, source: str) -> ActionRecord:
+            """返回已真实提交的旧版音频结果，不执行设备或再合成声音。"""
+            assert original is not None
+            return original
+
+    gate = ToolDeliveryGate(compiler=compile_materials)
+    tools = foreground(store, gate, LegacyPorts(store))
+    result, transport = await run(
+        store,
+        tools.tools,
+        gate,
+        ((ToolCallBlock("audio", "play_action", arguments={"action_code": "legacy"}),), "内部结束"),
+    )
+    assert len(transport.payloads) == 2
+    assert encoded not in encode(transport.payloads)
+    assert "音频编码未交付" in encode(transport.payloads)
+    assert encoded not in encode(result.checkpoint)
+    saved = await store.knowledge.get_evidence("action_result:legacy-audio")
+    assert saved is not None and encoded in saved.text
+    page = await tools.read_evidence("action_result:legacy-audio", max_chars=8000)
+    text = encode(page)
+    assert "音频编码未交付" in text and encoded[:200] not in text
+    assert await store.get_action("legacy-audio") == original

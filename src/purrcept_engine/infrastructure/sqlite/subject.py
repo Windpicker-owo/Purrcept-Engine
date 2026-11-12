@@ -1,8 +1,11 @@
 """在同一权威连接保存注意处置、前台批次和连续会话版本。
 
-接管、提交与唤醒分别记账。observe 留在收件箱，后续唤醒原子取尽已提交批次；
+接管、提交与唤醒分别记账。observe 留在收件箱；一旦出现唤醒级刺激，整个
+收件箱按最高级统一原则随它交给主脑：主脑空闲时 take_foreground_inputs 取作
+新一轮初始输入，忙碌时 absorb_turn_inputs 在 Core 请求边界并入在途轮次。
 成功会话、输入处理结束和检查点同事务提交。失败批次保留错误与来源，不能
-以 Core 丢弃临时历史为由抹掉已经发生的行动。这里不推进模型或等待设备。
+以 Core 丢弃临时历史为由抹掉已经发生的行动；模型从未回应的中途输入则释放
+回收件箱。这里不推进模型或等待设备。
 所有 SQL 函数由 Store 专属线程调用，事务内仅访问本连接。
 最低唤起的紧急升级单独保存宿主、旧代次和输入版本；它只结案一次判断，
 不另建待办。重启撤销旧观察，保留原前台交接资格。
@@ -176,30 +179,104 @@ def submit_inputs(
     return True
 
 
+def _wake_requested(connection: sqlite3.Connection) -> bool:
+    """收件箱中是否存在唤醒级刺激：注意判为 wake/urgent，或可信高价值输入。
+
+    priority 尚未经协调者整批提交，但它本身已保底 WAKE；把它算作唤醒意图，
+    主脑取批不必等待协调者先完成一次交接。
+    """
+    row: tuple[object, ...] | None = connection.execute(
+        "SELECT 1 FROM pending_inputs p JOIN input_processing s USING(input_id) "
+        "WHERE s.stage IN ('priority','foreground') LIMIT 1"
+    ).fetchone()
+    return row is not None
+
+
+def _inbox_ids(connection: sqlite3.Connection) -> tuple[str, ...]:
+    """按接管顺序返回全部尚未交给主脑的刺激，不论其注意判断是否完成。
+
+    Invariant: 最高级统一原则。一旦存在唤醒级刺激，整堆刺激随它一起交给
+    主脑：已 observe 的 submitted、判断中的 assessing、尚在合批窗口的
+    attention 与 priority 都不留在收件箱。判断中的批次随后由版本 CAS 拒绝
+    迟到结果，不会改写已交出的输入。
+    """
+    rows: list[tuple[object, ...]] = connection.execute(
+        "SELECT p.input_id FROM pending_inputs p JOIN input_processing s USING(input_id) "
+        "WHERE s.stage IN ('attention','priority','assessing','submitted','foreground') "
+        "ORDER BY p.sequence"
+    ).fetchall()
+    return tuple(_string(row[0]) for row in rows)
+
+
 def take_foreground_inputs(connection: sqlite3.Connection) -> tuple[str, ...]:
-    """唤醒时原子取尽已提交输入并消耗唤醒意图。
+    """主脑空闲时，若存在唤醒级刺激则原子取尽整个收件箱并消耗唤醒意图。
 
     Args:
         connection: Store 专属线程借用的权威连接。
 
     Returns:
-        按接管顺序冻结的本轮输入；没有 foreground 唤醒请求时为空。
+        按接管顺序冻结的新一轮初始输入；没有唤醒级刺激时为空。
 
     Note:
-        claimed 在 begin_turn 前已离开收件箱；其后的输入只能进入下一轮。
-        未提交的 attention/priority 不属于主脑状态，由协调者先完成交接。
-        调用方 Store 持有 BEGIN IMMEDIATE，将睡眠门槛、取批及原文恢复同事务提交。
+        取批范围遵循 _inbox_ids 的最高级统一原则，与主脑忙碌时的
+        absorb_turn_inputs 使用同一触发条件和同一范围，两条路径不区别对待。
+        claimed 在 begin_turn 前已离开收件箱；其后到达的唤醒级刺激由本轮
+        Core 请求边界的中途接管处理。调用方 Store 持有 BEGIN IMMEDIATE，
+        将睡眠门槛、取批及原文恢复同事务提交。
     """
-    if not pending_ids(connection, "foreground", 1):
+    if not _wake_requested(connection):
         return ()
-    rows: list[tuple[object, ...]] = connection.execute(
-        "SELECT p.input_id FROM pending_inputs p JOIN input_processing s USING(input_id) "
-        "WHERE s.stage IN ('assessing','submitted','foreground') ORDER BY p.sequence"
-    ).fetchall()
-    ids = tuple(_string(row[0]) for row in rows)
+    ids = _inbox_ids(connection)
     for input_id in ids:
         connection.execute(
             "UPDATE input_processing SET version=version+1,stage='claimed' WHERE input_id=?",
+            (input_id,),
+        )
+    return ids
+
+
+def absorb_turn_inputs(connection: sqlite3.Connection, turn_id: str) -> tuple[str, ...]:
+    """主脑忙碌时，若存在唤醒级刺激则把整个收件箱并入仍在运行的前台轮次。
+
+    Args:
+        connection: Store 专属线程借用的权威连接。
+        turn_id: 正在运行、持有前台会话在途身份的轮次。
+
+    Returns:
+        按接管顺序并入本轮的输入；轮次已结束、不是前台在途轮次或没有唤醒级
+        刺激时为空，且不修改任何状态。
+
+    Raises:
+        StorageError: 轮次身份不存在。
+
+    Note:
+        并入的输入直接成为本轮 turn_inputs 并进入 processing，与初始输入一同由
+        finish_turn 结案；失败时调用方可把尚未被模型回应的部分释放回收件箱。
+        调用方 Store 持有 BEGIN IMMEDIATE，与睡眠门槛同事务提交。
+    """
+    row: tuple[object, ...] | None = connection.execute(
+        "SELECT t.state='running' AND t.scope='foreground' AND s.active_turn=t.turn_id "
+        "FROM subject_turns t LEFT JOIN subject_sessions s ON s.scope=t.scope "
+        "WHERE t.turn_id=?",
+        (turn_id,),
+    ).fetchone()
+    if row is None:
+        raise StorageError("中途接管引用不存在的轮次。", code="invalid_record")
+    # 在途核对与插入同一事务：结案之后迟到的轮询不能把刺激挂到已结束轮次上。
+    if row[0] != 1 or not _wake_requested(connection):
+        return ()
+    ids = _inbox_ids(connection)
+    ordinal_row: tuple[object, ...] = connection.execute(
+        "SELECT COALESCE(MAX(ordinal)+1,0) FROM turn_inputs WHERE turn_id=?", (turn_id,)
+    ).fetchone()
+    ordinal = _integer(ordinal_row[0])
+    for offset, input_id in enumerate(ids):
+        connection.execute(
+            "INSERT INTO turn_inputs VALUES(?,?,?)", (turn_id, ordinal + offset, input_id)
+        )
+        # reason 保留注意判断原因，主脑收到的处置状态与空闲取批一致。
+        connection.execute(
+            "UPDATE input_processing SET version=version+1,stage='processing' WHERE input_id=?",
             (input_id,),
         )
     return ids
@@ -494,6 +571,7 @@ def finish_turn(
     checkpoint_json: str | None,
     error_json: str | None,
     accepted_failures: tuple[str, ...] = (),
+    released_inputs: tuple[str, ...] = (),
 ) -> SessionRecord:
     """成功检查点和输入结案原子安装。
 
@@ -504,6 +582,8 @@ def finish_turn(
         checkpoint_json: 完整 Core 检查点的编码；失败轮次可不安装新历史。
         error_json: 编码后的失败证据，供后续交互追溯原轮次。
         accepted_failures: 当前成功交互明确承接的先前失败轮次身份。 默认不附加此类条目。
+        released_inputs: 失败轮次中途接管、但模型从未回应过的输入；它们离开本轮并
+            带着唤醒意图回到收件箱，由下一轮作为完整当前输入处理。
 
     Returns:
         会话已提交版本与完整检查点，不包含尚未提交的临时历史。
@@ -517,6 +597,8 @@ def finish_turn(
     """
     if outcome == "running" or (outcome == "succeeded") != (checkpoint_json is not None):
         raise ValueError("只有成功终态可安装候选检查点。")
+    if released_inputs and outcome == "succeeded":
+        raise ValueError("成功轮次已回应全部中途输入，不能释放。")
     if error_json is not None:
         decode_object(error_json.encode("utf-8"))
     if accepted_failures:
@@ -533,11 +615,16 @@ def finish_turn(
         current = session_state(connection, turn.scope)
         if current.version != turn.session_version or current.active_turn != turn.turn_id:
             raise StorageError("会话提交已失去原版本资格。", code="session_conflict")
-        # 结案使用 begin_turn 冻结的权威来源集合，不能让调用方构造的
-        # TurnRecord 改写输入归属；本轮运行中不再接管后续刺激。
+        # 结案使用权威 turn_inputs 集合，不能让调用方构造的 TurnRecord 改写
+        # 输入归属；它包含 begin_turn 的初始输入及运行中并入的中途输入。
         actual_turn = get_turn(connection, turn.turn_id)
         if actual_turn is None:
             raise StorageError("活动轮次缺少权威记录。", code="invalid_record")
+        # 只有中途并入的输入可以释放；初始输入是本轮唤醒的对象，沿用既有的
+        # 失败结案语义，由后续轮次通过失败经历承接。
+        absorbed = set(actual_turn.input_ids) - set(turn.input_ids)
+        if any(input_id not in absorbed for input_id in released_inputs):
+            raise StorageError("释放的输入不是本轮中途接管的输入。", code="input_conflict")
         for failure_id in accepted_failures:
             row: tuple[object, ...] | None = connection.execute(
                 "SELECT t.scope,f.presented_in FROM failed_turns f "
@@ -564,7 +651,21 @@ def finish_turn(
             "UPDATE subject_turns SET state=?,finished_at=?,error_json=? WHERE turn_id=?",
             (outcome, time.time(), error_json, turn.turn_id),
         )
+        released = set(released_inputs)
         for input_id in actual_turn.input_ids:
+            if input_id in released:
+                # 模型没有回应过这些输入，失败不属于它们。离开本轮因果集合并
+                # 保留 pending 额度，以唤醒级 foreground 回到收件箱。
+                connection.execute(
+                    "DELETE FROM turn_inputs WHERE turn_id=? AND input_id=?",
+                    (turn.turn_id, input_id),
+                )
+                connection.execute(
+                    "UPDATE input_processing SET version=version+1,stage='foreground' "
+                    "WHERE input_id=?",
+                    (input_id,),
+                )
+                continue
             connection.execute(
                 "UPDATE input_processing SET version=version+1,stage=?,reason=? WHERE input_id=?",
                 ("processed" if outcome == "succeeded" else "failed", outcome, input_id),

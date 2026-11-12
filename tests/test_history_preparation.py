@@ -19,6 +19,7 @@ from purrcept_core.models import (
     ReminderState,
     SystemInstruction,
     TextBlock,
+    TokenUsage,
     ToolCallBlock,
     ToolResultBlock,
     ToolSet,
@@ -35,6 +36,7 @@ from purrcept_engine.domain.context.capacity import (
 from purrcept_engine.domain.context.checkpoints import decode_checkpoint, encode_checkpoint
 from purrcept_engine.domain.context.history import HistoryMaintenance
 from purrcept_engine.domain.context.history_preparation import HistoryPreparation, preview_request
+from purrcept_engine.domain.context.usage import UsageMeter
 from purrcept_engine.domain.inputs.models import InputContext, InputSource, InputSubmission
 from purrcept_engine.domain.knowledge.models import EvidenceSnapshot, WakeupPlan
 from purrcept_engine.domain.model_requests.service import RequestBudget
@@ -103,6 +105,131 @@ def check(payload: JsonObject):
 async def refresh(budget: RequestBudget) -> DynamicState:
     """冻结相同动态材料使前后布局可比较，不注册额外任务。"""
     return DynamicState("已提交来源状态与当前预算")
+
+
+async def test_observed_overflow_compacts_recent_completed_history_after_failed_tool_continuation(
+    store: Store,
+) -> None:
+    """服务端真实用量令轮内续问失败后，新输入仍能触发维护并保留首轮未决待办。"""
+    from purrcept_core.models.tools import FunctionTool
+    from test_capacity_usage import Backend as UsageBackend
+
+    from purrcept_engine.infrastructure.models.compiler import compiler_identity
+
+    messages: list[Message] = []
+    first = ""
+    for index in range(2):
+        identity = await admit(store, str(index), "已完成原文")
+        if index == 0:
+            first = identity
+        messages.extend(
+            (
+                Message.user("原文" + "x" * 4000, metadata={"evidence": (identity,)}),
+                Message.assistant("结束"),
+            )
+        )
+        checkpoint = ConversationCheckpoint(
+            ConversationState(
+                tuple(messages),
+                turn_index=index + 1,
+                turn_boundaries=tuple(range(2, len(messages) + 1, 2)),
+            ),
+            ReminderState(),
+        )
+        turn = await store.begin_turn(
+            "seed" + str(index), "foreground", index, index + 1, (identity,)
+        )
+        await store.finish_turn(turn, "succeeded", checkpoint_json=encode_checkpoint(checkpoint))
+    await store.knowledge.plan_wakeup(
+        WakeupPlan(id="pending", due=time.time() + 3600, reason="未到期", evidence=first)
+    )
+    original = await store.get_session("foreground")
+    usage = UsageMeter(store, "test-history", compiler_identity("generation"), None)
+
+    async def read() -> str:
+        """离线小结果，不制造新的世界效果或大正文。"""
+        return "小型工具结果"
+
+    tools = ToolSet((FunctionTool(read),))
+    generation = UsageBackend(
+        (
+            ModelResponse(
+                Message(MessageRole.ASSISTANT, (ToolCallBlock("read", "read"),)),
+                usage=TokenUsage(7500, 20),
+            ),
+            ModelResponse(Message.assistant("维护后继续处理"), usage=TokenUsage(1500, 20)),
+        )
+    )
+    summary = Backend('{"summary":"已完成第二轮的压缩内容"}')
+    maintenance = HistoryMaintenance(
+        store,
+        store,
+        summary,
+        model="openai/main",
+        retry=RetrySettings(attempts=1),
+        summary_capacity=lambda p: check_capacity(p, GenerationCapacity(100_000, 100)),
+        output_tokens=100,
+        diagnostic_bytes=1024,
+        compiler=compile_materials,
+    )
+    preparation = HistoryPreparation(
+        store,
+        maintenance,
+        backend=generation,
+        model="openai/main",
+        assess=lambda p: assess_capacity(p, GenerationCapacity(8000, 100), usage=usage),
+        context=ContextSettings(),
+        usage=usage,
+        compiler=compile_materials,
+    )
+    session = ContinuousSession(
+        store, "foreground", can_start=lambda: None, compiler=compile_materials
+    )
+    final_checkpoint: ConversationCheckpoint | None = None
+    try:
+        for attempt in range(2):
+            current = await admit(store, "attempt" + str(attempt), "新的输入" + str(attempt))
+            operation = session.run(
+                Message.user("新的输入" + str(attempt)),
+                turn_id="attempt" + str(attempt),
+                input_ids=(current,),
+                backend=generation,
+                evidence=store,
+                model="openai/main",
+                instructions=(),
+                tools=tools,
+                output_tokens=100,
+                max_requests=8,
+                turn_seconds=60,
+                retry=RetrySettings(attempts=1),
+                diagnostic_bytes=1024,
+                refresh=refresh,
+                capacity=lambda p: check_capacity(p, GenerationCapacity(8000, 100), usage=usage),
+                prepare_history=preparation,
+                observe_usage=usage.observe,
+            )
+            if attempt == 0:
+                with pytest.raises(CapacityError):
+                    await operation
+                assert (
+                    await store.get_session("foreground")
+                ).checkpoint_json == original.checkpoint_json
+                assert summary.requests == []
+            else:
+                result = await operation
+                assert result.final_text == "维护后继续处理"
+                final_checkpoint = result.checkpoint
+        assert len(summary.requests) == 1 and generation.calls == 2
+        assert original.checkpoint_json is not None
+        assert final_checkpoint is not None
+        assert (
+            final_checkpoint.history.messages[:2]
+            == decode_checkpoint(original.checkpoint_json).history.messages[:2]
+        )
+        assert (await store.knowledge.pending_plans())[0].id == "pending"
+    finally:
+        await session.close()
+        await preparation.close()
 
 
 async def test_history_preview_uses_actual_tool_tail_projection(store: Store) -> None:

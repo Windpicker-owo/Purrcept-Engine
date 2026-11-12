@@ -1,6 +1,6 @@
 """音频借出的有限视觉事实接缝，不授予设备客户端或资源所有权。
 
-app 在全部插件构造后绑定同实例 BodyPort。调用只改变身体本地最新状态，
+app 在全部插件构造后绑定同实例 BodyPort。调用只改变身体本地相应字段的最新状态，
 不得等待网络或恢复；返回值分开说明 accepted 和 VTS adopted。离线事实
 不会排队等待连接，后续恢复只运行基线。
 """
@@ -37,10 +37,11 @@ class BodyPort(Protocol):
         Args:
             playback_id: 本次实际播放的稳定身份，用于拒绝迟到口型或停止确认。
             elapsed_seconds: 实际播放器报告的已播放秒数。
-            energy: 实际 PCM 片段的音量能量，用于驱动视觉反馈。
+            energy: 实际 PCM 片段的归一化音量能量，范围[0,1]，用于口型。
 
         Note:
-            energy 是可用时的音频采样强度。
+            elapsed_seconds 必须有限且非递减；没有新进度不能按墙钟外推。
+            韵律动作仅在媒体时钟到达候选位置后采用。
         """
         ...
 
@@ -56,17 +57,19 @@ class BodyPort(Protocol):
             pcm: 已解码的 PCM 字节或按播放顺序产生的字节流。
 
         Note:
-            只供视觉分析，不能阻塞或回压声音。
+            pcm 是 mono s16le，长度为 sample_rate/50 个样本；sample_offset
+            从零起递增。PCM 可先于播放开始到达，只供有界视觉分析，不能
+            触发动作、阻塞或回压声音。串行播放器须在结束后停止旧身份回调。
         """
         ...
 
     def playback_finished(self, playback_id: str) -> JsonObject:
-        """撤销同身份联动，返回采用确认。
+        """撤销该播放仍拥有的字段和动作，返回采用确认。
 
         Args:
             playback_id: 本次实际播放的稳定身份，用于拒绝迟到口型或停止确认。
 
         Note:
-            旧结束不能清除新播放。
+            旧结束不能清除新播放或后来独立更新的字段；当前位置可平滑回落。
         """
         ...

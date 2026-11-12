@@ -23,6 +23,7 @@ from purrcept_core.models import (
     AudioBytes,
     ChoiceAnswer,
     ChoiceProbability,
+    ChoiceQuestion,
     DecisionRefusal,
     DecisionRequest,
     DecisionResponse,
@@ -66,6 +67,8 @@ from purrcept_engine.domain.knowledge.service import KnowledgeService
 from purrcept_engine.domain.model_requests.models import RequestEvidence
 from purrcept_engine.domain.model_requests.service import RequestBudget
 from purrcept_engine.domain.subject.attention import ATTENTION_QUESTION, AttentionModel
+from purrcept_engine.domain.subject.attention_service import AttentionResult
+from purrcept_engine.domain.subject.expression import ExpressionAssessment
 from purrcept_engine.domain.subject.foreground_tools import format_character_card
 from purrcept_engine.domain.subject.prompts import ATTENTION_IDENTITY_PROMPT
 from purrcept_engine.domain.subject.service import SubjectService
@@ -367,6 +370,128 @@ def _text(request: DecisionRequest) -> str:
     return "\n".join(block.text for block in request.input if isinstance(block, TextBlock))
 
 
+class _ExpressionDecision:
+    """完整回答实际编译的三个问题，保留每项独立置信度。"""
+
+    async def decide(self, request: DecisionRequest, *, model: str) -> DecisionResponse:
+        """拒答情绪时仍交付有效注视，不影响注意判断本身。"""
+        assert [question.name for question in request.questions] == [
+            "attention",
+            "emotion",
+            "focus",
+        ]
+        answers: list[ChoiceAnswer | DecisionRefusal] = []
+        for question in request.questions:
+            assert isinstance(question, ChoiceQuestion)
+            if question.name == "emotion":
+                answers.append(DecisionRefusal("emotion"))
+                continue
+            choice = "observe" if question.name == "attention" else "work"
+            answers.append(
+                ChoiceAnswer(
+                    question.name,
+                    choice,
+                    tuple(
+                        ChoiceProbability(option.value, float(option.value == choice))
+                        for option in question.choices
+                    ),
+                    0.83,
+                )
+            )
+        return DecisionResponse(tuple(answers))
+
+
+@pytest.mark.parametrize("kind", ["decision", "generation"])
+async def test_expression_is_delivered_only_after_batch_adoption(rig: _Rig, kind: str) -> None:
+    """两类实际请求经过临时库提交；重复/旧版本采用不能再次驱动身体。"""
+    attention = rig.coordinator.attention
+    assert attention is not None
+    if kind == "decision":
+        attention = replace(attention, backend=_ExpressionDecision(), expression=True)
+    else:
+        rig.chat_attention.responses.append(
+            ModelResponse(
+                Message.assistant(
+                    '{"attention":"observe","reason":"阅读工作", "expression": {'
+                    '"emotion":"curious","emotion_confidence":0.72,'
+                    '"focus":"work","focus_confidence":0.83}}'
+                )
+            )
+        )
+        attention = replace(
+            attention,
+            backend=rig.chat_attention,
+            kind="generation",
+            output_tokens=500,
+            expression=True,
+        )
+    rig.coordinator.attention = attention
+    delivered: list[ExpressionAssessment] = []
+
+    def receive(assessment: ExpressionAssessment, *, deadline: float, urgent: bool) -> None:
+        assert time.monotonic() < deadline <= started + 15.1
+        assert not urgent
+        delivered.append(assessment)
+
+    rig.coordinator.expression_sink = receive
+    identity = await _admit(rig, "expression", "正在处理工作，请看这里。")
+    record = await rig.store.get_input(identity)
+    state = await rig.store.input_processing(identity)
+    assert record is not None and state is not None
+    assert await rig.store.submit_inputs((state,), minimum_wake=False)
+    submitted = await rig.store.input_processing(identity)
+    assert submitted is not None
+    started = time.monotonic()
+    result = await rig.coordinator.attention_service.evaluate((record,), background={})
+    assert result.expression is not None and delivered == []
+    assert result.expression.focus == "work" and result.expression.focus_confidence == 0.83
+    assert result.expression.emotion == ("unchanged" if kind == "decision" else "curious")
+    rig.coordinator.coordinator.expected = (submitted,)
+    await rig.coordinator.coordinator.adopt(result)
+    assert delivered == [result.expression]
+    # 相同批次版本已提交。即使迟到结果变为 urgent，也没有新的视觉采用资格。
+    await rig.coordinator.coordinator.adopt(
+        AttentionResult(
+            "urgent",
+            result.reason,
+            result.request_id,
+            result.expression,
+            result.expression_deadline,
+        )
+    )
+    assert delivered == [result.expression]
+
+
+@pytest.mark.parametrize(
+    "expression",
+    [
+        "null",
+        '{"emotion":"warm"}',
+        '{"emotion":"warm","emotion_confidence":1.1,"focus":"chat","focus_confidence":0.9}',
+    ],
+)
+async def test_invalid_generated_expression_cannot_reach_body(rig: _Rig, expression: str) -> None:
+    """附加字段错误保留原紧急级别和明确失败说明，不能作为有效姿态泄漏。"""
+    attention = rig.coordinator.attention
+    assert attention is not None
+    rig.coordinator.attention = replace(
+        attention, backend=rig.chat_attention, kind="generation", output_tokens=500, expression=True
+    )
+    rig.chat_attention.responses.append(
+        ModelResponse(
+            Message.assistant(
+                '{"attention":"urgent","reason":"test","expression":' + expression + "}"
+            )
+        )
+    )
+    identity = await _admit(rig, "invalid-expression", "测试刺激")
+    record = await rig.store.get_input(identity)
+    assert record is not None
+    result = await rig.coordinator.attention_service.evaluate((record,), background={})
+    assert result.expression is None and result.level == "urgent"
+    assert '"state":"invalid"' in result.reason and result.request_id is not None
+
+
 async def test_real_core_uses_fixed_directory_six_tools_and_internal_final(rig: _Rig) -> None:
     identity = await _admit(rig, "current", "正文的后段不会被注意预览删除。")
     await rig.coordinator.start()
@@ -512,9 +637,10 @@ async def test_foreground_completion_requires_external_wake_and_uses_a_new_turn(
     assert new[0].request.scope.input_ids == (later, high)
 
 
-async def test_tool_loop_keeps_wake_snapshot_without_ingesting_later_inputs(
+async def test_tool_loop_does_not_ingest_later_inputs_without_wake(
     rig: _Rig,
 ) -> None:
+    """没有唤醒级刺激时，轮内工具循环不并入仍在合批或待判断的普通输入。"""
     rig.coordinator.settings = CoordinatorSettings(4096, coalesce_seconds=60)
     rig.generation.blocks[1] = asyncio.Event()
     rig.generation.responses.append(
@@ -569,6 +695,125 @@ async def test_tool_loop_keeps_wake_snapshot_without_ingesting_later_inputs(
     for identity in (arrived, *during_tool):
         state = await rig.store.input_processing(identity)
         assert state is not None and state.stage == "attention"
+
+
+def _echo_call() -> ModelResponse:
+    return ModelResponse(
+        Message(
+            MessageRole.ASSISTANT,
+            (
+                ToolCallBlock(
+                    "call",
+                    "play_action",
+                    arguments={
+                        "action_code": (
+                            'from world import me\nreturn await me.console.echo(text="actual")'
+                        )
+                    },
+                ),
+            ),
+        )
+    )
+
+
+async def test_wake_during_turn_joins_next_request_with_whole_inbox(rig: _Rig) -> None:
+    """主脑忙碌时的唤醒级刺激在模型返回后并入同一轮，下一请求连同积压一起看到。"""
+    rig.coordinator.settings = CoordinatorSettings(4096, coalesce_seconds=60)
+    rig.generation.blocks[1] = asyncio.Event()
+    rig.generation.responses.append(_echo_call())
+    first = await _admit(rig, "first", "开始", context=InputContext(minimum_wake=True))
+    await rig.coordinator.start()
+    await rig.generation.arrivals.get()
+    ambient = await _admit(rig, "ambient", "背景闲聊")
+    correction = await _admit(
+        rig, "correction", "补充：改成明天", context=InputContext(minimum_wake=True)
+    )
+    await _stage(rig, correction, "foreground")
+    rig.generation.blocks[1].set()
+    await _stage(rig, first, "processed")
+    for identity in (ambient, correction):
+        await _stage(rig, identity, "processed")
+
+    assert rig.effects == ["actual"] and rig.coordinator.generation == 1
+    assert len(rig.generation.requests) == 2 and not rig.generation.cancelled
+    second = rig.generation.requests[1]
+    assert [message.role for message in second.messages[-3:]] == [
+        MessageRole.ASSISTANT,
+        MessageRole.TOOL,
+        MessageRole.USER,
+    ]
+    intake = second.messages[-1].text
+    assert "turn_intake" in intake and "补充：改成明天" in intake and "背景闲聊" in intake
+    with sqlite3.connect(rig.directory / "state.sqlite3") as connection:
+        rows = connection.execute("SELECT turn_id FROM subject_turns").fetchall()
+    assert len(rows) == 1
+    requests = await rig.store.requests_for_turn("foreground", rows[0][0])
+    assert requests[0].request.scope.input_ids == (first,)
+    assert requests[1].request.scope.input_ids == (first, ambient, correction)
+
+
+async def test_urgent_preempts_absorbed_batch_before_model_sees_it(rig: _Rig) -> None:
+    """工具执行期间并入的批次被判 urgent 时抢占本轮，未回应输入完整进入新一轮。"""
+    rig.generation.blocks[1] = asyncio.Event()
+    rig.generation.responses.append(_echo_call())
+
+    async def execute_hold(
+        source: str,
+        *,
+        input_id: str | None,
+        can_start: Callable[[], bool],
+        presented_call_ids: frozenset[str],
+    ) -> ActionRecord:
+        # 批次此时已并入但还未随请求发给模型；放行判断后等待抢占取消本工具。
+        rig.decision.release.set()
+        await asyncio.Event().wait()
+        raise AssertionError("抢占必须取消仍在执行的工具等待")
+
+    rig.coordinator.execute = execute_hold
+    first = await _admit(rig, "first", "开始", context=InputContext(minimum_wake=True))
+    await rig.coordinator.start()
+    await rig.generation.arrivals.get()
+    rig.decision.release.clear()
+    rig.decision.choices.append("urgent")
+    urgent = await _admit(rig, "urgent", "紧急补充")
+    await rig.decision.arrivals.get()
+    companion = await _admit(
+        rig, "companion", "高价值同批", context=InputContext(minimum_wake=True)
+    )
+    await _stage(rig, companion, "foreground")
+    rig.generation.blocks[1].set()
+
+    await _stage(rig, first, "failed")
+    await _stage(rig, urgent, "processed")
+    await _stage(rig, companion, "processed")
+    assert rig.coordinator.generation == 2 and not rig.effects
+    assert len(rig.generation.requests) == 2
+    current = rig.generation.requests[1].messages[-1].text
+    assert "紧急补充" in current and "高价值同批" in current
+    assert "prior_failed_turn" in current and first in current
+    with sqlite3.connect(rig.directory / "state.sqlite3") as connection:
+        rows = connection.execute(
+            "SELECT i.input_id FROM turn_inputs i JOIN subject_turns t USING(turn_id) "
+            "WHERE t.state='cancelled'"
+        ).fetchall()
+    assert rows == [(first,)]
+
+
+async def test_wake_at_last_request_waits_for_next_turn_without_failing(rig: _Rig) -> None:
+    """已无请求名额时不并入新刺激，本轮正常成功，刺激由下一轮完整处理。"""
+    rig.coordinator.settings = CoordinatorSettings(4096, coalesce_seconds=60, max_requests=1)
+    rig.generation.blocks[1] = asyncio.Event()
+    first = await _admit(rig, "first", "初始材料", context=InputContext(minimum_wake=True))
+    await rig.coordinator.start()
+    await rig.generation.arrivals.get()
+    late = await _admit(rig, "late", "末轮之后", context=InputContext(minimum_wake=True))
+    await _stage(rig, late, "foreground")
+    rig.generation.blocks[1].set()
+    await _stage(rig, first, "processed")
+    await _stage(rig, late, "processed")
+    assert rig.coordinator.generation == 2 and len(rig.generation.requests) == 2
+    assert not await rig.store.failed_turns("foreground")
+    assert "末轮之后" in rig.generation.requests[1].messages[-1].text
 
 
 async def test_missing_materials_and_native_audio_reach_foreground_once(rig: _Rig) -> None:
@@ -888,7 +1133,17 @@ async def test_vad_notice_waits_for_current_generation_without_an_urgent_assessm
     assert not rig.generation.cancelled and not rig.decision.requests
 
 
+async def _adopted(rig: _Rig) -> None:
+    """等待协调者采用当前注意结果；采用失败的 CAS 不写库，只能观察槽位释放。"""
+    async with asyncio.timeout(5):
+        while rig.coordinator.coordinator.evaluation is not None:
+            if rig.coordinator.failure is not None:
+                raise rig.coordinator.failure
+            await asyncio.sleep(0.01)
+
+
 async def test_late_semantic_urgent_cannot_override_inputs_already_pulled(rig: _Rig) -> None:
+    """判断中的批次已随取批或中途并入发给模型，迟到 urgent 不再取消正在看它的生成。"""
     first_gate = asyncio.Event()
     second_gate = asyncio.Event()
     rig.generation.blocks = {1: first_gate, 2: second_gate}
@@ -901,14 +1156,17 @@ async def test_late_semantic_urgent_cannot_override_inputs_already_pulled(rig: _
     await rig.generation.arrivals.get()
     newer = await _admit(rig, "newer", "第二轮", context=InputContext(minimum_wake=True))
     first_gate.set()
-    await rig.generation.arrivals.get()
-    assert rig.coordinator.generation == 2
+    second = await rig.generation.arrivals.get()
+    # 唤醒级 newer 在首个响应返回时并入同一轮，下一请求立即看到它。
+    assert rig.coordinator.generation == 1
+    assert "第二轮" in "\n".join(message.text for message in second.messages)
     rig.decision.release.set()
-    await _stage(rig, ordinary, "processed")
-    assert rig.coordinator.generation == 2 and not rig.generation.cancelled
+    await _adopted(rig)
+    assert rig.coordinator.generation == 1 and not rig.generation.cancelled
     second_gate.set()
     await _stage(rig, newer, "processed")
     await _stage(rig, ordinary, "processed")
+    assert len(rig.generation.requests) == 2 and not rig.generation.cancelled
 
 
 async def test_later_input_does_not_refresh_oldest_admission_window(tmp_path: Path) -> None:
@@ -931,16 +1189,15 @@ async def test_later_input_does_not_refresh_oldest_admission_window(tmp_path: Pa
 
 
 async def test_attention_page_limit_does_not_limit_foreground_intake(rig: _Rig) -> None:
+    """注意分页只限制单次判断；首页判为 wake 时整个收件箱随它进入前台。"""
     identities = [await _admit(rig, str(index), str(index)) for index in range(9)]
     await rig.coordinator.start()
     for identity in identities:
         await _stage(rig, identity, "processed")
-    assert len(rig.decision.requests) == 2
+    assert len(rig.decision.requests) == 1
     assert sum(identity in _text(rig.decision.requests[0]) for identity in identities) == 8
-    assert all(
-        any(identity in request.messages[-1].text for request in rig.generation.requests)
-        for identity in identities
-    )
+    assert len(rig.generation.requests) == 1
+    assert all(identity in rig.generation.requests[0].messages[-1].text for identity in identities)
 
 
 async def test_close_cancels_model_wait_once_and_refuses_new_generation(rig: _Rig) -> None:
@@ -963,6 +1220,7 @@ async def test_body_stop_keywords_and_owner_claim_do_not_bypass_attention(rig: _
 
 
 async def test_inputs_arriving_during_judgment_stay_outside_frozen_request(rig: _Rig) -> None:
+    """判断请求冻结原批次；判为 wake 后，判断期间到达的输入随整个收件箱进入前台。"""
     rig.decision.release.clear()
     first = await _admit(rig, "one", "第一批原文")
     await rig.coordinator.start()
@@ -973,9 +1231,9 @@ async def test_inputs_arriving_during_judgment_stay_outside_frozen_request(rig: 
     assert state is not None and state.stage == "attention"
     rig.decision.release.set()
     await _stage(rig, later, "processed")
-    assert len(rig.decision.requests) == 2
-    assert later not in rig.generation.requests[0].messages[-1].text
-    assert later in rig.generation.requests[1].messages[-1].text
+    assert len(rig.decision.requests) == 1 and len(rig.generation.requests) == 1
+    assert first in rig.generation.requests[0].messages[-1].text
+    assert later in rig.generation.requests[0].messages[-1].text
 
 
 async def test_old_admitted_backlog_does_not_open_another_window(tmp_path: Path) -> None:

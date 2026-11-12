@@ -565,10 +565,11 @@ async def test_recovery_clears_smoothing_and_pcm_but_preserves_old_adoption(
     analyzers = iter((old_analyzer, new_analyzer))
     factory = Factory(first, restored)
     style = BodyStyle(baseline_valence=0.15, baseline_arousal=0.25, motion_scale=0.0)
+    now = 10.0
     body = Live2DRuntime(
         "body",
         factory,
-        monotonic=lambda: 10.0,
+        monotonic=lambda: now,
         analyzer_factory=lambda: next(analyzers),
         style=style,
     )
@@ -579,8 +580,10 @@ async def test_recovery_clears_smoothing_and_pcm_but_preserves_old_adoption(
     body.playback_progress("old", 0.0, 1.0)
     body.playback_pcm("old", 32000, 0, bytes(1280))
     await asyncio.wait_for(old_analyzer.produced.wait(), 1)
+    # 平滑按真实时间推进，同一时刻重复发送不能偷偷改变表情。
+    now += 0.1
     await body.step()
-    assert first.frames[-1]["mouth_open"] == 1.0
+    assert 0.3 < first.frames[-1]["mouth_open"] < 0.75
     assert first.frames[-1]["valence"] > style.baseline_valence
     assert body.snapshot()["adopted"] is True
 

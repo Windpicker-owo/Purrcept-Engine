@@ -30,6 +30,7 @@ from purrcept_engine.domain.model_requests.service import (
 from purrcept_engine.domain.subject.attention import AttentionModel, NativeMedia
 from purrcept_engine.domain.subject.attention_service import AttentionService
 from purrcept_engine.domain.subject.coordinator import StimulusCoordinator
+from purrcept_engine.domain.subject.expression import ExpressionSink
 from purrcept_engine.domain.subject.foreground_service import ForegroundService
 from purrcept_engine.domain.subject.models import (
     InputProcessing,
@@ -77,6 +78,7 @@ class SubjectService:
         can_start: Callable[[], None],
         prepare_history: PrepareHistory | None = None,
         compact_sleep_history: Callable[[], Awaitable[None]] | None = None,
+        expression_sink: ExpressionSink | None = None,
     ) -> None:
         """借用显式资源和纯声明，构造不联网、不推进输入或开启任务。
 
@@ -97,6 +99,7 @@ class SubjectService:
             can_start: 实际派发前重新检查的资格回调，等待后仍须复核。
             prepare_history: 会话空闲时维护已提交历史的入口；None 不维护。
             compact_sleep_history: 睡眠时强制检查一次可压缩旧历史；None 不运行摘要。
+            expression_sink: 批次采用后同步交付身体判断的有限借用，关闭归应用。
         """
         self.store = store
         self.knowledge = knowledge
@@ -114,6 +117,7 @@ class SubjectService:
         self.can_start = can_start
         self.prepare_history = prepare_history
         self.compact_sleep_history = compact_sleep_history
+        self.expression_sink = expression_sink
         self.session = ContinuousSession(
             store,
             "foreground",
@@ -204,9 +208,12 @@ class SubjectService:
 
         Note:
             app 在接管前读取 generation，再在成功提交后调用。输入若已经进入
-            前台处理或代次已经变化，不抢占新生成；重启后不猜测旧观察身份。
+            新一轮处理或代次已经变化，不抢占新生成；重启后不猜测旧观察身份。
+            输入可能在接管与本通知之间被在途轮次中途并入（processing），此时
+            仍按观察代次抢占：可信急停不能因为恰好赶上请求边界而失效，模型未回应
+            的并入输入随失败结案释放回收件箱。
             高价值输入的批次升级由刺激协调者统一登记；此入口只交接可信直接抢占。
-            speech_started 仅请求停音和下一轮通知，即使同时携带抢占标记也不取消生成。
+            speech_started 仅请求停音和下一次思考通知，即使同时携带抢占标记也不取消生成。
             音频停播由音频所有者另行受理；返回值
             只表示本通知是否已经直接抢占，不预报后续模型判断的结果。
         """
@@ -215,7 +222,13 @@ class SubjectService:
         processing = await self.store.input_processing(input_id)
         if record is None or processing is None:
             raise StorageError("可信接管通知引用不存在的输入。", code="invalid_record")
-        if processing.stage not in ("priority", "foreground", "assessing", "submitted"):
+        if processing.stage not in (
+            "priority",
+            "foreground",
+            "assessing",
+            "submitted",
+            "processing",
+        ):
             return False
         if record.context.interrupt_generation and not record.context.speech_started:
             return self.session.interrupt(observed_generation)

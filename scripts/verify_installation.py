@@ -90,6 +90,7 @@ async def verify_host(directory: Path) -> dict[str, object]:
     )
 
     from purrcept_engine import EngineConfig, EngineHost
+    from purrcept_engine.domain.context.audio_receipts import audio_text_view
     from purrcept_engine.domain.context.capacity import GenerationCapacity, check_capacity
     from purrcept_engine.infrastructure.audio.wav import encode_wav
     from purrcept_engine.infrastructure.models.compiler import compile_materials
@@ -130,6 +131,12 @@ async def verify_host(directory: Path) -> dict[str, object]:
     )
     # 包内预检必须读取实际图片尺寸和音频时长，不能把内联编码当正文。
     audio = encode_wav(bytes(32_000 * 60), 16_000)
+    encoded_audio = base64.b64encode(audio).decode()
+    legacy_receipt = json.dumps({"result_json": json.dumps(encoded_audio), "state": "confirmed"})
+    projected_receipt = audio_text_view(legacy_receipt)
+    assert encoded_audio not in projected_receipt
+    assert hashlib.sha256(audio).hexdigest() in projected_receipt
+    assert json.loads(projected_receipt)["state"] == "confirmed"
     payload = {
         "model": "openai/never-called",
         "max_tokens": 100,
@@ -238,6 +245,7 @@ async def verify_host(directory: Path) -> dict[str, object]:
         "image": "pixels-and-reference-reopened",
         "audio_file": "original-bytes-and-reference-reopened",
         "audio_transport": "text-tool-and-native-user-media",
+        "receipt_audio": "binary-references-only",
         "capacity": measured.estimate.method,
         "models_called": 0,
     }

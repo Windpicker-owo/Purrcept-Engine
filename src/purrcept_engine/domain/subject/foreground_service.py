@@ -1,8 +1,9 @@
-"""被协调者唤醒一次就处理一份冻结快照，连接前台工具与连续会话。
+"""被协调者唤醒后推进一次前台轮次，连接前台工具、连续会话与中途接管。
 
-入口 run 只处理调用方已经取出的输入；刺激选择、合批和下一次唤醒归协调者。
-ContinuousSession 拥有连续历史和生成资格，Core 拥有轮内模型/工具循环。
-本模块不轮询新刺激，也不根据前台最终文字自动对外发送。
+入口 run 处理调用方已经取出的初始输入；空闲时的刺激选择、合批和唤醒归
+协调者。轮次运行中，absorb 作为 Core 请求边界的中途接管入口，把出现唤醒级
+刺激时的整个收件箱并入本轮。ContinuousSession 拥有连续历史和生成资格，Core
+拥有轮内模型/工具循环。本模块不根据前台最终文字自动对外发送。
 """
 
 from __future__ import annotations
@@ -38,6 +39,7 @@ from purrcept_engine.domain.subject.models import (
     TurnRecord,
 )
 from purrcept_engine.domain.subject.ports import ActionCallback
+from purrcept_engine.domain.subject.session import TurnIntakeBatch
 from purrcept_engine.errors import HostStateError, StorageError
 
 if TYPE_CHECKING:
@@ -262,6 +264,72 @@ class ForegroundService:
             },
         )
 
+    async def absorb(self, turn: TurnRecord) -> TurnIntakeBatch | None:
+        """在 Core 请求边界把唤醒级刺激连同整个收件箱并入在途轮次。
+
+        Args:
+            turn: 本轮 begin_turn 返回的在途记录。
+
+        Returns:
+            已并入的输入及其完整 user 消息；没有唤醒级刺激、主体关闭或故障时为 None。
+
+        Note:
+            ContinuousSession 已过滤预算失效的边界。这里只在主体仍可派发时并入，
+            关闭中的主体不再接管新刺激，留给重启后的协调者处理。消息组装失败
+            使本轮失败，已并入但从未回应的输入由会话结案时释放回收件箱。
+        """
+        if self.runtime.closing or self.runtime.failure_error is not None:
+            return None
+        records = await self.runtime.store.absorb_turn_inputs(turn.turn_id)
+        if not records:
+            return None
+        return TurnIntakeBatch(
+            tuple(record.input_id for record in records), await self.intake_message(records)
+        )
+
+    async def intake_message(self, records: tuple[InputRecord, ...]) -> Message:
+        """组装中途到达的输入，前后标注到达时机与注意处置。
+
+        Args:
+            records: absorb_turn_inputs 按接管顺序并入的完整输入。
+
+        Returns:
+            与初始输入同样保留完整正文和原生媒体的 user 消息，metadata 关联来源。
+
+        Note:
+            说明块放在原文之前，让模型先知道这些输入晚于本轮已执行的行动到达，
+            可能补充或修改先前要求；处置块与初始消息使用同一形状。
+        """
+        current = await input_message(
+            self.runtime.store, records, supports_contents=self.runtime.subject.supports_contents
+        )
+        processing = await self.runtime.processing(records)
+        blocks: list[ContentBlock] = [
+            TextBlock(
+                render_material(
+                    "本轮处理期间新到达的输入",
+                    {
+                        "material_kind": "turn_intake",
+                        "instruction": "这些输入在你本轮思考或行动期间到达，可能补充、修改或"
+                        "撤回此前的要求。结合已经执行的行动及其回执继续处理，"
+                        "不要重放已经完成的行动。",
+                    },
+                )
+            ),
+            *current.content,
+            TextBlock(
+                render_material(
+                    "中途并入时的输入状态",
+                    {
+                        "material_kind": "input_disposition",
+                        "processing": processing,
+                        "assembled_at": time.time(),
+                    },
+                )
+            ),
+        ]
+        return Message(MessageRole.USER, tuple(blocks), metadata=current.metadata)
+
     def turn_eligible(self, generation: int) -> bool:
         """执行器最后核验此闭包，旧代次不能借新会话继续派发脚本。
 
@@ -297,7 +365,8 @@ class ForegroundService:
             records: 按接管顺序取得的完整输入记录。
 
         Note:
-            本轮不再查询新刺激；随后到达的输入由协调者留给下一次唤醒。
+            records 是唤醒时冻结的初始输入。之后出现的唤醒级刺激由 absorb 在
+            Core 请求边界并入本轮；没有唤醒级刺激的输入继续留在收件箱。
         """
         failures = await self.runtime.store.failed_turns("foreground")
         generation = self.runtime.session.generation + 1
@@ -338,4 +407,5 @@ class ForegroundService:
             capacity=self.runtime.subject.capacity,
             delivery=delivery,
             prepare_history=self.runtime.prepare_history,
+            intake=self.absorb,
         )

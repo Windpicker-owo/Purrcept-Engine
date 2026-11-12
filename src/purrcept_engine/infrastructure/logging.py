@@ -62,6 +62,13 @@ _SUMMARY_FIELDS = (
     "attempts",
     "retry_wait",
     "remaining_seconds",
+    "transport_step",
+    "headers_ms",
+    "first_byte_ms",
+    "body_bytes",
+    "event_loop_lag_ms",
+    "transport_id",
+    "connection_attempts",
 )
 
 

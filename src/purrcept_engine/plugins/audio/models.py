@@ -20,7 +20,8 @@ from purrcept_engine.values import JsonObject
 class AudioSettings(BaseModel):
     """纯声明阶段冻结的输出配置，构造不打开网络或播放器。
 
-    api_key 只来自显式配置。ffplay/ffmpeg 是明确外部程序；streaming 使用
+    api_key 和 proxy 只来自显式配置；省略 proxy 时直连，不读取环境代理。
+    ffplay/ffmpeg 是明确外部程序；streaming 使用
     同一独立音频播放器，不借用 Live2D 连接或原生进程。队列只数候播项。
     """
 
@@ -29,6 +30,7 @@ class AudioSettings(BaseModel):
     label: str = Field(default="麦克风", min_length=1, pattern=r"\S")
     api_key: SecretStr = SecretStr("")
     api_base: str = "https://fishaudio.org/api/open/v3"
+    proxy: str | None = None
     model: str = Field(default="fishaudio-s21pro-flash", min_length=1, pattern=r"\S")
     voice_id: str = Field(
         default="00a1b221-6137-4b73-ad62-b0cbce134167", min_length=1, pattern=r"\S"
@@ -47,13 +49,13 @@ class AudioSettings(BaseModel):
 
     @model_validator(mode="after")
     def explicit_endpoint(self) -> AudioSettings:
-        """纯配置阶段拒绝相对端点及隐藏URL凭据，不等到付费前才猜地址。
+        """在纯配置阶段核验服务端点与可选代理，不等到付费前才猜地址。
 
         Returns:
             本次声线与外部程序路径的已校验设置。
 
         Raises:
-            ValueError: Fish Audio需要不带URL凭据/查询串的完整http(s)根端点。
+            ValueError: 服务端点或代理不是允许的显式 HTTP(S) 地址。
         """
         url = urlsplit(self.api_base)
         if (
@@ -65,6 +67,22 @@ class AudioSettings(BaseModel):
             or url.fragment
         ):
             raise ValueError("Fish Audio需要不带URL凭据/查询串的完整http(s)根端点。")
+        if self.proxy is not None:
+            proxy = urlsplit(self.proxy)
+            # 只支持随 HTTPX 标准安装提供的 HTTP(S) 代理，声明阶段即拒绝
+            # 需要可选传输依赖的协议；代理失败不自动回退直连或重发合成。
+            if (
+                proxy.scheme not in {"http", "https"}
+                or not proxy.hostname
+                or proxy.username is not None
+                or proxy.password is not None
+                or proxy.path not in {"", "/"}
+                or proxy.query
+                or proxy.fragment
+            ):
+                raise ValueError("Fish Audio proxy需要不带凭据、路径或查询串的http(s)代理地址。")
+            # urlsplit 延迟校验端口，必须在配置阶段强制读取，不能留到首个请求。
+            _ = proxy.port
         return self
 
 
@@ -86,7 +104,7 @@ class SpeechParameters(BaseModel):
 
 
 class RecordParameters(BaseModel):
-    """只生成文件/base64，不加入现场队列，也不消费 BodyIntent。"""
+    """只生成持久文件并返回路径，不加入现场队列，也不消费 BodyIntent。"""
 
     model_config = ConfigDict(extra="forbid", strict=True, frozen=True)
     text: str = Field(min_length=1, max_length=10000, pattern=r"\S")

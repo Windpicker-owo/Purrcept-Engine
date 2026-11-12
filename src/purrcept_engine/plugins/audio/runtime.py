@@ -9,7 +9,6 @@
 from __future__ import annotations
 
 import asyncio
-import base64
 import logging
 import time
 from collections import deque
@@ -772,7 +771,9 @@ class AudioRuntime:
             profile=profile,
         )
         if target is None:
-            return CallOutcome("confirmed", base64.b64encode(audio.data).decode("ascii"))
+            # 默认同样落盘，返回短路径供下一能力直接发送；传输字节不进入
+            # Worker 返回值、能力参数账本和模型可见的行动历史。
+            target = self._output_dir / (uuid4().hex + "." + audio.format)
         if not target.suffix:
             target = target.with_suffix("." + audio.format)
         await asyncio.to_thread(self._write_audio, target, audio.data)

@@ -329,13 +329,19 @@ async def test_real_player_interrupt_releases_blocked_stream_and_allows_next_spe
         consume = (
             "import time; time.sleep(30)"
             if buffered and not processes
-            else "sys.stdin.buffer.read()"
+            else (
+                "received = 0\n"
+                "while chunk := sys.stdin.buffer.read(4096):\n"
+                " received += len(chunk)\n"
+                " sys.stderr.write(f'{received / 64000:.2f} M-A: 0.000 fd=0\\r')\n"
+                " sys.stderr.flush()\n"
+            )
         )
         process = await asyncio.create_subprocess_exec(
             sys.executable,
             "-c",
             "import sys; sys.stderr.write('0.02 M-A: 0.000 fd=0\\r'); "
-            "sys.stderr.flush(); " + consume,
+            "sys.stderr.flush()\n" + consume,
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.PIPE,
@@ -640,6 +646,24 @@ async def test_record_exports_file_outside_live_queue_and_stop_does_not_remove_i
     assert (tmp_path / "clip.mp3").is_file()
 
 
+async def test_default_record_returns_unique_persistent_files_instead_of_encoded_audio(
+    store: Store, tmp_path: Path
+) -> None:
+    """默认路径可直接交给后续发送能力，关闭与重复文本不删除或覆盖此前素材。"""
+    owner = await runtime(store, tmp_path, Source(), Player())
+    try:
+        first = await owner.record(RecordParameters(text="生成文件"), context("first"))
+        second = await owner.record(RecordParameters(text="生成文件"), context("second"))
+        assert first.state == second.state == "confirmed"
+        assert isinstance(first.value, str) and isinstance(second.value, str)
+        paths = (Path(first.value), Path(second.value))
+        assert paths[0] != paths[1] and all(path.parent == tmp_path for path in paths)
+        assert all(path.read_bytes() == "生成文件".encode() for path in paths)
+    finally:
+        await owner.close()
+    assert all(path.is_file() for path in paths)
+
+
 async def test_audio_facts_use_real_store_and_survive_reopen(tmp_path: Path) -> None:
     path = tmp_path / "reopen.sqlite3"
     database = await Store.open(path)
@@ -787,6 +811,116 @@ async def test_fish_file_contract_uses_explicit_credentials_and_one_paid_request
         assert calls[-1].headers["Authorization"] == "Bearer explicit"
         assert calls[-1].headers["Idempotency-Key"] == "call"
         assert result.duration_seconds is None
+    finally:
+        await source.close()
+
+
+@pytest.mark.parametrize("stage", ["能力目录查询", "音色查询", "文件合成", "流式合成"])
+@pytest.mark.parametrize("failure", ["status", "connect", "deadline"])
+async def test_fish_failures_retain_stage_without_remote_details(
+    stage: str, failure: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """错误回执能定位阶段，HTTP 正文及异常内的凭据不能进入持久短消息。"""
+    calls: list[httpx.Request] = []
+    streaming = stage == "流式合成"
+
+    async def respond(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        if request.url.path.endswith("capabilities"):
+            current = "能力目录查询"
+        elif request.method == "GET":
+            current = "音色查询"
+        else:
+            current = "流式合成" if streaming else "文件合成"
+        if current == stage:
+            if failure == "status":
+                return httpx.Response(503, text="remote-secret-body")
+            if failure == "connect":
+                raise httpx.ConnectTimeout("secret-key-in-provider-error", request=request)
+            await asyncio.Event().wait()
+        return metadata(request)
+
+    transport = httpx.MockTransport(respond)
+    install_transport(monkeypatch, transport)
+    source = FishSource(
+        AudioSettings(
+            api_key=SecretStr("secret-key"),
+            model="model",
+            voice_id="voice",
+            timeout_seconds=0.1,
+            playback_timeout_seconds=0.1,
+        ),
+        transport=transport,
+    )
+    try:
+        with pytest.raises(AudioError, match=stage) as captured:
+            if streaming:
+                _ = [part async for part in source.stream(SpeechParameters(text="语音"), "call")]
+            else:
+                await source.synthesize(RecordParameters(text="语音"), "call")
+        detail = str(captured.value)
+        assert "secret" not in detail
+        assert "https://" not in detail
+        assert captured.value.__cause__ is not None
+        expected = {
+            "status": "HTTPStatusError；HTTP 503",
+            "connect": "ConnectTimeout",
+            "deadline": "TimeoutError",
+        }
+        assert expected[failure] in detail
+        assert sum(request.method == "POST" for request in calls) == int("合成" in stage)
+    finally:
+        await source.close()
+
+
+async def test_fish_metadata_does_not_reset_total_deadline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """两次查询共用总期限，音色等待耗尽后不能继续提交付费请求。"""
+    calls: list[httpx.Request] = []
+
+    async def respond(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        await asyncio.sleep(0.08)
+        return metadata(request)
+
+    transport = httpx.MockTransport(respond)
+    install_transport(monkeypatch, transport)
+    source = FishSource(
+        AudioSettings(
+            api_key=SecretStr("test"), model="model", voice_id="voice", timeout_seconds=0.12
+        ),
+        transport=transport,
+    )
+    try:
+        with pytest.raises(AudioError, match=r"音色查询.*TimeoutError"):
+            await source.synthesize(RecordParameters(text="语音"), "call")
+        assert len(calls) == 2
+        assert all(request.method == "GET" for request in calls)
+    finally:
+        await source.close()
+
+
+async def test_fish_caller_cancellation_is_not_a_transfer_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """宿主取消仍按取消传播，不翻译为远端服务故障。"""
+    entered = asyncio.Event()
+
+    async def respond(request: httpx.Request) -> httpx.Response:
+        entered.set()
+        await asyncio.Event().wait()
+        return metadata(request)
+
+    transport = httpx.MockTransport(respond)
+    install_transport(monkeypatch, transport)
+    source = FishSource(AudioSettings(api_key=SecretStr("test")), transport=transport)
+    task = asyncio.create_task(source.synthesize(RecordParameters(text="语音"), "call"))
+    try:
+        await entered.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
     finally:
         await source.close()
 

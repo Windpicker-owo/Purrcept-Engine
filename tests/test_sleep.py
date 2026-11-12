@@ -354,8 +354,10 @@ async def test_sleep_policy_records_old_wake_and_idle_but_preserves_trusted_prio
         )
         priority = await store.admit(_input("trusted"))
         await store.time.rest("bed", 30, now, "rest")
-        # 即使协调者还没重新观察休息，实际取批和定时接管也须在事务中挡住旧意图。
-        assert not await store.take_foreground_inputs()
+        # 即使协调者还没重新观察休息，实际取批也须在事务中挡住旧普通意图；可信
+        # 高价值输入本身是唤醒级，睡眠中仍按最高级统一原则被单独取走。
+        taken = await store.take_foreground_inputs()
+        assert {record.input_id for record in taken} == {priority.input_id}
         sequence, _ = await store.idle_input_state()
         assert (
             await store.admit_idle_input(
@@ -374,10 +376,7 @@ async def test_sleep_policy_records_old_wake_and_idle_but_preserves_trusted_prio
             assert state is not None and state.stage == "processed"
             assert state.reason == "subject.sleeping.recorded"
         state = await store.input_processing(priority.input_id)
-        assert state is not None and state.stage == "priority"
-        assert await store.submit_inputs((state,), minimum_wake=True)
-        taken = await store.take_foreground_inputs()
-        assert {record.input_id for record in taken} == {priority.input_id}
+        assert state is not None and state.stage == "claimed"
         await store.time.leave(now, "leave")
         await store.time.rest("bed", 30, now, "new-rest")
         new_rest = await store.time.get_rest()

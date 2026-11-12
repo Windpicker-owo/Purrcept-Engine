@@ -1,4 +1,4 @@
-"""宿主侧 QQ 附件、语音临时文件与原生图片读取，不向 Worker 暴露文件句柄。
+"""宿主侧 QQ 附件、入站语音和发送临时文件，不向 Worker 暴露文件句柄。
 
 相对路径固定以主配置目录解释，发送路径须在明确允许根中；解析后的外部
 symlink 不因为原字符串位于根内而获准。文件工作由本所有者持有的 to_thread
@@ -18,9 +18,11 @@ from urllib.parse import unquote, urlparse
 
 import httpx
 
+from purrcept_engine.infrastructure.files import DownloadError, download_file
 from purrcept_engine.plugin_system import MediaAsset
 from purrcept_engine.plugins.qq.parameters import Send
 from purrcept_engine.plugins.qq.settings import QQSettings, resolve_path
+from purrcept_engine.plugins.qq.voice import MAX_VOICE_BYTES, VoiceError, decode_voice
 from purrcept_engine.values import JsonValue, encode_json
 
 
@@ -148,6 +150,26 @@ class MediaOwner:
             else:
                 self._detached.add(task)
             raise
+
+    async def voice(self, url: str) -> bytes:
+        """有界下载并解码平台语音；线程由此媒体所有者持有到实际归还。
+
+        Args:
+            url: 平台提供的 HTTP(S) 语音地址。
+
+        Returns:
+            解码后的完整 WAV 字节。
+
+        Raises:
+            QQMediaError: 下载、格式或容量不满足语音读取要求。
+        """
+        try:
+            data = await download_file(
+                self._http, url, max_bytes=MAX_VOICE_BYTES, timeout_seconds=15
+            )
+            return await self.io(lambda: decode_voice(data))
+        except (DownloadError, VoiceError) as error:
+            raise QQMediaError(str(error)) from error
 
     def path(self, raw: str) -> Path:
         """验证完整实际路径和大小。

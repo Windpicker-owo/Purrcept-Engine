@@ -2,7 +2,12 @@
 
 主脑和注意模型都是被调用方。协调者最多持有一个前台调用和一个注意调用，
 等待模型时仍响应输入提交。唤醒意图存在权威库，任务完成通知只促使重新查询。
-observe 留下的输入不自行触发下一轮；一次唤醒原子取走所有已提交输入。
+
+收件箱遵循最高级统一原则：observe 留下的输入不自行触发主脑；一旦出现唤醒
+级刺激（注意判为 wake/urgent，或可信高价值输入），整个收件箱随之交给主脑。
+主脑空闲时由这里原子取作新一轮输入；主脑忙碌时由前台轮次在 Core 请求边界
+自行并入（ForegroundService.absorb），协调者只负责尽快把刺激推进到唤醒级。
+urgent 仍抢占模型尚未看到它的旧生成。
 """
 
 from __future__ import annotations
@@ -130,8 +135,8 @@ class StimulusCoordinator:
                             )
                     continue
 
-                # 取批先于异步材料组装，claimed 在同一事务消耗唤醒资格，
-                # 本轮运行期间的新提交不能被 Core 工具循环悄悄拉入。
+                # 取批先于异步材料组装，claimed 在同一事务消耗唤醒资格。取批范围
+                # 是整个收件箱；本轮开始后出现的唤醒级刺激由前台在请求边界并入。
                 if self.foreground is None:
                     ready = await self.runtime.store.staged_inputs("foreground", limit=1)
                     if ready:
@@ -183,8 +188,16 @@ class StimulusCoordinator:
                     if assessments:
                         assessment = assessments[0]
                         records = await self.records_for(assessment)
+                        # 批次已被前台中途并入、但尚未随请求发给模型时（例如工具仍在
+                        # 执行），升级判断仍有意义：urgent 抢占这一代次，新一轮立即
+                        # 处理被释放的输入。已随请求发出则主脑正在看它，按过期结案。
+                        absorbed = self.runtime.session.absorbed_unseen(
+                            assessment.observed_generation,
+                            tuple(item.input_id for item in assessment.expected),
+                        )
                         if not self.runtime.session.eligible(assessment.observed_generation) or (
-                            await self.runtime.processing(records) != assessment.expected
+                            not absorbed
+                            and await self.runtime.processing(records) != assessment.expected
                         ):
                             await self.runtime.commit(
                                 self.runtime.store.finish_minimum_wake_assessment(
@@ -320,6 +333,8 @@ class StimulusCoordinator:
 
         Note:
             高价值分支不能降级；迟到普通判断不能更新已取走的批次或新代次。
+            批次在判断期间被前台中途并入时版本 CAS 必然失败，此时只有整批尚未随
+            请求发给模型，urgent 才继续抢占原代次；已发出则主脑正在处理它。
         """
         if self.minimum_wake is None:
             applied = await self.runtime.commit(
@@ -344,8 +359,21 @@ class StimulusCoordinator:
                     request_id=result.request_id,
                 )
             )
-        if applied and result.level == "urgent":
+        if result.level == "urgent" and (
+            applied
+            or self.runtime.session.absorbed_unseen(
+                self.observed, tuple(item.input_id for item in self.expected)
+            )
+        ):
             self.runtime.session.interrupt(self.observed)
+        # Ordering: 持久化版本检查成功才交给身体。迟到结果不能影响新一轮姿态，
+        # 外围视觉离线也不能阻塞上面的注意提交或抢占。
+        if applied and result.expression is not None and self.runtime.expression_sink is not None:
+            self.runtime.expression_sink(
+                result.expression,
+                deadline=result.expression_deadline,
+                urgent=result.level == "urgent",
+            )
 
     async def wait(self, revision: int, *, seconds: float | None) -> None:
         """同时观察输入、调用完成和批次期限，取消等待不传播给模型调用。

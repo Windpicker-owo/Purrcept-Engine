@@ -160,14 +160,33 @@ class CoordinatorStore(SessionStore, RequestEvidenceSink, MediaStore, Protocol):
         ...
 
     async def take_foreground_inputs(self) -> tuple[InputRecord, ...]:
-        """有持久唤醒请求时原子取尽已提交收件箱，后来输入留到下一轮。
+        """主脑空闲且存在唤醒级刺激时，原子取尽整个收件箱作为新一轮输入。
 
         Returns:
-            本轮独占的输入快照；未提交的缓存输入不在其中。
+            本轮独占的输入快照，按接管顺序排列；没有唤醒级刺激时为空。
 
         Note:
-            事务内复查明确休息，普通旧唤醒意图先仅记历史；只有仍有高优先
-            唤醒请求时才取批，不能借协调者排队前的清醒观察绕过睡眠规则。
+            唤醒级指 foreground（注意判为 wake/urgent）或 priority（可信高价值）。
+            最高级统一原则：一旦触发，observe 积压、判断中及合批窗口内的刺激
+            全部随之取走，不按注意批次分开提交。事务内复查明确休息，普通旧
+            唤醒意图先仅记历史；只有仍有高优先唤醒请求时才取批，不能借协调者
+            排队前的清醒观察绕过睡眠规则。
+        """
+        ...
+
+    async def absorb_turn_inputs(self, turn_id: str) -> tuple[InputRecord, ...]:
+        """主脑忙碌且存在唤醒级刺激时，把整个收件箱并入仍在运行的前台轮次。
+
+        Args:
+            turn_id: 正在运行、持有前台会话在途身份的轮次。
+
+        Returns:
+            按接管顺序并入的输入；轮次不在途或没有唤醒级刺激时为空且不改状态。
+
+        Note:
+            由前台 Core 请求边界的中途接管调用，触发条件、取批范围和睡眠门槛与
+            take_foreground_inputs 一致。并入的输入随本轮结案；失败时模型从未
+            回应的部分由 finish_turn 的 released_inputs 释放回收件箱。
         """
         ...
 

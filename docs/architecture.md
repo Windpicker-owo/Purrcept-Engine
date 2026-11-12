@@ -97,6 +97,13 @@ decision 写入 ChoiceQuestion.instructions，生成式注意写入 system 指�
 和工作背景仍留在输入层。普通判断和最低唤起升级共用此入口，不按姓名字符串在
 接入层强制唤起。完整角色卡参与 SDK 编译、容量预检和请求证据记录，不静默截断。
 
+可选身体判断通过领域 `ExpressionAssessment` / `ExpressionSink` 交接：插件在
+`PluginRuntime.expression_sink` 声明有限接收方，app 只允许绑定一个。装配后
+`attention_request` 在同一请求增加情绪和注视问题；协调者在采用批次的事务成功后
+同步交付，视觉接收方不得等待网络。Live2D 的 `ContextController` 拥有置信门槛、
+有限候选和衰减，`MotionController` 将它作为显式字段之下的基线。领域不导入
+身体实现，注意评估器不直接改变设备，也不拥有连续帧循环。
+
 刺激提供方通过 `InputSubmission.with_content(source, blocks)` 冻结来源和有序的
 TextBlock/ImageBlock/AudioBlock。QQ 的 `plugins/qq/presentation.py` 只选择消息身份、
 类型、参与者、目标、时间、正文及必要引用，生成 YAML；麦克风自行提供发言说明
@@ -115,6 +122,11 @@ TextBlock/ImageBlock/AudioBlock。QQ 的 `plugins/qq/presentation.py` 只选择�
 `context/usage.py` 为各用途保存实际输入用量锚点；成功证据提交后更新，原请求
 的静态输入和历史前缀完全匹配时只估算新增材料，摘要或目录改写使旧锚点失效。
 锚点按端点、模型、配置名及用途隔离，并核对 SDK 编译器身份，不能跨会话套用。
+成功观察同时保存请求恢复的原检查点摘要；即使下一轮输入变了，同静态声明及同历史
+的超额观察仍可触发维护，绝不改写新请求的容量估算。没有更旧区间时，可压缩已完成
+近期轮次以解除容量死锁，当前输入、未决保护及完整请求安装校验继续生效。
+默认 record 生成唯一持久文件并把路径交给 Worker/发送端。模型呈现对已有回执和
+分页中的内联音频编码作确定性引用投影，原件不改写，二进制片段不授予听觉资格。
 base64 不算正文；Pillow/PyAV 仅同步读取内存原件，准备在线程中完成，不联网
 或打开外部路径。不再装配可替换的模型或媒体规则。
 
@@ -219,10 +231,12 @@ EngineHost.submit / admit_input
 [StimulusCoordinator](../src/purrcept_engine/domain/subject/coordinator.py) 是唯一刺激
 调度循环，最多同时持有一个注意调用和一个前台调用。注意等待不阻塞高价值
 批次提交。输入依次经过 attention/priority 缓存、assessing/submitted/foreground
-收件箱、claimed 唤醒快照和 processing 轮次；foreground 是持久唤醒意图，
-observe 只留下 submitted，不自动重启主脑。前台完成后由协调者检查下一次唤醒。
+收件箱、claimed 唤醒快照和 processing 轮次；foreground 与 priority 是唤醒级，
+observe 只留下 submitted，不自动重启主脑。出现唤醒级刺激时整个收件箱一并交出：
+主脑空闲时由协调者取作 claimed 快照，忙碌时由前台在 Core 请求边界直接并入
+processing 轮次；失败轮次中模型从未回应的并入输入回到 foreground。
 版本 CAS 拒绝已取走批次的迟到判断；旧生成代次检查拒绝抢占新轮次。
-VAD 起音正式接管后只交音频所有者停播，同时以高优先通知进入下一轮，
+VAD 起音正式接管后只交音频所有者停播，同时以高优先通知交给主脑下一次思考，
 不直接撤销当前生成，也不单凭起音登记最低唤起的紧急升级。最终发言内容
 仍可独立判断紧急语义；其他显式抢占仍核对原生成代次。正文关键词本身不提供控制权限。
 
@@ -232,7 +246,8 @@ QQ 插件把已通过过滤的私聊消息与直接 @ 一同标为最低 WAKE；
 消息规则；自发消息回显只进入缓存。框架只采用可信标记，不解析 QQ 私聊字段。
 
 [ForegroundService](../src/purrcept_engine/domain/subject/foreground_service.py)
-只处理唤醒时原子取出的全部已提交输入，运行中不再接管新刺激；[ContinuousSession](../src/purrcept_engine/domain/subject/session.py)
+处理唤醒时原子取出的整个收件箱，并在运行中通过 Core `input_poll` 把新出现唤醒级
+刺激时的整个收件箱并入本轮；[ContinuousSession](../src/purrcept_engine/domain/subject/session.py)
 串行推进连续会话，Core 拥有模型工具循环和整轮事务。前台最终文字仍是内部结果，
 只有真实能力调用产生外部输出。抢占撤销生成资格，不撤销已开始的行动。
 

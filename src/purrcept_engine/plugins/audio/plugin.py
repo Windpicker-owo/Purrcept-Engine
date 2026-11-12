@@ -71,11 +71,11 @@ def make_factory(
             instance_id + ":microphone.record",
             object_id,
             "record",
-            "将完整文本合成为文件或标准base64音频，不现场播放。",
+            "将完整文本合成为持久音频文件，返回路径，不现场播放。",
             RecordParameters,
             settings.timeout_seconds + 15,
             'audio = await {path}(text="[温柔地说]你好。")',
-            "save_as 是沙箱内相对路径；省略返回标准base64。"
+            "save_as 是输出目录内相对路径；省略则生成唯一文件，返回绝对路径，可直接作为QQ的voice。"
             "支持Fish S2方括号语气/停顿标签，如[happy]、[slight pause]；"
             "S1固定圆括号标签不能与S2混用。",
             concurrency="parallel",
@@ -91,7 +91,9 @@ def make_factory(
             f"默认按宿主接管顺序排队，最多{settings.max_pending}项候播和1项正在合成/播放，"
             "队满拒绝。排队计入期限。accepted不代表播放开始；started来自播放器媒体时钟，"
             "completed才表示正常结束。failed/interrupted/timed_out可能已播放部分，不自动重播。"
-            "身体离线不阻断声音；body省略不添加语义姿态。流式输出省略format或使用pcm；"
+            "身体离线不阻断声音；body省略不添加语义姿态。body.delivery可选neutral/explain/"
+            "question/deny/emphasize，按实际语音节奏选择动作；effort只指定本次力度，"
+            "显式gesture优先。流式输出省略format或使用pcm；"
             "文件播放器使用mp3/wav。",
             concurrency="parallel",
         )

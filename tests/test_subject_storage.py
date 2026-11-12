@@ -56,25 +56,113 @@ async def test_only_idle_version_change_can_be_reprepared(tmp_path: Path) -> Non
 
 
 @pytest.mark.asyncio
-async def test_wake_snapshot_never_takes_unsubmitted_or_later_inputs(tmp_path: Path) -> None:
+async def test_wake_snapshot_takes_whole_inbox_but_not_later_inputs(tmp_path: Path) -> None:
+    """最高级统一原则：唤醒级刺激把未判断、判断中和 observe 积压一起带走。"""
     store = await Store.open(tmp_path / "state.sqlite3")
     try:
+        observed = await store.admit(submission("observed"))
+        state = await store.input_processing(observed.input_id)
+        assert state is not None and await store.submit_inputs((state,), minimum_wake=False)
+        state = await store.input_processing(observed.input_id)
+        assert state is not None and await store.decide_inputs((state,), "observe", "积累")
+        assessing = await store.admit(submission("assessing"))
+        state = await store.input_processing(assessing.input_id)
+        assert state is not None and await store.submit_inputs((state,), minimum_wake=False)
         cached = await store.admit(submission("cached"))
-        high = await store.admit(submission("high", wake=True))
-        priority = await store.input_processing(high.input_id)
-        assert priority is not None
-        await store.submit_inputs((priority,), minimum_wake=True)
-        records = await store.take_foreground_inputs()
-        assert tuple(record.input_id for record in records) == (high.input_id,)
         assert not await store.take_foreground_inputs()
-        turn = await store.begin_turn("turn", "foreground", 0, 1, (high.input_id,))
+
+        high = await store.admit(submission("high", wake=True))
+        records = await store.take_foreground_inputs()
+        assert tuple(record.input_id for record in records) == (
+            observed.input_id,
+            assessing.input_id,
+            cached.input_id,
+            high.input_id,
+        )
+        assert not await store.take_foreground_inputs()
+        ids = tuple(record.input_id for record in records)
+        turn = await store.begin_turn("turn", "foreground", 0, 1, ids)
         later = await store.admit(submission("later"))
         await store.finish_turn(turn, "cancelled", error_json='{"error_type":"CancelledError"}')
-        assert (await store.failed_turns("foreground"))[0].input_ids == (high.input_id,)
-        assert {record.input_id for record in await store.pending()} == {
-            cached.input_id,
-            later.input_id,
-        }
+        assert (await store.failed_turns("foreground"))[0].input_ids == ids
+        assert {record.input_id for record in await store.pending()} == {later.input_id}
+    finally:
+        await store.close()
+
+
+@pytest.mark.asyncio
+async def test_running_turn_absorbs_inbox_only_after_wake(tmp_path: Path) -> None:
+    """中途并入与空闲取批同触发条件；结案后的迟到轮询不改变状态。"""
+    store = await Store.open(tmp_path / "state.sqlite3")
+    try:
+        first = await store.admit(submission("first", wake=True))
+        taken = await store.take_foreground_inputs()
+        turn = await store.begin_turn("turn", "foreground", 0, 1, (taken[0].input_id,))
+        ordinary = await store.admit(submission("ordinary"))
+        assert not await store.absorb_turn_inputs("turn")
+        state = await store.input_processing(ordinary.input_id)
+        assert state is not None and state.stage == "attention"
+
+        high = await store.admit(submission("high", wake=True))
+        absorbed = await store.absorb_turn_inputs("turn")
+        assert tuple(record.input_id for record in absorbed) == (ordinary.input_id, high.input_id)
+        actual = await store.get_turn("turn")
+        assert actual is not None
+        assert actual.input_ids == (first.input_id, ordinary.input_id, high.input_id)
+        for identity in (ordinary.input_id, high.input_id):
+            state = await store.input_processing(identity)
+            assert state is not None and state.stage == "processing"
+
+        checkpoint = ConversationCheckpoint(
+            ConversationState(
+                (Message.user("初始"), Message.user("中途"), Message.assistant("完成")),
+                turn_index=1,
+                turn_boundaries=(3,),
+            ),
+            ReminderState(),
+        )
+        await store.finish_turn(turn, "succeeded", checkpoint_json=encode_checkpoint(checkpoint))
+        assert await store.pending() == ()
+        await store.admit(submission("after", wake=True))
+        assert not await store.absorb_turn_inputs("turn")
+        with pytest.raises(StorageError):
+            await store.absorb_turn_inputs("missing")
+    finally:
+        await store.close()
+
+
+@pytest.mark.asyncio
+async def test_failed_turn_releases_only_unanswered_absorbed_inputs(tmp_path: Path) -> None:
+    """模型从未回应的中途输入带唤醒意图回到收件箱；初始输入不能被释放。"""
+    store = await Store.open(tmp_path / "state.sqlite3")
+    try:
+        first = await store.admit(submission("first", wake=True))
+        await store.take_foreground_inputs()
+        turn = await store.begin_turn("turn", "foreground", 0, 1, (first.input_id,))
+        seen = await store.admit(submission("seen", wake=True))
+        await store.absorb_turn_inputs("turn")
+        unseen = await store.admit(submission("unseen", wake=True))
+        await store.absorb_turn_inputs("turn")
+        with pytest.raises(StorageError):
+            await store.finish_turn(
+                turn,
+                "cancelled",
+                error_json='{"error_type":"CancelledError"}',
+                released_inputs=(first.input_id,),
+            )
+        await store.finish_turn(
+            turn,
+            "cancelled",
+            error_json='{"error_type":"CancelledError"}',
+            released_inputs=(unseen.input_id,),
+        )
+        failed = await store.failed_turns("foreground")
+        assert failed[0].input_ids == (first.input_id, seen.input_id)
+        state = await store.input_processing(unseen.input_id)
+        assert state is not None and state.stage == "foreground"
+        assert tuple(record.input_id for record in await store.take_foreground_inputs()) == (
+            unseen.input_id,
+        )
     finally:
         await store.close()
 

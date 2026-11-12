@@ -2,6 +2,7 @@
 
 QQClient 只拥有传输，Service 在过滤后查回原生身份的第一次权威接管；新事实才
 补取转发原文并原子提交 InputSubmission。缓存不决定重放或内容冲突。
+语音在首次接管前有界读取并转换；平台转码失败时保留消息与缺口。
 工具应答先保存完整原响应，再检查 status/retcode 和投影；echo 超时不重发，
 真实迟到回包使用原 CallContext 追加版本。历史续读只访问宿主旧快照。
 """
@@ -18,7 +19,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from uuid import uuid4
 
-from purrcept_core.models import TextBlock
+from purrcept_core.models import AudioBlock, AudioBytes, TextBlock
 
 from purrcept_engine.errors import HostStateError, StorageError
 from purrcept_engine.plugin_system import (
@@ -36,7 +37,7 @@ from purrcept_engine.plugin_system import (
     PluginPorts,
 )
 from purrcept_engine.plugins.qq.client import QQClient
-from purrcept_engine.plugins.qq.media import MediaBusy, MediaOwner
+from purrcept_engine.plugins.qq.media import MediaBusy, MediaOwner, QQMediaError
 from purrcept_engine.plugins.qq.messages import (
     HistoryCache,
     filter_reason,
@@ -52,6 +53,7 @@ from purrcept_engine.plugins.qq.ports import ConnectionRejected, Connector, QQCa
 from purrcept_engine.plugins.qq.presentation import render_qq_input
 from purrcept_engine.plugins.qq.settings import QQSettings
 from purrcept_engine.plugins.qq.stickers import StickerLibrary
+from purrcept_engine.plugins.qq.voice import MAX_VOICE_BYTES, VoiceError, decode_voice
 from purrcept_engine.values import JsonObject, JsonValue, decode_object, encode_json
 
 
@@ -208,7 +210,7 @@ class QQService:
             ConnectionRejected: QQ 事件时间超出实际时间范围；QQ 事件 time 必须为有限 Unix 秒。
 
         Note:
-            推送媒体只保存引用。
+            图片推送只保存引用；语音在正式接管前有界读取并转换为原生音频。
         """
         post_type = payload.get("post_type")
         if post_type not in ("message", "message_sent", "notice"):
@@ -286,6 +288,47 @@ class QQService:
             if post_type == "message_sent":
                 self.cache.remember(account, message)
                 return
+        # 先核对原生身份再下载，确保重放不依赖可能过期或变化的语音链接。
+        voices: list[AudioBlock] = []
+        segments = payload.get("message")
+        voice_segments = (
+            [
+                object_value(value)
+                for value in segments
+                if object_value(value).get("type") == "record"
+            ]
+            if isinstance(segments, list)
+            else []
+        )
+        voice_size = 0
+        for index, segment in enumerate(voice_segments, start=1):
+            voice_data = object_value(segment.get("data"))
+            url = voice_data.get("url")
+            file = voice_data.get("file")
+            if index > 4:
+                missing.append(f"QQ 语音第 {index} 段超过单条消息的读取数量上限。")
+            else:
+                try:
+                    try:
+                        if not isinstance(url, str) or not url.strip():
+                            raise QQMediaError("平台没有提供可下载的地址。")
+                        audio = await self.media.voice(url)
+                    except QQMediaError:
+                        # QQ 可能以 .amr 命名 SILK；让原连接上的 OneBot 解码，
+                        # 不把扩展名或远端路径当作本机可访问的音频。
+                        if not isinstance(file, str) or not file.strip():
+                            raise
+                        audio = await self._converted_voice(file, generation)
+                    if voice_size + len(audio) > MAX_VOICE_BYTES:
+                        raise QQMediaError("同一消息的语音总量超过 20 MiB。")
+                except QQMediaError as error:
+                    missing.append(f"QQ 语音第 {index} 段未取得：{error}")
+                else:
+                    voice_size += len(audio)
+                    voices.append(
+                        AudioBlock(AudioBytes(audio, "audio/wav"), alt_text=f"QQ 语音第 {index} 段")
+                    )
+
         details: JsonObject = {
             "plugin": self.instance_id,
             "message": message,
@@ -293,6 +336,8 @@ class QQService:
             "pixels_acquired": False,
             "media_acquired_count": 0,
             "media_expected_count": len(image_references(payload.get("message"))),
+            "voice_expected_count": len(voice_segments),
+            "voice_acquired_count": len(voices),
         }
         # 在正式接管前冻结展示，重放直接借用第一次上下文；模型请求期间不再
         # 按变化的昵称缓存重绘事件，也不把整个原生帧重复交给注意与前台。
@@ -326,10 +371,36 @@ class QQService:
             (),
             input_context,
         ).with_content(
-            f"me.{self.settings.phone_id}.{self.settings.segment}", (TextBlock(readable_text),)
+            f"me.{self.settings.phone_id}.{self.settings.segment}",
+            (TextBlock(readable_text), *voices),
         )
         if await self._submit_input(submission, payload) is not None and post_type == "message":
             self.cache.remember(account, message)
+
+    async def _converted_voice(self, file: str, generation: int) -> bytes:
+        """向原连接请求转换后的音频，只采用实际返回的内联字节或 HTTP 地址。"""
+        try:
+            # SnowLuma 的语音身份需要先解析成服务端实际来源，再交给转码动作。
+            resolved = await self.client.request(
+                "get_record", {"file": file}, generation=generation
+            )
+            source = object_value(platform_data(resolved)).get("file")
+            if not isinstance(source, str) or not source:
+                raise QQMediaError("平台未返回可转换的语音来源。")
+            reply = await self.client.request(
+                "get_record", {"file": source, "out_format": "mp3"}, generation=generation
+            )
+            result = object_value(platform_data(reply))
+            encoded = result.get("base64")
+            if isinstance(encoded, str) and encoded:
+                data = self.media.decode_base64(encoded.removeprefix("base64://"))
+                return await self.media.io(lambda: decode_voice(data))
+            url = result.get("url")
+            if isinstance(url, str) and url:
+                return await self.media.voice(url)
+            raise QQMediaError("平台未返回可读取的转码音频。")
+        except (QQCallError, ConnectionRejected, VoiceError) as error:
+            raise QQMediaError("平台无法转换或提供 QQ 语音。") from error
 
     async def _replay_native(
         self, source: InputSource, payload: JsonObject, received: datetime
@@ -344,14 +415,19 @@ class QQService:
             return False
         details = decode_object(previous.context.details_json.encode())
         raw_event, message = details.get("raw_event"), details.get("message")
-        # 自动推送只保存平台媒体引用；它不能携带本适配器从未采集过的 BLOB。
-        if not isinstance(raw_event, dict) or not isinstance(message, dict) or previous.media:
+        if not isinstance(raw_event, dict) or not isinstance(message, dict):
             raise StorageError("QQ 权威接管缺少完整原生帧或引用投影。", code="invalid_record")
         if json.dumps(raw_event, sort_keys=True, allow_nan=False) != json.dumps(
             payload, sort_keys=True, allow_nan=False
         ):
             # JSON 成员次序不构成新事实；bool 与整数则不能按 Python 相等关系混同。
             self.gap(payload, "source_conflict")
+            return True
+
+        if previous.media:
+            # 首次接管已原子保存媒体和待处理关系；查询端口不暴露 BLOB，
+            # 重放无需重新下载或再次提交，也不能构造缺少媒体的伪提交。
+            self.cache.remember(source.account_id, message)
             return True
 
         replay = InputSubmission(

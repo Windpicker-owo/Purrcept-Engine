@@ -8,10 +8,12 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable
 from pathlib import Path
 
 import pytest
+from test_qq_transport import Connector, Socket
 
 from purrcept_engine import EngineConfig, EngineHost
 from purrcept_engine.plugins.audio.models import (
@@ -25,6 +27,7 @@ from purrcept_engine.plugins.audio.plugin import make_factory as audio_factory
 from purrcept_engine.plugins.live2d.models import ModelProfile
 from purrcept_engine.plugins.live2d.plugin import Live2DSettings
 from purrcept_engine.plugins.live2d.plugin import make_factory as body_factory
+from purrcept_engine.plugins.qq.plugin import factory_with_connector
 from purrcept_engine.values import decode_object
 
 
@@ -175,3 +178,85 @@ async def test_host_assembles_once_then_real_worker_speak_links_independent_body
     finally:
         await host.close()
     assert body.closed
+
+
+async def test_default_record_file_passes_through_real_worker_to_qq_without_inline_audio(
+    tmp_path: Path,
+) -> None:
+    """实际 Worker 串联合成与 OneBot 文件发送，回执保留短路径且关闭后文件仍可读。"""
+    socket = Socket()
+    connector = Connector((socket,))
+    config = EngineConfig.validate(
+        {
+            "host": {"data_dir": tmp_path / "state"},
+            "console": False,
+            "models": {
+                "main": {
+                    "kind": "generation",
+                    "model": "openai/offline",
+                    "api_base": "http://127.0.0.1:9999/v1",
+                    "api_key": "synthetic",
+                    "context_window": 100000,
+                    "max_output_tokens": 1000,
+                }
+            },
+            "subject": {
+                "foreground": "main",
+                "reflection": "main",
+                "behavior_review_enabled": False,
+                "memory_consolidation_enabled": False,
+            },
+            "plugins": [
+                {
+                    "instance_id": "audio",
+                    "entry": "audio-test",
+                    "config": {"playback_backend": "ffplay"},
+                },
+                {
+                    "instance_id": "qq",
+                    "entry": "qq-test",
+                    "config": {"mode": "direct", "typing_delay_max_seconds": 0.0},
+                },
+            ],
+        },
+        base_dir=tmp_path,
+    )
+    host = EngineHost(
+        config,
+        plugin_factories={
+            "audio-test": audio_factory(lambda _: Source(), lambda _: Player(), decode=False),
+            "qq-test": factory_with_connector(connector),
+        },
+    )
+    await host.start()
+    try:
+        operation = asyncio.create_task(
+            host.execute(
+                "from world import me\n"
+                'audio = await me.microphone.record(text="文件语音")\n'
+                'return await me.phone.qq.send(chat="private", target_id="100", voice=audio)'
+            )
+        )
+        request = await asyncio.wait_for(socket.sent.get(), 5)
+        assert request["action"] == "send_private_msg"
+        params = request["params"]
+        assert isinstance(params, dict)
+        segments = params["message"]
+        assert isinstance(segments, list) and isinstance(segments[0], dict)
+        data = segments[0]["data"]
+        assert isinstance(data, dict)
+        uri = data["file"]
+        assert isinstance(uri, str) and uri.startswith("file:")
+        socket.reply(request, {"message_id": "sent-audio"})
+        action = await asyncio.wait_for(operation, 5)
+        assert action.state == "completed" and len(action.calls) == 2
+        assert all(call.state == "confirmed" for call in action.calls)
+        recorded = json.loads(action.calls[0].result_json or "null")
+        assert isinstance(recorded, str)
+        path = Path(recorded)
+        assert uri == path.as_uri()
+        assert await asyncio.to_thread(path.read_bytes) == b"local-pcm"
+        assert len(action.calls[1].arguments_json) < 2000
+    finally:
+        await host.close()
+    assert await asyncio.to_thread(path.read_bytes) == b"local-pcm"

@@ -58,6 +58,7 @@ from purrcept_engine.domain.knowledge.models import (
     EvidenceSnapshot,
     KnowledgeInputError,
 )
+from purrcept_engine.domain.subject.expression import ExpressionAssessment, ExpressionSink
 from purrcept_engine.domain.subject.models import InputProcessing
 from purrcept_engine.domain.time.models import (
     Alarm,
@@ -125,6 +126,8 @@ __all__ = [
     "EvidenceSnapshot",
     "ExecutionJournal",
     "ExecutionSettings",
+    "ExpressionAssessment",
+    "ExpressionSink",
     "FeedbackKind",
     "FunctionCapability",
     "InputBlock",

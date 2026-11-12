@@ -12,6 +12,7 @@ import asyncio
 import logging
 import math
 from collections.abc import Awaitable, Callable, Mapping
+from dataclasses import replace
 from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
 from typing import Literal, cast
@@ -607,6 +608,18 @@ class ModelGenerationBackend(_RetryRunner):
             can_start=can_start,
         )
         self._backend = backend
+
+    def extend_inputs(self, input_ids: tuple[str, ...]) -> None:
+        """登记本轮运行中并入的输入，此后的逻辑请求证据关联完整来源。
+
+        Args:
+            input_ids: 已由权威事务并入本轮的输入身份，按接管顺序追加。
+
+        Note:
+            已开始的逻辑请求保留创建时的 scope；只有之后的请求才包含新来源，
+            与这些输入实际进入模型材料的时机一致。
+        """
+        self.scope = replace(self.scope, input_ids=(*self.scope.input_ids, *input_ids))
 
     async def generate(
         self, request: ModelRequest, *, model: str, emit: ModelEventSink | None = None

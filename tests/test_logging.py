@@ -106,6 +106,38 @@ def test_storage_latency_fields_survive_structured_logging(tmp_path: Path) -> No
         owner.close()
 
 
+def test_audio_transfer_progress_survives_structured_logging(tmp_path: Path) -> None:
+    """语音阶段的受控计量保留到文件，认证、正文和任意 trace info 仍被排除。"""
+    owner = CliLogging.open(tmp_path, console=io.StringIO())
+    try:
+        logging.getLogger("purrcept_engine.plugins.audio.tts").info(
+            "语音传输阶段状态已更新。",
+            extra={
+                "call_id": "audio-call",
+                "stage": "文件合成",
+                "transport_step": "http11.receive_response_body.started",
+                "headers_ms": 3000.0,
+                "first_byte_ms": 3100.0,
+                "body_bytes": 128,
+                "event_loop_lag_ms": 2.5,
+                "trace_info": "secret-headers",
+                "text": "secret-text",
+            },
+        )
+        path = owner.file_path
+        assert path is not None
+        diagnostic = path.read_text(encoding="utf-8")
+        record = json.loads(diagnostic)
+        assert record["transport_step"] == "http11.receive_response_body.started"
+        assert record["headers_ms"] == 3000.0
+        assert record["first_byte_ms"] == 3100.0
+        assert record["body_bytes"] == 128
+        assert record["event_loop_lag_ms"] == 2.5
+        assert "secret" not in diagnostic
+    finally:
+        owner.close()
+
+
 def test_generated_logs_bound_file_bytes_and_total_files(tmp_path: Path) -> None:
     owner = CliLogging.open(tmp_path, max_bytes=128, max_files=2, console=io.StringIO())
     try:

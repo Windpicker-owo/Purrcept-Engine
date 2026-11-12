@@ -121,13 +121,30 @@ def settle(connection: sqlite3.Connection, batch_id: str, *, failure: str | None
     """结束实际领取的范围；已成功范围不能因为会话后置失败回退。
 
     本函数借用调用者事务。只有真实完成回执中的 reviewed 范围允许推进，延期不
-    重试。失败最多三次；独立新来源不会重置同一来源版本的尝试计数。
+    重试。结案也同步本批补读的未领取来源；另一批正在处理的来源仍由原领取者结算。
+    失败最多三次；独立新来源不会重置同一来源版本的尝试计数。
     """
     rows: list[tuple[str, str, int, str, int]] = connection.execute(
         "SELECT purpose,evidence_id,version,slice_ref,attempts FROM analysis_work "
         "WHERE batch_id=? AND state='processing'",
         (batch_id,),
     ).fetchall()
+    if failure is None:
+        # 补读材料可以获得真实复核回执，却没有本批的初始领取记录。若只结算
+        # processing行，已读完的来源会留在pending，后续错误地请求末页续读游标。
+        # 仅采用同用途已完成批次的reviewed范围；不伪造claim、不接管其他在途批次。
+        rows.extend(
+            connection.execute(
+                "SELECT DISTINCT w.purpose,w.evidence_id,w.version,r.slice_ref,w.attempts "
+                "FROM knowledge_review_ranges r JOIN knowledge_slices s USING(slice_ref) "
+                "JOIN reflection_batches b ON r.batch_id=b.batch_id AND r.batch_version=b.version "
+                "JOIN analysis_work w ON w.evidence_id=s.evidence_id AND w.version=s.version "
+                "AND w.purpose=coalesce(json_extract(b.payload_json,'$.purpose'),'memory') "
+                "WHERE r.batch_id=? AND b.state='completed' AND r.state='reviewed' "
+                "AND w.state NOT IN('processing','completed')",
+                (batch_id,),
+            ).fetchall()
+        )
     now = time.time()
     for purpose, identity, version, reference, attempts in rows:
         if failure in ("BackgroundBudgetExceeded", "host_closing"):

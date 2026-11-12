@@ -2,9 +2,11 @@
 
 每轮创建一个借用相同模型资源的新 facade。continuous 策略恢复已提交检查点，
 batch 策略仅保留提交版本而从空历史开始，也不维护前批历史摘要；Core 仍
-独占工具循环和完整轮次边界。前台只读取唤醒时冻结的输入快照，运行中不接管
-新刺激，整轮预算不重置。失败或取消丢弃临时 facade，真实行动和
-模型尝试已经独立入账。动态尾部由同步 ReminderSource 投影内存值，在实际
+独占工具循环和完整轮次边界。初始输入在唤醒时冻结；调用方可提供 TurnIntake，
+由 Core input_poll 在每次模型请求前和每次响应后把新到达的唤醒级刺激并入
+本轮，整轮预算不重置。失败或取消丢弃临时 facade，真实行动和模型尝试已经
+独立入账；中途并入但模型从未回应的输入释放回收件箱，不随本轮记为失败。
+动态尾部由同步 ReminderSource 投影内存值，在实际
 请求边界异步刷新后重投影一次；同一逻辑请求的重试不再次刷新。
 恢复时冻结最近两轮媒体窗口，当前轮所有工具请求共用同一历史；旧媒体
 原位过期，权威原件仍由输入、请求和回执保留。新历史仅随成功轮次安装。
@@ -20,7 +22,7 @@ from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass, field, replace
 from typing import Literal, Protocol
 
-from purrcept_core import AgentDriver, InlineExecutor
+from purrcept_core import AgentDriver, Effect, ExecutionContext, InlineExecutor
 from purrcept_core.models import (
     ConversationCheckpoint,
     Message,
@@ -46,6 +48,7 @@ from purrcept_engine.domain.context.delivery import ToolDeliveryGate
 from purrcept_engine.domain.context.media_history import expire_history_media
 from purrcept_engine.domain.context.presentation import render_host_state
 from purrcept_engine.domain.context.templates import DYNAMIC_STATE_PROMPT, ENGINE_STATE_REMINDER_KEY
+from purrcept_engine.domain.context.usage import history_fingerprint
 from purrcept_engine.domain.model_requests.models import RequestScope
 from purrcept_engine.domain.model_requests.ports import (
     MaterialCompiler,
@@ -204,6 +207,113 @@ class PrepareHistory(Protocol):
         ...
 
 
+# ---------------------------------------------------------------------------
+# 轮次中途接管
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class TurnIntakeBatch:
+    """一次中途接管的权威结果及交给 Core 的完整 user 消息。
+
+    Attributes:
+        input_ids: 已由权威事务并入本轮 turn_inputs 的输入身份，按接管顺序排列。
+        message: 呈现这些输入的 Core user 消息，metadata 携带相同来源身份。
+
+    Note:
+        实例字段在构造后不可重新赋值；嵌套值的冻结范围由字段所属契约决定。
+    """
+
+    input_ids: tuple[str, ...]
+    message: Message
+
+
+class TurnIntake(Protocol):
+    """在 Core 请求边界把新刺激并入在途轮次的应用入口。
+
+    创建与选择：ForegroundService 每轮绑定一个实现并传给 run；反思等批次会话
+    不提供，此时 Core 不轮询。调用者：本会话包装的 Core input_poll，在每次
+    模型请求前与每次模型响应后（包括没有工具调用的最终响应）串行调用，不会
+    并发。会话已过滤预算撤销、到期和请求名额耗尽的边界，此时不会调用。
+
+    前置条件：turn 已 begin_turn 且仍是会话在途轮次。后置条件：返回 None 表示
+    没有可并入的输入且未改变任何状态；返回批次表示其输入已在同一权威事务中
+    成为本轮输入。实现不得等待未来到达的输入。
+
+    错误：异常使本轮失败。已提交并入但模型从未回应的输入由会话在失败结案时
+    释放回收件箱，实现不必自行补偿。
+    """
+
+    async def __call__(self, turn: TurnRecord) -> TurnIntakeBatch | None:
+        """并入当前可用的唤醒级刺激，不等待未来输入。
+
+        Args:
+            turn: begin_turn 返回的在途轮次，其 input_ids 只含初始输入。
+
+        Returns:
+            已并入的批次；没有唤醒级刺激时为 None。
+        """
+        ...
+
+
+class TurnIntakeLedger:
+    """本轮中途并入输入的会话内记账，区分已派发给模型与已得到回应的前缀。
+
+    由 _run 在 begin_turn 之后为提供了 TurnIntake 的轮次创建，同一事件循环内
+    由轮询、请求门槛和协调者查询共享，轮次结束后丢弃。
+
+    Invariant: answered <= dispatched <= len(absorbed)。absorbed 的前 dispatched
+    项已包含在某个已发出的请求中，模型正在或已经看到它们；前 answered 项至少
+    出现在一次成功返回响应的请求中，模型已据此思考或行动。Core 在每次请求前
+    轮询，因此请求开始时已登记的输入必然包含在该请求中。
+    """
+
+    def __init__(self) -> None:
+        """从空记账开始；初始输入不在此登记。"""
+        self.absorbed: list[str] = []
+        self.dispatched = 0
+        self.answered = 0
+
+    def unanswered(self, input_ids: Iterable[str]) -> tuple[str, ...]:
+        """按原顺序过滤出模型尚未回应过的输入，失败结案据此释放。
+
+        Args:
+            input_ids: 待核对的中途输入；权威库已并入但本记账尚未登记的身份
+                同样视为未回应。
+
+        Returns:
+            未出现在任何已成功响应请求中的输入。
+        """
+        answered = set(self.absorbed[: self.answered])
+        return tuple(input_id for input_id in input_ids if input_id not in answered)
+
+    def unseen(self, input_ids: Iterable[str]) -> bool:
+        """报告这些输入是否都已登记并入、但尚未随任何请求发给模型。
+
+        Args:
+            input_ids: 待核对的输入身份。
+
+        Returns:
+            全部已登记且都在已派发前缀之外时为 True；空集合为 False。
+        """
+        pending = set(self.absorbed[self.dispatched :])
+        identities = tuple(input_ids)
+        return bool(identities) and all(item in pending for item in identities)
+
+
+class _TurnIntakeEffect(Effect[tuple[Message, ...]]):
+    """把会话的异步轮询交给 InlineExecutor 执行的 Core input_poll。"""
+
+    __slots__ = ("_poll",)
+
+    def __init__(self, poll: Callable[[], Awaitable[tuple[Message, ...]]]) -> None:
+        self._poll = poll
+
+    async def execute(self, context: ExecutionContext[object]) -> tuple[Message, ...]:
+        """执行一次不等待未来输入的轮询。"""
+        return await self._poll()
+
+
 class PreparedGenerationBackend:
     """Core 的实际请求门槛，借用证据/重试包装而不重写 SDK 协议。
 
@@ -221,6 +331,8 @@ class PreparedGenerationBackend:
         capacity: CapacityCheck,
         presented: PresentedGate | None = None,
         delivery: ToolDeliveryGate | None = None,
+        history_digest: str | None = None,
+        intake: TurnIntakeLedger | None = None,
     ) -> None:
         """借用本轮所有者和纯计量入口。
 
@@ -231,6 +343,8 @@ class PreparedGenerationBackend:
             capacity: 对完整实际请求执行容量核验的函数。
             presented: 真实请求成功门槛的完整材料呈现回调。 None 表示没有额外的呈现追踪回调。
             delivery: 本轮工具原文交付门槛；None 不执行候选交付替换。
+            history_digest: 本轮恢复的原检查点身份，供实际用量确认后的维护触发使用。
+            intake: 本轮中途接管记账；派发与成功响应时分别推进前缀。None 表示未启用。
 
         Note:
             不取得客户端或持久化连接。
@@ -241,6 +355,8 @@ class PreparedGenerationBackend:
         self.capacity = capacity
         self.presented = presented
         self.delivery = delivery
+        self.history_digest = history_digest
+        self.intake = intake
         self.last_capacity: CapacityAssessment | None = None
 
     async def generate(
@@ -276,10 +392,17 @@ class PreparedGenerationBackend:
         current = await prepare_off_loop(lambda: self._prepare(current, model))
         self.backend.budget.check()
 
+        # Core 先轮询再编译请求，所以此刻已登记的中途输入都在本请求材料中。
+        # 派发即表示模型正在看到它们；只有响应成功返回后才算得到回应。
+        seen = len(self.intake.absorbed) if self.intake is not None else 0
+        if self.intake is not None:
+            self.intake.dispatched = max(self.intake.dispatched, seen)
         events: list[ModelStreamEvent] = []
         response = await self.backend.generate(
             current, model=model, emit=events.append if emit is not None else None
         )
+        if self.intake is not None:
+            self.intake.answered = max(self.intake.answered, seen)
         if self.presented is not None:
             await self.presented(current)
         if self.delivery is not None:
@@ -312,11 +435,10 @@ class PreparedGenerationBackend:
         self.last_capacity = self.capacity(payload)
         # 实际输入基线与新材料估算分别保存为 Engine 元数据，不插入模型正文；
         # 组合规划值不能冒充本次完整请求的实际 usage。
-        current = replace(
-            current, metadata={**current.metadata, "engine.capacity": encode(self.last_capacity)}
-        )
-
-        return current
+        metadata = {**current.metadata, "engine.capacity": encode(self.last_capacity)}
+        if self.history_digest is not None:
+            metadata["engine.history_digest"] = self.history_digest
+        return replace(current, metadata=metadata)
 
 
 @dataclass(frozen=True, slots=True)
@@ -381,6 +503,8 @@ class ContinuousSession:
         self._commits: set[asyncio.Future[SessionRecord]] = set()
         self._closing = False
         self._close_task: asyncio.Task[None] | None = None
+        # Lifecycle: 只在提供 TurnIntake 的在途轮次中存在，结案后清空。
+        self._intake: TurnIntakeLedger | None = None
 
     @property
     def generation(self) -> int:
@@ -422,6 +546,28 @@ class ContinuousSession:
             and generation != self._settling_generation
             and any(asyncio.get_running_loop().time() < budget.deadline for budget in self._budgets)
         )
+
+    def absorbed_unseen(self, generation: int, input_ids: tuple[str, ...]) -> bool:
+        """报告这些输入是否已中途并入给定代次、但尚未随任何请求发给模型。
+
+        Args:
+            generation: 注意判断开始时观察的生成代次。
+            input_ids: 注意批次的完整输入身份。
+
+        Returns:
+            代次仍在处理，且整批都已并入本轮又不在任何已派发请求中。
+
+        Note:
+            协调者据此决定迟到的 urgent 是否仍应抢占：整批还没被模型看到时
+            （通常是模型返回工具调用后、工具仍在执行），抢占让新一轮立即处理
+            它们，失败结案会把这些未回应输入释放回收件箱；已随请求发出则主脑
+            正在看它们，不再取消。权威并入已提交但轮询尚未登记的极短窗口内
+            返回 False，输入仍会在下一次请求交给模型。
+        """
+        ledger = self._intake
+        if ledger is None or generation != self._generation or not self.busy:
+            return False
+        return ledger.unseen(input_ids)
 
     def snapshot(self) -> JsonObject:
         """读取当前处理与真实整轮预算，不返回提示/历史，也不推进会话。
@@ -474,13 +620,14 @@ class ContinuousSession:
         accepted_failures: tuple[str, ...] = (),
         prepare_history: PrepareHistory | None = None,
         observe_usage: UsageObserver | None = None,
+        intake: TurnIntake | None = None,
     ) -> SessionResult:
         """从主动处理起计预算，成功提交后返回。
 
         Args:
             message: 本轮准备接管的原始消息或延迟构造入口。
             turn_id: 连续会话中本轮处理的身份。
-            input_ids: 本轮接管的输入身份集合，保留真实因果关联。
+            input_ids: 本轮初始接管的输入身份集合，保留真实因果关联。
             backend: 显式注入的模型后端，资源取得和关闭归装配层。
             evidence: 接收逻辑请求及各次真实尝试的权威提交口。
             model: 本次调用使用的显式模型名，不在领域层推断替代模型。
@@ -498,6 +645,7 @@ class ContinuousSession:
             accepted_failures: 当前成功交互明确承接的先前失败轮次身份。 默认不附加此类条目。
             observe_usage: 成功证据提交后的输入用量保存入口；None 不保存锚点。
             prepare_history: 会话空闲时维护已提交历史的入口；None 不维护。
+            intake: 在 Core 请求边界并入新刺激的入口；None 表示本轮只处理初始输入。
 
         Returns:
             权威历史已提交的内部轮次结果；最终文字不会自动对外发送。
@@ -508,7 +656,8 @@ class ContinuousSession:
         Note:
             重叠调用明确拒绝。
 
-            输入身份由调用方在唤醒时冻结，轮内工具调用不会拉取后续刺激。
+            初始输入由调用方在唤醒时冻结。提供 intake 时，Core 在每次请求前和
+            每次响应后轮询它，新输入沿用本轮剩余预算，不重置请求名额或截止。
         """
         if self._closing or self.busy:
             raise HostStateError("会话正在处理或收尾。")
@@ -541,6 +690,7 @@ class ContinuousSession:
                 accepted_failures=accepted_failures,
                 prepare_history=prepare_history,
                 observe_usage=observe_usage,
+                intake=intake,
             ),
             name=f"subject-{self.scope}-{generation}",
         )
@@ -569,11 +719,13 @@ class ContinuousSession:
         accepted_failures: tuple[str, ...],
         prepare_history: PrepareHistory | None,
         observe_usage: UsageObserver | None,
+        intake: TurnIntake | None,
     ) -> SessionResult:
         """只采用当前权威版本；Core 临时成功不是 Engine 安装历史的提交点。"""
         wrapped: ModelGenerationBackend | None = None
         turn: TurnRecord | None = None
         turn_timeout: asyncio.Timeout | None = None
+        ledger: TurnIntakeLedger | None = None
         try:
             previous = await self._previous()
             budget.check()
@@ -623,6 +775,9 @@ class ContinuousSession:
             )
             self._backends.add(wrapped)
             reminder = DynamicReminder(dynamic)
+            if intake is not None:
+                ledger = TurnIntakeLedger()
+                self._intake = ledger
             prepared = PreparedGenerationBackend(
                 wrapped,
                 reminder,
@@ -630,6 +785,8 @@ class ContinuousSession:
                 capacity=capacity,
                 presented=presented,
                 delivery=delivery,
+                history_digest=history_fingerprint(previous.checkpoint_json),
+                intake=ledger,
             )
             conversation = Model(prepared, model).conversation(
                 instructions=instructions,
@@ -648,10 +805,37 @@ class ContinuousSession:
                 )
                 budget.check()
                 conversation.restore(restored)
+
+            input_poll: _TurnIntakeEffect | None = None
+            if intake is not None and ledger is not None:
+                started = turn
+                intake_ledger = ledger
+                generation_backend = wrapped
+
+                async def poll() -> tuple[Message, ...]:
+                    """Core 在每次请求前和每次响应后串行调用，只并入当下可用的输入。"""
+                    # 没有剩余请求名额或预算已失效时不再接管：Core 会因新输入要求
+                    # 另一轮而抛出 ToolLoopLimitError，本可成功的轮次反被拖成失败。
+                    # 留在收件箱的输入由协调者在本轮结束后作为下一轮处理。
+                    if budget.used >= budget.max_requests:
+                        return ()
+                    try:
+                        budget.check()
+                    except RequestBudgetExceeded:
+                        return ()
+                    batch = await intake(started)
+                    if batch is None:
+                        return ()
+                    intake_ledger.absorbed.extend(batch.input_ids)
+                    generation_backend.extend_inputs(batch.input_ids)
+                    return (batch.message,)
+
+                input_poll = _TurnIntakeEffect(poll)
+
             turn_timeout = asyncio.timeout_at(budget.deadline)
             async with turn_timeout:
                 result = await AgentDriver[None](InlineExecutor()).run(
-                    conversation.ask(prepared_message),
+                    conversation.ask(prepared_message, input_poll=input_poll),
                     host=None,
                 )
             budget.check()
@@ -718,11 +902,22 @@ class ContinuousSession:
             try:
                 current = await self._previous()
                 if current.active_turn == turn.turn_id:
+                    # 中途并入的输入以权威 turn_inputs 为准：即使轮询在并入事务
+                    # 提交后、登记记账前被取消，它们也在这里被识别为未回应。
+                    released: tuple[str, ...] = ()
+                    if ledger is not None:
+                        actual = await self.store.get_turn(turn.turn_id)
+                        if actual is not None:
+                            initial = set(turn.input_ids)
+                            released = ledger.unanswered(
+                                item for item in actual.input_ids if item not in initial
+                            )
                     await self._commit(
                         self.store.finish_turn(
                             turn,
                             outcome,
                             error_json=encode_json(failure).decode("utf-8"),
+                            released_inputs=released,
                         )
                     )
             except BaseException as commit_error:
@@ -732,6 +927,8 @@ class ContinuousSession:
             raise
         finally:
             self._settling_generation = generation
+            if self._intake is ledger:
+                self._intake = None
             budget.revoke()
             self._budgets.discard(budget)
             if wrapped is not None:

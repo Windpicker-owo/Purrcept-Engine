@@ -4,6 +4,8 @@
 由协调者保底唤醒，不偷偷删减批次或正文。这里只组装固定角色卡、当前原文、
 按模型声明投影的媒体及有限工作背景，不读取完整前台历史、不增设 ASR，
 也不决定实际暂停、回复或停止设备。
+已装配身体接收方时，在同一请求中附带情绪与语境注视问题；这些材料同样
+参与容量核验，结果的版本采用与设备交付仍由协调者负责。
 """
 
 from collections.abc import Awaitable, Callable
@@ -36,6 +38,9 @@ from purrcept_engine.domain.subject.prompts import (
     ATTENTION_GENERATION_PROMPT,
     ATTENTION_IDENTITY_PROMPT,
     ATTENTION_RULES_PROMPT,
+    EXPRESSION_GENERATION_PROMPT,
+    EXPRESSION_IDENTITY_PROMPT,
+    EXPRESSION_RULES_PROMPT,
 )
 from purrcept_engine.domain.subject.session import CapacityCheck
 from purrcept_engine.serialization import encode
@@ -46,8 +51,14 @@ ATTENTION_QUESTION = ChoiceQuestion(
     ATTENTION_RULES_PROMPT.render(),
     (
         ChoiceOption("observe", "提交到主脑待处理输入，等待后续唤醒，本批不请求立即思考。"),
-        ChoiceOption("wake", "整批进入前台下一轮，可与其他刺激合并，不打断当前生成。"),
-        ChoiceOption("urgent", "有明确紧急依据，请求抢占生成；不取消已经开始的行动。"),
+        ChoiceOption(
+            "wake",
+            "连同全部待处理刺激整批交给主脑；主脑正在思考时于其下一次请求前并入，不打断当前生成。",
+        ),
+        ChoiceOption(
+            "urgent",
+            "有明确紧急依据，请求抢占主脑尚未看到本批的生成；不取消已经开始的行动。",
+        ),
     ),
 )
 
@@ -69,6 +80,7 @@ class AttentionModel:
         kind: 此业务值所属的稳定种类。
         output_tokens: 为本次生成预留的最大输出 token 数。
         supports_contents: 刺激允许交付的内容类型，默认仅 text；decision 还受协议限制。
+        expression: 已装配身体接收方时，在同一次请求中附带情绪与注视判断。
 
     Note:
         实例字段在构造后不可重新赋值；嵌套值的冻结范围由字段所属契约决定。
@@ -87,6 +99,7 @@ class AttentionModel:
     output_tokens: int | None = field(default=None, kw_only=True)
     observe_usage: UsageObserver | None = field(default=None, kw_only=True)
     supports_contents: tuple[ContentKind, ...] = field(default=("text",), kw_only=True)
+    expression: bool = field(default=False, kw_only=True)
 
     def __post_init__(self) -> None:
         """拒绝无法表达配置选择的组合，不用运行时探测退回另一模型路径。"""
@@ -169,14 +182,60 @@ async def attention_request(
             if not isinstance(block, (TextBlock, ImageBlock)):
                 raise UnsupportedMaterial("attention.unsupported_native_content")
             decision_blocks.append(block)
-        request = DecisionRequest(tuple(decision_blocks), (question,))
+        questions = (question,)
+        if model.expression:
+            expression_rules = EXPRESSION_IDENTITY_PROMPT.render(
+                {"profile": model.profile, "rules": EXPRESSION_RULES_PROMPT.render()}
+            )
+            questions += (
+                ChoiceQuestion(
+                    "emotion",
+                    expression_rules,
+                    tuple(
+                        ChoiceOption(value, label)
+                        for value, label in (
+                            ("unchanged", "保持，没有新的情绪依据"),
+                            ("neutral", "平静、中性"),
+                            ("warm", "友好、温暖"),
+                            ("concerned", "担心、关切"),
+                            ("curious", "好奇、思索"),
+                            ("excited", "兴奋、欣喜"),
+                            ("displeased", "不悦、不满"),
+                        )
+                    ),
+                ),
+                ChoiceQuestion(
+                    "focus",
+                    expression_rules,
+                    tuple(
+                        ChoiceOption(value, label)
+                        for value, label in (
+                            ("unchanged", "保持，没有切换依据"),
+                            ("audience", "面向观众"),
+                            ("chat", "阅读聊天"),
+                            ("game", "关注游戏"),
+                            ("work", "处理工作"),
+                            ("speaker", "倾听发言"),
+                            ("away", "短暂移开"),
+                        )
+                    ),
+                ),
+            )
+        request = DecisionRequest(tuple(decision_blocks), questions)
     else:
         # 生成式注意判断必须返回固定 JSON 选择，才能进入同一版本核验流程；
         # 完整正文与原生媒体只是判断依据，此请求不提供世界目录或执行工具。
         request = ModelRequest(
             (Message(MessageRole.USER, tuple(blocks)),),
             instructions=(
-                ATTENTION_GENERATION_PROMPT.instruction({"rules": question.instructions}),
+                EXPRESSION_GENERATION_PROMPT.instruction(
+                    {
+                        "rules": question.instructions,
+                        "expression_rules": EXPRESSION_RULES_PROMPT.render(),
+                    }
+                )
+                if model.expression
+                else ATTENTION_GENERATION_PROMPT.instruction({"rules": question.instructions}),
             ),
             settings=ModelSettings(max_output_tokens=model.output_tokens),
         )

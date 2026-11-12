@@ -42,6 +42,7 @@ class Live2DSettings(BaseModel):
     vts_url: str = "ws://127.0.0.1:8001"
     token_path: str = ".purrcept/live2d/token"
     profile_path: str = Field(min_length=1)
+    preferences_path: str = ""
     reaction_seconds: float = Field(default=4.0, ge=0.1, le=30, allow_inf_nan=False)
     frame_hz: float = Field(default=30.0, ge=1, le=60, allow_inf_nan=False)
     sample_rate: Literal[16000, 24000, 32000, 44100] = 32000
@@ -103,7 +104,10 @@ def make_factory(
             10.0,
             'result = await {path}(intent={"valence": 0.4, "gesture": "nod"})',
             "数值valence/gaze为[-1,1]，arousal/tension为[0,1]；gesture为none/nod/shak"
-            "e/tilt。缺省数值为0、手势为none。宿主分配身份，独立意图初值4秒；accepted不等于VTS已采用，恢复不补演。说话姿"
+            "e/tilt。情绪/注视未填写或null保持原字段和期限，显式0恢复中性，gesture=none取消动作。"
+            "effort为本次转向/手势力度[0,1]，0放松、1强调；缺省柔和，单独传入不改变已有动作。"
+            "delivery只用于speak(body=...)的语音表演，独立apply会明确拒绝该字段。"
+            "宿主分配身份，独立意图初值4秒；accepted不等于VTS已采用，恢复不补演。说话姿"
             "态可直接给speak(body=...)，不需要先创建表达句柄。",
             concurrency="parallel",
         )
@@ -147,6 +151,12 @@ def make_factory(
                 sample_rate=settings.sample_rate,
                 lip_sync_offset_ms=profile.lip_sync_offset_ms,
                 style=settings.style,
+                gaze_calibration=profile.gaze,
+                focus_layout=profile.focus,
+                preferences_path=(base_dir / settings.preferences_path).resolve()
+                if settings.preferences_path
+                else profile_path.with_suffix(".preferences.json"),
+                model_id=profile.model_id,
             )
 
             async def run_apply(parameters: _Apply, context: CallContext) -> CallOutcome:
@@ -166,6 +176,7 @@ def make_factory(
                 prepare_request=runtime.prepare_request,
                 panel=DevicePanel("live2d", (), revision),
                 body=runtime,
+                expression_sink=runtime.observe_expression,
                 resources_released=lambda: runtime.resources_released,
             )
 

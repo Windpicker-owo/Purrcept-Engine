@@ -130,6 +130,7 @@ def test_pure_factory_declares_qq_paths_and_strict_params(tmp_path: Path) -> Non
         "qzone_ban",
         "reconnect",
         "file_url",
+        "avatar",
     }
     assert set(catalog.bindings) == {"me.phone.qq." + name for name in names}
     assert blueprint.required_modules == ("websockets",)
@@ -320,11 +321,25 @@ async def test_invalid_params_and_unsupported_deep_feed_do_not_send(rig: Rig) ->
         ("read", {"cursor": "x", "chat": "private", "target_id": "123"}),
         ("qzone_post", {"content": "x", "ugc_right": 16}),
         ("file_url", {"chat": "private", "target_id": "123", "file_id": "f", "busid": 1}),
+        ("avatar", {"user_id": "123&extra=1"}),
+        ("avatar", {"user_id": 123}),
     )
     for name, arguments in cases:
         action = await rig.host.invoke("me.phone.qq." + name, arguments)
         assert action.calls[0].state == "failed"
         assert action.calls[0].error_type == "CapabilityInputError"
+    assert rig.socket.sent.empty()
+
+
+async def test_avatar_returns_public_url_without_onebot_request(rig: Rig) -> None:
+    action = await rig.host.invoke("me.phone.qq.avatar", {"user_id": "123456"})
+    call = action.calls[0]
+    assert call.state == "confirmed"
+    assert call.result_json is not None
+    assert decode_object(call.result_json.encode()) == {
+        "user_id": "123456",
+        "url": "https://q1.qlogo.cn/g?b=qq&nk=123456&s=640",
+    }
     assert rig.socket.sent.empty()
 
 

@@ -54,7 +54,8 @@ me.bed.rest(...)  # 睡觉：普通刺激只记历史
   <img src="./assets/readme/lifecycle.svg" width="100%" alt="一条刺激的生命周期：01 接管（InputAdmissionService）、02 注意（StimulusCoordinator，observe/wake/urgent）、03 主脑（ContinuousSession）、04 行动（隔离 Worker 与 me.* 能力）、05 记忆（revise_memory），随后回到注意持续循环。">
 </p>
 
-主脑每次被唤醒时原子取尽已提交输入，运行中不再拉取新刺激；注意模型只是被调用的
+收件箱遵循最高级统一原则：出现唤醒级刺激时，整个收件箱随它交给主脑。主脑空闲时
+作为新一轮输入，忙碌时在模型的下一次请求前并入当前思考；注意模型只是被调用的
 批次评估器，不拥有定时、提交或抢占。完整规则见 [主体运行行为](docs/behavior.md)。
 
 ## 内置能力

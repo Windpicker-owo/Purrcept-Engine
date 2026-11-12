@@ -112,6 +112,12 @@ class Members(Parameters):
     group_id: QQId
 
 
+class Avatar(Parameters):
+    """指定真实 QQ 号；生成的链接不证明账号或头像存在。"""
+
+    user_id: QQId
+
+
 class Recall(Parameters):
     """保留平台带符号的消息身份。"""
 

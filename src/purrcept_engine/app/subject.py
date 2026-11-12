@@ -229,6 +229,7 @@ async def build_subject(
             model=settings.model,
             assess=capacity_for(settings, enforce=False, usage=usage),
             context=config.context,
+            usage=usage,
             compiler=compile_materials,
         )
 
@@ -353,6 +354,12 @@ async def build_subject(
             sleep_history.last_failure = type(error).__name__
             _logger.warning("睡眠历史维护保留原版本。", extra={"error_type": type(error).__name__})
 
+    expression_sinks = [
+        plugin.expression_sink for plugin in plugins.values() if plugin.expression_sink is not None
+    ]
+    if len(expression_sinks) > 1:
+        raise ValueError("同一主体只能装配一个身体注意判断接收方。")
+    expression_sink = expression_sinks[0] if expression_sinks else None
     attention: AttentionModel | None = None
     attention_name = config.subject.attention
     if attention_name is not None:
@@ -367,6 +374,7 @@ async def build_subject(
                 capacity_for(settings, enforce=True, usage=attention_usage),
                 config.subject.attention_retry,
                 kind="decision",
+                expression=expression_sink is not None,
                 compiler=compile_materials,
                 profile=attention_profile,
                 observe_usage=attention_usage.observe,
@@ -379,6 +387,7 @@ async def build_subject(
                 capacity_for(settings, enforce=True, usage=attention_usage),
                 config.subject.attention_retry,
                 kind="generation",
+                expression=expression_sink is not None,
                 output_tokens=settings.max_output_tokens,
                 compiler=compile_materials,
                 profile=attention_profile,
@@ -401,6 +410,7 @@ async def build_subject(
             observe_usage=foreground_usage.observe,
         ),
         attention=attention,
+        expression_sink=expression_sink,
         settings=CoordinatorSettings(
             diagnostic_bytes,
             config.subject.attention_batch_seconds,

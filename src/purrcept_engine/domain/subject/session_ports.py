@@ -97,6 +97,7 @@ class SessionStore(Protocol):
         checkpoint_json: str | None = None,
         error_json: str | None = None,
         accepted_failures: tuple[str, ...] = (),
+        released_inputs: tuple[str, ...] = (),
     ) -> SessionRecord:
         """提交整轮成功或明确失败，返回实际已提交会话。
 
@@ -106,6 +107,8 @@ class SessionStore(Protocol):
             checkpoint_json: 完整 Core 检查点的编码；失败轮次可不安装新历史。
             error_json: 编码后的失败证据，供后续交互追溯原轮次。
             accepted_failures: 当前成功交互明确承接的先前失败轮次身份。 默认不附加此类条目。
+            released_inputs: 仅失败轮次可用。运行中并入、但从未得到模型回应的输入
+                离开本轮，以唤醒意图回到收件箱；初始输入不可释放。
 
         Returns:
             已提交版本和历史；两个分析用途仅返回元数据，完整本批历史另行保存供审计。

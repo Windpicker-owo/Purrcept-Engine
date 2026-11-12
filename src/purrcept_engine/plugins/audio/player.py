@@ -4,6 +4,8 @@
 BodyIntent。停止先设置本次撤销标记，再杀掉当前进程；启动窗口也要
 收回已创建进程。停音同时取消本次 PCM 消费等待，避免上游停顿占住播放队列；
 临时网络/解码迭代器由调用方收回，不跨播放复用。
+PCM 预读以真实媒体时钟限制在约 750ms 加一个上游块以内，避免系统管道缓存
+数秒声音时，让身体分析提前挤掉尚未播放的音素。此背压不等待视觉分析器。
 """
 
 from __future__ import annotations
@@ -175,6 +177,7 @@ class FFplayPlayer:
         self._playing, self._revoked = True, False
         self._identity = playback_id
         adopted, elapsed = False, 0.0
+        clock_changed, clock_ended = asyncio.Event(), False
         energies: list[float] = []
         pending = bytearray()
         frame_size = max(2, self._rate // 50 * 2)
@@ -212,6 +215,7 @@ class FFplayPlayer:
                 return PlaybackResult("not_started", False)
 
             async def feed() -> None:
+                written = 0
                 try:
                     async for chunk in pcm:
                         if self._revoked or self._closed:
@@ -228,11 +232,23 @@ class FFplayPlayer:
                             energies.append(min(1.0, energy * 4))
                         stdin.write(chunk)
                         await stdin.drain()
+                        written += len(chunk)
+                        # 管道 drain 只说明 OS 接收，不表示声音已播放。等待媒体时钟
+                        # 再取下一块，上游的 PCM/视素准备因此保持有限领先；停止仍由
+                        # interrupt 取消本任务，时钟失效由外层总期限终止。
+                        while (
+                            written / (self._rate * 2) - elapsed > 0.75
+                            and process.returncode is None
+                            and not self._revoked
+                            and not clock_ended
+                        ):
+                            clock_changed.clear()
+                            await clock_changed.wait()
                 finally:
                     stdin.close()
 
             async def observe() -> None:
-                nonlocal adopted, elapsed
+                nonlocal adopted, elapsed, clock_ended
                 buffer = bytearray()
                 while piece := await stderr.read(2048):
                     buffer.extend(piece)
@@ -252,6 +268,7 @@ class FFplayPlayer:
                                     adopted = True
                                     await started()
                                 elapsed = max(elapsed, position)
+                                clock_changed.set()
                                 index = min(len(energies) - 1, max(0, int(position * 50)))
                                 progress(position, 0.0 if index < 0 else energies[index])
                         elif line.strip() and b"nan" not in line:
@@ -261,6 +278,9 @@ class FFplayPlayer:
                 tail = _TERMINAL_CONTROL.sub(b"", bytes(buffer))
                 if tail.strip() and _CLOCK.match(tail) is None and b"nan" not in tail:
                     failures.append(tail[:1024])
+                # EOF 唤醒预读等待，让进程退出或管道错误沿原终态路径结算。
+                clock_ended = True
+                clock_changed.set()
 
             tasks = [
                 asyncio.create_task(feed(), name="audio-player-feed"),

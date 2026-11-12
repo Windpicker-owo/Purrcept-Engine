@@ -109,7 +109,7 @@ def make_factory(
             25.0,
             'await {path}(mode="asr")',
             "audio 模式要求生成模型显式声明支持音频；已收音时先 stop。"
-            "VAD 自动停播开启时，持续人声只停止播放并通知下一轮，不取消模型生成。",
+            "VAD 自动停播开启时，持续人声只停止播放并通知主脑下一次思考，不取消模型生成。",
             control=True,
         )
         stop = CapabilityDeclaration(

@@ -3,7 +3,8 @@
 应用按用途、端点及模型隔离 UsageMeter，并在启动时从同库恢复最后锚点。
 只有完整静态输入及消息前缀逐值一致时，旧输入才沿用实际 input_tokens，
 新增消息仍采用唯一内置估算器。摘要、工具目录变化或媒体过期改变前缀时，
-整份新布局重新估算。这里不推断模型 tokenizer，也不取得模型客户端。
+整份新布局重新估算。另存已提交历史摘要以匹配真实超额观察：新输入变化时
+仍可触发同历史维护，但不把旧用量套给新请求。这里不推断 tokenizer 或取得客户端。
 """
 
 from __future__ import annotations
@@ -33,6 +34,7 @@ class UsageAnchor:
         field: SDK 的 messages 或 input 槽位。
         prefix: 按顺序冻结的完整消息摘要，不包含请求局部动态尾部。
         input_tokens: 服务端报告的完整输入用量，包含缓存命中的输入。
+        history_digest: 请求所恢复的已提交检查点摘要；仅供同历史维护触发，不替代输入计量。
 
     Note:
         动态尾部虽不参与前缀匹配，其当时用量仍包含在 input_tokens 中。
@@ -47,6 +49,7 @@ class UsageAnchor:
     field: str
     prefix: tuple[str, ...]
     input_tokens: int
+    history_digest: str | None = None
 
     def __post_init__(self) -> None:
         """拒绝无效持久字段，损坏锚点不能成为零用量或跨协议容量凭据。"""
@@ -54,9 +57,12 @@ class UsageAnchor:
             raise ValueError("用量锚点身份或协议无效。")
         if isinstance(self.input_tokens, bool) or self.input_tokens <= 0:
             raise ValueError("用量锚点必须来自正的实际输入用量。")
+        digests = (self.static_digest, *self.prefix)
+        if self.history_digest is not None:
+            digests = (*digests, self.history_digest)
         if any(
             len(digest) != 64 or any(char not in "0123456789abcdef" for char in digest)
-            for digest in (self.static_digest, *self.prefix)
+            for digest in digests
         ):
             raise ValueError("用量锚点摘要损坏。")
 
@@ -102,6 +108,22 @@ class UsageEstimate:
 
 def _digest(value: object) -> str:
     return hashlib.sha256(encode(value).encode("utf-8")).hexdigest()
+
+
+def history_fingerprint(checkpoint_json: str | None) -> str | None:
+    """给已提交原检查点签发维护匹配身份，摘要安装或历史变化后自然失效。
+
+    Args:
+        checkpoint_json: Store 恢复的完整原版本；None 表示没有旧历史。
+
+    Returns:
+        只用于匹配同一份历史的 SHA-256，不包含正文或模型凭据。
+    """
+    return (
+        hashlib.sha256(checkpoint_json.encode("utf-8")).hexdigest()
+        if checkpoint_json is not None
+        else None
+    )
 
 
 def _layout(payload: JsonObject) -> tuple[str, str, tuple[str, ...]]:
@@ -199,6 +221,29 @@ class UsageMeter:
         estimated = estimate_tokens(payload)
         return UsageEstimate(estimated, new_tokens=estimated)
 
+    def history_input_tokens(self, payload: JsonObject, checkpoint_json: str | None) -> int | None:
+        """查同历史、同静态布局的最近实际输入，仅用于决定是否需要压缩。
+
+        Args:
+            payload: 当前完整请求的编译材料，静态指令和工具必须仍然匹配。
+            checkpoint_json: 当前待维护的已提交历史原件。
+
+        Returns:
+            先前成功响应的完整实际输入，或 None。新输入变化不抹掉超额观察，
+            但这份旧用量不能冒充新请求估算或摘要候选的计量结果。
+        """
+        anchor = self.anchor
+        if anchor is None or anchor.history_digest is None:
+            return None
+        field, static, _ = _layout(payload)
+        if (
+            field != anchor.field
+            or static != anchor.static_digest
+            or history_fingerprint(checkpoint_json) != anchor.history_digest
+        ):
+            return None
+        return anchor.input_tokens
+
     async def observe(
         self,
         evidence: RequestEvidence,
@@ -232,6 +277,7 @@ class UsageMeter:
             )
             stable = prefix[:-1] if has_tail else prefix
             assert response.usage is not None
+            history_digest = request.metadata.get("engine.history_digest")
             return UsageAnchor(
                 evidence.request_id,
                 evidence.compiler,
@@ -239,6 +285,7 @@ class UsageMeter:
                 field,
                 stable,
                 response.usage.input_tokens,
+                history_digest if isinstance(history_digest, str) else None,
             )
 
         anchor = await prepare_off_loop(freeze)

@@ -19,6 +19,7 @@ from purrcept_core.models import (
     ModelRequest,
     ToolCallBlock,
 )
+from pydantic import ValidationError
 
 from purrcept_engine.domain.context.capacity import CapacityError
 from purrcept_engine.domain.context.materials import UnsupportedMaterial
@@ -31,6 +32,7 @@ from purrcept_engine.domain.model_requests.service import (
     RequestBudgetExceeded,
 )
 from purrcept_engine.domain.subject.attention import attention_request
+from purrcept_engine.domain.subject.expression import ExpressionAssessment
 from purrcept_engine.domain.subject.models import (
     AttentionLevel,
 )
@@ -50,11 +52,15 @@ class AttentionResult:
         level: observe、wake 或 urgent；模型暂时失败时明确保底 wake。
         reason: 实际判断原因或未完成的完整证据说明。
         request_id: 已保存的逻辑请求身份，未发起请求时为 None。
+        expression: 可选身体判断，模型失败时不产生。
+        expression_deadline: 从评估开始计时的短期资格，慢响应不能成为迟到表演。
     """
 
     level: AttentionLevel
     reason: str
     request_id: str | None = None
+    expression: ExpressionAssessment | None = None
+    expression_deadline: float = 0.0
 
 
 class AttentionService:
@@ -98,6 +104,7 @@ class AttentionService:
         """
         if self.runtime.attention is None:
             return AttentionResult("wake", "attention.not_configured")
+        expression_deadline = asyncio.get_running_loop().time() + 15.0
         try:
             request = await attention_request(
                 records,
@@ -117,13 +124,16 @@ class AttentionService:
                     }
                 ),
             )
-        return await self.assess(records, request, eligible=eligible)
+        return await self.assess(
+            records, request, expression_deadline=expression_deadline, eligible=eligible
+        )
 
     async def assess(
         self,
         records: tuple[InputRecord, ...],
         request: DecisionRequest | ModelRequest,
         *,
+        expression_deadline: float,
         eligible: Callable[[], bool] | None = None,
     ) -> AttentionResult:
         """在原预算内执行一次逻辑判断，保留所有真实尝试。
@@ -131,6 +141,7 @@ class AttentionService:
         Args:
             records: 请求对应的冻结输入批次。
             request: 已完整组装并预检的实际模型请求。
+            expression_deadline: 本次身体判断从评估开始计算的绝对失效时刻。
             eligible: 可选的原生成资格检查，重试前重新核对。
 
         Returns:
@@ -184,6 +195,8 @@ class AttentionService:
         level: AttentionLevel = "wake"
         reason = "typesafe.batch_judgment"
         failed = False
+        expression: ExpressionAssessment | None = None
+        expression_fields: object = None
         budget_stopped = False
         try:
             try:
@@ -202,6 +215,19 @@ class AttentionService:
                     ):
                         raise DecisionResponseError("注意判断未返回声明的选择。")
                     level = answer.choice
+                    if self.runtime.attention.expression:
+                        fields: dict[str, object] = {}
+                        for name in ("emotion", "focus"):
+                            answer = response.answer(name)
+                            if isinstance(answer, DecisionRefusal):
+                                # 独立问题允许拒答；只保持该字段，不伪造中性情绪。
+                                fields[name], fields[name + "_confidence"] = "unchanged", 0.0
+                            elif isinstance(answer, ChoiceAnswer):
+                                fields[name] = answer.choice
+                                fields[name + "_confidence"] = answer.confidence
+                            else:
+                                raise DecisionResponseError("身体判断必须返回声明的选择。")
+                        expression_fields = fields
                 else:
                     if not isinstance(request, ModelRequest):
                         raise TypeError("生成注意必须使用生成请求。")
@@ -223,8 +249,27 @@ class AttentionService:
                     if not isinstance(value, str):
                         raise DecisionResponseError("生成注意理由必须是字符串。")
                     level, reason = choice, value
+                    if self.runtime.attention.expression:
+                        expression_fields = parsed.get("expression")
+                if self.runtime.attention.expression:
+                    try:
+                        expression = ExpressionAssessment.model_validate(expression_fields)
+                    except ValidationError as error:
+                        # 身体附加字段错误不能抹掉有效的紧急注意判断。保留原级别，
+                        # 在采用理由中明确记录视觉协议失败，且不交付部分姿态。
+                        reason = encode(
+                            {
+                                "attention": level,
+                                "reason": reason,
+                                "expression": {
+                                    "state": "invalid",
+                                    "error_type": type(error).__name__,
+                                },
+                            }
+                        )
             except (ModelError, TimeoutError) as error:
                 failed = True
+                level, expression = "wake", None
                 budget_stopped = isinstance(error, RequestBudgetExceeded)
                 reason = encode({"attention": "not_completed", "error_type": type(error).__name__})
             requests = await self.runtime.store.requests_for_turn("attention", identity)
@@ -256,7 +301,9 @@ class AttentionService:
                         ),
                     }
                 )
-            return AttentionResult(level, reason, requests[0].request.request_id)
+            return AttentionResult(
+                level, reason, requests[0].request.request_id, expression, expression_deadline
+            )
         except Exception as error:
             # 内部/权威故障必须先锁存再异步归还后端；关闭取消可能发生在
             # finally 的清理等待中，不能用那次取消覆盖已经发生的原始故障。

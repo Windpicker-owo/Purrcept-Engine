@@ -6,6 +6,8 @@ BodyIntent 是模型可写的纯语义。身份和失效时间由身体所有者
 
 from __future__ import annotations
 
+from typing import Annotated
+
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from purrcept_engine.errors import EngineError
@@ -31,7 +33,21 @@ class BodyUnavailable(BodyError):
 
 
 class BodyStyle(BaseModel):
-    """本地自然动作习惯，配置零值只关闭相应程序运动，不删除语义或口型。"""
+    """本地动作习惯；motion_scale 控制手势和待机，不缩放明确注视或口型。
+
+    head_turn_seconds 与 relaxed_head_turn_seconds 分别是强调和放松转头的
+    完成时间，default_effort 是每次未注明力度的新动作的基线。身体
+    response_seconds 是临界阻尼时间尺度，body_gaze_scale 是越过注视死区后
+    的最大归一化身体转向幅度。主动头部动作不再经过第二层弹簧。当前版本
+    不再提供音量驱动摆头和独立正弦微表情；眨眼间隔是随机分布的尺度。
+    speech_gesture_scale 只缩放自动语音动作，speech_gesture_interval_seconds
+    限制媒体时钟中的动作密度；交流意图不会自动把缺省力度提高到强调档。
+    speech_expression_scale 控制交流眉眼/嘴角层，mouth_* 控制输出口型的
+    开合惯性与短间隙保持；不改变音频、播放器进度或情绪字段的所有权。
+    context_* 仅控制已采用注意判断的低优先级姿态：置信门槛不是正确率，
+    focus_hold 是切换间隔，focus/emotion_seconds 是有效期上限，情绪的
+    attack/decay 是进入和自然消退的指数响应尺度。
+    """
 
     model_config = ConfigDict(extra="forbid", strict=True, frozen=True, allow_inf_nan=False)
     baseline_valence: float = Field(default=0.0, ge=-1, le=1)
@@ -40,8 +56,60 @@ class BodyStyle(BaseModel):
     blink_interval_seconds: float = Field(default=3.75, ge=1, le=10)
     gesture_cooldown_seconds: float = Field(default=2.0, ge=0.9, le=10)
     idle_motion_scale: float = Field(default=1.0, ge=0, le=2)
-    speech_motion_scale: float = Field(default=1.0, ge=0, le=2)
-    micro_expression_scale: float = Field(default=1.0, ge=0, le=2)
+    head_turn_seconds: float = Field(default=0.24, ge=0.08, le=1)
+    relaxed_head_turn_seconds: float = Field(default=0.70, ge=0.08, le=2)
+    default_effort: float = Field(default=0.15, ge=0, le=1)
+    body_response_seconds: float = Field(default=0.65, ge=0.1, le=3)
+    body_gaze_scale: float = Field(default=0.50, ge=0, le=1)
+    speech_gesture_scale: float = Field(default=0.80, ge=0, le=1)
+    speech_gesture_interval_seconds: float = Field(default=3.0, ge=2, le=10)
+    speech_expression_scale: float = Field(default=0.90, ge=0, le=1)
+    mouth_open_scale: float = Field(default=0.75, ge=0, le=1)
+    mouth_attack_seconds: float = Field(default=0.07, ge=0.02, le=0.3)
+    mouth_release_seconds: float = Field(default=0.14, ge=0.03, le=0.4)
+    mouth_gap_hold_seconds: float = Field(default=0.08, ge=0, le=0.2)
+    gaze_hold_seconds: float = Field(default=0.35, ge=0, le=2)
+    head_delay_seconds: float = Field(default=0.12, ge=0, le=1)
+    body_delay_seconds: float = Field(default=0.55, ge=0, le=2)
+    context_confidence: float = Field(default=0.65, ge=0, le=1)
+    context_focus_hold_seconds: float = Field(default=1.2, ge=0, le=5)
+    context_focus_seconds: float = Field(default=6.0, ge=0.5, le=15)
+    context_emotion_seconds: float = Field(default=8.0, ge=0.5, le=15)
+    context_emotion_attack_seconds: float = Field(default=1.2, ge=0.1, le=5)
+    context_emotion_decay_seconds: float = Field(default=6.0, ge=0.2, le=20)
+
+
+type FocusPoint = tuple[Annotated[float, Field(ge=-1, le=1)], Annotated[float, Field(ge=-1, le=1)]]
+
+
+class FocusLayout(BaseModel):
+    """语境对象在角色归一化注视空间中的位置，不代表实际屏幕坐标。
+
+    模型校准文件可分别调整六个目标；audience 同时是无有效语境时的回正位置。
+    方向仍经过该模型的眼头补偿及参数绑定，不从来源名称猜测屏幕布局。
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True, allow_inf_nan=False)
+    audience: FocusPoint = (0.0, 0.0)
+    chat: FocusPoint = (-0.65, -0.1)
+    game: FocusPoint = (0.5, 0.0)
+    work: FocusPoint = (0.25, -0.45)
+    speaker: FocusPoint = (0.0, 0.08)
+    away: FocusPoint = (-0.35, 0.25)
+
+
+class GazeCalibration(BaseModel):
+    """将头身归一化输出换算为注视偏移，供眼球反向补偿。
+
+    系数属于模型校准而非人体角度，默认值只是调试起点。符号应在完成
+    ParameterBinding 和 VTS 输入映射后人工核对；零值关闭相应补偿。
+    """
+
+    model_config = ConfigDict(extra="forbid", strict=True, frozen=True, allow_inf_nan=False)
+    head_x: float = Field(default=0.8, ge=-3, le=3)
+    head_y: float = Field(default=0.8, ge=-3, le=3)
+    body_x: float = Field(default=0.3, ge=-3, le=3)
+    body_y: float = Field(default=0.3, ge=-3, le=3)
 
 
 class ParameterBinding(BaseModel):
@@ -122,6 +190,8 @@ class ModelProfile(BaseModel):
     model_id: str = Field(min_length=1)
     bindings: tuple[ParameterBinding, ...] = Field(min_length=1, max_length=100)
     lip_sync_offset_ms: float = Field(default=0.0, ge=-200, le=200, allow_inf_nan=False)
+    gaze: GazeCalibration = Field(default_factory=GazeCalibration)
+    focus: FocusLayout = Field(default_factory=FocusLayout)
 
     @model_validator(mode="after")
     def unique_inputs(self) -> ModelProfile:

@@ -24,6 +24,7 @@ from purrcept_core.models import (
 )
 from purrcept_core.models.tools import ToolResult
 
+from purrcept_engine.domain.context.audio_receipts import audio_text_view
 from purrcept_engine.domain.context.capacity import CapacityAssessment, CapacityError
 from purrcept_engine.domain.context.presentation import render_host_state
 from purrcept_engine.domain.knowledge.models import EvidencePage
@@ -212,6 +213,13 @@ def _correctable(error: CapacityError) -> bool:
     return error.code == "over_capacity"
 
 
+def _receipt_value_matches(original: JsonValue, current: JsonValue) -> bool:
+    """核验原值或确定性音频引用视图；编码摘要匹配不授予音频感知资格。"""
+    if isinstance(original, str) and isinstance(current, str):
+        return original == current or original == audio_text_view(current)
+    return original == current
+
+
 def _full_action_matches(payload: JsonObject, current: JsonObject) -> bool:
     """只匹配真实 ActionRecord 的当前同版本调用，不以身份字符串代替内容。"""
     if payload.get("type") != "ActionRecord" or (
@@ -227,7 +235,9 @@ def _full_action_matches(payload: JsonObject, current: JsonObject) -> bool:
         if not isinstance(original, dict) or original.get("type") != "CallRecord":
             raise RuntimeError("Engine 完整行动调用结果形状无效。")
         if all(
-            key in original and key in current and original[key] == current[key]
+            key in original
+            and key in current
+            and _receipt_value_matches(original[key], current[key])
             for key in _CALL_CONTEXT_FIELDS
         ):
             return True
@@ -249,7 +259,8 @@ def _full_call_receipt_matches(payload: JsonObject, source: JsonValue, current: 
     if not isinstance(call, dict):
         raise RuntimeError("Engine 完整调用回执原文缺少调用事实。")
     return call.get("action_id") == current.get("action_id") and all(
-        key in call and key in current and call[key] == current[key] for key in _CALL_CONTEXT_FIELDS
+        key in call and key in current and _receipt_value_matches(call[key], current[key])
+        for key in _CALL_CONTEXT_FIELDS
     )
 
 

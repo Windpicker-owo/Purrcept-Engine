@@ -31,6 +31,7 @@ from purrcept_core.models import (
 from purrcept_core.models.tools import FunctionTool, ToolContext, ToolResult, ToolSet
 from pydantic import Field, StrictBool, StrictStr, ValidationError
 
+from purrcept_engine.domain.context.audio_receipts import evidence_text_view
 from purrcept_engine.domain.context.delivery import (
     ToolDelivery,
     ToolDeliveryGate,
@@ -490,7 +491,7 @@ class ReflectionTools:
                     "id": patch.id,
                     "version": memory.version,
                     "kind": patch.kind,
-                    "text": page.text,
+                    "text": evidence_text_view(page),
                     "sources": patch.sources,
                     "active": memory.active,
                     "inactive_reason": memory.inactive_reason,
@@ -512,7 +513,7 @@ class ReflectionTools:
                 "id": snapshot.evidence_id,
                 "version": snapshot.version,
                 "kind": snapshot.kind,
-                "text": page.text,
+                "text": evidence_text_view(page),
                 "source": json.loads(snapshot.source_json),
                 "occurred_at": snapshot.occurred_at,
                 "valid": snapshot.valid,

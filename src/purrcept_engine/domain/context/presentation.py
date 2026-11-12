@@ -1,7 +1,7 @@
 """呈现宿主已冻结的工作状态与完整回执，不解释具体输入来源协议。
 
 render_attention_context 只整理注意的有限工作背景，render_host_state 投影当前
-未决工作，render_material 为完整材料保留无损字段树。输入提供方负责渲染内容，
+未决工作，render_material 为材料保留字段树，并将音频传输编码投影为引用。输入提供方负责渲染内容，
 按来源分组与有序媒体交付由 materials.input_blocks 完成，本模块不再解析平台帧。
 执行时间线只派生已保存记录的可读 UTC 时间，不采样当前时钟或推测平台送达。
 """
@@ -9,6 +9,7 @@ render_attention_context 只整理注意的有限工作背景，render_host_stat
 import re
 from datetime import UTC, datetime
 
+from purrcept_engine.domain.context.audio_receipts import audio_text_view
 from purrcept_engine.domain.context.templates import (
     ATTENTION_CONTEXT_PROMPT,
     FENCED_TEXT_PROMPT,
@@ -92,14 +93,14 @@ def _fenced_text(text: str) -> str:
 
 
 def render_material(title: str, payload: object) -> str:
-    """按既有公开编码契约展开完整对象。
+    """按公开编码展开对象，音频传输编码以引用交付。
 
     Args:
         title: 宿主提供的固定节标题，不从外界正文提取指令。
         payload: 已按公开材料编码协议冻结的完整对象。
 
     Returns:
-        固定标题与无损字段树。此入口不解释来源协议；新输入使用 materials.input_blocks。
+        固定标题与字段树，音频编码替换为含摘要及大小的引用；新输入使用 materials.input_blocks。
 
     Raises:
         TypeError: 对象不支持公开编码，或包含非字符串映射键。
@@ -110,9 +111,11 @@ def render_material(title: str, payload: object) -> str:
         固定标题不从外部正文取得。
 
         数据类沿用权威编码的类型标签与字段顺序，不遍历任意实例属性。显示层不
-        改写存储格式，字段值仍是材料而非指令。
+        改写存储格式；音频引用只省略传输字节，不冒充原生音频已被感知。
     """
-    return MATERIAL_PROMPT.render({"title": title, "fields": render_field_tree(payload)})
+    return audio_text_view(
+        MATERIAL_PROMPT.render({"title": title, "fields": render_field_tree(payload)})
+    )
 
 
 def render_attention_context(background: JsonObject) -> str:

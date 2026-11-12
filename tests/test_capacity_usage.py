@@ -32,7 +32,7 @@ from purrcept_engine.domain.context.capacity import (
     assess_capacity,
     check_capacity,
 )
-from purrcept_engine.domain.context.usage import UsageMeter
+from purrcept_engine.domain.context.usage import UsageMeter, history_fingerprint
 from purrcept_engine.domain.model_requests.models import RequestScope
 from purrcept_engine.domain.model_requests.service import ModelGenerationBackend, RequestBudget
 from purrcept_engine.errors import StorageError
@@ -164,6 +164,43 @@ async def test_changed_history_and_tools_do_not_borrow_old_usage(tmp_path: Path)
         assert usage.estimate(changed).request_id is None
     finally:
         await store.close()
+
+
+async def test_history_overflow_observation_survives_new_input_and_restart_without_reusing_usage(
+    tmp_path: Path,
+) -> None:
+    """新输入使精确前缀计量失配，同历史超额观察仍可触发维护；改历史或工具即失效。"""
+    path = tmp_path / "history-usage.sqlite3"
+    store = await Store.open(path)
+    history = '{"committed_history":"original"}'
+    original = replace(request(), metadata={"engine.history_digest": history_fingerprint(history)})
+    try:
+        usage = await meter(store)
+        await invoke(
+            store,
+            usage,
+            Backend((ModelResponse(Message.assistant("已响应"), usage=TokenUsage(90_000, 5)),)),
+            original,
+        )
+    finally:
+        await store.close()
+    reopened = await Store.open(path)
+    try:
+        usage = await meter(reopened)
+        candidate = replace(original, messages=(Message.user("完全不同的新输入"),))
+        current = payload(candidate)
+        assert usage.estimate(current).request_id is None
+        assert usage.history_input_tokens(current, history) == 90_000
+        assert usage.history_input_tokens(current, '{"committed_history":"summary"}') is None
+        changed: JsonObject = {
+            **current,
+            "tools": [{"type": "function", "function": {"name": "other"}}],
+        }
+        assert usage.history_input_tokens(changed, history) is None
+        wrong = UsageMeter(reopened, usage.binding, "other-compiler", usage.anchor)
+        assert wrong.history_input_tokens(current, history) is None
+    finally:
+        await reopened.close()
 
 
 async def test_only_new_media_are_estimated_after_valid_usage(

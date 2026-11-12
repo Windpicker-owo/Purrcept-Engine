@@ -11,6 +11,7 @@ from typing import Protocol
 from purrcept_core.models import ContentBlock, SystemInstruction, TextBlock
 from purrcept_core.models.tools import FunctionTool, ToolContext, ToolResult, ToolSet
 
+from purrcept_engine.domain.context.audio_receipts import audio_text_view, evidence_text_view
 from purrcept_engine.domain.context.delivery import (
     ToolDelivery,
     ToolDeliveryGate,
@@ -222,7 +223,7 @@ class ForegroundTools:
         return ToolDelivery(
             ToolResult(
                 content=(
-                    TextBlock(original),
+                    TextBlock(audio_text_view(original)),
                     *native,
                     TextBlock(render_material("行动时间线（宿主记录，非平台送达证明）", timeline)),
                 )
@@ -356,7 +357,7 @@ class ForegroundTools:
                 "id": snapshot.evidence_id,
                 "version": snapshot.version,
                 "kind": snapshot.kind,
-                "text": page.text,
+                "text": evidence_text_view(page),
                 "source": decode_object(snapshot.source_json.encode("utf-8")),
                 "occurred_at": snapshot.occurred_at,
                 "valid": snapshot.valid,
@@ -367,7 +368,7 @@ class ForegroundTools:
                 "id": memory.patch.id,
                 "version": memory.version,
                 "kind": memory.patch.kind,
-                "text": page.text,
+                "text": evidence_text_view(page),
                 "sources": memory.patch.sources,
                 "active": memory.active,
                 "inactive_reason": memory.inactive_reason,

@@ -7,7 +7,7 @@
 import asyncio
 import re
 from collections import deque
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -93,7 +93,7 @@ def _text(request: ModelRequest) -> str:
 async def test_late_stimulus_is_dated_before_previous_reply_and_clock_refreshes(
     tmp_path: Path,
 ) -> None:
-    """msg-2 在旧轮思考期间到达；新轮能核对它早于对 msg-1 的实际行动。"""
+    """msg-2 在旧轮思考期间到达并于下一请求并入；模型能核对它早于对 msg-1 的行动。"""
     effects: list[datetime] = []
     release = asyncio.Event()
     model = _Generation(
@@ -207,25 +207,33 @@ async def test_late_stimulus_is_dated_before_previous_reply_and_clock_refreshes(
         retry = await asyncio.wait_for(model.arrivals.get(), 10)
         assert retry == first
         after_action = await asyncio.wait_for(model.arrivals.get(), 10)
-        assert "msg-2" not in _text(after_action)
+        # msg-2 未配置注意即为唤醒级：首个响应返回后并入同一轮，排在 msg-1 的
+        # 行动回执之后，下一请求就能核对它早于对 msg-1 的实际行动。
         assert len(effects) == 1
         assert second_time < effects[0] <= _clock(after_action, "prepared_at")
         assert _clock(after_action) >= _clock(after_action, "prepared_at") > first_clock
+        assert first.instructions == after_action.instructions
+        assert all(first_clock.isoformat() not in str(item) for item in after_action.instructions)
 
-        current = await asyncio.wait_for(model.arrivals.get(), 10)
-        assert second_time.isoformat() in _text(current) and "msg-2" in _text(current)
-        assert _clock(current) >= _clock(current, "prepared_at") >= _clock(after_action)
-        assert first.instructions == after_action.instructions == current.instructions
-        assert all(first_clock.isoformat() not in str(item) for item in current.instructions)
+        receipt_index = next(
+            index
+            for index, message in enumerate(after_action.messages)
+            if any(
+                isinstance(block, ToolResultBlock) and block.tool_call_id == "reply-1"
+                for block in message.content
+            )
+        )
+        intake = after_action.messages[-1]
+        assert receipt_index == len(after_action.messages) - 2
+        intake_text = _text(replace(after_action, messages=(intake,)))
+        assert second_time.isoformat() in intake_text and "msg-2" in intake_text
 
-        receipts = [
+        receipt = next(
             block
-            for message in current.messages
-            for block in message.content
-            if isinstance(block, ToolResultBlock) and block.tool_call_id == "reply-1"
-        ]
-        assert len(receipts) == 1
-        original = receipts[0].content[0]
+            for block in after_action.messages[receipt_index].content
+            if isinstance(block, ToolResultBlock)
+        )
+        original = receipt.content[0]
         assert isinstance(original, TextBlock)
         action = decode_object(original.text.encode())
         calls = action["calls"]
@@ -236,7 +244,7 @@ async def test_late_stimulus_is_dated_before_previous_reply_and_clock_refreshes(
         assert second_time < effects[0] <= receipt_time <= _clock(after_action)
         assert any(
             isinstance(block, TextBlock) and receipt_time.isoformat() in block.text
-            for block in receipts[0].content[1:]
+            for block in receipt.content[1:]
         )
     finally:
         release.set()

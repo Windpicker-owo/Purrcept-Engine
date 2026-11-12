@@ -2,7 +2,8 @@
 
 会话恢复、首发容量预览及摘要材料共同使用 expire_history_media，最近两个
 已完成轮次和未完成后缀保留图片与音频。更早的原生媒体块原位换成固定文字，
-包括嵌套工具结果和 URL 图像；消息、工具关联、回执文字及轮次边界保持原值。
+包括嵌套工具结果和 URL 图像。所有轮次的回执内联音频编码只显示引用；
+普通文字、消息与工具身份及轮次边界保持原值。
 这里只产生不可变检查点视图。新会话成功后才随正常提交安装，失败保留原版本；
 已保存的输入、模型请求和工具回执继续提供原始媒体证据。
 """
@@ -19,6 +20,7 @@ from purrcept_core.models import (
     ToolResultBlock,
 )
 
+from purrcept_engine.domain.context.audio_receipts import receipt_messages_view
 from purrcept_engine.domain.context.templates import EXPIRED_AUDIO_PROMPT, EXPIRED_IMAGE_PROMPT
 
 
@@ -56,8 +58,14 @@ def expire_history_media(checkpoint: ConversationCheckpoint) -> ConversationChec
         轮次包含该次输入、所有工具调用与最终内部响应，不按消息数或附件数
         计数。摘要占位没有新轮次边界。投影重复执行不继续缩短窗口；当前轮内
         工具循环和传输重试不推进过期范围。媒体的持久化与归档归原证据所有者。
-        文字、隐藏推理及工具协议不属于媒体，不按内容块是否为 TextBlock 来删除。
+        普通文字、隐藏推理及工具协议不属于媒体，不按内容块种类删除；
+        仅可校验文件头与编码的内联音频运输字节投影为引用。
     """
+    # 旧版本的音频传输文本无论是否仍在近期窗口，都只向模型提供引用。
+    # 该视图不改写原件，成功轮次才随正常会话提交安装。
+    messages = receipt_messages_view(checkpoint.history.messages)
+    if messages != checkpoint.history.messages:
+        checkpoint = replace(checkpoint, history=replace(checkpoint.history, messages=messages))
     history = checkpoint.history
     if len(history.turn_boundaries) <= 2:
         return checkpoint

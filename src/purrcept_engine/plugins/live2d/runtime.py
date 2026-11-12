@@ -1,6 +1,10 @@
 """身体最新语义、自然运动与视觉确认，不拥有任何声音资源。
 
-音频实际开始才登记同身份姿态；进度只更新该关联。连续帧采用平滑目标，
+音频实际开始才登记同身份姿态；进度只更新该关联。MotionController 分别维护
+有期限的情绪、注视与动作；SpeechPerformance 从 PCM 准备韵律候选，只有
+实际播放进度和首帧确认之后才选择语音动作。本模块拥有发送确认和口型对齐，
+MouthController 将媒体时刻上的口型目标变成有惯性的最终开合。
+连续帧采用平滑目标，
 离散手势只在首次真实发送的身份开始，过期/结束/断开撤销联动。VTS 离线
 只影响身体，恢复创建新连接和基线，不补演旧手势或旧语音。
 """
@@ -14,11 +18,23 @@ import time
 from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass
+from pathlib import Path
 
 from purrcept_engine.errors import HostStateError
-from purrcept_engine.plugin_system import BodyIntent, CallContext, CallOutcome
+from purrcept_engine.plugin_system import BodyIntent, CallContext, CallOutcome, ExpressionAssessment
 from purrcept_engine.plugins.live2d.analyzer import VisemeAnalyzer, VisemeFrame
-from purrcept_engine.plugins.live2d.models import VISEMES, BodyError, BodyStyle, BodyUnavailable
+from purrcept_engine.plugins.live2d.models import (
+    VISEMES,
+    BodyError,
+    BodyStyle,
+    BodyUnavailable,
+    FocusLayout,
+    GazeCalibration,
+)
+from purrcept_engine.plugins.live2d.motion import MotionController
+from purrcept_engine.plugins.live2d.mouth import MouthController, viseme_mouth_form
+from purrcept_engine.plugins.live2d.preferences import Preferences, load_preferences
+from purrcept_engine.plugins.live2d.prosody import SpeechPerformance
 from purrcept_engine.plugins.live2d.vts import BodyDriver
 from purrcept_engine.values import JsonObject
 
@@ -27,7 +43,7 @@ _LOG = logging.getLogger(__name__)
 
 @dataclass(slots=True)
 class _Intent:
-    """保存当前可采用的身体姿态、运行代次与截止。"""
+    """保存最新请求的发送确认，不承担已经采用的字段与动作生命周期。"""
 
     identity: str
     value: BodyIntent
@@ -35,8 +51,6 @@ class _Intent:
     playback_id: str | None
     accepted_at: float
     adopted_at: float | None = None
-    gesture_at: float | None = None
-    gesture_allowed: bool = True
 
 
 @dataclass(frozen=True, slots=True)
@@ -70,6 +84,11 @@ class Live2DRuntime:
         sample_rate: int = 32000,
         lip_sync_offset_ms: float = 0.0,
         style: BodyStyle | None = None,
+        gaze_calibration: GazeCalibration | None = None,
+        motion_seed: int | None = None,
+        focus_layout: FocusLayout | None = None,
+        preferences_path: Path | None = None,
+        model_id: str = "unbound",
     ) -> None:
         """冻结视觉工厂和宿主期限，不取得音频或数据库所有权。
 
@@ -83,6 +102,11 @@ class Live2DRuntime:
             sample_rate: PCM 的明确采样率（Hz）。 默认 32000。
             lip_sync_offset_ms: 实际播放与口型对齐采用的毫秒偏移。 默认 0.0。
             style: 可选身体样式参数，缺省采用当前运行配置。
+            gaze_calibration: 归一化头身到注视偏移的模型校准。
+            motion_seed: 动作事件随机种子，固定值用于离线复现。
+            focus_layout: 语境注视对象的模型校准坐标。
+            preferences_path: 可选模型偏好文件；连接期间每秒检查，在工作线程有界读取。
+            model_id: 偏好必须匹配的校准模型身份。
         """
         self.instance_id, self._factory = instance_id, driver_factory
         self._duration, self._frame_hz, self._clock = duration_seconds, frame_hz, monotonic
@@ -95,7 +119,6 @@ class Live2DRuntime:
         self._visemes: deque[VisemeFrame] = deque(maxlen=512)
         self._prepared_playback: str | None = None
         self._dropped_pcm = 0
-        self._last_gesture = -float("inf")
         self._driver: BodyDriver | None = None
         self._connected, self._stopping = False, False
         self._recovery_enabled = False
@@ -116,29 +139,54 @@ class Live2DRuntime:
         self._connection_lock = asyncio.Lock()
         self._wake = asyncio.Event()
         self._adopted = asyncio.Event()
-        self._channels: dict[str, float] = {
-            "valence": 0.0,
-            "arousal": 0.0,
-            "tension": 0.0,
-            "gaze_x": 0.0,
-            "gaze_y": 0.0,
-            "head_x": 0.0,
-            "head_y": 0.0,
-            "head_z": 0.0,
-            "eye_open": 1.0,
-            "mouth_open": 0.0,
-            "mouth_form": 0.0,
-            "breath": 0.0,
-            "body_x": 0.0,
-            "body_y": 0.0,
-            "body_z": 0.0,
-            "eye_l": 1.0,
-            "eye_r": 1.0,
-            "brow_l": 0.0,
-            "brow_r": 0.0,
-            "smile": 0.0,
-            **{"viseme_" + name: 0.0 for name in VISEMES},
-        }
+        self._motion = MotionController(
+            self._style, gaze_calibration or GazeCalibration(), seed=motion_seed, focus=focus_layout
+        )
+        self._speech = SpeechPerformance(self._style)
+        self._mouth = MouthController(self._style)
+        self._preferences_path, self._model_id = preferences_path, model_id
+        self._preferences_revision = ""
+        self._preferences_error: str | None = None
+        self._preferences_at = -math.inf
+        self._preferences = Preferences(model_id=model_id)
+
+    def configure(self, preferences: Preferences) -> None:
+        """在同一循环采用完整偏好，姿态与口型保持运动连续。
+
+        Args:
+            preferences: 与构造时模型一致的已校验偏好。
+
+        Raises:
+            ValueError: 模型身份不符。
+
+        Note:
+            不写磁盘、不改变语音所有权；独立调节页用此入口预览草稿。
+        """
+        if preferences.model_id != self._model_id:
+            raise ValueError("偏好模型身份不符。")
+        self._preferences = preferences
+        self._motion.configure(preferences)
+        self._mouth.configure(preferences)
+
+    async def _reload_preferences(self, now: float) -> None:
+        """读取不占用帧循环；坏文件保留最后有效版本并在快照显式报告。
+
+        由唯一发送循环串行调用，关闭时随该循环收尾；没有独立无限轮询任务。
+        """
+        if self._preferences_path is None or now < self._preferences_at:
+            return
+        self._preferences_at = now + 1.0
+        try:
+            value, revision = await asyncio.to_thread(
+                load_preferences, self._preferences_path, self._model_id
+            )
+        except (ValueError, OSError):
+            self._preferences_error = "偏好读取失败，保留上一有效版本；请检查模型身份和文件。"
+            return
+        if revision != self._preferences_revision:
+            self.configure(value)
+            self._preferences_revision = revision
+        self._preferences_error = None
 
     @property
     def resources_released(self) -> bool:
@@ -312,15 +360,13 @@ class Live2DRuntime:
             self._generation += 1
             self._intent, self._playback = None, None
             self._energy, self._elapsed = 0.0, 0.0
-            self._last_gesture = -float("inf")
             self._prepared_playback = None
             self._pcm.clear()
             self._visemes.clear()
-            # 平滑通道也属于旧表达，不能在新连接的首帧继续缓慢衰减。
-            for name in self._channels:
-                self._channels[name] = 1.0 if name in {"eye_open", "eye_l", "eye_r"} else 0.0
-            self._channels["valence"] = self._style.baseline_valence
-            self._channels["arousal"] = self._style.baseline_arousal
+            # 新连接不能继承旧表达的目标、动作或速度。
+            self._motion.reset(self._clock())
+            self._speech.reset()
+            self._mouth.reset(self._clock())
             self._first_frame = asyncio.get_running_loop().create_future()
             if self._analyzer is not None:
                 self._analysis_task = asyncio.create_task(
@@ -339,6 +385,7 @@ class Live2DRuntime:
     def _record_task_error(self, error: BaseException) -> None:
         """程序故障只停止视觉，不伪装成可自动重试的外围失联。"""
         self._connected = False
+        self._speech.reset()
         self._wake.set()
         self._analysis_wake.set()
         self._adopted.set()
@@ -350,6 +397,30 @@ class Live2DRuntime:
             exc_info=(type(error), error, error.__traceback__),
             extra={"plugin_id": self.instance_id},
         )
+
+    def observe_expression(
+        self, assessment: ExpressionAssessment, *, deadline: float, urgent: bool
+    ) -> None:
+        """接收协调者已经采用的短期语境，离线或关闭时直接丢弃。
+
+        Args:
+            assessment: 已校验的情绪与注视选择，各自带独立置信度。
+            deadline: 宿主单调时钟中的绝对失效时间，恢复连接不能续期。
+            urgent: 可以打断语境停留，不覆盖显式动作或改变力度。
+
+        Raises:
+            ValueError: 宿主交付非有限期限。
+
+        Note:
+            同步更新本地帧目标，不等待 VTS 确认，也不影响注意提交或声音播放。
+        """
+        if not math.isfinite(deadline):
+            raise ValueError("语境判断期限必须有限。")
+        now = self._clock()
+        if not self._connected or self._stopping or deadline <= now:
+            return
+        self._motion.observe(assessment, now=now, deadline=deadline, urgent=urgent)
+        self._wake.set()
 
     def playback_started(
         self, playback_id: str, intent: BodyIntent | None, deadline: float
@@ -374,7 +445,12 @@ class Live2DRuntime:
                 "status": "offline" if not self._connected else "expired",
                 "playback_id": playback_id,
             }
+        if self._playback is not None and self._playback != playback_id:
+            self._motion.revoke(self._playback, self._clock())
+            self._speech.finish(self._playback)
+            self._mouth.release()
         self._playback, self._elapsed, self._energy = playback_id, 0.0, 0.0
+        self._speech.begin(playback_id, intent, deadline)
         self._playback_result = {
             "accepted": True,
             "adopted": False,
@@ -385,6 +461,7 @@ class Live2DRuntime:
         }
         if intent is not None:
             self._intent = _Intent(playback_id, intent, deadline, playback_id, self._clock())
+            self._motion.submit(intent, now=self._clock(), expires=deadline, playback=playback_id)
         elif self._intent is not None and self._intent.playback_id is not None:
             self._intent = None
         self._adopted.clear()
@@ -392,7 +469,7 @@ class Live2DRuntime:
         return {**self._playback_result, "status": "accepted"}
 
     def playback_progress(self, playback_id: str, elapsed_seconds: float, energy: float) -> None:
-        """同身份实际音频采样强度控制口型。
+        """同身份实际媒体进度驱动口型与韵律；重复或倒退进度不重放动作。
 
         Args:
             playback_id: 本次实际播放的稳定身份，用于拒绝迟到口型或停止确认。
@@ -403,12 +480,20 @@ class Live2DRuntime:
             旧进度不覆盖新播放。
         """
         if self._connected and self._playback == playback_id:
+            if not math.isfinite(elapsed_seconds) or elapsed_seconds < 0 or not 0 <= energy <= 1:
+                self._error = {
+                    "error_type": "BodyPlaybackClock",
+                    "message": "身体收到非有限或越界的播放进度/能量。",
+                }
+                return
+            if elapsed_seconds < self._elapsed:
+                return
             self._elapsed, self._energy = elapsed_seconds, energy
 
     def playback_pcm(
         self, playback_id: str, sample_rate: int, sample_offset: int, pcm: bytes
     ) -> None:
-        """只接管最多2秒20ms视觉采样，慢分析丢视觉旧块不回压音频。
+        """接管20ms视觉采样；本地韵律只保存候选，OVR队列最多保留2秒。
 
         Args:
             playback_id: 本次实际播放的稳定身份，用于拒绝迟到口型或停止确认。
@@ -420,13 +505,17 @@ class Live2DRuntime:
             PCM可以先于播放器时钟到达，只准备分析，不采用姿态或口型。
             当前关联和播放结束门槛另行核验，恢复不会保留旧准备材料。
         """
-        if not self._connected or self._stopping or self._analyzer is None:
+        if not self._connected or self._stopping:
             return
         if sample_rate != self._rate or len(pcm) != self._rate // 50 * 2 or sample_offset < 0:
             self._error = {
                 "error_type": "BodyPCMFormat",
                 "message": "身体与实际调音PCM采样格式不符。",
             }
+            return
+        if not self._speech.feed(playback_id, sample_rate, sample_offset, pcm):
+            return
+        if self._analyzer is None:
             return
         if self._prepared_playback != playback_id:
             self._prepared_playback = playback_id
@@ -463,6 +552,7 @@ class Live2DRuntime:
                 if self._first_frame is not None and not self._first_frame.done():
                     self._first_frame.set_exception(error)
                 self._connected = False
+                self._speech.reset()
                 self._intent, self._playback, self._prepared_playback = None, None, None
                 self._pcm.clear()
                 self._visemes.clear()
@@ -502,8 +592,11 @@ class Live2DRuntime:
                 "adopted": False,
                 "status": "finished",
             }
+        self._motion.revoke(playback_id, self._clock())
+        self._speech.finish(playback_id)
         if self._playback == playback_id:
             self._playback, self._energy = None, 0.0
+            self._mouth.release()
             if intent is not None and intent.playback_id == playback_id:
                 self._intent = None
             self._wake.set()
@@ -514,15 +607,23 @@ class Live2DRuntime:
         return result
 
     async def apply(self, intent: BodyIntent, context: CallContext) -> CallOutcome:
-        """独立姿态最多配置4秒，只有真实帧确认才返回 adopted=true。
+        """在配置期限内采用局部身体更新，真实帧确认才返回 adopted=true。
 
         Args:
-            intent: 有明确期限的身体语义姿态。
+            intent: 只更新非空字段；其他字段与已开始的动作保留原有期限。
+                delivery 需要 speak 的实际播放时间轴，本入口明确返回失败。
             context: 宿主或 Core 注入的可信调用上下文，不由模型自行填写。
 
         Returns:
             实际确认、失败或未知结论，以及可 JSON 化的业务值和原生媒体引用。
         """
+        if intent.delivery is not None:
+            return CallOutcome(
+                "failed",
+                {"accepted": False, "adopted": False, "status": "speech_required"},
+                "BodySpeechContextRequired",
+                "delivery 需要实际播放时间轴，请通过 speak(body=...) 提交。",
+            )
         now = self._clock()
         expires = min(context.deadline, now + self._duration)
         if not self._connected or self._stopping or expires <= now:
@@ -538,6 +639,7 @@ class Live2DRuntime:
             )
         value = _Intent(context.call_id, intent, expires, None, now)
         self._intent = value
+        self._motion.submit(intent, now=now, expires=expires, playback=None)
         self._adopted.clear()
         self._wake.set()
         while value is self._intent and self._connected and value.adopted_at is None:
@@ -560,74 +662,56 @@ class Live2DRuntime:
         return CallOutcome("confirmed" if adopted else "unknown", result)
 
     def _frame(self, now: float) -> tuple[dict[str, float], _Intent | None]:
-        """目标平滑与一次手势共享当前身份；有效期不随帧发送而延长。"""
+        """动作状态独立推进；口型最后按实际播放器进度取值，最新意图仅供确认。"""
         intent = self._intent
         if intent is not None and (
             intent.expires_at <= now
             or (intent.playback_id is not None and intent.playback_id != self._playback)
         ):
             self._intent = intent = None
-        style = self._style
-        target = (
-            BodyIntent(valence=style.baseline_valence, arousal=style.baseline_arousal)
-            if intent is None
-            else intent.value
-        )
-        values = {
-            "valence": target.valence,
-            "arousal": target.arousal,
-            "tension": target.tension,
-            "gaze_x": target.gaze_x,
-            "gaze_y": target.gaze_y,
-        }
-        for name, value in values.items():
-            self._channels[name] += (value - self._channels[name]) * 0.2
-        idle = style.motion_scale * style.idle_motion_scale
-        speech = style.motion_scale * style.speech_motion_scale * self._energy
-        self._channels["head_x"] = target.gaze_x * 0.2 + math.sin(now * 0.7) * 0.025 * idle
-        self._channels["head_y"] = (
-            target.gaze_y * 0.2
-            + math.sin(now * 0.53) * 0.02 * idle
-            + math.sin(now * 4) * speech * 0.03
-        )
-        self._channels["head_z"] = math.sin(now * 0.37) * 0.015 * idle
-        self._channels["body_x"] = self._channels["head_x"] * 0.2
-        self._channels["body_y"] = self._channels["head_y"] * 0.1
-        self._channels["body_z"] = self._channels["head_z"] * 0.3
-        self._channels["eye_open"] = 0.05 if now % style.blink_interval_seconds < 0.12 else 1.0
-        self._channels["eye_l"] = self._channels["eye_r"] = self._channels["eye_open"]
-        self._channels["brow_l"] = self._channels["brow_r"] = (
-            target.tension * -0.3 + math.sin(now * 0.8) * 0.01 * style.micro_expression_scale
-        )
-        self._channels["smile"] = target.valence * 0.4
-        self._channels["breath"] = math.sin(now * 1.7) * 0.1
+        playback = self._playback
+        if playback is not None:
+            self._motion.advance_speech(playback, self._elapsed)
+            history = self._playback_result
+            if history is not None and history.get("visual_frame_confirmed") is True:
+                cue = self._speech.sample(self._elapsed, now)
+                if cue is not None:
+                    self._motion.speech_cue(
+                        cue,
+                        playback=playback,
+                        elapsed=self._elapsed,
+                        now=now,
+                        expires=self._speech.deadline,
+                    )
+        channels = self._motion.sample(now)
         sample = round((self._elapsed + self._offset_ms / 1000) * self._rate)
         frame = next((item for item in reversed(self._visemes) if item.sample <= sample), None)
         if self._playback is None or frame is None or sample - frame.sample > self._rate // 25:
             weights = (0.0,) * len(VISEMES)
         else:
             weights = frame.weights
-        for name, weight in zip(VISEMES, weights, strict=True):
-            self._channels["viseme_" + name] = weight
         if self._analyzer_factory is not None:
-            self._channels["mouth_open"] = max(weights[10:])
+            opening = max(weights[10:])
         else:
-            self._channels["mouth_open"] = self._energy if self._playback is not None else 0.0
-        self._channels["mouth_form"] = max(-1.0, min(1.0, target.valence * 0.2))
-        if intent is not None and target.gesture != "none" and intent.gesture_allowed:
-            if (
-                intent.gesture_at is None
-                and now - self._last_gesture < style.gesture_cooldown_seconds
-            ):
-                intent.gesture_allowed = False
-                return dict(self._channels), intent
-            gesture_at = now if intent.gesture_at is None else intent.gesture_at
-            age = now - gesture_at
-            if age <= 0.9:
-                wave = math.sin(age / 0.9 * math.pi * 2) * (1 - age / 0.9) * 0.2
-                channel = {"nod": "head_y", "shake": "head_x", "tilt": "head_z"}[target.gesture]
-                self._channels[channel] += wave
-        return dict(self._channels), intent
+            opening = self._energy if self._playback is not None else 0.0
+        channels["mouth_open"], weights = self._mouth.sample(
+            now, opening, weights, active=self._playback is not None
+        )
+        # Q 等双通道模型也利用实际视素改变横向嘴型；完整视素绑定仍原样交付。
+        # 先平滑权重再投影，不能把音素边界直接变成面部跳变。
+        channels["mouth_form"] = max(
+            -1.0,
+            min(
+                1.0,
+                channels["mouth_form"]
+                + viseme_mouth_form(weights)
+                * self._preferences.mouth_viseme_form_scale
+                * self._preferences.mouth_form_gain,
+            ),
+        )
+        for name, weight in zip(VISEMES, weights, strict=True):
+            channels["viseme_" + name] = weight
+        return channels, intent
 
     async def step(self) -> None:
         """发送一项当下帧。
@@ -659,9 +743,12 @@ class Live2DRuntime:
         ):
             if intent.adopted_at is None:
                 intent.adopted_at = self._clock()
-                intent.gesture_at = intent.adopted_at
-                if intent.value.gesture != "none" and intent.gesture_allowed:
-                    self._last_gesture = intent.adopted_at
+                self._motion.confirm(
+                    intent.value,
+                    now=intent.adopted_at,
+                    expires=intent.expires_at,
+                    playback=intent.playback_id,
+                )
                 if history is not None and history["playback_id"] == intent.playback_id:
                     history["adopted"] = True
                     history["adopted_at"] = intent.adopted_at
@@ -671,10 +758,13 @@ class Live2DRuntime:
         """只发最新帧；失联撤旧表达，传输故障交唯一有限恢复轮。"""
         while self._connected and not self._stopping:
             self._wake.clear()
+            frame_started = self._clock()
             try:
+                await self._reload_preferences(frame_started)
                 await self.step()
             except BodyError as error:
                 self._connected = False
+                self._speech.reset()
                 self._intent, self._playback = None, None
                 self._energy = 0.0
                 self._prepared_playback = None
@@ -698,7 +788,10 @@ class Live2DRuntime:
             if self._first_frame is not None and not self._first_frame.done():
                 self._first_frame.set_result(None)
             try:
-                await asyncio.wait_for(self._wake.wait(), 1 / self._frame_hz)
+                await asyncio.wait_for(
+                    self._wake.wait(),
+                    max(0.001, 1 / self._frame_hz - (self._clock() - frame_started)),
+                )
             except TimeoutError:
                 pass
 
@@ -712,6 +805,8 @@ class Live2DRuntime:
         intent = self._intent
         return {
             "connected": self._connected,
+            "preferences_revision": self._preferences_revision,
+            "preferences_error": self._preferences_error,
             "generation": self._generation,
             "playback_id": self._playback,
             "intent_id": None if intent is None else intent.identity,
@@ -727,6 +822,8 @@ class Live2DRuntime:
             "native_visemes": self._analyzer is not None,
             "analysis_queued_frames": len(self._pcm),
             "analysis_dropped_frames": self._dropped_pcm,
+            "speech_pending_events": self._speech.pending_events,
+            "speech_dropped_events": self._speech.dropped_events,
         }
 
     async def prepare_request(self) -> JsonObject:
@@ -773,6 +870,7 @@ class Live2DRuntime:
                 raise BaseExceptionGroup("身体恢复撤销失败。", failures)
         async with self._connection_lock:
             self._connected = False
+            self._speech.reset()
             self._generation += 1
             self._intent, self._playback = None, None
             self._energy = 0.0
@@ -810,6 +908,7 @@ class Live2DRuntime:
         # 归还资源后先检查资格，不能再睡眠或创建下一连接。
         self._recovery_enabled = False
         self._connected = False
+        self._speech.reset()
         self._generation += 1
         self._intent, self._playback = None, None
         self._energy = 0.0

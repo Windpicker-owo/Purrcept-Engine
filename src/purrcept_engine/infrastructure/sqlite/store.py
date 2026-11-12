@@ -432,6 +432,8 @@ def _protected_inputs(
     selected 为历史中的来源时只返回其子集；None 用于完整当前状态投影。
     监管保护同时包含已投递的派生输入及原文片段关联的真实来源。意见已回应
     或失效即不再授予保护，未知调用则须由新的真实回执改变状态。
+    活动的旧暂停/恢复确认在后继控制接管后成为历史；它们不再单凭活动尚未
+    结束保护整个输入轮次。目标与预算命令、当前控制和未确认命令仍受保护。
     """
     # 从仍未解决的业务事实出发，再按输入主键核验身份。若先遍历全部 inputs，
     # 再逐条关联没有 input_id 索引的 turn_inputs，历史增长会形成近似平方扫描；
@@ -444,7 +446,12 @@ def _protected_inputs(
         "SELECT a.input_id FROM actions a JOIN calls c ON c.action_id=a.action_id "
         "JOIN activity_commands cmd ON cmd.command_id=c.call_id "
         "JOIN activities act ON act.activity_id=cmd.activity_id "
-        "WHERE act.state NOT IN ('ended','completed') UNION "
+        # control_version 只随控制接管推进，普通进度/计时更新不能使当前回执
+        # 退役。旧确认仍在原文账本；未知调用和其它未决关系由各自分支继续保护。
+        "WHERE act.state NOT IN ('ended','completed') AND "
+        "(cmd.command NOT IN ('pause','resume') OR "
+        "cmd.status NOT IN ('confirmed','rejected') OR "
+        "cmd.version >= act.control_version) UNION "
         "SELECT t.input_id FROM failed_turns f JOIN turn_inputs t ON t.turn_id=f.turn_id "
         "WHERE f.presented_in IS NULL) "
         "SELECT i.input_id FROM unresolved u JOIN inputs i ON i.input_id=u.input_id" + selection,
@@ -1142,10 +1149,10 @@ class Store:
         )
 
     async def take_foreground_inputs(self) -> tuple[InputRecord, ...]:
-        """原子消耗持久唤醒意图并取尽已提交收件箱。
+        """存在唤醒级刺激时原子取尽整个收件箱，作为新一轮初始输入。
 
         Returns:
-            本轮独占的完整输入快照；无唤醒意图时为空。
+            本轮独占的完整输入快照；没有唤醒级刺激时为空。
         """
 
         def take(connection: sqlite3.Connection) -> tuple[InputRecord, ...]:
@@ -1162,6 +1169,36 @@ class Store:
             return tuple(records)
 
         return await self._submit(take, control=True, writing=True)
+
+    async def absorb_turn_inputs(self, turn_id: str) -> tuple[InputRecord, ...]:
+        """存在唤醒级刺激时把整个收件箱并入仍在运行的前台轮次。
+
+        Args:
+            turn_id: 正在运行的前台轮次身份。
+
+        Returns:
+            按接管顺序并入本轮的完整输入；无唤醒级刺激或轮次已不在途时为空。
+
+        Note:
+            与 take_foreground_inputs 共用睡眠门槛、触发条件和取批范围，只是
+            结果直接成为在途轮次的 turn_inputs，而不是等待下一次 begin_turn。
+        """
+        self._validate_id(turn_id)
+
+        def absorb(connection: sqlite3.Connection) -> tuple[InputRecord, ...]:
+            """在途核对、睡眠门槛与并入同一事务，结案后的迟到轮询不改变状态。"""
+            records: list[InputRecord] = []
+            with connection:
+                connection.execute("BEGIN IMMEDIATE")
+                _record_sleep_inputs(connection)
+                for input_id in subject_storage.absorb_turn_inputs(connection, turn_id):
+                    record = self._get_input(connection, input_id)
+                    if record is None:
+                        raise StorageError("处理队列引用不存在的原文。", code="invalid_record")
+                    records.append(record)
+            return tuple(records)
+
+        return await self._submit(absorb, control=True, writing=True)
 
     async def buffered_inputs(self) -> tuple[InputRecord, ...]:
         """按接管顺序读取全部尚未提交的缓存输入。
@@ -1473,6 +1510,7 @@ class Store:
                     _text(value.get("field")),
                     tuple(_text(item) for item in prefix),
                     _integer(value.get("input_tokens")),
+                    _optional_text(value.get("history_digest")),
                 )
             except ValueError as error:
                 raise StorageError("用量锚点字段损坏。", code="invalid_record") from error
@@ -1573,6 +1611,7 @@ class Store:
         checkpoint_json: str | None = None,
         error_json: str | None = None,
         accepted_failures: tuple[str, ...] = (),
+        released_inputs: tuple[str, ...] = (),
     ) -> SessionRecord:
         """原子安装成功历史或保留失败经历。
 
@@ -1582,6 +1621,7 @@ class Store:
             checkpoint_json: 完整 Core 检查点的编码；失败轮次可不安装新历史。
             error_json: 编码后的失败证据，供后续交互追溯原轮次。
             accepted_failures: 当前成功交互明确承接的先前失败轮次身份。 默认不附加此类条目。
+            released_inputs: 失败轮次中模型从未回应的中途输入，带唤醒意图回到收件箱。
 
         Returns:
             已提交版本和历史；两个分析用途只返回 CAS 元数据，不恢复前批检查点。
@@ -1597,6 +1637,7 @@ class Store:
                 checkpoint_json=checkpoint_json,
                 error_json=error_json,
                 accepted_failures=accepted_failures,
+                released_inputs=released_inputs,
             ),
             logical_bytes=len((checkpoint_json or "").encode("utf-8"))
             + len((error_json or "").encode("utf-8")),

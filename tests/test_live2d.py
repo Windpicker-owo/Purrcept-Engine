@@ -16,6 +16,7 @@ import pytest
 from pydantic import ValidationError
 
 from purrcept_engine.domain.execution.providers import CallContext
+from purrcept_engine.plugin_system import ExpressionAssessment
 from purrcept_engine.plugin_system.body import BodyIntent
 from purrcept_engine.plugins.live2d import analyzer as analyzer_module
 from purrcept_engine.plugins.live2d.analyzer import AnalyzerProcess, VisemeFrame
@@ -78,13 +79,45 @@ def test_semantic_body_parameters_reject_unknown_identity_and_invalid_ranges(
     with pytest.raises(ValidationError):
         BodyIntent.model_validate({field: value})
     assert BodyIntent().model_dump() == {
-        "valence": 0.0,
-        "arousal": 0.0,
-        "tension": 0.0,
-        "gaze_x": 0.0,
-        "gaze_y": 0.0,
-        "gesture": "none",
+        "valence": None,
+        "arousal": None,
+        "tension": None,
+        "gaze_x": None,
+        "gaze_y": None,
+        "gesture": None,
+        "effort": None,
+        "delivery": None,
     }
+
+
+async def test_context_offline_expiry_and_reconnect_do_not_replay() -> None:
+    """语境与声音一样没有离线队列，重连只恢复基线。"""
+    clock, driver = Clock(), Driver()
+    body = Live2DRuntime("body", lambda: driver, monotonic=clock)
+    assessment = ExpressionAssessment(
+        emotion="warm", emotion_confidence=0.9, focus="chat", focus_confidence=0.9
+    )
+    body.observe_expression(assessment, deadline=20, urgent=False)
+    await body.connect()
+    try:
+        clock.now = 12
+        await body.step()
+        assert driver.frames[-1]["valence"] == 0
+        body.observe_expression(assessment, deadline=11, urgent=True)
+        clock.now = 13
+        await body.step()
+        assert driver.frames[-1]["valence"] == 0
+        body.observe_expression(assessment, deadline=20, urgent=False)
+        clock.now = 14
+        await body.step()
+        assert driver.frames[-1]["valence"] > 0.1
+        await body.disconnect()
+        await body.connect()
+        clock.now = 15
+        await body.step()
+        assert driver.frames[-1]["valence"] == 0
+    finally:
+        await body.close()
 
 
 async def test_playback_adopts_only_actual_start_and_gesture_does_not_restart() -> None:
@@ -199,6 +232,33 @@ async def test_actual_body_adoption_survives_later_apply_and_device_failure() ->
     assert result["adopted"] is True
     assert result["visual_frame_confirmed"] is True
     assert result["error"] is not None
+    await body.close()
+
+
+async def test_partial_apply_preserves_playback_motion_and_finish_preserves_new_emotion() -> None:
+    """正式入口跨越发送确认、独立更新和播放结束后仍按字段所有权撤销。"""
+    clock, driver = Clock(), Driver()
+    body = Live2DRuntime("body", lambda: driver, monotonic=clock, motion_seed=9)
+    await body.connect()
+    body.playback_started("voice", BodyIntent(gaze_x=0.6, gesture="tilt", effort=1.0), 20)
+    await body.step()
+    clock.now += 0.3
+    await body.step()
+    before = driver.frames[-1]
+    await body.apply(BodyIntent(valence=-0.5), CallContext("emotion", "action", 20))
+    clock.now += 0.2
+    await body.step()
+    following = driver.frames[-1]
+    assert following["head_z"] == pytest.approx(before["head_z"], abs=0.005)
+    assert following["head_z"] > 0.1
+    assert following["gaze_x"] > 0.2
+    assert body.playback_finished("voice")["adopted"] is True
+    for _ in range(60):
+        clock.now += 1 / 30
+        await body.step()
+    final = driver.frames[-1]
+    assert abs(final["gaze_x"]) < 0.01 and abs(final["head_z"]) < 0.01
+    assert final["valence"] < -0.49
     await body.close()
 
 
@@ -393,10 +453,17 @@ async def test_ovr_prepared_pcm_does_not_adopt_until_actual_playback_clock() -> 
     assert driver.frames[-1]["viseme_aa"] == 0
     body.playback_started("voice", None, 20)
     body.playback_progress("voice", 0.005, 0.2)
+    clock.now += 0.1
     await body.step()
-    assert driver.frames[-1]["viseme_aa"] == 1
+    adopted = driver.frames[-1]["viseme_aa"]
+    assert 0.5 < adopted < 1
     body.playback_finished("voice")
+    clock.now += 0.1
     await body.step()
+    assert 0 < driver.frames[-1]["viseme_aa"] < adopted
+    for _ in range(8):
+        clock.now += 0.1
+        await body.step()
     assert driver.frames[-1]["viseme_aa"] == 0
     await body.close()
     assert analyzer.closed == 1

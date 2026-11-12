@@ -27,6 +27,7 @@ from purrcept_engine.domain.context.history import HistoryMaintenance
 from purrcept_engine.domain.context.history_ports import HistoryContext, HistoryStore
 from purrcept_engine.domain.context.maintenance import SummaryError, freeze_summary_source
 from purrcept_engine.domain.context.media_history import expire_history_media
+from purrcept_engine.domain.context.usage import UsageMeter
 from purrcept_engine.domain.model_requests.ports import MaterialCompiler
 from purrcept_engine.domain.model_requests.service import RequestBudget, prepare_off_loop
 from purrcept_engine.domain.subject.models import SessionRecord
@@ -109,6 +110,7 @@ class HistoryPreparation:
         model: str,
         assess: CapacityCheck,
         context: HistoryContext,
+        usage: UsageMeter | None = None,
     ) -> None:
         """借用有限模型与同库账本，构造不读库或启动摘要。
 
@@ -120,11 +122,13 @@ class HistoryPreparation:
             model: 本次调用使用的显式模型名，不在领域层推断替代模型。
             assess: 只生成完整请求容量评估的函数。
             context: 宿主或 Core 注入的可信调用上下文，不由模型自行填写。
+            usage: 同用途实际用量所有者；观察只触发维护，不改变当前计量。
         """
         self.compiler = compiler
         self.store, self.maintenance = store, maintenance
         self.backend, self.model, self.assess, self.context = backend, model, assess, context
         self.last_failure: str | None = None
+        self.usage = usage
 
     async def __call__(
         self,
@@ -186,17 +190,23 @@ class HistoryPreparation:
                 reminder_key=DynamicReminder.source_id,
             )
 
-        def measure() -> CapacityAssessment:
+        def measure() -> tuple[CapacityAssessment, int | None]:
             """完整媒体布局和 JSON 编码可能较大，准备工作不能阻塞麦克风采集。"""
             materials, _ = self.compiler(layout(checkpoint), model=self.model)
             payload = decode_object(materials.encode("utf-8")).get("payload")
             if not isinstance(payload, dict):
                 raise TypeError("Core 实际布局缺少 SDK payload。")
-            return self.assess(payload)
+            observed = (
+                self.usage.history_input_tokens(payload, checkpoint_json) if self.usage else None
+            )
+            return self.assess(payload), observed
 
-        before = await prepare_off_loop(measure)
+        before, observed = await prepare_off_loop(measure)
         budget.check()
-        if (not force and not before.maintenance_due) or checkpoint is None:
+        observed_overflow = observed is not None and observed > before.input_budget
+        if (
+            not force and not before.maintenance_due and not observed_overflow
+        ) or checkpoint is None:
             return session
 
         # 未决保护来自数据库中的因果关系；外界正文或工具 JSON 同名字段不能
@@ -227,6 +237,16 @@ class HistoryPreparation:
             protected_turns=self.context.protected_turns,
             protected_message_indices=positions,
         )
+        if source is None and observed_overflow:
+            # 实际成功输入已超过额度，最近两轮保护不能形成永久死锁。仅在没有
+            # 更旧区间时允许压缩已完成近期轮次；当前输入和真实未决保护仍不可覆盖。
+            source = freeze_summary_source(
+                checkpoint,
+                owner_id=session.scope,
+                source_version=session.version,
+                protected_turns=0,
+                protected_message_indices=positions,
+            )
         if source is None:
             return session
         budget.check()

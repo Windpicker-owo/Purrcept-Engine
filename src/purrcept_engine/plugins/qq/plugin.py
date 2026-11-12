@@ -47,6 +47,14 @@ from purrcept_engine.values import JsonObject, JsonValue, encode_json
 
 _SCHEMAS: tuple[tuple[str, type[BaseModel], str, str, str], ...] = (
     (
+        "avatar",
+        p.Avatar,
+        "获取指定 QQ 用户的头像链接。",
+        "填写用户的 QQ 号。返回公开头像地址，不验证账号或图片是否存在；"
+        "可将 url 传给 me.view_image 查看头像。",
+        'await me.phone.qq.avatar(user_id="123456")',
+    ),
+    (
         "file_url",
         p.FileUrl,
         "获取 QQ 私聊或群文件的 HTTP(S) 下载链接，不下载文件。",
@@ -273,6 +281,7 @@ _SCHEMAS: tuple[tuple[str, type[BaseModel], str, str, str], ...] = (
 
 _READS = frozenset(
     {
+        "avatar",
         "read",
         "friends",
         "groups",
@@ -332,6 +341,10 @@ class QQCapabilities:
     async def _invoke(self, name: str, parameters: BaseModel, context: CallContext) -> CallOutcome:
         """从原入口的明确参数走原生动作，不通过通用参数字典猜业务分支。"""
         service = self.service
+        if isinstance(parameters, p.Avatar):
+            # QQ 头像使用公开 CDN 地址，不依赖 OneBot 连接；实际图片由看图能力读取。
+            url = f"https://q1.qlogo.cn/g?b=qq&nk={parameters.user_id}&s=640"
+            return CallOutcome("confirmed", {"user_id": parameters.user_id, "url": url})
         if name == "reconnect" and isinstance(parameters, p.Empty):
             return CallOutcome("confirmed", await service.client.reconnect(context.call_id))
         if isinstance(parameters, p.Read):

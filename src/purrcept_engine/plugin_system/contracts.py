@@ -31,6 +31,7 @@ from purrcept_engine.domain.inputs.models import (
     MediaAsset,
 )
 from purrcept_engine.domain.knowledge.models import EvidencePage, EvidenceSnapshot
+from purrcept_engine.domain.subject.expression import ExpressionSink
 from purrcept_engine.domain.subject.models import InputProcessing
 from purrcept_engine.domain.time.ports import TimePort
 from purrcept_engine.plugin_system.audio_port import AudioOutputPort
@@ -273,6 +274,7 @@ class PluginRuntime:
         body: 可选身体端口；缺省时声音资源仍独立工作。
         resources_released: 仅在全部真实资源确认归还时返回 True 的显式证明入口。
         caption: 可选的当前真实播放台词投影，声音结束或被撤销时返回 None。
+        expression_sink: 可选的注意判断接收方；仅接收已采用批次，不调用模型或阻塞设备。
 
     Note:
         实例字段在构造后不可重新赋值；嵌套值的冻结范围由字段所属契约决定。
@@ -305,6 +307,7 @@ class PluginRuntime:
     body: BodyPort | None = None
     resources_released: Callable[[], bool] | None = None
     caption: Callable[[], SpeechCaption | None] | None = None
+    expression_sink: ExpressionSink | None = None
 
 
 @dataclass(frozen=True, slots=True)

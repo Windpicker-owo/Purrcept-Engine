@@ -149,7 +149,7 @@ class EngineHost:
         Note:
             宿主在首次等待前持有完整接管任务。取消本次观察不会撤销已接管原文，
             以及随后必要的 VAD 停音或其他显式原代次抢占交接。
-            VAD 只保底通知下一轮，不取消当前生成。后续处理用 query_processing 查询。
+            VAD 只保底通知主脑下一次思考，不取消当前生成。后续处理用 query_processing 查询。
         """
         return await self._inputs.submit(submission)
 

@@ -8,11 +8,15 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import io
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING, Protocol, cast
 
+import av
 import pytest
+from purrcept_core.models import AudioBlock
 from test_qq_transport import Connector, Socket
 
 from purrcept_engine.app.evidence import EvidenceAccess
@@ -26,8 +30,10 @@ from purrcept_engine.domain.inputs.models import (
 )
 from purrcept_engine.domain.knowledge.models import EvidenceSnapshot, KnowledgeInputError
 from purrcept_engine.domain.subject.models import InputProcessing
+from purrcept_engine.infrastructure.audio.wav import encode_wav
 from purrcept_engine.infrastructure.sqlite.store import Store
 from purrcept_engine.plugin_system.contracts import PluginPorts
+from purrcept_engine.plugins.qq import media as qq_media
 from purrcept_engine.plugins.qq.parameters import Read
 from purrcept_engine.plugins.qq.ports import ConnectionRejected
 from purrcept_engine.plugins.qq.service import QQService
@@ -37,6 +43,17 @@ from purrcept_engine.values import JsonObject, JsonValue, decode_object, encode_
 PNG = base64.b64decode(
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII="
 )
+
+if TYPE_CHECKING:
+    from av.audio.stream import AudioStream
+
+
+class _AudioOutput(Protocol):
+    """测试只创建音频轨道，收窄 PyAV 的多媒体编码器重载。"""
+
+    def add_stream(self, codec_name: str, rate: int) -> AudioStream:
+        """按明确编码器创建音频轨道。"""
+        ...
 
 
 class Inputs:
@@ -127,6 +144,130 @@ def message(*, message_id: int = -1, group_id: int = 123, user_id: int = 456) ->
             {"type": "text", "data": {"text": "正文中提到999"}},
         ],
     }
+
+
+async def test_voice_is_decoded_admitted_and_replayed_without_downloading_again(
+    rig: Rig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """原生 AMR 通过真实解码和 Store 接管，重放沿用首次保存的音频。"""
+    output = io.BytesIO()
+    with (
+        av.open(io.BytesIO(encode_wav(bytes(8000), 16000)), "r") as source,
+        av.open(output, "w", format="amr") as target,
+    ):
+        stream = cast(_AudioOutput, target).add_stream("libopencore_amrnb", rate=8000)
+        stream.layout = "mono"
+        for frame in source.decode(audio=0):
+            for packet in stream.encode(frame):
+                target.mux(packet)
+        for packet in stream.encode(None):
+            target.mux(packet)
+    requests: list[str] = []
+
+    async def download(
+        client: object, url: str, *, max_bytes: int, timeout_seconds: float
+    ) -> bytes:
+        requests.append(url)
+        return output.getvalue()
+
+    monkeypatch.setattr(qq_media, "download_file", download)
+    payload = message()
+    payload["message"] = [{"type": "record", "data": {"url": "https://qq.test/voice.amr"}}]
+    await rig.service.event(payload, 1)
+    record = await rig.store.get_input(rig.inputs.admitted[0].input_id)
+    assert record is not None and len(record.media) == 1
+    assert record.media[0].media_type == "audio/wav"
+    data = await rig.store.get_media(record.media[0].media_id)
+    assert data is not None and data.startswith(b"RIFF")
+    from purrcept_engine.domain.context.materials import input_message
+
+    rendered = await input_message(rig.store, (record,), supports_contents=("text", "audio"))
+    assert any(isinstance(block, AudioBlock) for block in rendered.content)
+    await rig.service.event(payload, 2)
+    assert requests == ["https://qq.test/voice.amr"]
+    assert len(rig.inputs.admitted) == 1
+
+
+async def test_voice_failure_still_admits_message_with_explicit_gap(rig: Rig) -> None:
+    payload = message()
+    payload["message"] = [{"type": "record", "data": {}}]
+    await rig.service.event(payload, 1)
+    record = await rig.store.get_input(rig.inputs.admitted[0].input_id)
+    assert record is not None and not record.media
+    assert any("没有提供可下载的地址" in reason for reason in record.context.missing_materials)
+
+
+async def test_silk_uses_onebot_transcoded_audio(rig: Rig, monkeypatch: pytest.MonkeyPatch) -> None:
+    """真实下载的 SILK 不能按后缀冒充 AMR；协议端转码结果进入同库输入。"""
+
+    async def download(
+        client: object, url: str, *, max_bytes: int, timeout_seconds: float
+    ) -> bytes:
+        return b"\x02#!SILK_V3invalid"
+
+    monkeypatch.setattr(qq_media, "download_file", download)
+    payload = message()
+    payload["message"] = [
+        {"type": "record", "data": {"url": "https://qq.test/voice", "file": "voice.amr"}}
+    ]
+    task = asyncio.create_task(rig.service.event(payload, 1))
+    request = await asyncio.wait_for(rig.socket.sent.get(), 3)
+    assert request["action"] == "get_record"
+    assert request["params"] == {"file": "voice.amr"}
+    rig.socket.reply(request, {"file": "https://qq.test/resolved"})
+    request = await asyncio.wait_for(rig.socket.sent.get(), 3)
+    assert request["action"] == "get_record"
+    assert request["params"] == {"file": "https://qq.test/resolved", "out_format": "mp3"}
+    encoded = base64.b64encode(encode_wav(bytes(8000), 16000)).decode("ascii")
+    rig.socket.reply(request, {"base64": encoded})
+    await task
+    record = await rig.store.get_input(rig.inputs.admitted[0].input_id)
+    assert record is not None and len(record.media) == 1
+    assert record.media[0].media_type == "audio/wav"
+    assert record.context.missing_materials == ()
+
+
+async def test_provider_rejecting_voice_conversion_still_admits_message(
+    rig: Rig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def download(
+        client: object, url: str, *, max_bytes: int, timeout_seconds: float
+    ) -> bytes:
+        return b"\x02#!SILK_V3invalid"
+
+    monkeypatch.setattr(qq_media, "download_file", download)
+    payload = message()
+    payload["message"] = [
+        {"type": "record", "data": {"url": "https://qq.test/voice", "file": "voice.amr"}}
+    ]
+    task = asyncio.create_task(rig.service.event(payload, 1))
+    request = await asyncio.wait_for(rig.socket.sent.get(), 3)
+    rig.socket.incoming.put_nowait(
+        encode_json(
+            {"status": "failed", "retcode": -1, "data": None, "echo": request["echo"]}
+        ).decode()
+    )
+    await task
+    record = await rig.store.get_input(rig.inputs.admitted[0].input_id)
+    assert record is not None and not record.media
+    assert any("平台无法转换" in reason for reason in record.context.missing_materials)
+
+
+async def test_undecodable_voice_does_not_discard_message(
+    rig: Rig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def download(
+        client: object, url: str, *, max_bytes: int, timeout_seconds: float
+    ) -> bytes:
+        return b"not an audio file"
+
+    monkeypatch.setattr(qq_media, "download_file", download)
+    payload = message()
+    payload["message"] = [{"type": "record", "data": {"url": "https://qq.test/voice"}}]
+    await rig.service.event(payload, 1)
+    record = await rig.store.get_input(rig.inputs.admitted[0].input_id)
+    assert record is not None and not record.media
+    assert any("未取得" in reason for reason in record.context.missing_materials)
 
 
 async def test_filter_precedes_media_cache_and_atomic_admission(
