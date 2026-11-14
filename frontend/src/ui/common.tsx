@@ -4,7 +4,7 @@
  */
 import type { ReactElement, ReactNode } from "react";
 import { MotionConfig } from "motion/react";
-import { Icon, StatusMark } from "@purrcept/cel";
+import { Icon, Panel, StatusMark } from "@purrcept/cel";
 import type { IconName } from "@purrcept/cel";
 import type { Json } from "../contracts";
 import type { Mark } from "../semantics";
@@ -127,15 +127,7 @@ export function PageHeading({ title, aside, children }: { title: string; aside?:
  * @returns 仅呈现当前输入事实的 React 元素。
  */
 export function Section({ id, title, more, aside, children }: { id: string; title: string; more?: () => void; aside?: ReactNode; children: ReactNode }): ReactElement {
-  return <section className="section" aria-labelledby={id}>
-    <div className="section-head">
-      {more !== undefined
-        ? <h2 id={id}><button className="section-link pc-focusable" onClick={more}>{title}<Icon name="chevron" /></button></h2>
-        : <h2 id={id}>{title}</h2>}
-      {aside}
-    </div>
-    {children}
-  </section>;
+  return <Panel id={id} title={title} onNavigate={more} actions={aside}>{children}</Panel>;
 }
 /**
  * 展示对象标题、说明与尾部状态或操作。

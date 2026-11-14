@@ -13,7 +13,7 @@ export const PAGES: readonly { id: Page; label: string; icon: IconName; descript
   { id: "home", label: "首页", icon: "home", description: "她现在在做什么" },
   { id: "attention", label: "待处理", icon: "inbox", description: "需要你看一下的事" },
   { id: "timeline", label: "时间线", icon: "timeline", description: "最近发生了什么" },
-  { id: "reviews", label: "行为审查", icon: "inbox", description: "查看刺激与行动，留下好坏评价和建议" },
+  { id: "reviews", label: "行为审查", icon: "review", description: "查看刺激与行动，留下好坏评价和建议" },
   { id: "devices", label: "设备", icon: "device", description: "连接与感官" },
   { id: "activities", label: "活动", icon: "activity", description: "持续进行的目标" },
   { id: "system", label: "系统", icon: "settings", description: "运行状况与工具" },

@@ -5,31 +5,29 @@
  */
 import { useEffect, useState, useSyncExternalStore } from "react";
 import type { ReactElement } from "react";
-import { motion } from "motion/react";
-import { Button, CelProvider, Feedback, Icon, Sheet, transitions } from "@purrcept/cel";
+import { breakpoints, Button, CelProvider, Feedback, Sheet } from "@purrcept/cel";
 import type { PanelClient, PanelState } from "./client";
 import { isSnapshotDelayed } from "./client";
 import { agentView } from "./model/agent";
 import type { AgentView } from "./model/agent";
 import { attentionItems } from "./model/attention";
 import type { AttentionItem } from "./model/attention";
-import { deviceSummary, deviceTechnical } from "./model/devices";
-import { deviceName } from "./model/names";
 import { PAGES, parseRoute, routeHref } from "./model/routes";
 import type { Page, Route } from "./model/routes";
 import { controlId } from "./model/timeline";
 import { Activities } from "./pages/Activities";
 import { Attention } from "./pages/Attention";
-import { Devices } from "./pages/Devices";
+import { Devices, DeviceDetail } from "./pages/Devices";
 import { Home } from "./pages/Home";
 import { System } from "./pages/System";
 import { Timeline } from "./pages/Timeline";
-import { Reviews, ReviewDetail } from "./pages/Reviews";
-import { activityReason, deviceMark, mark } from "./semantics";
-import { BrandMark, duration, StateMark, TechDetails, Unavailable } from "./ui/common";
+import { Reviews } from "./pages/Reviews";
+import { activityReason, mark } from "./semantics";
+import { duration, StateMark, TechDetails, Unavailable } from "./ui/common";
 import { ActionDetail, ControlDetail } from "./ui/details";
 
-const NARROW = "(max-width: 72rem)";
+import { Navigation, useMediaQuery } from "./ui/Navigation";
+import { createReviewWorkspace, type ReviewWorkspace } from "./model/review-workspace";
 
 /** hash 是选择的唯一来源；浏览器后退与页面内导航都经同一监听更新 React。 */
 function useRoute(): [Route, (route: Route) => void] {
@@ -48,7 +46,6 @@ function Selection({ route, state, client, go }: { route: Route; state: PanelSta
   const s = state.snapshot;
   const id = route.id;
   if (id === null) return null;
-  if (route.page === "reviews") return <ReviewDetail key={`${state.snapshot?.instance_id}:${id}`} actionId={id} state={state} client={client} />;
   if (route.page === "timeline") {
     const entry = state.entries.find((item) => controlId(item) === id);
     if (entry) return <ControlDetail entry={entry} client={client} state={state} open={(actionId) => go({ page: "timeline", id: actionId })} />;
@@ -58,11 +55,7 @@ function Selection({ route, state, client, go }: { route: Route; state: PanelSta
   if (route.page === "devices") {
     const device = s?.devices.find((item) => item.instance_id === id);
     if (!device) return <Unavailable>这个设备当前没有启用。</Unavailable>;
-    return <div className="detail">
-      <h2>{deviceName(device)}</h2><StateMark {...deviceMark(device)} />
-      {deviceSummary(device).map((line) => <p key={line}>{line}</p>)}
-      <TechDetails items={deviceTechnical(device)} />
-    </div>;
+    return <DeviceDetail client={client} state={state} device={device} />;
   }
   if (route.page === "activities") {
     const activity = s?.activities.find((item) => item.activity_id === id);
@@ -78,12 +71,13 @@ function Selection({ route, state, client, go }: { route: Route; state: PanelSta
   return null;
 }
 
-function PageBody({ page, state, client, agent, attention, route, go }: { page: Page; state: PanelState; client: PanelClient; agent: AgentView; attention: readonly AttentionItem[]; route: Route; go: (route: Route) => void }): ReactElement {
+/** 页面只取得展示所需的共享状态；审查草稿的生命周期由外壳持有，不随页面卸载。 */
+function PageBody({ page, state, client, agent, attention, route, go, reviewWorkspace }: { page: Page; state: PanelState; client: PanelClient; agent: AgentView; attention: readonly AttentionItem[]; route: Route; go: (route: Route) => void; reviewWorkspace: ReviewWorkspace }): ReactElement {
   switch (page) {
     case "home": return <Home state={state} agent={agent} attention={attention} go={go} />;
     case "attention": return <Attention items={attention} go={go} />;
     case "timeline": return <Timeline state={state} selected={route.id} go={go} />;
-    case "reviews": return <Reviews client={client} state={state} selected={route.id} go={go} />;
+    case "reviews": return <Reviews client={client} state={state} selected={route.id} go={go} workspace={reviewWorkspace} />;
     case "devices": return <Devices client={client} state={state} selected={route.id} go={go} />;
     case "activities": return <Activities client={client} state={state} selected={route.id} go={go} />;
     case "system": return <System state={state} client={client} go={go} />;
@@ -100,17 +94,15 @@ function PageBody({ page, state, client, agent, attention, route, go }: { page: 
 export function App({ client }: { client: PanelClient }): ReactElement {
   const state = useSyncExternalStore(client.subscribe, client.getState);
   const [route, go] = useRoute();
-  const [narrow, setNarrow] = useState(() => window.matchMedia(NARROW).matches);
+  const narrow = useMediaQuery(breakpoints.inspector);
+  const [reviewWorkspace] = useState(createReviewWorkspace);
   useEffect(() => {
     void client.refresh();
     // 标签页不可见时不轮询；回到前台立即刷新一次。
     const interval = window.setInterval(() => { if (document.visibilityState === "visible") void client.refresh(); }, 2000);
     const visible = (): void => { if (document.visibilityState === "visible") void client.refresh(); };
-    const media = window.matchMedia(NARROW);
-    const changed = (): void => setNarrow(media.matches);
     document.addEventListener("visibilitychange", visible);
-    media.addEventListener("change", changed);
-    return () => { window.clearInterval(interval); document.removeEventListener("visibilitychange", visible); media.removeEventListener("change", changed); };
+    return () => { window.clearInterval(interval); document.removeEventListener("visibilitychange", visible); };
   }, [client]);
 
   const attention = attentionItems(state.snapshot, state.entries);
@@ -118,35 +110,42 @@ export function App({ client }: { client: PanelClient }): ReactElement {
   const connecting = state.snapshot === null && state.error === null;
   const currentAgent = agentView(state.snapshot, state.online || connecting, attention);
   const snapshotDelayed = isSnapshotDelayed(state);
-  const agent = snapshotDelayed ? {
-    state: state.observedHealth?.can_process ? "warning" as const : "failed" as const,
-    headline: state.observedHealth?.can_process ? "状态更新延迟" : "主体已停止处理",
-    detail: "本机服务仍可响应，等待最新状态。", focus: null,
-  } : state.snapshot === null && state.startup ? { state: state.startup.phase === "failed" ? "failed" as const : "waiting-external" as const, headline: state.startup.phase === "failed" ? "启动失败" : "Engine 正在启动", detail: state.startup.phase === "failed" ? "请查看诊断日志定位失败阶段。" : ({ sqlite:"正在打开本机数据。", models:"正在准备模型请求服务。", execution:"正在准备行动服务。", subject_restore:"正在恢复主体状态。", subject_start:"正在启用主体工作。" } as Record<string,string>)[state.startup.startup_stage ?? ""] ?? (state.startup.startup_stage?.startsWith("plugin_") ? "正在准备输入与设备插件。" : "配置与设备准备完成后即可接收新的工作。"), focus: null } : currentAgent;
+  let agent: AgentView = currentAgent;
+  if (snapshotDelayed) {
+    agent = {
+      state: state.observedHealth?.can_process ? "warning" : "failed",
+      headline: state.observedHealth?.can_process ? "状态更新延迟" : "主体已停止处理",
+      detail: "本机服务仍可响应，等待最新状态。", focus: null,
+    };
+  } else if (state.snapshot === null && state.startup) {
+    const failed = state.startup.phase === "failed";
+    const stages: Record<string, string> = {
+      sqlite: "正在打开本机数据。", models: "正在准备模型请求服务。",
+      execution: "正在准备行动服务。", subject_restore: "正在恢复主体状态。",
+      subject_start: "正在启用主体工作。",
+    };
+    const stage = state.startup.startup_stage ?? "";
+    const detail = stages[stage] ?? (stage.startsWith("plugin_")
+      ? "正在准备输入与设备插件。" : "配置与设备准备完成后即可接收新的工作。");
+    agent = {
+      state: failed ? "failed" : "waiting-external",
+      headline: failed ? "启动失败" : "Engine 正在启动",
+      detail: failed ? "请查看诊断日志定位失败阶段。" : detail, focus: null,
+    };
+  }
   useEffect(() => { document.title = `${agent.headline} · Purrcept`; }, [agent.headline]);
   const current = PAGES.find((item) => item.id === route.page);
   const age = state.receivedAt === null ? null : Math.floor((Date.now() - state.receivedAt) / 1000);
   const freshness = age !== null ? `更新于 ${age} 秒前` : connecting ? "正在取得状态" : "尚未取得状态";
-  const inspectable = ["timeline", "reviews", "devices", "activities"].includes(route.page);
+  const inspectable = ["timeline", "devices", "activities"].includes(route.page);
   const hasSelection = route.id !== null && inspectable;
   const close = (): void => go({ page: route.page, id: null });
 
   return (
     <CelProvider>
-      <div className="panel-shell" data-inspector={!narrow && inspectable}>
+      <div className="panel-shell" data-inspector={!narrow && hasSelection}>
         <button className="skip-link pc-focusable" onClick={() => document.getElementById("main")?.focus()}>跳到主要内容</button>
-        <nav className="navigation" aria-label="主导航">
-          <a className="wordmark pc-focusable" href="#/home" aria-label="Purrcept 首页"><BrandMark /></a>
-          {PAGES.map((item) => (
-            <a key={item.id} className="nav-item pc-focusable" href={routeHref({ page: item.id, id: null })}
-              title={`${item.label} · ${item.description}`} aria-current={route.page === item.id ? "page" : undefined}>
-              {/* 当前项指示块是同一个对象，以 move 弹簧从旧位置滑到新位置；文字颜色同帧切换。 */}
-              {route.page === item.id ? <motion.span layoutId="nav-current" className="nav-indicator" transition={transitions.move} aria-hidden="true" /> : null}
-              <Icon name={item.icon} /><span>{item.label}</span>
-              {item.id === "attention" && attention.length > 0 ? <span className="nav-count" aria-label={`${attention.length} 项待处理`}>{attention.length}</span> : null}
-            </a>
-          ))}
-        </nav>
+        <Navigation page={route.page} attentionCount={attention.length} />
 
         <div className="main-column">
           <header className="topbar">
@@ -166,11 +165,11 @@ export function App({ client }: { client: PanelClient }): ReactElement {
 
           <main id="main" className="main-stage" tabIndex={-1}>
             {/* 同级切换立即替换内容，不保留退场页，避免列宽变化时双页叠字和白闪。
-                key 只重置各页的局部筛选；宿主观察和整个外壳保持同一生命周期。 */}
+                key 重置页面局部状态；审查草稿/筛选与宿主观察由外壳继续持有。 */}
             <div key={route.page} className="page pc-enter" data-measure={route.page === "attention" || route.page === "system" ? "reading" : "wide"}>
               {state.snapshot === null && route.page !== "home"
                 ? <section><h1>{current?.label}</h1><p className="page-intro">正在等待本机服务的状态。页面不会启动她或打开设备。</p></section>
-                : <PageBody page={route.page} state={state} client={client} agent={agent} attention={attention} route={route} go={go} />}
+                : <PageBody page={route.page} state={state} client={client} agent={agent} attention={attention} route={route} go={go} reviewWorkspace={reviewWorkspace} />}
             </div>
             {state.storageError ? (
               <Feedback state="warning" scope="region" urgency="passive" persistence="retained" title="操作记录没有保存到浏览器">{state.storageError}</Feedback>
@@ -181,15 +180,9 @@ export function App({ client }: { client: PanelClient }): ReactElement {
           </main>
         </div>
 
-        {!narrow ? (inspectable ? <aside className="inspector" aria-label="详情">
-            {hasSelection ? <>
-              <div className="inspector-heading"><span className="eyebrow">详情</span><Button variant="ghost" onClick={close}>关闭</Button></div>
-              <div key={route.id} className="pc-enter"><Selection route={route} state={state} client={client} go={go} /></div>
-            </> : <div className="inspector-empty">
-              <span className="item-icon" aria-hidden="true"><Icon name={current?.icon ?? "home"} /></span>
-              <h2>查看{route.page === "reviews" ? "刺激与行动" : route.page === "timeline" ? "行动结果" : route.page === "devices" ? "设备状态" : "活动进展"}</h2>
-              <p className="muted">{route.page === "reviews" ? "选择一次行动，阅读完整材料并留下评价。" : route.page === "timeline" ? "选择一条记录，查看每项操作的实际结果。" : route.page === "devices" ? "选择“查看详情”，查看设备的全部状态。" : "选择“查看详情”，查看活动的完整记录。"}</p>
-            </div>}
+        {!narrow ? (hasSelection ? <aside className="inspector" aria-label="详情">
+            <div className="inspector-heading"><span className="eyebrow">详情</span><Button variant="ghost" onClick={close}>关闭</Button></div>
+            <div key={route.id} className="pc-enter"><Selection route={route} state={state} client={client} go={go} /></div>
           </aside> : null
         ) : (
           <Sheet open={hasSelection} onOpenChange={(open) => { if (!open) close(); }} title={current?.label ?? "详情"} description="详情">

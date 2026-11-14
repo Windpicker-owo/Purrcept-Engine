@@ -39,7 +39,7 @@ def main() -> None:
         or name.upper().startswith(("LICENSE", "COPYING", "NOTICE"))
     ]
     files = {name: git("show", f"{revision}:{name}") for name in selected}
-    for name in ("motion.js", "motion.d.ts"):
+    for name in ("motion.js", "motion.d.ts", "layout.mjs", "layout.d.mts"):
         files[f"react/src/generated/{name}"] = files[f"dist/{name}"]
     upstream = json.loads(git("show", f"{revision}:react/package.json"))
     manifest = {
@@ -52,6 +52,7 @@ def main() -> None:
             ".": {"types": "./react/src/index.ts", "default": "./react/src/index.ts"},
             "./styles.css": "./react/src/styles/index.css",
             "./tokens.css": "./dist/purrcept.css",
+            "./layout": "./dist/layout.mjs",
         },
         "dependencies": upstream["dependencies"],
         "peerDependencies": upstream["peerDependencies"],
@@ -69,7 +70,7 @@ def main() -> None:
                 ],
                 "license_note": "上游该提交未声明许可证时，本快照不另行授予许可。",
                 "generated_copies": {
-                    "react/src/generated/": "dist/motion.js 与 dist/motion.d.ts 的原样副本"
+                    "react/src/generated/": "dist/ 中 motion 与 layout 模块及声明的原样副本"
                 },
             },
             ensure_ascii=False,
@@ -97,7 +98,8 @@ def main() -> None:
         "来源与许可声明见包内 `UPSTREAM.json`；原始源码和 Token 均来自 Git 对象，"
         "不包含上游未提交修改。生成副本保持原字节。\n\n"
         "更新：在 Engine 根目录运行 `python scripts/vendor_design.py --source <Design仓库> "
-        "--revision <完整提交>`，然后在 frontend 运行 `npm install` 并提交锁文件。\n",
+        "--revision <完整提交>`，然后在 frontend 运行 `npm install ./vendor/purrcept-cel.tgz` "
+        "刷新同路径 tarball 的版本与完整性，并提交锁文件。\n",
         encoding="utf-8",
     )
 

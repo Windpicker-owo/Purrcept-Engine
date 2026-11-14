@@ -10,12 +10,14 @@ import path from "node:path";
 const engine = fileURLToPath(new URL("../", import.meta.url));
 const dependencies = path.join(engine, "frontend/node_modules");
 const { build } = await import(pathToFileURL(path.join(dependencies, "vite/dist/node/index.js")).href);
+const { breakpointMedia } = await import(pathToFileURL(path.join(dependencies, "@purrcept/cel/dist/layout.mjs")).href);
 const output = path.join(engine, "src/purrcept_engine/app/static");
 
 await build({
   configFile: false,
   root: path.join(engine, "frontend"),
   base: "/",
+  css: { postcss: { plugins: [breakpointMedia()] } },
   build: {
     outDir: output,
     emptyOutDir: true,

@@ -4,7 +4,8 @@
  * “行动已结束”不等于每项操作都生效：逐项按已经发生 / 结果未知 / 没有发生分组。
  */
 import type { ReactElement } from "react";
-import { Button, EFFECT_OUTCOMES } from "@purrcept/cel";
+import { Button, OutcomeList } from "@purrcept/cel";
+import type { OutcomeKind } from "@purrcept/cel";
 import type { PanelClient, PanelState, Entry } from "../client";
 import type { Action, Call, Snapshot } from "../contracts";
 import { controlMark, mark } from "../semantics";
@@ -12,13 +13,16 @@ import { capabilityName } from "../model/names";
 import { actionTitle } from "../model/timeline";
 import { StateMark, TechDetails, time, Unavailable } from "./common";
 
-const GROUPS: readonly { key: string; title: string; family: string; match: (call: Call) => boolean }[] = [
-  { key: "confirmed", title: EFFECT_OUTCOMES.committed.label, family: EFFECT_OUTCOMES.committed.family, match: (call) => call.state === "confirmed" },
-  { key: "unknown", title: EFFECT_OUTCOMES.unknown.label, family: EFFECT_OUTCOMES.unknown.family, match: (call) => call.state === "unknown" },
-  { key: "failed", title: "失败（已发生的部分不会回滚）", family: "failed", match: (call) => call.state === "failed" },
-  { key: "pending", title: "进行中", family: "active", match: (call) => !["confirmed", "unknown", "not_started", "failed"].includes(call.state) },
-  { key: "not_started", title: EFFECT_OUTCOMES.skipped.label, family: EFFECT_OUTCOMES.skipped.family, match: (call) => call.state === "not_started" },
-];
+/** 回执阶段映射到展示分组；确认来自插件回执，不额外推断外部效果。 */
+function outcome(call: Call): OutcomeKind {
+  switch (call.state) {
+    case "confirmed": return "committed";
+    case "unknown": return "unknown";
+    case "failed": return "failed";
+    case "not_started": return "skipped";
+    default: return "pending";
+  }
+}
 
 /** 能力路径的末段是操作名；完整路径留在技术细节。 */
 function operation(path: string): string { return path.split(".").at(-1) ?? path; }
@@ -36,19 +40,17 @@ export function ActionDetail({ action, snapshot }: { action: Action; snapshot: S
     <StateMark {...mark(action.state)} />
     <p className="muted">开始于 {time(action.created_at)}{action.finished_at !== null ? ` · 结束于 ${time(action.finished_at)}` : ""}</p>
     {action.error ? <p>{action.error.text}{action.error.truncated ? " …（已截断）" : ""}</p> : null}
-    {action.calls.length === 0 ? <Unavailable>这次行动没有调用任何外部操作。</Unavailable> : GROUPS.map((group) => {
-      const calls = action.calls.filter(group.match);
-      return calls.length === 0 ? null : <section key={group.key} className="call-group">
-        <h3 className="pc-tint" data-family={group.family}>{group.title} · {calls.length}</h3>
-        {calls.map((call) => <div className="call-item" key={call.call_id}>
-          <p><strong>{capabilityName(call.path, snapshot)}</strong> <span className="identity">{operation(call.path)}</span></p>
-          <StateMark {...mark(call.state)} />
-          {call.error ? <p>{call.error.text}{call.error.truncated ? " …（已截断）" : ""}</p> : null}
-          {call.result ? <pre>{call.result.text}{call.result.truncated ? `\n…（仅预览，原文 ${call.result.original_chars} 字）` : ""}</pre> : null}
-          <TechDetails items={[["调用", call.call_id], ["能力路径", call.path], ["状态值", call.state], ["回执版本", call.receipt_revision], ["开始", time(call.started_at)], ["结束", time(call.finished_at)], ["错误类型", call.error_type], ["媒体", call.media_count]]} />
-        </div>)}
-      </section>;
-    })}
+    {action.calls.length === 0 ? <Unavailable>这次行动没有调用任何外部操作。</Unavailable> : <OutcomeList items={action.calls.map((call) => ({
+      id: call.call_id,
+      outcome: outcome(call),
+      label: <><strong>{capabilityName(call.path, snapshot)}</strong> <span className="identity">{operation(call.path)}</span></>,
+      children: <>
+        <StateMark {...mark(call.state)} />
+        {call.error ? <p>{call.error.text}{call.error.truncated ? " …（已截断）" : ""}</p> : null}
+        {call.result ? <pre>{call.result.text}{call.result.truncated ? `\n…（仅预览，原文 ${call.result.original_chars} 字）` : ""}</pre> : null}
+        <TechDetails items={[["调用", call.call_id], ["能力路径", call.path], ["状态值", call.state], ["回执版本", call.receipt_revision], ["开始", time(call.started_at)], ["结束", time(call.finished_at)], ["错误类型", call.error_type], ["媒体", call.media_count]]} />
+      </>,
+    }))} />}
     {action.calls.some((call) => call.state === "unknown") ? <p className="muted">结果未知的操作不会自动重做；请到对应应用中确认实际情况。</p> : null}
     <TechDetails items={[["行动", action.action_id], ["状态值", action.state], ["调用数", action.calls.length]]}>
       <p className="muted">“已经发生”来自对应插件的真实回执，不额外保证外部效果一直保持。</p>

@@ -5,16 +5,16 @@
  */
 import { useEffect, useState } from "react";
 import type { ReactElement } from "react";
-import { Button, isLive } from "@purrcept/cel";
+import { Button, Field, Switch, isLive } from "@purrcept/cel";
 import type { PanelClient, PanelState } from "../client";
 import { isSnapshotDelayed } from "../client";
 import type { Device, DeviceControl, Json, ObjectValue } from "../contracts";
 import { deviceMark } from "../semantics";
 import { targetReason } from "../model/controls";
-import { ALLOWED_CONTROLS, computerReason, deviceNote, deviceSummary } from "../model/devices";
+import { ALLOWED_CONTROLS, computerReason, deviceNote, deviceSummary, deviceTechnical } from "../model/devices";
 import { deviceName } from "../model/names";
 import type { Route } from "../model/routes";
-import { EmptyState, PageHeading, StateMark, time, Unavailable } from "../ui/common";
+import { EmptyState, PageHeading, StateMark, TechDetails, time, Unavailable } from "../ui/common";
 
 /** 控制只来自已声明快捷键；页面不按模型能力目录生成任意按钮。 */
 function QuickControl({ client, state, device, control, args = {}, reason }: {
@@ -34,6 +34,7 @@ function inputDevices(value: Json | undefined): InputDevice[] {
   }
   return devices;
 }
+/** 选择只在详情内暂存；发起收音前重新校验当前设备、模式及宿主提供的准入事实。 */
 function VoiceControls({ client, state, device }: { client: PanelClient; state: PanelState; device: Device }): ReactElement {
   const devices = inputDevices(device.state.devices);
   const modes = Array.isArray(device.state.available_modes) ? device.state.available_modes.filter((item): item is string => item === "asr" || item === "audio") : [];
@@ -50,14 +51,14 @@ function VoiceControls({ client, state, device }: { client: PanelClient; state: 
     {vadControl ? <div className="setting-row">
       <div><h3>VAD 自动停播</h3><p className="muted">检测到持续人声时停止当前及已有候播的语音。关闭后仍正常收音和分段。</p>
         <p className="muted">本次运行有效，重启后使用配置默认值。</p></div>
-      <Button variant="secondary" role="switch" aria-label="VAD 自动停播" aria-checked={vadEnabled === true}
-        disabledReason={vadReason} onClick={() => {
-          if (device.revision !== null && typeof vadEnabled === "boolean") void client.submit(device.instance_id, "set_vad_interrupt", device.revision, { enabled: !vadEnabled }, vadEnabled ? "关闭 VAD 自动停播" : "开启 VAD 自动停播");
-        }}>{typeof vadEnabled !== "boolean" ? "状态未知" : vadEnabled ? "已开启" : "已关闭"}</Button>
+      <Switch label="VAD 自动停播" checked={typeof vadEnabled === "boolean" ? vadEnabled : null}
+        disabledReason={vadReason} onCheckedChange={(enabled) => {
+          if (device.revision !== null) void client.submit(device.instance_id, "set_vad_interrupt", device.revision, { enabled }, enabled ? "开启 VAD 自动停播" : "关闭 VAD 自动停播");
+        }} />
     </div> : null}
     <div className="input-selection">
-      <label>麦克风<select value={input} onChange={(event) => setInput(event.target.value)} disabled={devices.length === 0}><option value="">选择麦克风</option>{devices.map((item) => <option key={item.index} value={item.index}>{item.name}</option>)}</select></label>
-      <label>收听方式<select value={mode} onChange={(event) => setMode(event.target.value)} disabled={modes.length === 0}><option value="">选择收听方式</option>{modes.map((item) => <option key={item} value={item}>{item === "asr" ? "识别成文字" : "直接听原声"}</option>)}</select></label>
+      <Field label="麦克风">{(control) => <select {...control} value={input} onChange={(event) => setInput(event.target.value)} disabled={devices.length === 0}><option value="">选择麦克风</option>{devices.map((item) => <option key={item.index} value={item.index}>{item.name}</option>)}</select>}</Field>
+      <Field label="收听方式">{(control) => <select {...control} value={mode} onChange={(event) => setMode(event.target.value)} disabled={modes.length === 0}><option value="">选择收听方式</option>{modes.map((item) => <option key={item} value={item}>{item === "asr" ? "识别成文字" : "直接听原声"}</option>)}</select>}</Field>
     </div>
     {devices.length === 0 ? <Unavailable>{device.state.devices_loaded === false ? "还没有读取麦克风列表。先点“刷新设备列表”，再选择麦克风。" : "没有找到可用的麦克风。"}</Unavailable> : null}
     {modes.length === 0 ? <Unavailable>当前配置没有可用的收听方式。</Unavailable> : null}
@@ -118,7 +119,7 @@ function CachedPreview({ device, online, refreshAt }: { device: Device; online: 
 }
 
 /**
- * 展示已装配设备、预览与明确允许的快捷控制。
+ * 展示已装配设备的摘要与明确允许的快捷控制；配置与预览在选中后展开。
  *
  * client/state 共用页面观察；selected 与 go 定位设备。按钮点击才发起业务。
  *
@@ -137,13 +138,23 @@ export function Devices({ client, state, selected, go }: { client: PanelClient; 
         return <article className="device-object" key={device.instance_id} aria-current={selected === device.instance_id ? "true" : undefined}>
           <div className="object-header"><h2>{deviceName(device)}</h2><StateMark {...status} live={device.instance_id === liveId} /></div>
           {deviceSummary(device).map((line) => <p key={line}>{line}</p>)}
-          {device.kind === "voice_input" ? <VoiceControls client={client} state={state} device={device} />
-            : <div className="actions">{device.controls.filter((control) => ALLOWED_CONTROLS[device.kind ?? ""]?.includes(control.key)).map((control) => <QuickControl key={control.key} client={client} state={state} device={device} control={control}
-              reason={control.fields.length > 0 ? "这个操作需要页面暂不支持的参数。" : computerReason(device, control.key)} />)}</div>}
-          {device.kind === "computer" && device.has_preview ? <CachedPreview device={device} online={state.online} refreshAt={state.receivedAt} /> : null}
-          {note !== null ? <p className="muted">{note}</p> : null}
-          <div className="actions"><Button variant="ghost" onClick={() => go({ page: "devices", id: device.instance_id })}>查看详情</Button></div>
+          {device.kind !== "voice_input" ? <div className="actions">{device.controls.filter((control) => ALLOWED_CONTROLS[device.kind ?? ""]?.includes(control.key)).map((control) => <QuickControl key={control.key} client={client} state={state} device={device} control={control}
+            reason={control.fields.length > 0 ? "这个操作需要页面暂不支持的参数。" : computerReason(device, control.key)} />)}</div> : null}
+          {note !== null ? <p className="muted device-note">{note}</p> : null}
+          <div className="actions"><Button variant="ghost" onClick={() => go({ page: "devices", id: device.instance_id })}>{device.kind === "voice_input" ? "设置收音" : "查看详情"}</Button></div>
         </article>;
       })}</div>}
   </>;
+}
+
+/** 选中设备后才展开配置与缓存预览；所有控制仍经过客户端的资格和版本校验。 */
+export function DeviceDetail({ client, state, device }: { client: PanelClient; state: PanelState; device: Device }): ReactElement {
+  return <div className="detail device-detail">
+    <h2>{deviceName(device)}</h2>
+    <StateMark {...(state.online ? deviceMark(device) : { state: "warning" as const, label: "状态已过期，操作暂停" })} />
+    {deviceSummary(device).map((line) => <p key={line}>{line}</p>)}
+    {device.kind === "voice_input" ? <VoiceControls client={client} state={state} device={device} /> : null}
+    {device.kind === "computer" && device.has_preview ? <CachedPreview device={device} online={state.online} refreshAt={state.receivedAt} /> : null}
+    <TechDetails items={deviceTechnical(device)} />
+  </div>;
 }

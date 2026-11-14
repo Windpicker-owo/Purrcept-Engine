@@ -4,7 +4,7 @@
  * 预算来自会话快照时刻的值，浏览器不自行倒计时或补充额度。
  */
 import type { ReactElement } from "react";
-import { Button } from "@purrcept/cel";
+import { Switch } from "@purrcept/cel";
 import type { PanelClient, PanelState } from "../client";
 import { isSnapshotDelayed } from "../client";
 import { targetReason } from "../model/controls";
@@ -69,11 +69,12 @@ export function System({ state, client, go }: { state: PanelState; client: Panel
           <p className="muted">上床休息时暂停，起床后重新计时。本次运行有效，重启后使用配置默认值。关闭不会撤回已接手的思考。</p>
           {s.proactive_thinking.last_error !== null ? <p className="muted">输入缓存已满，本次空闲刺激未生成；等待下一个周期。</p> : null}
         </div>
-        <div><Button variant="secondary" role="switch" aria-label="主动思考" aria-checked={s.proactive_thinking.enabled}
+        <Switch label="主动思考" checked={s.proactive_thinking.enabled}
           disabledReason={targetReason(state, "subject", "set_proactive_thinking")}
-          onClick={() => { const p = s.proactive_thinking; if (p !== null) void client.submit("subject", "set_proactive_thinking", p.revision, { enabled: !p.enabled }, p.enabled ? "关闭主动思考" : "开启主动思考"); }}>
-          {s.proactive_thinking.enabled ? "已开启" : "已关闭"}
-        </Button></div>
+          onCheckedChange={(enabled) => {
+            const thinking = s.proactive_thinking;
+            if (thinking !== null) void client.submit("subject", "set_proactive_thinking", thinking.revision, { enabled }, enabled ? "开启主动思考" : "关闭主动思考");
+          }} />
       </div> : null}
       <SessionRow title="回应" description="处理新消息并决定怎么做。" session={s.foreground} />
       <SessionRow title="行为评审" description="每批独立检查近期互动，不继承上一批评审过程。" session={s.behavior_review} />

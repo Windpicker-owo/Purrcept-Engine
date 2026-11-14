@@ -5,7 +5,7 @@
  */
 import { useState } from "react";
 import type { ReactElement } from "react";
-import { Button, Icon, isLive } from "@purrcept/cel";
+import { Button, Field, Icon, isLive } from "@purrcept/cel";
 import type { PanelState } from "../client";
 import type { Route } from "../model/routes";
 import { FILTERS, timelineItems } from "../model/timeline";
@@ -30,12 +30,13 @@ export function Timeline({ state, selected, go }: { state: PanelState; selected:
   return <>
     <PageHeading title="时间线">她最近做了什么，以及你在这个页面发起的操作。结果未知的操作不会自动重做。</PageHeading>
     <div className="timeline-tools">
+      <Button variant="secondary" onClick={() => go({ page: "reviews", id: null })}>审查历史表现</Button>
       <fieldset className="toolbar"><legend className="visually-hidden">筛选记录</legend>
         {FILTERS.map((item) => <label key={item.id} className="filter" data-selected={filter === item.id}>
           <input type="radio" name="timeline-filter" value={item.id} checked={filter === item.id} onChange={() => setFilter(item.id)} />{item.label}
         </label>)}
       </fieldset>
-      <label className="search-field"><span>搜索记录</span><input type="search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="按内容或结果搜索" /></label>
+      <Field label="搜索记录">{(control) => <input {...control} type="search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="按内容或结果搜索" />}</Field>
     </div>
     <div className="result-summary"><span role="status">{items.length} 条记录{term ? ` · 搜索“${query.trim()}”` : ""}</span>
       {filter !== "all" || term ? <Button variant="ghost" onClick={() => { setFilter("all"); setQuery(""); }}>清除筛选</Button> : null}

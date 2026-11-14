@@ -147,12 +147,24 @@ await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
 const base = `http://127.0.0.1:${server.address().port}`;
 let browser;
 let page;
-/** hash 生效即应只剩一份可读内容；不再靠等待离场动画掩盖中间帧的问题。 */
+/** 路由到达时只有一份可读内容；低频页面在手机上由“更多”入口承载。 */
 async function openPage(name) {
   await page.goto(`${base}/#/${name}`);
   await page.locator('.topbar-age').filter({ hasText: '更新于' }).waitFor();
-  await page.waitForFunction((route) => document.querySelector('.nav-item[aria-current="page"]')?.getAttribute('href') === `#/${route}`, name);
+  await page.waitForFunction((route) => location.hash === `#/${route}`, name);
   await page.waitForFunction(() => document.querySelectorAll('main .page').length === 1 && Number(getComputedStyle(document.querySelector('main .page')).opacity) === 1);
+}
+/** 截图等待字体与有限进场动画；持续状态节拍不属于完成条件。 */
+async function stableScreenshot(options) {
+  await page.evaluate(() => window.scrollTo(0, 0));
+  await page.evaluate(async () => {
+    await document.fonts.ready;
+    const finite = document.getAnimations().filter((animation) => Number.isFinite(animation.effect?.getComputedTiming().iterations));
+    await Promise.all(finite.map((animation) => animation.finished.catch(() => {})));
+  });
+  await page.waitForFunction(() => [...document.querySelectorAll('.pc-enter > *')]
+    .every((node) => getComputedStyle(node).opacity === '1' && getComputedStyle(node).transform === 'none'));
+  await page.screenshot(options);
 }
 try {
   browser = await chromium.launch({ channel: 'msedge' });
@@ -215,12 +227,59 @@ try {
       await page.evaluate(() => document.fonts.ready);
       const overflow = await page.evaluate(() => document.documentElement.scrollWidth > innerWidth);
       assert.equal(overflow, false, `${route} 在 ${width}px 横向溢出`);
-      if (width === 1440 || width === 390) await page.screenshot({ path: `${output}/${route}-${width}.png`, fullPage: true });
+      if (width <= 768) {
+        const targets = await page.locator('.navigation .nav-item').evaluateAll((items) => items.map((item) => {
+          const bounds = item.getBoundingClientRect();
+          return { width: bounds.width, height: bounds.height, label: item.textContent.trim() };
+        }));
+        assert.equal(targets.length, 5);
+        assert.ok(targets.every((target) => target.width >= 44 && target.height >= 44 && target.label.length > 0), '手机五项导航应具名且触控区域至少 44px');
+      }
+      if (width === 1440 || width === 390) await stableScreenshot({ path: `${output}/${route}-${width}.png`, fullPage: true });
     }
   }
 
+  await page.getByRole('button', { name: '更多页面' }).click();
+  await page.getByRole('navigation', { name: '更多页面' }).getByRole('link', { name: /行为审查/ }).click();
+  await page.waitForFunction(() => location.hash === '#/reviews');
+  await page.getByRole('dialog').waitFor({ state: 'hidden' });
+
+  // 文本缩放按原始计算字号逐项翻倍；仅改 body 字号无法覆盖 Token 中的固定字号。
+  // 同一替身加入大量长记录，验证自然换行及系统字体回退，不借省略号隐藏正文。
+  snapshot.activities = Array.from({ length: 30 }, (_, index) => ({
+    ...example.activities[0], activity_id: `long-${index}`,
+    goal: `第 ${index + 1} 项：${'整理中文阅读笔记并保留完整上下文'.repeat(8)}`,
+  }));
+  for (const width of [1440, 320]) {
+    await page.setViewportSize({ width, height: 960 });
+    for (const route of ['home', 'activities', 'devices', 'reviews']) {
+      await openPage(route);
+      // hash 导航不会重建文档；每个压力样本先刷新，避免上个样本的字号再次翻倍。
+      await page.reload();
+      await page.locator('.topbar-age').filter({ hasText: '更新于' }).waitFor();
+      if (route === 'reviews') {
+        await page.locator('.item-row').filter({ hasText: '3 项操作' }).click();
+        await page.getByRole('textbox', { name: '留言（可选）' }).waitFor();
+      }
+      await page.evaluate(() => {
+        const sizes = [...document.querySelectorAll('body *')].filter((node) => node instanceof HTMLElement)
+          .map((node) => [node, Number.parseFloat(getComputedStyle(node).fontSize)]);
+        for (const [node, size] of sizes) {
+          node.style.setProperty('font-size', `${size * 2}px`, 'important');
+          node.style.setProperty('font-family', 'system-ui, sans-serif', 'important');
+        }
+      });
+      await page.evaluate(() => document.fonts.ready);
+      assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false, `${route} 在 ${width}px / 200% 字号下溢出`);
+      if (width === 320 && route === 'reviews') await stableScreenshot({ path: `${output}/reviews-text200-320.png`, fullPage: true });
+    }
+  }
+  snapshot = structuredClone(example);
+  await page.reload();
+
   await page.setViewportSize({ width: 1440, height: 960 });
   await openPage('timeline');
+  assert.equal(await page.locator('.inspector').count(), 0, '未选择时不占用详情栏');
   await page.getByRole('button', { name: /使用电脑/ }).waitFor();
   await page.getByRole('searchbox', { name: '搜索记录' }).fill('电脑');
   assert.equal(await page.locator('.data-row').count(), 1);
@@ -236,17 +295,23 @@ try {
   await page.getByRole('heading', { name: '已经发生 · 1' }).waitFor();
   await page.getByRole('heading', { name: '结果未知 · 1' }).waitFor();
   await page.getByRole('heading', { name: '没有发生 · 1' }).waitFor();
-  await page.screenshot({ path: `${output}/inspector-1440.png`, fullPage: true });
+  await stableScreenshot({ path: `${output}/inspector-1440.png`, fullPage: true });
   await page.setViewportSize({ width: 390, height: 844 });
   await page.getByRole('dialog').waitFor();
   await page.waitForFunction(() => document.documentElement.scrollWidth <= innerWidth);
   await page.waitForFunction(() => Math.abs(new DOMMatrix(getComputedStyle(document.querySelector('[role="dialog"]')).transform).m41) < 0.1);
-  await page.screenshot({ path: `${output}/sheet-390.png`, fullPage: true });
+  await stableScreenshot({ path: `${output}/sheet-390.png`, fullPage: true });
   await page.keyboard.press('Escape');
   await page.waitForFunction(() => location.hash === '#/timeline');
 
   // 同一页面断线后保留旧事实，任何原本可用的控制必须关闭。
   await openPage('devices');
+  assert.equal(await page.getByRole('combobox').count(), 0, '设备摘要不提前展开配置');
+  await page.getByRole('button', { name: '设置收音' }).click();
+  await page.getByRole('combobox', { name: '麦克风' }).waitFor();
+  assert.equal(await page.getByRole('option', { name: '直接听原声', exact: true }).count(), 0);
+  await page.keyboard.press('Escape');
+  await page.getByRole('dialog').waitFor({ state: 'hidden' });
   await page.getByText('最近一句处理失败，不能视为已经回应', { exact: true }).waitFor();
   await page.getByText('收音设备：测试麦克风', { exact: true }).waitFor();
   assert.equal(await page.getByRole('option', { name: '直接听原声', exact: true }).count(), 0);
@@ -257,14 +322,14 @@ try {
   assert.equal(await page.getByText('与本机服务的连接中断', { exact: true }).count(), 0);
   assert.equal(await page.locator('.object-grid').getByText('连接中断', { exact: false }).count(), 0);
   assert.equal(await page.getByRole('button', { name: '重新连接 QQ', exact: true }).isDisabled(), true);
-  await page.screenshot({ path: `${output}/snapshot-delayed-390.png`, fullPage: true });
+  await stableScreenshot({ path: `${output}/snapshot-delayed-390.png`, fullPage: true });
   snapshotDelayed = false;
   await page.getByText('本机服务可连接，状态更新延迟', { exact: true }).waitFor({ state: 'hidden' });
   assert.equal(await page.getByRole('button', { name: '重新连接 QQ', exact: true }).isDisabled(), false);
   disconnected = true;
   await page.getByRole('banner').getByText('与本机服务的连接中断', { exact: true }).waitFor();
   assert.equal(await page.getByRole('button', { name: '重新连接 QQ', exact: true }).isDisabled(), true);
-  await page.screenshot({ path: `${output}/offline-390.png`, fullPage: true });
+  await stableScreenshot({ path: `${output}/offline-390.png`, fullPage: true });
   disconnected = false;
 
   // 当前行动比近期完成记录更早时，首页仍必须展示当前行动路径。
@@ -281,9 +346,9 @@ try {
   await page.emulateMedia({ reducedMotion: 'reduce' });
   await openPage('home');
   await page.getByRole('heading', { name: '安静待命中' }).waitFor();
-  await page.screenshot({ path: `${output}/idle-1440.png`, fullPage: true });
-  // 移除吉祥物和放大正文不能丢失主体状态或导致水平溢出。
-  await page.addStyleTag({ content: '.home-mascot { visibility: hidden; } body { font-size: 200%; }' });
+  await stableScreenshot({ path: `${output}/idle-1440.png`, fullPage: true });
+  // 移除吉祥物不能丢失主体状态；真实 200% 文本缩放已由上面的压力用例覆盖。
+  await page.addStyleTag({ content: '.home-mascot { visibility: hidden; }' });
   assert.equal(await page.getByRole('heading', { name: '安静待命中' }).isVisible(), true);
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
   assert.deepEqual(writes, [], '查看页面不能提交业务控制');
@@ -297,7 +362,7 @@ try {
   await proactive.click();
   await page.waitForFunction(() => document.querySelector('[role="switch"]')?.getAttribute('aria-checked') === 'true');
   assert.equal(proactiveRequests.length, 1);
-  await page.screenshot({ path: `${output}/proactive-on-1440.png`, fullPage: true });
+  await stableScreenshot({ path: `${output}/proactive-on-1440.png`, fullPage: true });
   await proactive.focus();
   await page.keyboard.press('Space');
   await page.waitForFunction(() => document.querySelector('[role="switch"]')?.getAttribute('aria-checked') === 'false');
@@ -312,6 +377,7 @@ try {
   disconnected = false;
   snapshot = structuredClone(example);
   await openPage('devices');
+  await page.getByRole('button', { name: '设置收音' }).click();
   const vad = page.getByRole('switch', { name: 'VAD 自动停播' });
   await vad.waitFor();
   assert.equal(await vad.isChecked(), true);
@@ -321,7 +387,7 @@ try {
   await page.keyboard.press('Space');
   await page.waitForFunction(() => document.querySelector('[aria-label="VAD 自动停播"]')?.getAttribute('aria-checked') === 'true');
   assert.deepEqual(vadRequests.map((item) => item.arguments.enabled), [false, true]);
-  await page.screenshot({ path: `${output}/vad-switch-1440.png`, fullPage: true });
+  await stableScreenshot({ path: `${output}/vad-switch-1440.png`, fullPage: true });
   disconnected = true;
   await page.getByRole('button', { name: '立即重试', exact: true }).click();
   await page.waitForFunction(() => document.querySelector('[aria-label="VAD 自动停播"]')?.getAttribute('aria-disabled') === 'true');
@@ -338,13 +404,18 @@ try {
   await page.getByText('请先不要发消息。', { exact: true }).waitFor();
   await page.getByRole('radio', { name: '坏', exact: true }).check();
   await page.getByRole('textbox', { name: '留言（可选）' }).fill('对方已经说明正在忙，等待她主动回应后再继续。');
+  await page.getByRole('button', { name: '返回记录列表' }).click();
+  await page.locator('.item-row').filter({ hasText: '3 项操作' }).click();
+  assert.equal(await page.getByRole('radio', { name: '坏', exact: true }).isChecked(), true);
+  assert.equal(await page.getByRole('textbox', { name: '留言（可选）' }).inputValue(), '对方已经说明正在忙，等待她主动回应后再继续。');
   await page.getByRole('button', { name: '提交评价', exact: true }).click();
   await page.getByText('评价已保存，已加入主脑与反思的可靠待办。', { exact: true }).waitFor();
   assert.equal(reviewRequests.length, 1);
   assert.equal(reviewRequests[0].arguments.rating, 'bad');
-  await page.screenshot({ path: `${output}/reviews-1440.png`, fullPage: true });
+  await stableScreenshot({ path: `${output}/reviews-1440.png`, fullPage: true });
   await page.setViewportSize({ width: 390, height: 960 });
-  await page.getByRole('dialog').waitFor();
+  assert.equal(await page.getByRole('dialog').count(), 0, '审查材料保持在主工作区');
+  await page.locator('.review-material').waitFor();
   await page.getByRole('radio', { name: '好', exact: true }).check();
   await page.getByRole('textbox', { name: '留言（可选）' }).fill('补充评价：有克制地等待时值得保持。');
   await page.getByRole('button', { name: '提交评价', exact: true }).click();
@@ -354,19 +425,21 @@ try {
   assert.equal(reviewRequests.length, 2);
   assert.notEqual(reviewRequests[0].request_id, reviewRequests[1].request_id);
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
-  await page.screenshot({ path: `${output}/reviews-390.png`, fullPage: true });
+  await stableScreenshot({ path: `${output}/reviews-390.png`, fullPage: true });
   disconnected = true;
-  await page.keyboard.press('Escape');
+  await page.getByRole('button', { name: '返回记录列表' }).click();
   await page.getByRole('button', { name: '立即重试', exact: true }).click();
   await page.locator('.item-row').filter({ hasText: '3 项操作' }).click();
   await page.getByRole('radio', { name: '坏', exact: true }).check();
   assert.equal(await page.getByRole('button', { name: '提交评价', exact: true }).isDisabled(), true);
   assert.equal(reviewRequests.length, 2);
   assert.deepEqual(failures, [], '浏览器不应报错或访问外网');
-  console.log(`通过：28 个快速切换帧、35 个页面/视口组合、搜索、键盘过滤、部分失败详情、窄屏关闭、断线控制、主动思考与 VAD 开关、人工好坏评价与留言、当前行动、减少动效与空状态。截图：${output}`);
+  console.log(`通过：28 个快速切换帧、35 个页面/视口组合、搜索、键盘过滤、部分失败详情、窄屏关闭、断线控制、主动思考与 VAD 开关、人工好坏评价与留言、当前行动、减少动效、五项具名导航、草稿恢复、长中文/30 条记录/200% 字号/字体回退与空状态。截图：${output}`);
 } catch (error) {
   if (page) {
     await page.screenshot({ path: `${output}/failure.png`, fullPage: true });
+    console.error(await page.evaluate(() => [...document.querySelectorAll('body *')].filter((node) => node.getBoundingClientRect().right > innerWidth)
+      .map((node) => ({ tag: node.tagName, class: node.getAttribute('class'), width: node.getBoundingClientRect().width, text: node.textContent.slice(0, 80) })).slice(0, 20)));
     console.error(await page.locator('body').innerText());
   }
   throw error;

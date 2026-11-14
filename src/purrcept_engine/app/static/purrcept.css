@@ -1,5 +1,5 @@
 /* 由 scripts/export_tokens.py 从 DESIGN.md 生成，请勿手动修改。 */
-/* Purrcept Cel 0.2.0 */
+/* Purrcept Cel 0.3.0 */
 
 :root {
   /* colors */
@@ -48,21 +48,21 @@
   --pc-color-mascot-blush: #F3BDB3;
 
   /* typography */
-  --pc-font-display: 700 48px/1.08 Geist, MiSans, "Noto Sans SC", system-ui, sans-serif;
+  --pc-font-display: 700 48px/1.08 system-ui, -apple-system, "Segoe UI", "Microsoft YaHei", "PingFang SC", sans-serif;
   --pc-font-display-letter-spacing: -0.025em;
-  --pc-font-headline: 700 28px/1.25 Geist, MiSans, "Noto Sans SC", system-ui, sans-serif;
+  --pc-font-headline: 700 28px/1.25 system-ui, -apple-system, "Segoe UI", "Microsoft YaHei", "PingFang SC", sans-serif;
   --pc-font-headline-letter-spacing: -0.015em;
-  --pc-font-title: 600 17px/1.45 Geist, MiSans, "Noto Sans SC", system-ui, sans-serif;
+  --pc-font-title: 600 17px/1.45 system-ui, -apple-system, "Segoe UI", "Microsoft YaHei", "PingFang SC", sans-serif;
   --pc-font-title-letter-spacing: normal;
-  --pc-font-body: 400 14px/1.6 Geist, MiSans, "Noto Sans SC", system-ui, sans-serif;
+  --pc-font-body: 400 14px/1.6 system-ui, -apple-system, "Segoe UI", "Microsoft YaHei", "PingFang SC", sans-serif;
   --pc-font-body-letter-spacing: normal;
-  --pc-font-body-long: 400 16px/1.7 Geist, MiSans, "Noto Sans SC", system-ui, sans-serif;
+  --pc-font-body-long: 400 16px/1.7 system-ui, -apple-system, "Segoe UI", "Microsoft YaHei", "PingFang SC", sans-serif;
   --pc-font-body-long-letter-spacing: normal;
-  --pc-font-label: 600 13px/1.4 Geist, MiSans, "Noto Sans SC", system-ui, sans-serif;
+  --pc-font-label: 600 13px/1.4 system-ui, -apple-system, "Segoe UI", "Microsoft YaHei", "PingFang SC", sans-serif;
   --pc-font-label-letter-spacing: normal;
-  --pc-font-caption: 500 12px/1.4 Geist, MiSans, "Noto Sans SC", system-ui, sans-serif;
+  --pc-font-caption: 500 12px/1.4 system-ui, -apple-system, "Segoe UI", "Microsoft YaHei", "PingFang SC", sans-serif;
   --pc-font-caption-letter-spacing: normal;
-  --pc-font-mono: 500 13px/1.5 "JetBrains Mono", "SFMono-Regular", Consolas, monospace;
+  --pc-font-mono: 500 13px/1.5 ui-monospace, "SFMono-Regular", Consolas, "Microsoft YaHei", "PingFang SC", monospace;
   --pc-font-mono-letter-spacing: normal;
   --pc-font-mono-feature-settings: "tnum" 1, "zero" 1;
 
@@ -92,7 +92,7 @@
   --pc-space-sidebar: 72px;
   --pc-space-inspector: 360px;
   --pc-space-content-max: 1600px;
-  --pc-space-touch-target: 40px;
+  --pc-space-touch-target: 44px;
 
   /* elevation：外阴影只用墨色，inset 只用墨色或纯白受光边 */
   --pc-shadow-control: 0 1px 2px rgba(21, 23, 26, 0.16), inset 0 1px 0 rgba(255, 255, 255, 0.22);

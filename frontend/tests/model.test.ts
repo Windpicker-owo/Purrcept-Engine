@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import type { Entry } from "../src/client";
 import type { Action, Device, Snapshot } from "../src/contracts";
 import { agentView } from "../src/model/agent";
+import { summarizePath } from "../src/model/home-path";
 import { attentionItems } from "../src/model/attention";
 import { deviceSummary } from "../src/model/devices";
 import { capabilityName } from "../src/model/names";
@@ -25,6 +26,24 @@ function device(kind: string, state: Device["state"]): Device {
 function entry(patch: Partial<Entry> = {}): Entry {
   return { request: request(), title: "连接电脑", result: null, sending: false, unresolved: false, rejected: false, unavailable: false, error: null, ...patch };
 }
+
+describe("首页行动摘要", () => {
+  it("后段未知优先保留，同名调用不合并且原始顺序不变", () => {
+    const value = action("failed", [
+      ["me.qq.send", "confirmed"], ["me.qq.send", "confirmed"],
+      ["me.qq.send", "confirmed"], ["me.qq.send", "confirmed"],
+      ["me.qq.send", "unknown"], ["me.qq.send", "started"],
+    ]);
+    const summary = summarizePath(value);
+    expect(summary.visible.map((call) => call.call_id)).toEqual(["action-1-call-0", "action-1-call-1", "action-1-call-4", "action-1-call-5"]);
+    expect(summary).toMatchObject({ omitted: 2, hiddenAttention: 0 });
+  });
+  it("超过预算的异常明确计数，空行动没有虚构路径", () => {
+    const value = action("failed", Array.from({ length: 6 }, () => ["me.qq.send", "unknown"]));
+    expect(summarizePath(value)).toMatchObject({ omitted: 2, hiddenAttention: 2 });
+    expect(summarizePath(action("completed", []))).toEqual({ visible: [], omitted: 0, hiddenAttention: 0 });
+  });
+});
 
 describe("agentView", () => {
   it("主体丧失派发资格时禁止把空闲会话显示为安静待命", () => {
