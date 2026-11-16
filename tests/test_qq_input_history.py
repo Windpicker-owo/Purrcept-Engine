@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, Protocol, cast
 
 import av
 import pytest
+from PIL import Image
 from purrcept_core.models import AudioBlock
 from test_qq_transport import Connector, Socket
 
@@ -40,9 +41,10 @@ from purrcept_engine.plugins.qq.service import QQService
 from purrcept_engine.plugins.qq.settings import QQSettings
 from purrcept_engine.values import JsonObject, JsonValue, decode_object, encode_json
 
-PNG = base64.b64decode(
-    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII="
-)
+_png = io.BytesIO()
+Image.new("RGB", (1, 1), (220, 120, 80)).save(_png, format="PNG")
+PNG = _png.getvalue()
+
 
 if TYPE_CHECKING:
     from av.audio.stream import AudioStream
@@ -115,6 +117,7 @@ async def rig(tmp_path: Path) -> AsyncIterator[Rig]:
         evidence,
         late_results=LateCallResults(store, frozenset({"me.phone.qq.read"})),
         native_inputs=inputs,
+        stickers=store.stickers,
     )
     service = QQService("qq", settings, tmp_path, ports, Connector((socket,)))
     await service.client.start()
@@ -553,9 +556,11 @@ async def test_large_history_body_has_independent_smaller_readable_source(rig: R
     )
     outcome = await task
     assert isinstance(outcome.value, dict)
-    refs = outcome.value["large_message_body_refs"]
-    assert isinstance(refs, list) and isinstance(refs[0], dict)
-    identity = refs[0]["evidence_ref"]
+    messages = outcome.value["messages"]
+    assert isinstance(messages, list) and isinstance(messages[0], dict)
+    reference = messages[0]["body_ref"]
+    assert isinstance(reference, dict)
+    identity = reference["evidence_ref"]
     assert isinstance(identity, str)
     page = await rig.service.evidence.read_evidence(identity, max_chars=13)
     assert page.text == body[:13] and page.next_cursor is not None

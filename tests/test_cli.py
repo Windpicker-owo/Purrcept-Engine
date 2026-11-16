@@ -2,7 +2,10 @@
 
 import asyncio
 import io
+import os
 import signal
+import subprocess
+import sys
 from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import cast
@@ -15,6 +18,36 @@ from purrcept_engine.app.config import EngineConfig, load_config
 from purrcept_engine.app.host import EngineHost
 from purrcept_engine.app.host_types import HostSnapshot
 from purrcept_engine.app.onboarding import render_plugin_guide, run_interactive_init
+
+
+@pytest.mark.parametrize(
+    ("module", "expected_option", "other_option"),
+    [
+        ("purrcept_engine", "db-check", "--profile"),
+        ("purrcept_engine.app.studio", "--profile", "db-check"),
+    ],
+)
+def test_module_entrypoints_keep_engine_and_studio_commands_separate(
+    tmp_path: Path, module: str, expected_option: str, other_option: str
+) -> None:
+    """在新进程实际执行模块入口，防止导入缓存掩盖循环或入口错误。
+
+    只读取帮助，不启动服务或模型；从空目录运行以确认入口无需现成配置。
+    """
+    source = Path(__file__).parents[1] / "src"
+    result = subprocess.run(
+        [sys.executable, "-X", "utf8", "-m", module, "--help"],
+        cwd=tmp_path,
+        env={**os.environ, "PYTHONPATH": str(source)},
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=20,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert expected_option in result.stdout and other_option not in result.stdout
+    assert list(tmp_path.iterdir()) == []
 
 
 def test_init_check_plugins_and_force_backup(
@@ -89,7 +122,9 @@ def test_interactive_init_wizard_generates_valid_cloud_and_local_configs(tmp_pat
     assert loaded_cloud.subject.character.name == "杰瑞喵"
     assert any(p.entry == "notebook" for p in loaded_cloud.plugins)
 
-    local_answers = iter(["2", "http://127.0.0.1:11434/v1", "qwen2.5:14b", "", "小咕", "", "n", "n"])
+    local_answers = iter(
+        ["2", "http://127.0.0.1:11434/v1", "qwen2.5:14b", "", "小咕", "", "n", "n"]
+    )
     local_toml = run_interactive_init(
         tmp_path / "local.toml",
         input_fn=lambda _: next(local_answers),

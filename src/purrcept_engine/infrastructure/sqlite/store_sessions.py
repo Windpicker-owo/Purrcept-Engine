@@ -1,4 +1,9 @@
-"""连续会话、轮次事务、摘要维护、用量锚点与未决工作投影存储实现。"""
+"""通过 SessionStoreMixin 提交会话、轮次、摘要和用量锚点，并组装当前工作。
+
+连接和串行提交队列由 StoreBase 提供；本模块不调用模型或执行能力。
+protected_input_ids 决定哪些旧轮次不得摘要，subject_work 提供每次请求的当前
+未决材料。两者共用未知回执时间窗口，过期只释放自动保护，不修改执行账本。
+"""
 
 import hashlib
 import json
@@ -225,15 +230,30 @@ def _evidence_inputs(connection: sqlite3.Connection, references: tuple[str, ...]
     return frozenset(identities)
 
 
+# 两个投影共用最新回执的时间条件，不能因重启或读取旧输入而刷新保护窗口。
+_CURRENT_CALL_SQL = (
+    "(c.state IN ('prepared','started') OR (c.state='unknown' AND EXISTS("
+    "SELECT 1 FROM call_results r WHERE r.call_id=c.call_id AND "
+    "r.revision=c.receipt_revision AND r.finished_at>?)))"
+)
+
+
 def _protected_inputs(
-    connection: sqlite3.Connection, selected: tuple[str, ...] | None
+    connection: sqlite3.Connection,
+    selected: tuple[str, ...] | None,
+    *,
+    unknown_since: float,
 ) -> frozenset[str]:
-    """从在途调用、活动控制、未承接失败、未完成计划与监管中提取受保护输入集合。"""
+    """从近期未知回执、在途调用及独立未决事项中提取受保护输入。
+
+    unknown_since 是本次查询冻结的时间边界。过期未知回执仍在账本中，
+    只是不再凭自身状态永久锁住整轮原文；其他未决事项仍可保护同一输入。
+    """
     selection = "" if selected is None else " WHERE i.input_id IN (SELECT value FROM json_each(?))"
     rows: list[tuple[object, ...]] = connection.execute(
         "WITH unresolved(input_id) AS ("
         "SELECT a.input_id FROM calls c JOIN actions a ON a.action_id=c.action_id "
-        "WHERE c.state IN ('prepared','started','unknown') UNION "
+        "WHERE " + _CURRENT_CALL_SQL + " UNION "
         "SELECT a.input_id FROM actions a JOIN calls c ON c.action_id=a.action_id "
         "JOIN activity_commands cmd ON cmd.command_id=c.call_id "
         "JOIN activities act ON act.activity_id=cmd.activity_id "
@@ -244,7 +264,7 @@ def _protected_inputs(
         "SELECT t.input_id FROM failed_turns f JOIN turn_inputs t ON t.turn_id=f.turn_id "
         "WHERE f.presented_in IS NULL) "
         "SELECT i.input_id FROM unresolved u JOIN inputs i ON i.input_id=u.input_id" + selection,
-        () if selected is None else (json.dumps(selected),),
+        (unknown_since,) if selected is None else (unknown_since, json.dumps(selected)),
     ).fetchall()
     protected = {as_text(row[0]) for row in rows}
     selected_ids = None if selected is None else frozenset(selected)
@@ -286,18 +306,25 @@ class SessionStoreMixin(StoreBase):
         return await self._submit(lambda connection: subject_storage.session(connection, scope))
 
     async def protected_input_ids(self, input_ids: tuple[str, ...]) -> frozenset[str]:
-        """查询给定输入集合中仍关联未决事项的输入身份。"""
+        """查询仍受保护的输入；过期 unknown 不阻止原轮次进入摘要。"""
         for identity in input_ids:
             self._validate_id(identity)
         return await self._submit(
-            lambda connection: _protected_inputs(connection, input_ids),
+            lambda connection: _protected_inputs(
+                connection,
+                input_ids,
+                unknown_since=time.time() - self._unknown_call_protection_seconds,
+            ),
             logical_bytes=sum(len(value.encode()) for value in input_ids),
         )
 
     async def subject_work(self) -> JsonObject:
-        """组装当前前台会话、未决计划、有效监管、活动与未结案能力调用快照。"""
+        """组装当前工作；过期未知回执不再反复复制到每个请求的动态材料。"""
 
         def query(connection: sqlite3.Connection) -> JsonObject:
+            # 查询与逐条投影共用一个截止点，避免恰好跨窗时出现资格不一致。
+            now = time.time()
+            unknown_since = now - self._unknown_call_protection_seconds
             session = subject_storage.session_state(connection, "foreground")
             turn = (
                 None
@@ -315,13 +342,14 @@ class SessionStoreMixin(StoreBase):
             plans = () if count == 0 else evidence_storage.pending_plans(connection, limit=count)
             supervision = tuple(_active_supervision(connection))
             activities = activity_storage.activity_records(connection)
-            protected = _protected_inputs(connection, None)
+            protected = _protected_inputs(connection, None, unknown_since=unknown_since)
             cursor = connection.execute(
                 "SELECT action_id FROM actions a WHERE a.state='running' OR "
                 "EXISTS(SELECT 1 FROM calls c WHERE c.action_id=a.action_id AND "
-                "c.state IN ('prepared','started','unknown')) OR "
+                + _CURRENT_CALL_SQL
+                + ") OR "
                 "a.input_id IN (SELECT value FROM json_each(?)) ORDER BY created_at,action_id",
-                (json.dumps(tuple(sorted(protected))),),
+                (unknown_since, json.dumps(tuple(sorted(protected)))),
             )
             calls: list[JsonValue] = []
             while rows := cursor.fetchmany(32):
@@ -331,7 +359,12 @@ class SessionStoreMixin(StoreBase):
                         raise StorageError("当前调用投影引用缺失行动。", code="invalid_record")
                     original_refs = _call_original_refs(connection, action)
                     for call in action.calls:
-                        if call.state not in ("prepared", "started", "unknown") and (
+                        current = call.state in ("prepared", "started") or (
+                            call.state == "unknown"
+                            and call.finished_at is not None
+                            and call.finished_at > unknown_since
+                        )
+                        if not current and (
                             action.state != "running" and action.input_id not in protected
                         ):
                             continue
@@ -356,8 +389,8 @@ class SessionStoreMixin(StoreBase):
                         )
             return {
                 "coverage": "all_current_pending_plans; active_supervision; active_activities; "
-                "unresolved_calls_and_effects_linked_to_unfinished_work",
-                "assembled_at": time.time(),
+                "inflight_or_recent_unknown_calls_and_effects_linked_to_unfinished_work",
+                "assembled_at": now,
                 "foreground_session_version": session.version,
                 "current_turn": None
                 if turn is None

@@ -73,7 +73,6 @@ class QQSettings(BaseModel):
     extra_media_roots: tuple[str, ...] = ()
     image_max_bytes: int = Field(default=2 * 1024 * 1024, gt=0)
     file_max_bytes: int = Field(default=20 * 1024 * 1024, gt=0)
-    sticker_dir: str = ".purrcept/qq-stickers"
 
     @field_validator("group_list", "private_list", "ban_user_id", mode="before")
     @classmethod
@@ -136,7 +135,7 @@ class QQSettings(BaseModel):
         for name in (self.phone_id, self.segment):
             if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name):
                 raise ValueError("phone_id/segment 必须是明确对象标识。")
-        if not self.label.strip() or not self.media_dir.strip() or not self.sticker_dir.strip():
+        if not self.label.strip() or not self.media_dir.strip():
             raise ValueError("标签及资源目录不能留空。")
         if not self.host or any(char in self.host for char in "/?#@ \r\n"):
             raise ValueError("host 只能填写主机名或 IP，不能携带路径、凭据或查询。")

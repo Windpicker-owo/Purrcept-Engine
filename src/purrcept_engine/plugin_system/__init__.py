@@ -65,6 +65,7 @@ from purrcept_engine.domain.notebook.contracts import (
     NotebookRequirement,
     NotebookStore,
 )
+from purrcept_engine.domain.stickers import StickerError, StickerLibrary, StickerRecord
 from purrcept_engine.domain.subject.expression import ExpressionAssessment, ExpressionSink
 from purrcept_engine.domain.subject.models import InputProcessing
 from purrcept_engine.domain.time.models import (
@@ -169,6 +170,9 @@ __all__ = [
     "RecoveryObservation",
     "RestChange",
     "RestState",
+    "StickerError",
+    "StickerLibrary",
+    "StickerRecord",
     "TimeError",
     "TimePort",
     "make_fact",

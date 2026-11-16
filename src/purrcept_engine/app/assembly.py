@@ -26,6 +26,7 @@ from purrcept_engine.errors import ConfigError
 from purrcept_engine.plugin_system.contracts import PluginBlueprint, PluginFactory
 from purrcept_engine.plugins.audio_files import audio_files_blueprint
 from purrcept_engine.plugins.images import images_blueprint
+from purrcept_engine.plugins.stickers import stickers_blueprint
 
 _BUILTIN_ENTRIES = {
     "phone": "purrcept_engine.plugins.phone.plugin:factory",
@@ -87,6 +88,8 @@ def prepare_plugins(
         raise ConfigError("plugins: image实例身份已由主体默认看图能力占用。")
     if any(item.enabled and item.instance_id == "audio_file" for item in settings):
         raise ConfigError("plugins: audio_file实例身份已由主体默认音频读取能力占用。")
+    if any(item.enabled and item.instance_id == "stickers" for item in settings):
+        raise ConfigError("plugins: stickers 实例身份已由共享贴纸库占用。")
     if console_output is not None and any(
         item.enabled and item.instance_id == "console" for item in settings
     ):
@@ -98,7 +101,10 @@ def prepare_plugins(
     blueprints: list[tuple[str, PluginBlueprint]] = [
         ("image", images_blueprint(base_dir)),
         ("audio_file", audio_files_blueprint(base_dir)),
+        ("stickers", stickers_blueprint()),
     ]
+    for _, blueprint in blueprints:
+        objects.extend(blueprint.objects)
     if console_output is not None:
         console = console_blueprint(console_output)
         objects.extend(console.objects)

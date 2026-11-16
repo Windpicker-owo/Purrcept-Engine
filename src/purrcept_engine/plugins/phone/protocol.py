@@ -30,11 +30,22 @@ class Frame(WireValue):
 
 
 class ChatSubmission(WireValue):
-    """手机先保存原生身份和发生时间，重发必须沿用全部原始字段。"""
+    """手机先保存原生身份和发生时间，重发必须沿用全部原始字段。
+
+    支持纯文本以及向后兼容扩展的贴纸、语音、图片与引用回复元数据。
+    """
 
     message_id: str = Field(pattern=r"^[A-Za-z0-9_-]{1,128}$")
     text: str = Field(min_length=1, max_length=32768)
     occurred_at: str = Field(max_length=64)
+    kind: Literal["text", "sticker", "voice", "image"] | None = None
+    sticker_id: str | None = Field(default=None, pattern=r"^[A-Za-z0-9_:-]{1,64}$")
+    media_id: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    media_type: str | None = Field(default=None, max_length=64)
+    duration_ms: int | None = Field(default=None, ge=0, le=600_000)
+    # JSON 数组在边界转为不可变容器；波形元素仍遵守严格整数及幅度约束。
+    waveform: tuple[int, ...] | None = Field(default=None, max_length=64, strict=False)
+    reply_to_id: str | None = Field(default=None, min_length=1, max_length=128)
 
     @field_validator("text")
     @classmethod
@@ -49,6 +60,16 @@ class ChatSubmission(WireValue):
         parsed = datetime.fromisoformat(value)
         if parsed.utcoffset() is None:
             raise ValueError("消息时间必须包含时区。")
+        return value
+
+    @field_validator("waveform")
+    @classmethod
+    def bounded_waveform(cls, value: tuple[int, ...] | None) -> tuple[int, ...] | None:
+        """波形柱统一归一化为 0..100 的有界整数。"""
+        if value is None:
+            return None
+        if any(bar < 0 or bar > 100 for bar in value):
+            raise ValueError("语音波形柱必须在 0..100 范围内。")
         return value
 
 

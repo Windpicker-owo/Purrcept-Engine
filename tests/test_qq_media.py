@@ -4,9 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
-import os
 import subprocess
-import threading
 from pathlib import Path
 
 import pytest
@@ -19,7 +17,6 @@ from purrcept_engine.plugins.qq.media import MediaOwner, QQMediaError
 from purrcept_engine.plugins.qq.parameters import Send
 from purrcept_engine.plugins.qq.plugin import factory_with_connector
 from purrcept_engine.plugins.qq.settings import QQSettings
-from purrcept_engine.plugins.qq.stickers import StickerLibrary
 from purrcept_engine.values import decode_object
 
 
@@ -132,8 +129,8 @@ async def test_sticker_uses_real_get_image_and_survives_restart(tmp_path: Path, 
         assert action.calls[0].state == "confirmed" and action.calls[0].result_json is not None
         saved = decode_object(action.calls[0].result_json.encode())
         assert saved["tag"] == "开心"
-        assert isinstance(saved["path"], str)
-        assert await asyncio.to_thread(Path(saved["path"]).read_bytes) == PNG
+        assert isinstance(saved["media_id"], str)
+        assert "path" not in saved
     finally:
         await host.close()
     second_socket = Socket()
@@ -144,7 +141,7 @@ async def test_sticker_uses_real_get_image_and_survives_restart(tmp_path: Path, 
     await host.start()
     await connector.connected.wait()
     try:
-        listing = await host.invoke("me.phone.qq.stickers", {})
+        listing = await host.invoke("me.stickers.list", {})
         assert listing.calls[0].result_json is not None
         values = decode_object(listing.calls[0].result_json.encode())["stickers"]
         assert isinstance(values, list) and len(values) == 1
@@ -161,7 +158,7 @@ async def test_sticker_uses_real_get_image_and_survives_restart(tmp_path: Path, 
         message = params["message"]
         assert isinstance(message, list) and isinstance(message[0], dict)
         assert message[0]["data"] == {
-            "file": Path(saved["path"]).as_uri(),
+            "file": "base64://" + base64.b64encode(PNG).decode(),
             "sub_type": 1,
             "summary": "[开心]",
         }
@@ -169,48 +166,3 @@ async def test_sticker_uses_real_get_image_and_survives_restart(tmp_path: Path, 
         assert (await task).calls[0].state == "confirmed"
     finally:
         await host.close()
-
-
-async def test_cancelled_sticker_waiter_retains_actual_write_and_late_receipt(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    socket = Socket()
-    connector = Connector((socket,))
-    host = EngineHost(
-        config(tmp_path, call_timeout=0.05),
-        plugin_factories={"qq-fixture": factory_with_connector(connector)},
-    )
-    entered, release = threading.Event(), threading.Event()
-    original = os.fsync
-
-    def delayed(fd: int) -> None:
-        entered.set()
-        assert release.wait(5)
-        original(fd)
-
-    monkeypatch.setattr(os, "fsync", delayed)
-    await host.start()
-    await connector.connected.wait()
-    try:
-        task = asyncio.create_task(
-            host.invoke("me.phone.qq.save_sticker", {"tag": "迟到", "message_id": "-123"})
-        )
-        request = await socket.sent.get()
-        socket.reply(request, {"base64": "base64://" + base64.b64encode(PNG).decode()})
-        assert await asyncio.to_thread(entered.wait, 2)
-        initial = await task
-        assert initial.calls[0].state == "unknown"
-        release.set()
-        async with asyncio.timeout(5):
-            while True:
-                result = await host.query_action(initial.action_id)
-                if result is not None and result.calls[0].state == "confirmed":
-                    break
-                await asyncio.sleep(0.005)
-        assert result.state == initial.state and result.calls[0].history[0].state == "unknown"
-        assert result.calls[0].result_json is not None
-        assert decode_object(result.calls[0].result_json.encode())["tag"] == "迟到"
-    finally:
-        release.set()
-        await host.close()
-    assert len(StickerLibrary(tmp_path / ".purrcept/qq-stickers").list()) == 1

@@ -8,11 +8,12 @@ prepare 只校验配置和声明 me.phone.qq 的能力入口；build 才加载
 from __future__ import annotations
 
 import asyncio
-import time
+import base64
 from pathlib import Path
 
 from pydantic import BaseModel
 
+from purrcept_engine.domain.stickers import StickerError
 from purrcept_engine.infrastructure.files import DownloadError, validate_download_url
 from purrcept_engine.plugin_system import (
     CallContext,
@@ -42,7 +43,6 @@ from purrcept_engine.plugins.qq.ports import ConnectionRejected, Connector, QQCa
 from purrcept_engine.plugins.qq.qzone import cards, write_result
 from purrcept_engine.plugins.qq.service import QQService
 from purrcept_engine.plugins.qq.settings import QQSettings
-from purrcept_engine.plugins.qq.stickers import StickerPublicationError
 from purrcept_engine.values import JsonObject, JsonValue, encode_json
 
 _SCHEMAS: tuple[tuple[str, type[BaseModel], str, str, str], ...] = (
@@ -90,7 +90,8 @@ _SCHEMAS: tuple[tuple[str, type[BaseModel], str, str, str], ...] = (
         (
             "用于查阅特定好友或群聊近期交流记录。本轮刚感知到的新消息已在上下文中，"
             "无需重复读取。 首次要求 chat/target_id，count "
-            "省略仍为20；续读仅指定 cursor，不重新查询平台。"
+            "省略仍为20。每页最多4000字符，只返回必要身份和一份正文；"
+            "长正文及原始消息段按引用展开，续读仅指定 cursor，不重新查询平台。"
         ),
         ('await me.phone.qq.read(chat="group", target_id="987654", count=20)'),
     ),
@@ -180,23 +181,16 @@ _SCHEMAS: tuple[tuple[str, type[BaseModel], str, str, str], ...] = (
     (
         "save_sticker",
         p.SaveSticker,
-        "把一张图存进贴纸库并打标签。可用 message_id 或 url。",
+        "从 QQ 消息或图片 URL 收集图片到共享贴纸库。",
         "以后想反复发的表情先存下来。默认不会把图像内容塞进感知。",
         ('await me.phone.qq.save_sticker(tag="猫猫", url="https://example.com/cat.png")'),
     ),
     (
         "send_sticker",
         p.SendSticker,
-        "按 id 或标签发出一张已保存贴纸。",
+        "按共享库的 sticker_id 或标签向指定 QQ 会话发出贴纸。",
         "贴纸库里已有标签时用。不要把原始像素写进行动代码。",
         ('await me.phone.qq.send_sticker(chat="group", target_id="987654", tag="猫猫")'),
-    ),
-    (
-        "stickers",
-        p.Empty,
-        ("浏览已保存贴纸：路径 → 标签和 sticker_id。默认不展示图像内容。"),
-        "想确认库里有哪些标签时用。看画面请再调用 view。",
-        "await me.phone.qq.stickers()",
     ),
     (
         "qzone_post",
@@ -287,7 +281,6 @@ _READS = frozenset(
         "groups",
         "members",
         "login",
-        "stickers",
         "qzone_list",
         "qzone_feeds",
         "file_url",
@@ -322,10 +315,8 @@ class QQCapabilities:
         """
         try:
             return await self._invoke(name, parameters, context)
-        except QQMediaError as error:
+        except (QQMediaError, StickerError) as error:
             raise CapabilityInputError(str(error)) from error
-        except StickerPublicationError as error:
-            return CallOutcome("unknown", error.recovery, type(error).__name__, str(error))
         except QQCallError as error:
             # 此处只接多阶段前置 lookup 的失败；后续副作用没有派发，不能报已发送。
             return CallOutcome(
@@ -400,11 +391,6 @@ class QQCapabilities:
                 },
             )
         if isinstance(parameters, p.Empty):
-            if name == "stickers":
-                records = await service.media.io(service.stickers.list)
-                return CallOutcome(
-                    "confirmed", {"stickers": [record.value() for record in records]}
-                )
             actions = {
                 "friends": "get_friend_list",
                 "groups": "get_group_list",
@@ -607,30 +593,22 @@ class QQCapabilities:
                     raw = self.image_data_source(data)
             asset = await service.media.image(raw)
 
-            def save_file() -> CallOutcome:
-                # 文件串行工作可能等待旧线程；真正写入前再核对原调用期限。
-                if time.monotonic() >= context.deadline:
-                    return CallOutcome(
-                        "failed",
-                        {"phase": "write_not_started"},
-                        "QQCallDeadline",
-                        "贴纸写入在实际开始前期限耗尽。",
-                    )
-                try:
-                    record = service.stickers.save(asset, tag=parameters.tag)
-                except StickerPublicationError as error:
-                    return CallOutcome("unknown", error.recovery, type(error).__name__, str(error))
-                return CallOutcome("confirmed", record.value())
-
             async def save() -> CallOutcome:
-                return await service.media.io(save_file)
+                # 平台图片取得后交给宿主共享库；SQL 事务拥有媒体与标签的原子发布。
+                try:
+                    record = await service.stickers.save_image(asset, tag=parameters.tag)
+                except StickerError as error:
+                    # 迟到的标签冲突也是实际业务回执，不能被后台所有者锁存为连接故障。
+                    return CallOutcome(
+                        "failed", {"error": "sticker_rejected"}, type(error).__name__, str(error)
+                    )
+                return CallOutcome("confirmed", record.value())
 
             return await service.file_result(context, save)
         if isinstance(parameters, p.SendSticker):
-            record = await service.media.io(
-                lambda: service.stickers.get(sticker_id=parameters.sticker_id, tag=parameters.tag)
+            record, asset = await service.stickers.read(
+                sticker_id=parameters.sticker_id, tag=parameters.tag
             )
-            path = await service.media.io(lambda: service.stickers.path(record))
             pause = service.settings.typing_pause_seconds("·")
             if pause:
                 await asyncio.sleep(pause)
@@ -638,7 +616,7 @@ class QQCapabilities:
                 {
                     "type": "image",
                     "data": {
-                        "file": path.as_uri(),
+                        "file": "base64://" + base64.b64encode(asset.content).decode(),
                         # SnowLuma 的 OneBot 字段是 sub_type；省略或拼成 subtype
                         # 会按普通图片发送，summary 只控制摘要文字，不决定显示样式。
                         "sub_type": 1,

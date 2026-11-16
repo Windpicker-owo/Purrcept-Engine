@@ -50,7 +50,10 @@ seed_examples = true""",
             ("notebook_dir", "必填，笔记根目录（相对配置文件目录），如 'notes'"),
             ("skills_dir", "可选，技能子目录（相对 notebook_dir），默认 ''，常用 'skills'"),
             ("seed_examples", "首次启动是否生成示例日记与技能文件，默认 true"),
-            ("consolidation.enabled", "是否启用后台专题记忆自动整理，默认 false（启用时需填 consolidation.model）"),
+            (
+                "consolidation.enabled",
+                "是否启用后台专题记忆自动整理，默认 false（启用时需填 consolidation.model）",
+            ),
             (
                 "embedding.model",
                 "可选，向量模型名（如 'openai/text-embedding-3-small'），不配则用关键词检索",
@@ -108,12 +111,20 @@ private_list = ["123456789"]
 group_list_type = "whitelist"
 group_list = []""",
         key_fields=(
-            ("mode", "连接方式：'reverse'（Engine 监听等待 OneBot 连入）或 'direct'（主动连 OneBot）"),
+            (
+                "mode",
+                "连接方式：'reverse'（Engine 监听等待 OneBot 连入）或 'direct'（主动连 OneBot）",
+            ),
             ("host / port", "WebSocket 地址与端口，默认 '127.0.0.1' 与 8095"),
             ("access_token", "OneBot 鉴权 Token，支持 '${ONEBOT_ACCESS_TOKEN}'，无密码可留空"),
-            ("private_list_type / private_list", "私聊过滤模式（'whitelist' 或 'blacklist'）与 QQ 号数组"),
-            ("group_list_type / group_list", "群聊过滤模式（'whitelist' 或 'blacklist'）与群号数组"),
-            ("sticker_dir", "本地表情包目录，默认 '.purrcept/qq-stickers'"),
+            (
+                "private_list_type / private_list",
+                "私聊过滤模式（'whitelist' 或 'blacklist'）与 QQ 号数组",
+            ),
+            (
+                "group_list_type / group_list",
+                "群聊过滤模式（'whitelist' 或 'blacklist'）与群号数组",
+            ),
         ),
     ),
     PluginGuideEntry(
@@ -132,7 +143,11 @@ public_url = "https://192.168.1.100:8766"
 certificate = ".purrcept/phone/phone-cert.pem"
 private_key = ".purrcept/phone/phone-key.pem\"""",
         key_fields=(
-            ("public_url", "必填，手机可访问到的电脑 HTTPS 根地址（推荐使用 `purrcept-phone` 向导自动生成证书与配置）"),
+            (
+                "public_url",
+                "必填，手机可访问到的电脑 HTTPS 根地址"
+                "（推荐使用 `purrcept-phone` 向导自动生成证书与配置）",
+            ),
             ("port", "HTTPS 监听端口，默认 8766（不可与 WebUI 端口冲突）"),
             ("certificate / private_key", "TLS 证书与私钥 PEM 文件路径"),
             ("pairing_enabled", "启动时是否自动开启 2 分钟扫码配对窗口，默认 false"),
@@ -143,7 +158,9 @@ private_key = ".purrcept/phone/phone-key.pem\"""",
         title="宿主电脑感知与命令行 (Computer)",
         capability_prefix="me.computer.*",
         extra=None,
-        summary="显式连接宿主 Windows 桌面，读取前台窗口信息、截取屏幕画面或执行受控 PowerShell 命令。",
+        summary=(
+            "显式连接宿主 Windows 桌面，读取前台窗口信息、截取屏幕画面或执行受控 PowerShell 命令。"
+        ),
         toml_snippet="""[[plugins]]
 instance_id = "computer"
 entry = "computer\"""",
@@ -200,7 +217,9 @@ timezone = "Asia/Shanghai\"""",
         title="语音合成与实时播放 (Microphone / TTS)",
         capability_prefix="me.microphone.*",
         extra="需系统已安装 ffmpeg 与 ffplay",
-        summary="调用 TTS 接口将文字合成为语音并播放，支持流式播放、声线预设后处理与联动 Live2D 口型。",
+        summary=(
+            "调用 TTS 接口将文字合成为语音并播放，支持流式播放、声线预设后处理与联动 Live2D 口型。"
+        ),
         toml_snippet="""[[plugins]]
 instance_id = "microphone"
 entry = "microphone"
@@ -221,7 +240,10 @@ voice_id = "replace-with-voice-id\"""",
         title="本地麦克风 VAD 收音与语音识别 (Voice Input)",
         capability_prefix="me.voice_input（状态与面板控制）",
         extra="voice-input（另需准备 silero_vad.onnx 模型文件）",
-        summary="通过本地麦克风检测人声起止（支持说话自动打断 TTS 播报），经实时 ASR 转写或原声直传主脑。",
+        summary=(
+            "通过本地麦克风检测人声起止（支持说话自动打断 TTS 播报），"
+            "经实时 ASR 转写或原声直传主脑。"
+        ),
         toml_snippet="""[[plugins]]
 instance_id = "voice_input"
 entry = "voice_input"
@@ -232,7 +254,10 @@ asr_api_key = "${DASHSCOPE_API_KEY:-}"
 asr_model = "fun-asr-realtime"
 vad_interrupt_enabled = true""",
         key_fields=(
-            ("vad_model_path", "Silero VAD ONNX 模型路径，默认 '.purrcept/voice-input/silero_vad.onnx'"),
+            (
+                "vad_model_path",
+                "Silero VAD ONNX 模型路径，默认 '.purrcept/voice-input/silero_vad.onnx'",
+            ),
             ("asr_url / asr_api_key / asr_model", "实时语音识别 WebSocket 地址、API Key 与模型名"),
             ("vad_interrupt_enabled", "检测到持续说话时是否自动打断正在播放的语音，默认 true"),
         ),
@@ -242,7 +267,9 @@ vad_interrupt_enabled = true""",
         title="VTube Studio 身体与表情驱动 (Live2D)",
         capability_prefix="me.live2d.*",
         extra="live2d",
-        summary="连接本机 VTube Studio WebSocket 接口，根据情绪、注视、动作意图与语音韵律实时驱动皮套。",
+        summary=(
+            "连接本机 VTube Studio WebSocket 接口，根据情绪、注视、动作意图与语音韵律实时驱动皮套。"
+        ),
         toml_snippet="""[[plugins]]
 instance_id = "live2d"
 entry = "live2d"
@@ -252,7 +279,10 @@ profile_path = ".purrcept/live2d/profile.json\"""",
         key_fields=(
             ("vts_url", "本机 VTube Studio API 地址，默认 'ws://127.0.0.1:8001'"),
             ("profile_path", "必填，模型参数绑定与校准 JSON 路径"),
-            ("preferences_path", "可选，由 `python -m purrcept_engine.app.live2d_studio` 调节的姿态偏好路径"),
+            (
+                "preferences_path",
+                "可选，由 `python -m purrcept_engine.app.live2d_studio` 调节的姿态偏好路径",
+            ),
         ),
     ),
 )
@@ -264,7 +294,8 @@ def render_plugin_guide(target: str | None = None) -> str:
         lines = [
             "Purrcept Engine 内置插件配置速查目录",
             "用法：在 purrcept.toml 中添加对应的 [[plugins]] 段落即可启用。",
-            "运行 `purrcept-engine plugins <插件名>`（例如 `purrcept-engine plugins qq`）查看完整配置示例。\n",
+            "运行 `purrcept-engine plugins <插件名>`"
+            "（例如 `purrcept-engine plugins qq`）查看完整配置示例。\n",
         ]
         for item in PLUGIN_GUIDES:
             dep = f"额外依赖: {item.extra}" if item.extra else "无额外依赖"
@@ -281,7 +312,7 @@ def render_plugin_guide(target: str | None = None) -> str:
     dep_line = matched.extra if matched.extra else "无（开箱即用）"
     field_lines = "\n".join(f"  - {name}: {desc}" for name, desc in matched.key_fields)
     return (
-        f"插件：{matched.title} (entry = \"{matched.entry}\")\n"
+        f'插件：{matched.title} (entry = "{matched.entry}")\n'
         f"能力路径：{matched.capability_prefix}\n"
         f"依赖要求：{dep_line}\n"
         f"功能简介：{matched.summary}\n\n"

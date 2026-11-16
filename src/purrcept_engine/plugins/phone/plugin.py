@@ -71,17 +71,73 @@ class _Empty(_Parameters):
 
 
 class _Send(_Parameters):
-    text: str = Field(min_length=1, max_length=32768)
+    text: str = Field(default="", max_length=32768)
+    sticker_id: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=128,
+        description="共享贴纸库的稳定身份，从 me.stickers.list 获取，QQ 与手机共用。",
+    )
+    sticker: str | None = Field(
+        default=None,
+        pattern=r"^[A-Za-z0-9_:-]{1,64}$",
+        description=(
+            "可选内置陪伴贴纸 ID（如 peek_curious、pat_head、sparkle_eyes、hug_warm、"
+            "cheer_flag、thinking_hmm、sleepy_curl、pout_hmph、ok_salute、tea_break、"
+            "heart_tail、shock_ahoge）。"
+        ),
+    )
+    voice_base64: str | None = Field(
+        default=None,
+        max_length=12_000_000,
+        description=(
+            "可选标准 Base64 编码的语音音频字节（WAV/MP3/OGG），"
+            "将作为可播放的波形语音气泡投递至手机。"
+        ),
+    )
+    reply_to: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=128,
+        description="可选引用回复的目标 message_id。",
+    )
 
     @field_validator("text")
     @classmethod
     def bounded_text(cls, value: str) -> str:
         """入队前验证出站信封能够交付，不能留下永久阻塞补送的超大消息。"""
-        return validate_text(value)
+        return validate_text(value) if value else value
+
+    @model_validator(mode="after")
+    def non_empty_content(self) -> _Send:
+        """纯文本、贴纸或语音至少提供一项；仅发贴纸或语音时自动生成无障碍摘要正文。"""
+        if sum(item is not None for item in (self.sticker, self.sticker_id, self.voice_base64)) > 1:
+            raise ValueError("内置贴纸、共享贴纸和语音不能混用。")
+        if (
+            not self.text.strip()
+            and self.sticker is None
+            and self.sticker_id is None
+            and self.voice_base64 is None
+        ):
+            raise ValueError("必须提供 text、内置 sticker、共享 sticker_id 或 voice_base64。")
+        if not self.text.strip() and self.sticker_id is None:
+            fallback = f"[贴纸：{self.sticker}]" if self.sticker is not None else "[语音消息]"
+            object.__setattr__(self, "text", fallback)
+        return self
 
 
 class _History(_Parameters):
     after: int = Field(default=0, ge=0)
+
+
+class _Avatar(_Parameters):
+    """使用宿主已接管的图片；省略或传 None 恢复默认头像。"""
+
+    media_id: str | None = Field(
+        default=None,
+        pattern=r"^[0-9a-f]{64}$",
+        description="me.view_image、图片输入或 me.stickers.list 的图片媒体 ID；None 恢复默认头像。",
+    )
 
 
 class _Package(_Parameters):
@@ -151,10 +207,13 @@ def _declare(instance_id: str, settings: PhoneSettings, base_dir: Path) -> Plugi
             instance_id + ":send",
             instance_id + ":chat",
             "send",
-            "持久接管向手机发送的文字；queued 表示已保存待投递，不表示手机已收到。",
+            (
+                "持久接管向手机发送的聊天消息，支持文字、共享贴纸（sticker_id）、内置贴纸（sticker）、"
+                "语音气泡（voice_base64）及引用回复（reply_to）；queued 表示已保存待投递。"
+            ),
             _Send,
-            10.0,
-            'await me.phone.chat.send(text="你好")',
+            15.0,
+            'await me.phone.chat.send(text="在呢～", sticker="pat_head")',
         ),
         CapabilityDeclaration(
             instance_id + ":history",
@@ -164,6 +223,16 @@ def _declare(instance_id: str, settings: PhoneSettings, base_dir: Path) -> Plugi
             _History,
             10.0,
             "await me.phone.chat.history()",
+        ),
+        CapabilityDeclaration(
+            instance_id + ":set_avatar",
+            instance_id + ":chat",
+            "set_avatar",
+            "设置自己在手机 APP 中显示的头像。先 me.view_image 取得 media_id；"
+            "省略 media_id 恢复默认。离线时持久保存，queued 表示待同步，不证明手机已显示。",
+            _Avatar,
+            15.0,
+            'await me.phone.chat.set_avatar(media_id="图片媒体ID")',
         ),
     )
 
@@ -243,6 +312,7 @@ def _declare(instance_id: str, settings: PhoneSettings, base_dir: Path) -> Plugi
             ports.evidence,
             subject_name=ports.subject_name,
             host_snapshot=ports.snapshot,
+            stickers=ports.stickers,
         )
         server = PhoneServer(runtime, settings)
 
@@ -271,10 +341,20 @@ def _declare(instance_id: str, settings: PhoneSettings, base_dir: Path) -> Plugi
             return FunctionCapability(declaration, invoke)
 
         async def send(parameters: _Send, context: CallContext) -> CallOutcome:
-            return await runtime.send_chat(parameters.text, context)
+            return await runtime.send_chat(
+                parameters.text,
+                context,
+                sticker=parameters.sticker,
+                voice_base64=parameters.voice_base64,
+                reply_to=parameters.reply_to,
+                sticker_id=parameters.sticker_id,
+            )
 
         async def history(parameters: _History, context: CallContext) -> CallOutcome:
             return CallOutcome("confirmed", await runtime.history(parameters.after))
+
+        async def set_avatar(parameters: _Avatar, context: CallContext) -> CallOutcome:
+            return await runtime.set_avatar(parameters.media_id)
 
         async def prepare_request() -> JsonObject:
             return {"phone": runtime.snapshot()}
@@ -286,6 +366,7 @@ def _declare(instance_id: str, settings: PhoneSettings, base_dir: Path) -> Plugi
                 FunctionCapability(declarations[2], disconnect),
                 FunctionCapability(declarations[3], send),
                 FunctionCapability(declarations[4], history),
+                FunctionCapability(declarations[5], set_avatar),
                 *(bind_device(item) for item in device_declarations),
             ),
             start=server.start,

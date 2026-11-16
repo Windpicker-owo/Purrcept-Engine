@@ -3,7 +3,8 @@
 支持从 TOML 文件或 Python 字典加载配置，提供以下人性化能力：
 1. 字符串字段支持 ``${ENV_VAR}`` 与 ``${ENV_VAR:-默认值}`` 环境变量插值（``$$`` 转义字面量 ``$``）。
 2. 本机回环与局域网模型服务（如 Ollama、vLLM、LM Studio）可省略 ``api_key`` 或留空。
-3. 模型默认 ``kind = "generation"`` 及合理的上下文窗口默认值；``subject.reflection`` 未填时默认复用 ``foreground``。
+3. 模型默认 ``kind = "generation"`` 及合理的上下文窗口默认值；
+   ``subject.reflection`` 未填时默认复用 ``foreground``。
 4. TOML 语法报错直接指出具体行列号与常见冲突提示，敏感凭据自动脱敏。
 """
 
@@ -265,9 +266,7 @@ class _ModelSettings(_Settings):
             )
             _ = parts.port
         except ValueError:
-            raise ValueError(
-                "api_base 必须是完整的 http(s):// 地址，且不能内嵌账号密码"
-            ) from None
+            raise ValueError("api_base 必须是完整的 http(s):// 地址，且不能内嵌账号密码") from None
         if not valid:
             raise ValueError("api_base 必须是完整的 http(s):// 地址，且不能内嵌账号密码")
         return value
@@ -380,12 +379,17 @@ class SubjectSettings(_Settings):
 
 
 class ContextSettings(_Settings):
-    """上下文窗口自动摘要维护比例与近期轮次保护阈值。"""
+    """配置摘要阈值、近期轮数与 unknown 回执的整轮原文保护时长。
+
+    unknown_call_protection_seconds 从最新未知回执起算；过期只撤销自动保护，
+    不将未知效果改记为成功，也不解除计划、活动及监管的独立保护。
+    """
 
     summary_trigger: Fraction = 0.8
     summary_target: Fraction = 0.5
     input_reserve_fraction: Annotated[float, Field(ge=0, lt=1, allow_inf_nan=False)] = 0.1
     protected_turns: PositiveInt = 2
+    unknown_call_protection_seconds: PositiveSeconds = 86400.0
     page_chars: PositiveInt = 8000
 
     @model_validator(mode="after")
@@ -538,7 +542,8 @@ class EngineConfig(_Settings):
                 location = ".".join(str(part) for part in issue["loc"]) or "config"
                 if location == "knowledge":
                     descriptions.append(
-                        "knowledge 已移除；向量配置请写在 notebook 插件的 [plugins.config.embedding] 中。"
+                        "knowledge 已移除；向量配置请写在 notebook 插件的 "
+                        "[plugins.config.embedding] 中。"
                     )
                 elif location.startswith("subject.memory_"):
                     descriptions.append(

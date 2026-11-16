@@ -94,6 +94,23 @@ Android 完成手势仅证明手势回调完成，不证明第三方应用的业
 可通过 `chat.history` 查询。用户普通直接消息提供最低唤起资格，但仍遵循
 当前睡眠规则，不默认抢占旧生成。
 
+Bot 的跨通道贴纸库使用 `me.stickers.save/list/view/delete`，QQ 和手机发言共用；
+向手机发送用 `me.phone.chat.send(sticker_id=...)`。APP 的「我的收藏」属于用户，
+独立保存在手机，允许离线添加与删除，不提供修改 Bot 目录的手机接口。
+
+Bot 可自行设置 APP 中的头像：
+
+```python
+picture = await me.view_image(source="avatars/cat.png")
+await me.phone.chat.set_avatar(media_id=picture["media_id"])
+await me.phone.chat.set_avatar()  # 显式恢复默认头像。
+```
+
+使用已接管的 PNG/JPEG/GIF/WebP 图片，最大 8 MiB、3200 万像素；不要求手机在线或
+开启操控。头像与递增版本在 Engine 同库保存，重连后通过 `engine.state.avatar` 同步。
+queued 表示已保存待交付，不能作为手机已显示的证明。客户端完整下载成功后才更新
+顶栏和气泡头像；失败保留旧头像，可重试附件传输。用户头像和昵称独立保存在手机。
+
 手机聊天界面区分本机已保存、Engine 已接管等待同步和事件已同步。接管
 回执不会提前移除手机待发项，直到对应事件落盘才替换气泡；重连仍可按
 原身份幂等提交。上述状态不代表主脑已读或已经作答，协议没有已读回执。
@@ -125,9 +142,9 @@ uv run purrcept-phone revoke --data-dir .purrcept-engine --instance-id phone
 
 ## 本轮范围
 
-当前实现文字聊天、可靠补送、显式设备连接和基础 Android 操作。图片上传
-目前用于设备截图；安卓扫码已接入。聊天附件选择、语音、连续观察、桌宠和
-主脑主观已读回执尚未实现。运行时权限、前台服务和截图效果需要测试手机
+当前实现文字、图片、贴纸、语音、引用回复、可靠补送、Bot 头像同步、显式设备连接
+和基础 Android 操作；安卓扫码已接入。连续观察、桌宠和主脑主观已读回执尚未实现。
+运行时权限、前台服务和截图效果需要测试手机
 验收；离线协议测试不代表真实设备已通过。
 
 

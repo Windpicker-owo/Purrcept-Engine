@@ -25,6 +25,7 @@ from purrcept_engine.domain.inputs.models import (
     InputSource,
     InputSubmission,
 )
+from purrcept_engine.domain.stickers import StickerRecord
 from purrcept_engine.errors import StorageError
 from purrcept_engine.infrastructure.sqlite.store import Store
 from purrcept_engine.plugin_system.contracts import PluginPorts
@@ -32,7 +33,6 @@ from purrcept_engine.plugins.qq.messages import HistoryCache, project_message
 from purrcept_engine.plugins.qq.plugin import factory_with_connector
 from purrcept_engine.plugins.qq.service import QQService
 from purrcept_engine.plugins.qq.settings import QQSettings
-from purrcept_engine.plugins.qq.stickers import StickerRecord
 from purrcept_engine.values import JsonObject, decode_object, encode_json
 
 
@@ -217,17 +217,16 @@ async def test_replay_after_local_sticker_change_keeps_first_projection(
         sticker_id="new-sticker",
         tag="new-tag",
         digest="0" * 32,
-        filename="example.png",
+        media_id="0" * 64,
         media_type="image/png",
-        path=str(rig.directory / "example.png"),
         created_at="2026-10-13",
     )
 
-    def changed(data: JsonObject) -> StickerRecord:
+    async def changed(data: JsonObject) -> StickerRecord:
         del data
         return matched
 
-    monkeypatch.setattr(rig.service.stickers, "match", changed)
+    monkeypatch.setattr(rig.service, "_match_sticker", changed)
     rig.service.cache = HistoryCache(rig.service.settings)
     await rig.service.event(payload, 2)
     assert rig.inputs.admitted[-1].duplicate
@@ -294,6 +293,7 @@ async def test_native_query_authority_failure_remains_fatal(
             EvidenceAccess(store.evidence, 700),
             late_results=LateCallResults(store, frozenset()),
             native_inputs=inputs,
+            stickers=store.stickers,
         ),
         Connector((socket,)),
     )

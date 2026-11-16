@@ -1,22 +1,28 @@
 """拥有一个手机连接、可靠聊天交接与显式操作会话。
 
-聊天接入进入已有 InputPort，模型发言通过持久事件日志投递。网络在线与操作
+聊天接入进入已有 InputPort（支持纯文本及已接管的手机图片、贴纸与语音多模态块），
+模型发言通过持久事件日志投递（支持文字、Bot 共享贴纸、内置贴纸、语音及引用回复）。
+Bot 头像通过持久版本同步，用户手机收藏不由本模块管理。网络在线与操作
 资格分开；重连不会恢复操控。命令断线返回未知，禁止自动再次派发。
 传输实现通过 Peer 借用发送入口，不取得主脑或 Worker 对象。
 """
 
 from __future__ import annotations
 
+import array
 import asyncio
+import base64
+import math
 from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Protocol
 from uuid import uuid4
 
-from purrcept_core.models import TextBlock
+from purrcept_core.models import AudioBlock, AudioBytes, ImageBlock, ImageBytes, TextBlock
 
 from purrcept_engine.domain.phone.contracts import PhoneStore
-from purrcept_engine.errors import HostStateError
+from purrcept_engine.domain.stickers import StickerError, StickerLibrary
+from purrcept_engine.errors import HostStateError, StorageError
 from purrcept_engine.plugin_system import (
     CallContext,
     CallOutcome,
@@ -30,7 +36,28 @@ from purrcept_engine.plugin_system import (
     MediaReference,
 )
 from purrcept_engine.plugins.phone.protocol import ChatSubmission
-from purrcept_engine.values import JsonObject, encode_json
+from purrcept_engine.values import JsonObject, JsonValue, encode_json
+
+
+def _wav_waveform(wav_bytes: bytes, bars: int = 24) -> list[int]:
+    """从 16kHz 16-bit 单声道 WAV 数据提取归一化波形高度（8..96），供移动端语音气泡展示。"""
+    pcm = wav_bytes[44:] if len(wav_bytes) > 44 else b""
+    if len(pcm) < 4:
+        return [24] * bars
+    samples = array.array("h")
+    samples.frombytes(pcm[: len(pcm) - (len(pcm) % 2)])
+    total = len(samples)
+    step = max(1, total // bars)
+    out: list[int] = []
+    for idx in range(bars):
+        chunk = samples[idx * step : min(total, (idx + 1) * step)]
+        if not chunk:
+            out.append(18)
+            continue
+        rms = math.sqrt(sum(int(s) * int(s) for s in chunk) / len(chunk))
+        norm = min(96, max(12, round((rms / 9000.0) * 88 + 12)))
+        out.append(norm)
+    return out
 
 
 class Peer(Protocol):
@@ -57,6 +84,7 @@ class PhoneRuntime:
         *,
         subject_name: str | None = None,
         host_snapshot: Callable[[], JsonObject] | None = None,
+        stickers: StickerLibrary | None = None,
     ) -> None:
         """保存有限端口；构造不打开网络或采集手机。"""
         self.instance_id, self.inputs, self.store = instance_id, inputs, store
@@ -64,6 +92,7 @@ class PhoneRuntime:
         self._evidence = evidence
         self._subject_name = None if subject_name is None else subject_name.strip()[:120]
         self._host_snapshot = host_snapshot
+        self.stickers = stickers
         self.peer: Peer | None = None
         self.control_session: str | None = None
         self.device_state: JsonObject = {}
@@ -105,22 +134,12 @@ class PhoneRuntime:
         return {
             **progress,
             "subject_name": self._subject_name,
+            "avatar": await self.store.avatar(),
             "host_phase": host.get("phase", "unknown"),
         }
 
     async def deliver(self, peer: Peer, after: int) -> None:
-        """补送聊天并发布当前状态，寿命由当前传输连接拥有。
-
-        Args:
-            peer: 已认证的唯一连接；发送在同一宿主循环串行化。
-            after: 对端已落盘的聊天游标，传输层已核验其范围。
-
-        Note:
-            调用方在断线时取消此协程并等待退出；取消与发送失败原样传播。
-            只有已提交事实变化才发送 engine.state；连接内 revision 单调增加，
-            状态不占聊天序号、不要求确认、不在重连时重放。轮询不能保证捕获
-            每个短暂阶段；最近真实调用的摘要由账本保留，界面不能人为延长忙碌。
-        """
+        """补送聊天并发布当前状态，寿命由当前传输连接拥有。"""
         previous: JsonObject | None = None
         revision = 0
         while True:
@@ -142,9 +161,6 @@ class PhoneRuntime:
                 previous = current
             if events:
                 continue
-            # 输入、模型和执行账本由原来的所有者提交。手机只轮询已提交的
-            # 有限投影，不增加订阅总线或反向驱动主脑。忙碌时提高采样频率，
-            # 空闲时每秒最多一次；重复采样不产生网络帧。
             activity = current["activity"]
             assert isinstance(activity, dict)
             interval = 0.25 if activity["phase"] != "idle" else 1.0
@@ -158,6 +174,22 @@ class PhoneRuntime:
         """先正式接管，再补齐展示索引；重投沿原生身份取得同一次输入。"""
         if self.stopping:
             raise HostStateError("手机插件已停止新输入。")
+
+        blocks: list[TextBlock | ImageBlock | AudioBlock] = [TextBlock(message.text)]
+        resolved_media_type = message.media_type
+        if message.media_id is not None:
+            asset = await self.store.media(device_id, message.media_id)
+            if asset is None:
+                raise StorageError("手机消息引用的媒体不存在。", code="media_missing")
+            resolved_media_type = asset.media_type
+            if asset.media_type in ("image/png", "image/jpeg", "image/webp", "image/gif"):
+                alt = "手机贴纸" if message.kind == "sticker" else "手机图片"
+                blocks.append(ImageBlock(ImageBytes(asset.content, asset.media_type), alt_text=alt))
+            elif asset.media_type.startswith("audio/"):
+                blocks.append(
+                    AudioBlock(AudioBytes(asset.content, asset.media_type), alt_text="手机语音消息")
+                )
+
         submission = InputSubmission(
             InputSource(
                 self.instance_id,
@@ -172,7 +204,7 @@ class PhoneRuntime:
             datetime.now(UTC),
             (),
             InputContext(minimum_wake=True),
-        ).with_content("me.phone.chat", (TextBlock(message.text),))
+        ).with_content("me.phone.chat", tuple(blocks))
         admitted = await self.inputs.submit(submission)
         event: JsonObject = {
             "type": "chat.message",
@@ -182,6 +214,21 @@ class PhoneRuntime:
             "occurred_at": datetime.fromisoformat(message.occurred_at).astimezone(UTC).isoformat(),
             "input_id": admitted.input_id,
         }
+        if message.kind is not None:
+            event["kind"] = message.kind
+        if message.sticker_id is not None:
+            event["sticker_id"] = message.sticker_id
+        if message.media_id is not None:
+            event["media_id"] = message.media_id
+        if resolved_media_type is not None:
+            event["media_type"] = resolved_media_type
+        if message.duration_ms is not None:
+            event["duration_ms"] = message.duration_ms
+        if message.waveform is not None:
+            event["waveform"] = list(message.waveform)
+        if message.reply_to_id is not None:
+            event["reply_to_id"] = message.reply_to_id
+
         await self.store.append(device_id, "in:" + message.message_id, event)
         self.changed.set()
         return {
@@ -190,27 +237,85 @@ class PhoneRuntime:
             "duplicate": admitted.duplicate,
         }
 
-    async def send_chat(self, text: str, context: CallContext) -> CallOutcome:
-        """以真实 call_id 持久接管对外消息，离线时明确返回 queued。"""
+    async def send_chat(
+        self,
+        text: str,
+        context: CallContext,
+        *,
+        sticker: str | None = None,
+        voice_base64: str | None = None,
+        reply_to: str | None = None,
+        sticker_id: str | None = None,
+    ) -> CallOutcome:
+        """以真实 call_id 持久接管对外消息（支持文字、内置陪伴贴纸、语音与引用回复）。"""
+        from purrcept_engine.plugins.phone.transport import normalize_phone_voice
+
         device = await self.store.device()
         device_id = device.get("device_id")
         if not isinstance(device_id, str):
             return CallOutcome("failed", {"error": "not_paired"})
-        event = await self.store.append(
-            device_id,
-            "out:" + context.call_id,
-            {
-                "type": "chat.message",
-                "message_id": context.call_id,
-                "direction": "outgoing",
-                "text": text,
-            },
-        )
+
+        payload: JsonObject = {
+            "type": "chat.message",
+            "message_id": context.call_id,
+            "direction": "outgoing",
+            "text": text,
+        }
+        if reply_to is not None:
+            payload["reply_to_id"] = reply_to
+        if sticker_id is not None:
+            if self.stickers is None:
+                return CallOutcome("failed", {"error": "sticker_library_unavailable"})
+            try:
+                record, asset = await self.stickers.read(sticker_id=sticker_id)
+            except StickerError as error:
+                return CallOutcome(
+                    "failed", {"error": "sticker_missing"}, type(error).__name__, str(error)
+                )
+            media_id = await self.store.put_media(device_id, asset.content, asset.media_type)
+            payload.update(
+                kind="sticker",
+                sticker_id=record.sticker_id,
+                media_id=media_id,
+                media_type=asset.media_type,
+            )
+            if not text:
+                payload["text"] = "[贴纸：" + record.tag + "]"
+        elif voice_base64 is not None:
+            try:
+                raw_audio = base64.b64decode(voice_base64, validate=True)
+                wav_bytes, duration_ms = normalize_phone_voice(raw_audio)
+            except (ValueError, Exception):
+                return CallOutcome("failed", {"error": "invalid_voice_audio"})
+            media_id = await self.store.put_media(device_id, wav_bytes, "audio/wav")
+            payload["kind"] = "voice"
+            payload["media_id"] = media_id
+            payload["media_type"] = "audio/wav"
+            payload["duration_ms"] = duration_ms
+            # 波形计算保留整数约束；写入通用事件时再构造 JSON 数组。
+            waveform: list[JsonValue] = [height for height in _wav_waveform(wav_bytes)]
+            payload["waveform"] = waveform
+        elif sticker is not None:
+            payload["kind"] = "sticker"
+            payload["sticker_id"] = sticker
+
+        event = await self.store.append(device_id, "out:" + context.call_id, payload)
         self.changed.set()
         return CallOutcome(
             "confirmed",
             {"message_id": context.call_id, "seq": event["seq"], "delivery_state": "queued"},
         )
+
+    async def set_avatar(self, media_id: str | None) -> CallOutcome:
+        """接管 Bot 头像设置；手机离线时保存，联网后的状态同步交付最新版本。"""
+        try:
+            avatar = await self.store.set_avatar(media_id)
+        except StorageError as error:
+            if error.code != "phone_invalid_avatar":
+                raise
+            return CallOutcome("failed", {"error": error.code, "message": str(error)})
+        self.changed.set()
+        return CallOutcome("confirmed", {"avatar": avatar, "delivery_state": "queued"})
 
     async def command(
         self, operation: str, arguments: JsonObject, context: CallContext
@@ -246,7 +351,6 @@ class PhoneRuntime:
                     "failed",
                     {"command_id": context.call_id, "error": "connection_changed_before_dispatch"},
                 )
-            # 持久化等待也消耗原调用预算，不能用旧 remaining 延长手机执行期限。
             remaining = context.deadline - asyncio.get_running_loop().time()
             if remaining <= 0:
                 return CallOutcome(
@@ -283,7 +387,6 @@ class PhoneRuntime:
                 self.control_session = None
             return await self._outcome(peer, operation, result)
         except ConnectionError:
-            # 网络写失败不证明对端没有取得命令；登记后的身份只允许查询。
             return CallOutcome(
                 "unknown", {"command_id": context.call_id, "error": "connection_lost"}
             )

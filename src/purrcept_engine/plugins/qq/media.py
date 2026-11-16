@@ -87,11 +87,9 @@ class MediaOwner:
         self.settings = settings
         self.base_dir = base_dir
         self.media_dir = resolve_path(settings.media_dir, base_dir)
-        self.sticker_dir = resolve_path(settings.sticker_dir, base_dir)
         self.roots = (
             base_dir / ".purrcept",
             self.media_dir,
-            self.sticker_dir,
             *(resolve_path(value, base_dir) for value in settings.extra_media_roots),
         )
         self._http = httpx.AsyncClient(timeout=10.0, follow_redirects=False, trust_env=False)

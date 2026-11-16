@@ -31,6 +31,9 @@ class HistoryStore(Protocol):
     async def protected_input_ids(self, input_ids: tuple[str, ...]) -> frozenset[str]:
         """返回尚受未决工作保护的原始输入身份。
 
+        unknown 回执仅在宿主配置的保护窗口内自动保护原轮次；过期不改变回执
+        或原文，仍关联计划、活动、监管等未决工作的输入继续受保护。
+
         Args:
             input_ids: 本轮接管的输入身份集合，保留真实因果关联。
 

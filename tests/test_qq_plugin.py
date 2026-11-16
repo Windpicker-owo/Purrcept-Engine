@@ -118,7 +118,6 @@ def test_pure_factory_declares_qq_paths_and_strict_params(tmp_path: Path) -> Non
         "compose_forward",
         "save_sticker",
         "send_sticker",
-        "stickers",
         "qzone_post",
         "qzone_list",
         "qzone_feeds",

@@ -165,6 +165,7 @@ notes = ""
 # asr_model = "fun-asr-realtime"
 # vad_interrupt_enabled = true
 
+# 共享贴纸库 me.stickers 由宿主默认提供，无需配置插件；QQ 与手机聊天共用。
 # --- [插件 10] Live2D：连接本机 VTube Studio 驱动表情与姿态（需 uv sync --extra live2d） ---
 # [[plugins]]
 # instance_id = "live2d"
@@ -201,6 +202,7 @@ notes = ""
 # # summary_trigger = 0.8        # 上下文占用达 80% 时触发旧轮次摘要压缩
 # # summary_target = 0.5         # 压缩目标比例
 # # protected_turns = 2          # 始终保留完整原文的最近轮数
+# # unknown_call_protection_seconds = 86400.0 # 未知回执仅在最近 24 小时自动保护整轮原文
 
 # # [execution]
 # # action_seconds = 180.0       # 单次行动脚本最大执行秒数

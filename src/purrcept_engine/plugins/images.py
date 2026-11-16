@@ -3,6 +3,7 @@
 images_blueprint 只声明稳定 me.view_image 路径，不打开文件或连接网络。build
 交回一个 ImageRuntime，独占 HTTP 客户端并持有读盘、格式检查和正式接管任务。
 Worker 只收到来源与持久引用，后续主脑请求按 CallOutcome.media 展开原生像素。
+回执的 media_id 是实际接管的内容身份，可在同一行动中继续收藏到共享贴纸库。
 取消观察不能释放仍在读盘或提交的资源；关闭等待真实任务再关闭客户端。
 """
 
@@ -202,6 +203,7 @@ class ImageRuntime:
                 "source": source,
                 "media_type": media_type,
                 "size": len(data),
+                "media_id": reference.media_id,
                 "width": width,
                 "height": height,
                 "resource_status": "available",

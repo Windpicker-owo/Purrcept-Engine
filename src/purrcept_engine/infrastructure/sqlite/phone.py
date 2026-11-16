@@ -1,4 +1,4 @@
-"""在 Store 唯一线程持久保存配对、聊天事件和手机确认位置。
+"""在 Store 唯一线程持久保存配对、聊天事件、Bot 头像和手机确认位置。
 
 账本由 app 按插件实例借出；不创建连接或后台任务。事件日志是传输事实，
 入站原文仍归 inputs，能力结果仍归 execution；事件仅通过身份关联二者。
@@ -6,8 +6,11 @@
 """
 
 import hashlib
+import io
 import sqlite3
 from collections.abc import Callable
+
+from PIL import Image, UnidentifiedImageError
 
 from purrcept_engine.domain.inputs.models import MediaAsset
 from purrcept_engine.errors import StorageError
@@ -15,6 +18,8 @@ from purrcept_engine.infrastructure.sqlite.evidence_port import SqliteSubmit
 from purrcept_engine.values import JsonObject, JsonValue, decode_object, encode_json
 
 SCHEMA = (
+    "CREATE TABLE IF NOT EXISTS phone_profile(plugin TEXT PRIMARY KEY,"
+    "media_id TEXT REFERENCES media(media_id),media_type TEXT,revision INTEGER NOT NULL)",
     "CREATE TABLE IF NOT EXISTS phone_commands(plugin TEXT NOT NULL,identity TEXT NOT NULL,"
     "intent TEXT NOT NULL,result TEXT,PRIMARY KEY(plugin,identity))",
     "CREATE TABLE IF NOT EXISTS phone_media(plugin TEXT NOT NULL,device_id TEXT NOT NULL,"
@@ -275,15 +280,76 @@ class PhoneLedger:
         return await self._write(write, logical_bytes=len(content))
 
     async def media(self, device_id: str, media_id: str) -> MediaAsset | None:
-        """设备归属和内容读取在同一个查询中核验。"""
+        """同次查询核验设备附件或当前公开头像，不开放任意宿主媒体。"""
 
         def read(c: sqlite3.Connection) -> MediaAsset | None:
             row = c.execute(
                 "SELECT m.content,p.media_type FROM phone_media p JOIN media m USING(media_id) "
-                "WHERE p.plugin=? AND p.device_id=? AND p.media_id=?",
-                (self._plugin, device_id, media_id),
+                "WHERE p.plugin=? AND p.device_id=? AND p.media_id=? "
+                "UNION ALL SELECT m.content,p.media_type FROM phone_profile p "
+                "JOIN media m USING(media_id) WHERE p.plugin=? AND p.media_id=? LIMIT 1",
+                (self._plugin, device_id, media_id, self._plugin, media_id),
             ).fetchone()
             return None if row is None else MediaAsset(bytes(row[0]), str(row[1]))
+
+        return await self._submit(read)
+
+    async def set_avatar(self, media_id: str | None) -> JsonObject:
+        """核验实际图片后替换头像；外键保留原始媒体，重启后仍可同步。"""
+
+        def write(c: sqlite3.Connection) -> JsonObject:
+            media_type = None
+            if media_id is not None:
+                row = c.execute(
+                    "SELECT content FROM media WHERE media_id=?", (media_id,)
+                ).fetchone()
+                formats = {
+                    "PNG": "image/png",
+                    "JPEG": "image/jpeg",
+                    "GIF": "image/gif",
+                    "WEBP": "image/webp",
+                }
+                if row is None or not 0 < len(row[0]) <= 8 * 1024 * 1024:
+                    raise StorageError("头像图片缺失或超过 8 MiB。", code="phone_invalid_avatar")
+                try:
+                    with Image.open(io.BytesIO(row[0])) as image:
+                        media_type = formats.get(image.format or "")
+                        if media_type is None or image.width * image.height > 32_000_000:
+                            raise StorageError(
+                                "头像格式或尺寸不受支持。", code="phone_invalid_avatar"
+                            )
+                        image.verify()
+                except (
+                    UnidentifiedImageError,
+                    OSError,
+                    SyntaxError,
+                    Image.DecompressionBombError,
+                ) as error:
+                    raise StorageError("头像图片损坏。", code="phone_invalid_avatar") from error
+            # 版本按显式设置递增，即使重复选择同图，也能覆盖手机上随后修改的头像。
+            revision = c.execute(
+                "INSERT INTO phone_profile VALUES(?,?,?,1) ON CONFLICT(plugin) DO UPDATE SET "
+                "media_id=excluded.media_id,media_type=excluded.media_type,revision=revision+1 "
+                "RETURNING revision",
+                (self._plugin, media_id, media_type),
+            ).fetchone()[0]
+            return {"media_id": media_id, "media_type": media_type, "revision": int(revision)}
+
+        return await self._write(write)
+
+    async def avatar(self) -> JsonObject | None:
+        """返回插件级头像资料；media 查询只向认证设备公开当前头像字节。"""
+
+        def read(c: sqlite3.Connection) -> JsonObject | None:
+            row = c.execute(
+                "SELECT media_id,media_type,revision FROM phone_profile WHERE plugin=?",
+                (self._plugin,),
+            ).fetchone()
+            return (
+                None
+                if row is None
+                else {"media_id": row[0], "media_type": row[1], "revision": int(row[2])}
+            )
 
         return await self._submit(read)
 

@@ -89,6 +89,9 @@ class EngineAssembly:
             self.state.config.host.data_dir / "engine.sqlite3",
             max_inputs=self.state.config.execution.max_pending_inputs,
             max_input_bytes=self.state.config.execution.pending_input_bytes,
+            unknown_call_protection_seconds=(
+                self.state.config.context.unknown_call_protection_seconds
+            ),
         )
         self.state.store = store
         return store
@@ -101,9 +104,7 @@ class EngineAssembly:
             self.state.config.subject.reflection,
         }
         for _, blueprint in self.state.prepared.blueprints:
-            model_names.update(
-                requirement.model for requirement in blueprint.model_requirements
-            )
+            model_names.update(requirement.model for requirement in blueprint.model_requirements)
         if self.state.config.subject.attention is not None:
             model_names.add(self.state.config.subject.attention)
 
@@ -127,9 +128,7 @@ class EngineAssembly:
                 decisions[name] = decision
         return generation, decisions
 
-    async def _build_plugins(
-        self, store: Store, generation: dict[str, ModelBackend]
-    ) -> None:
+    async def _build_plugins(self, store: Store, generation: dict[str, ModelBackend]) -> None:
         """阶段 3：为每个已启用插件构造隔离的 PluginPorts 并实例化运行时。"""
         capability_paths = {
             binding.declaration.capability_id: binding.path
@@ -142,8 +141,7 @@ class EngineAssembly:
         )
         for instance_id, blueprint in self.state.prepared.blueprints:
             paths = frozenset(
-                capability_paths[capability.capability_id]
-                for capability in blueprint.capabilities
+                capability_paths[capability.capability_id] for capability in blueprint.capabilities
             )
             notebook_access = None
             if blueprint.notebook is not None:
@@ -183,6 +181,7 @@ class EngineAssembly:
                 background_models=background_models,
                 phone=store.phone(instance_id),
                 subject_name=self.state.config.subject.character.name,
+                stickers=store.stickers,
             )
             self.stage(f"plugin_build:{instance_id}")
             self.state.plugins[instance_id] = await blueprint.build(ports)

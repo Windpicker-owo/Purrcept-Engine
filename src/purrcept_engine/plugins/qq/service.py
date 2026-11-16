@@ -4,7 +4,8 @@ QQClient 只拥有传输，Service 在过滤后查回原生身份的第一次权
 补取转发原文并原子提交 InputSubmission。缓存不决定重放或内容冲突。
 语音在首次接管前有界读取并转换；平台转码失败时保留消息与缺口。
 工具应答先保存完整原响应，再检查 status/retcode 和投影；echo 超时不重发，
-真实迟到回包使用原 CallContext 追加版本。历史续读只访问宿主旧快照。
+真实迟到回包使用原 CallContext 追加版本。历史以有界页面交付，
+续读只访问宿主旧快照。聊天原消息另存证据，贴纸统一借用宿主共享库。
 """
 
 from __future__ import annotations
@@ -12,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import json
 import math
+import re
 import time
 from collections import deque
 from collections.abc import Awaitable, Callable
@@ -21,6 +23,7 @@ from uuid import uuid4
 
 from purrcept_core.models import AudioBlock, AudioBytes, TextBlock
 
+from purrcept_engine.domain.stickers import StickerRecord
 from purrcept_engine.errors import HostStateError, StorageError
 from purrcept_engine.plugin_system import (
     Admission,
@@ -52,9 +55,12 @@ from purrcept_engine.plugins.qq.parameters import Read
 from purrcept_engine.plugins.qq.ports import ConnectionRejected, Connector, QQCallError, Reply
 from purrcept_engine.plugins.qq.presentation import render_qq_input
 from purrcept_engine.plugins.qq.settings import QQSettings
-from purrcept_engine.plugins.qq.stickers import StickerLibrary
 from purrcept_engine.plugins.qq.voice import MAX_VOICE_BYTES, VoiceError, decode_voice
 from purrcept_engine.values import JsonObject, JsonValue, decode_object, encode_json
+
+# 页面正文与宿主来源信封分开计量。即使全局证据页长较大，QQ 列表也不应
+# 一次填满上下文；调用方可通过同一快照游标继续读取。
+_READ_PAGE_CHARS = 4000
 
 
 def platform_data(reply: Reply) -> JsonValue:
@@ -117,7 +123,12 @@ class QQService:
         Note:
             连接在 start 后发生。
         """
-        if ports.evidence is None or ports.late_results is None or ports.native_inputs is None:
+        if (
+            ports.evidence is None
+            or ports.late_results is None
+            or ports.native_inputs is None
+            or ports.stickers is None
+        ):
             raise RuntimeError("QQ 必须装配宿主原文、原生接管查询与迟到回执端口。")
         self.instance_id = instance_id
         self.settings = settings
@@ -125,7 +136,7 @@ class QQService:
         self.evidence: EvidencePort = ports.evidence
         self.native_inputs: NativeInputPort = ports.native_inputs
         self.media = MediaOwner(settings, base_dir)
-        self.stickers = StickerLibrary(self.media.sticker_dir)
+        self.stickers = ports.stickers
         self.cache = HistoryCache(settings)
         self.client = QQClient(settings, connector, self.event, self.gap)
         self._account = ""
@@ -498,7 +509,7 @@ class QQService:
         if isinstance(image_items, list) and image_items:
             for image in image_items:
                 if isinstance(image, dict):
-                    matched = await self.media.io(lambda image=image: self.stickers.match(image))
+                    matched = await self._match_sticker(image)
                     if matched is not None:
                         image.update(
                             {
@@ -741,7 +752,7 @@ class QQService:
     async def file_result(
         self, context: CallContext, operation: Callable[[], Awaitable[CallOutcome]]
     ) -> CallOutcome:
-        """有限拥有一次真实贴纸写入，取消观察后仍把实际结果交原调用回执。
+        """有限拥有一次 QQ 图片到共享库的导入，取消观察后仍交付实际回执。
 
         Args:
             context: 宿主或 Core 注入的可信调用上下文，不由模型自行填写。
@@ -755,7 +766,7 @@ class QQService:
 
         Note:
             observed 门槛让完成与取消竞争保持同一个所有者：首版正常结果直接返回，
-            观察已取消才等待宿主首版提交并追加结果；不回滚文件或重新执行操作。
+            观察已取消才等待宿主首版提交并追加结果；不回滚共享事务或重新执行操作。
         """
         late_port = self.ports.late_results
         if late_port is None:
@@ -796,7 +807,7 @@ class QQService:
             observed.set()
 
     async def read(self, parameters: Read, context: CallContext) -> CallOutcome:
-        """平台首读保存完整消息快照。
+        """保存平台完整历史，向模型分页交付必要字段和单份正文。
 
         Args:
             parameters: 已通过能力参数模型校验的调用参数。
@@ -814,7 +825,7 @@ class QQService:
         """
         if parameters.cursor is not None:
             page = await self.evidence.read_evidence_cursor(
-                parameters.cursor, max_chars=self.evidence.page_chars
+                parameters.cursor, max_chars=min(self.evidence.page_chars, _READ_PAGE_CHARS)
             )
             return self.history_page(page)
         chat, target = parameters.chat, parameters.target_id
@@ -890,17 +901,12 @@ class QQService:
                 "known_count": len(messages),
                 "complete": None,
                 "remote_total": None,
-                "times": [object_value(item).get("time") for item in messages],
             },
         }
         page_items: list[JsonValue] = []
-        body_refs: list[JsonValue] = []
         for item in messages:
             projected = await self.history_item(object_value(item), metadata)
             page_items.append(projected)
-            if "body_ref" in projected:
-                body_refs.append(projected["body_ref"])
-        metadata["large_message_body_refs"] = body_refs
         snapshot = EvidenceSnapshot(
             evidence_id=self.instance_id + ":qq:history:" + uuid4().hex,
             version=1,
@@ -913,7 +919,7 @@ class QQService:
         saved = await self.evidence.put_evidence(snapshot)
         try:
             page = await self.evidence.read_evidence(
-                saved.evidence_id, max_chars=self.evidence.page_chars
+                saved.evidence_id, max_chars=min(self.evidence.page_chars, _READ_PAGE_CHARS)
             )
         except EvidenceInputError as error:
             return CallOutcome(
@@ -932,22 +938,19 @@ class QQService:
         return self.history_page(page)
 
     async def history_item(self, message: JsonObject, source: JsonObject) -> JsonObject:
-        """过大的结构化消息另存完整正文和原字段，不截断对象制造完整页面。
+        """原消息另存证据，页面只保留身份和一份正文，超长正文再提供独立引用。
 
         Args:
             message: 已解码的原生协议对象。
             source: 本次原生读取实际取得并需要保存的来源字段。
 
         Returns:
-            业务对象，按实际结果提供 chat、target_id、message_id、sender_id、time、text、
-            raw_message、level、body_ref、original_ref 等 字段。
+            发送者、时间、消息身份与正文，或明确未展示正文的引用卡片。
 
         Note:
-            返回卡片明确没有正文；read_evidence 可按字符读取独立 body_ref，因此
-            原结构对象再大也不会让正文只能通过永远失败的列表分页访问。
+            text、authored_text 与 raw_message 经常重复同一段文字。完整字段留在
+            original_ref 中，页面不重复携带；长正文的 body_ref 支持按字符续读。
         """
-        if len(encode_json(message).decode()) + 2 <= self.evidence.page_chars:
-            return message
         identity = self.instance_id + ":qq:message:" + uuid4().hex
         metadata = {**source, "message_id": message.get("message_id")}
         original = EvidenceSnapshot(
@@ -958,6 +961,23 @@ class QQService:
             source_json=encode_json(metadata).decode(),
             occurred_at=time.time(),
         )
+        await self.evidence.put_evidence(original)
+        item: JsonObject = {
+            "message_id": message.get("message_id"),
+            "sender_id": message.get("sender_id"),
+            "sender_name": message.get("sender_name"),
+            "time": message.get("time"),
+            "text": message.get("text"),
+            "original_ref": {
+                "evidence_ref": original.evidence_id,
+                "version": 1,
+                "entry": "read_evidence",
+            },
+        }
+        page_chars = min(self.evidence.page_chars, _READ_PAGE_CHARS)
+        if len(encode_json(item).decode()) + 2 <= page_chars:
+            return item
+
         body = EvidenceSnapshot(
             evidence_id=identity + ":body",
             version=1,
@@ -966,16 +986,12 @@ class QQService:
             source_json=encode_json({**metadata, "original_ref": identity}).decode(),
             occurred_at=time.time(),
         )
-        await self.evidence.put_evidence(original)
         await self.evidence.put_evidence(body)
         return {
-            "chat": message.get("chat"),
-            "target_id": message.get("target_id"),
             "message_id": message.get("message_id"),
             "sender_id": message.get("sender_id"),
             "time": message.get("time"),
             "text": None,
-            "raw_message": None,
             "level": "overview",
             "body_ref": {
                 "evidence_ref": body.evidence_id,
@@ -992,7 +1008,7 @@ class QQService:
         }
 
     def history_page(self, page: EvidencePage) -> CallOutcome:
-        """核验宿主快照实际归属，返回旧字段和确切本地续读范围。
+        """核验快照归属，只交付本页消息及确切续读范围。
 
         Args:
             page: 与原版本绑定的完整原文页及媒体引用。
@@ -1012,7 +1028,21 @@ class QQService:
         raw_items: object = json.loads(page.text)
         items = decode_object(encode_json({"items": raw_items}))["items"]
         value: JsonObject = {
-            **metadata,
+            **{
+                key: metadata.get(key)
+                for key in (
+                    "chat",
+                    "target_id",
+                    "source",
+                    "platform_failure",
+                    "raw_response",
+                    "requested_count",
+                )
+            },
+            "coverage": {
+                key: object_value(metadata.get("coverage")).get(key)
+                for key in ("known_count", "complete", "remote_total")
+            },
             "messages": items,
             "evidence_ref": snapshot.evidence_id,
             "version": snapshot.version,
@@ -1024,6 +1054,17 @@ class QQService:
             "level": page.level,
         }
         return CallOutcome("confirmed", value, media=snapshot.media)
+
+    async def _match_sticker(self, image: JsonObject) -> StickerRecord | None:
+        """QQ 原生摘要字段只在适配层解析；共享库不认识 OneBot 信封。"""
+        digests: set[str] = set()
+        for key in ("md5", "file_md5", "file_unique", "file", "file_id", "filename", "name"):
+            value = image.get(key)
+            if isinstance(value, str) and (match := re.search(r"[0-9a-fA-F]{32}", value)):
+                digests.add(match.group().lower())
+        if not digests:
+            return None
+        return next((item for item in await self.stickers.list() if item.digest in digests), None)
 
     def resources_released(self) -> bool:
         """汇总传输与媒体各自的实际释放明证，供宿主关闭权威库前核验。

@@ -222,11 +222,17 @@ async def test_cancelling_start_waiter_does_not_abandon_open_store(
         *,
         max_inputs: int = 1024,
         max_input_bytes: int = 256 * 1024 * 1024,
+        unknown_call_protection_seconds: float = 86400.0,
     ) -> Store:
         del cls
         entered.set()
         await release.wait()
-        return await original_open(path, max_inputs=max_inputs, max_input_bytes=max_input_bytes)
+        return await original_open(
+            path,
+            max_inputs=max_inputs,
+            max_input_bytes=max_input_bytes,
+            unknown_call_protection_seconds=unknown_call_protection_seconds,
+        )
 
     monkeypatch.setattr(Store, "open", classmethod(delayed_open))
     host = EngineHost(_config(tmp_path))

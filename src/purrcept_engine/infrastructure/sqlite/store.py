@@ -6,6 +6,7 @@
 - ``store_execution.py``：行动与能力调用回执、模型请求证据与长时活动状态
 """
 
+import math
 import sqlite3
 from pathlib import Path
 
@@ -21,6 +22,7 @@ from purrcept_engine.infrastructure.sqlite.human_feedback import HumanFeedbackLe
 from purrcept_engine.infrastructure.sqlite.notebook import NotebookLedger
 from purrcept_engine.infrastructure.sqlite.phone import PhoneLedger
 from purrcept_engine.infrastructure.sqlite.rows import require_positive
+from purrcept_engine.infrastructure.sqlite.stickers import SqliteStickerLibrary
 from purrcept_engine.infrastructure.sqlite.store_execution import ExecutionStoreMixin
 from purrcept_engine.infrastructure.sqlite.store_inputs import (
     InputStoreMixin,
@@ -39,14 +41,30 @@ class Store(InputStoreMixin, SessionStoreMixin, ExecutionStoreMixin):
 
     @classmethod
     async def open(
-        cls, path: Path, *, max_inputs: int = 1024, max_input_bytes: int = 256 * 1024 * 1024
+        cls,
+        path: Path,
+        *,
+        max_inputs: int = 1024,
+        max_input_bytes: int = 256 * 1024 * 1024,
+        unknown_call_protection_seconds: float = 86400.0,
     ) -> "Store":
-        """打开或初始化 Engine 权威 SQLite 数据库并启动专属工作线程。"""
+        """打开权威库；未知回执只在指定秒数内自动保护整轮历史。
+
+        窗口从最新 unknown 回执的落库时间起算，过期不修改回执状态或原文。
+        未完成计划、活动及监管仍独立决定保护资格。
+        """
         if not isinstance(path, Path):
             raise ValueError("path 必须是 Path。")
         require_positive(max_inputs, "max_inputs")
         require_positive(max_input_bytes, "max_input_bytes")
-        store = cls(path, max_inputs, max_input_bytes)
+        if (
+            isinstance(unknown_call_protection_seconds, bool)
+            or not isinstance(unknown_call_protection_seconds, (int, float))
+            or not math.isfinite(unknown_call_protection_seconds)
+            or unknown_call_protection_seconds <= 0
+        ):
+            raise ValueError("unknown_call_protection_seconds 必须是有限正数。")
+        store = cls(path, max_inputs, max_input_bytes, unknown_call_protection_seconds)
         await store._queue.start()
         return store
 
@@ -61,6 +79,11 @@ class Store(InputStoreMixin, SessionStoreMixin, ExecutionStoreMixin):
     def phone(self, instance_id: str) -> PhoneLedger:
         """借出按插件实例隔离的手机会话账本。"""
         return PhoneLedger(self._submit, instance_id)
+
+    @property
+    def stickers(self) -> SqliteStickerLibrary:
+        """借出跨 QQ、手机及通用能力共享的贴纸库，同库事务串行执行。"""
+        return SqliteStickerLibrary(self._submit)
 
     @property
     def evidence(self) -> EvidenceLedger:

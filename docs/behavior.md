@@ -164,6 +164,12 @@ TextBlock、ImageBlock 和 AudioBlock。QQ 自行选择必要字段生成 YAML�
 使用同一窗口；原始媒体仍可从输入、真实请求及回执证据追溯。已有历史在下次
 恢复时应用，不需迁移数据库；成功轮次正常提交新历史。
 
+未知调用回执默认仅在最近 24 小时内自动保护所在的完整轮次，时长由
+`[context].unknown_call_protection_seconds` 配置，从最新 `unknown` 回执时间起算。
+超过窗口后，旧轮次允许摘要，回执状态和原始证据继续保留；过期不表示调用成功或失败。
+这些旧回执也不再作为当前工作反复附加到动态上下文。仍在执行的调用，以及关联未完成
+计划、活动或有效监管的输入，继续按各自业务规则保护。
+
 主体默认装配 `me.view_image(source=...)`，支持URL或本地图像（8MiB以内的
 PNG/JPEG/GIF/WebP）；像素完整保存到同库，后续请求通过原生媒体取得。
 TOML相对路径沿配置目录，程序式调用未给base_dir时沿数据目录。图片与文字
@@ -205,6 +211,32 @@ edited = await me.notebook.edit(
 恢复文件及 `unknown` 回执，不自动重试。外部编辑器仍有最终核验后的竞争窗口。
 
 ### QQ 附件与 Notebook
+
+`me.phone.qq.read(chat=..., target_id=..., count=20)` 保存完整历史，默认只分页返回
+消息身份、发送者、时间和一份正文。每页正文最多 4000 字符，全局 `page_chars` 更小时
+取更小值。原始 OneBot 分段通过 `original_ref` 核对，超长消息通过 `body_ref` 按字符读取。
+`next_cursor` 非空时，仅传 `cursor` 继续读取同一快照，不重新请求平台。
+
+贴纸库由宿主默认装配的 `me.stickers` 提供，不再隶属于 QQ。`save(media_id, tag)`
+收藏已经读取或上传的实际图片；URL 和本地文件先通过 `me.view_image` 取得媒体引用。
+`list(query="猫")` 按标签搜索，省略关键词浏览全库；每页最多 4000 字符，使用
+`cursor` 续读原快照。目录只含稳定 ID、标签与媒体元数据，`view(sticker_id)` 才读取像素。
+`delete(sticker_id)` 撤销共享收藏，历史消息的图片引用保留。
+
+QQ 的 `save_sticker(message_id=..., tag=...)` 只是从平台收集图片的适配器，写入同一
+共享库；发送用 `me.phone.qq.send_sticker(sticker_id=..., chat=..., target_id=...)`。
+手机发送用 `me.phone.chat.send(sticker_id=...)`。同图重存沿用身份并更新标签，
+不同图片不能抢占同一标签。通用目录入口改为 `me.stickers.list`，不保留 QQ 专用目录别名。
+这个共享库归 Bot 使用；APP「我的收藏」归手机用户，保存在手机本地，添加、删除
+均不改动 Bot 库。用户发送收藏时按普通图片附件上传，Bot 可再显式决定是否收藏。
+Bot 贴纸的唯一索引和完整图片保存在宿主 `engine.sqlite3`。
+旧 QQ 的 `sticker_dir` 配置和文件索引已移除，不自动迁移旧目录；已有图片文件
+保持原样，可通过 `me.view_image` 读取后重新收藏到共享库。
+
+Bot 可通过 `me.phone.chat.set_avatar(media_id=...)` 设置自己在 APP 中的头像，
+图片 ID 可来自 `me.view_image` 或已接管的图片。省略参数或传 `None` 恢复默认。
+头像在宿主持久保存，手机离线时也可设置；queued 只证明已保存待同步。
+手机联网后下载实际图片并更新顶栏和气泡头像，不改变用户自己的头像和昵称。
 
 QQ 收到语音消息时，在入站过滤和重放核验后下载并解码语音，转换为 WAV 与
 消息一起接管；模型声明支持 audio 且容量允许时，原生音频进入输入材料。

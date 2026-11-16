@@ -14,6 +14,7 @@ from purrcept_engine.infrastructure.sqlite import feedback as feedback_storage
 from purrcept_engine.infrastructure.sqlite import maintenance as maintenance_storage
 from purrcept_engine.infrastructure.sqlite import model_requests as model_storage
 from purrcept_engine.infrastructure.sqlite import phone as phone_storage
+from purrcept_engine.infrastructure.sqlite import stickers as sticker_storage
 from purrcept_engine.infrastructure.sqlite import subject as subject_storage
 from purrcept_engine.infrastructure.sqlite import time as time_storage
 from purrcept_engine.infrastructure.sqlite.rows import as_int
@@ -107,6 +108,8 @@ def initialize(connection: sqlite3.Connection) -> None:
 
         # 手机账本是可选接入的附加事实表；与原库恢复共用当前事务。
         for statement in phone_storage.SCHEMA:
+            connection.execute(statement)
+        for statement in sticker_storage.SCHEMA:
             connection.execute(statement)
 
         if version != _FORMAT_VERSION:

@@ -10,8 +10,15 @@ import threading
 from contextlib import closing
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
+from purrcept_core.models import (
+    ConversationCheckpoint,
+    ConversationState,
+    Message,
+    ReminderState,
+)
 
 from purrcept_engine.domain.activities.models import (
     ActivityCommand,
@@ -19,7 +26,10 @@ from purrcept_engine.domain.activities.models import (
     CommandKind,
     CommandStatus,
 )
+from purrcept_engine.domain.context.maintenance import freeze_summary_source
+from purrcept_engine.domain.evidence.models import EvidenceSnapshot, WakeupPlan
 from purrcept_engine.infrastructure.sqlite import queue as sqlite_queue
+from purrcept_engine.infrastructure.sqlite import store_sessions
 from purrcept_engine.infrastructure.sqlite.schema import initialize
 from purrcept_engine.infrastructure.sqlite.store import Store
 
@@ -128,6 +138,136 @@ async def test_protection_scans_unresolved_facts_with_linear_work(
             error=None,
         )
         assert await store.protected_input_ids(("input-1", "input-2")) == frozenset()
+    finally:
+        await store.close()
+
+
+async def test_unknown_protection_expires_without_changing_receipt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """到窗即释放整轮和动态材料；重开库不重置窗口，迟到回执仍可追加。"""
+
+    def prepare(connection: sqlite3.Connection) -> None:
+        initialize(connection)
+        _history(connection, 3)
+
+    monkeypatch.setattr(sqlite_queue, "initialize", prepare)
+    path = tmp_path / "expiry.sqlite3"
+    store = await Store.open(path, unknown_call_protection_seconds=60.0)
+    try:
+        await store.begin_action(
+            "action", catalog_version="catalog", source="return None", input_id="input-0"
+        )
+        await store.begin_call(
+            "call",
+            action_id="action",
+            sequence=0,
+            path="me.test.send",
+            target_id="test",
+            arguments_json="{}",
+        )
+        await store.mark_call_started("call")
+        call = await store.record_call_result(
+            "call",
+            state="unknown",
+            result_json='{"original":"unconfirmed"}',
+            error_type="Unconfirmed",
+            error="awaiting receipt",
+        )
+        await store.finish_action(
+            "action", state="completed", result_json="{}", output="", error=None
+        )
+        assert call.finished_at is not None
+        now = call.finished_at + 59.0
+        monkeypatch.setattr(store_sessions, "time", SimpleNamespace(time=lambda: now))
+        assert await store.protected_input_ids(("input-0",)) == {"input-0"}
+        calls = (await store.subject_work())["calls"]
+        assert isinstance(calls, list) and len(calls) == 1
+
+        checkpoint = ConversationCheckpoint(
+            ConversationState(
+                tuple(Message.user(f"历史轮次 {index}") for index in range(5)),
+                turn_index=5,
+                turn_boundaries=(1, 2, 3, 4, 5),
+            ),
+            ReminderState(),
+        )
+        protected = await store.protected_input_ids(("input-0",))
+        source = freeze_summary_source(
+            checkpoint,
+            owner_id="foreground",
+            source_version=0,
+            protected_message_indices=(0,) if protected else (),
+        )
+        assert source is not None and source.start_turn == 1
+
+        now += 1.0
+        assert await store.protected_input_ids(("input-0",)) == frozenset()
+        assert (await store.subject_work())["calls"] == []
+        source = freeze_summary_source(
+            checkpoint,
+            owner_id="foreground",
+            source_version=0,
+            protected_message_indices=(),
+        )
+        assert source is not None and source.start_turn == 0
+        stored = await store.get_action("action")
+        assert stored is not None and stored.calls[0] == call
+
+        # unknown 自身已过期，未完成计划仍可独立保留同一输入和调用事实。
+        await store.evidence.put_evidence(
+            EvidenceSnapshot(
+                evidence_id="input-0",
+                version=1,
+                kind="input",
+                text="original",
+                source_json="{}",
+                occurred_at=0.0,
+            ),
+            needs_reflection=False,
+        )
+        await store.evidence.plan_wakeup(
+            WakeupPlan(id="pending", due=now + 3600, reason="后续核对", evidence="input-0")
+        )
+        assert await store.protected_input_ids(("input-0",)) == {"input-0"}
+        calls = (await store.subject_work())["calls"]
+        assert isinstance(calls, list) and len(calls) == 1
+        await store.evidence.resolve_plan("pending", "后续工作结束", "input-0")
+        assert await store.protected_input_ids(("input-0",)) == frozenset()
+    finally:
+        await store.close()
+
+    # 直接重开原库，不再运行测试初始化；时间窗口不因重启而重置。
+    monkeypatch.setattr(sqlite_queue, "initialize", initialize)
+    store = await Store.open(path, unknown_call_protection_seconds=60.0)
+    try:
+        assert await store.protected_input_ids(("input-0",)) == frozenset()
+        assert (await store.subject_work())["calls"] == []
+        late = await store.record_call_result(
+            "call",
+            state="confirmed",
+            result_json='{"delivered":true}',
+            error_type=None,
+            error=None,
+        )
+        assert late.state == "confirmed" and late.receipt_revision == 2
+        assert late.history[0].state == "unknown"
+
+        # 正在执行而尚无回执的调用不受 unknown 窗口影响。
+        await store.begin_action(
+            "running", catalog_version="catalog", source="return None", input_id="input-1"
+        )
+        await store.begin_call(
+            "inflight",
+            action_id="running",
+            sequence=0,
+            path="me.test.run",
+            target_id="test",
+            arguments_json="{}",
+        )
+        await store.mark_call_started("inflight")
+        now += 100000.0
+        assert await store.protected_input_ids(("input-0", "input-1")) == {"input-1"}
     finally:
         await store.close()
 

@@ -15,7 +15,8 @@ class PhoneStore(Protocol):
     """宿主装配的单实例手机账本；内置 SQLite 实现借用唯一提交线程。
 
     写入返回表示事务完成，取消等待不撤销已入队事务。所有查询按插件及设备
-    隔离；身份冲突明确失败，数据库故障沿用 StorageError，不能回退到内存。
+    隔离，Bot 头像为插件级公开资料；身份冲突明确失败，数据库故障沿用
+    StorageError，不能回退到内存。
     """
 
     async def begin_command(self, identity: str, intent: JsonObject) -> bool:
@@ -39,7 +40,19 @@ class PhoneStore(Protocol):
         ...
 
     async def media(self, device_id: str, media_id: str) -> MediaAsset | None:
-        """只读取本设备已上传附件，不暴露其他来源媒体。"""
+        """读取本设备已授权附件或当前 Bot 头像，不暴露其他来源媒体。"""
+        ...
+
+    async def set_avatar(self, media_id: str | None) -> JsonObject:
+        """以宿主已有图片设置 Bot 头像，None 恢复默认；返回已提交的头像版本。
+
+        头像归插件实例持久保存，不要求手机在线。无效或缺失图片以
+        StorageError(code="phone_invalid_avatar") 拒绝，原头像保持不变。
+        """
+        ...
+
+    async def avatar(self) -> JsonObject | None:
+        """读取最新头像版本；尚未设置返回 None，明确恢复默认仍带版本号。"""
         ...
 
     async def pair(self, device_id: str, name: str, token_hash: str) -> None:

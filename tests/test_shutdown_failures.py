@@ -72,10 +72,16 @@ async def resources(monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[_Resources
         *,
         max_inputs: int = 1024,
         max_input_bytes: int = 256 * 1024 * 1024,
+        unknown_call_protection_seconds: float = 86400.0,
     ) -> Store:
         del cls
         previous = set(threading.enumerate())
-        store = await original_open(path, max_inputs=max_inputs, max_input_bytes=max_input_bytes)
+        store = await original_open(
+            path,
+            max_inputs=max_inputs,
+            max_input_bytes=max_input_bytes,
+            unknown_call_protection_seconds=unknown_call_protection_seconds,
+        )
         owned.stores.append(store)
         owned.threads.extend(
             thread

@@ -14,11 +14,14 @@ import secrets
 import socket as sockets
 import ssl
 import time
+import wave
 from contextlib import contextmanager, suppress
 from typing import TYPE_CHECKING
 from uuid import uuid4
 
+import av
 import uvicorn
+from av.error import FFmpegError
 from PIL import Image, UnidentifiedImageError
 from pydantic import ValidationError
 from starlette.applications import Starlette
@@ -27,6 +30,7 @@ from starlette.responses import JSONResponse, Response
 from starlette.routing import Route, WebSocketRoute
 from starlette.websockets import WebSocket, WebSocketDisconnect, WebSocketState
 
+from purrcept_engine.domain.stickers import StickerError
 from purrcept_engine.errors import HostStateError, StorageError
 from purrcept_engine.plugins.phone.protocol import (
     ChatSubmission,
@@ -37,17 +41,83 @@ from purrcept_engine.plugins.phone.protocol import (
     Pairing,
 )
 from purrcept_engine.plugins.phone.runtime import PhoneRuntime
-from purrcept_engine.values import JsonObject, decode_object, encode_json
+from purrcept_engine.values import JsonObject, JsonValue, decode_object, encode_json
 
 if TYPE_CHECKING:
     from collections.abc import Generator
 
     from purrcept_engine.plugins.phone.plugin import PhoneSettings
 
+_IMAGE_FORMATS = {
+    "JPEG": "image/jpeg",
+    "PNG": "image/png",
+    "WEBP": "image/webp",
+    "GIF": "image/gif",
+}
+_VOICE_RATE = 16000
+_MAX_VOICE_SECONDS = 600
+
 
 def token_hash(token: str) -> str:
     """生成仅供设备认证的摘要，原始 token 不进入数据库。"""
     return hashlib.sha256(token.encode()).hexdigest()
+
+
+def normalize_phone_voice(data: bytes) -> tuple[bytes, int]:
+    """校验并将手机上传或主脑发出的语音统一归一化为有界 16kHz 单声道 WAV。"""
+    if not data or len(data) > 8 * 1024 * 1024:
+        raise ValueError("语音为空或超过 8 MiB 上限。")
+    max_pcm = _MAX_VOICE_SECONDS * _VOICE_RATE * 2
+    # 已是规范 PCM 时直接校验帧长并重写头，避免重复解码录音。
+    if data[:4] == b"RIFF" and data[8:12] == b"WAVE":
+        try:
+            with wave.open(io.BytesIO(data), "rb") as src:
+                if (
+                    src.getnchannels() == 1
+                    and src.getsampwidth() == 2
+                    and src.getframerate() == _VOICE_RATE
+                    and src.getcomptype() == "NONE"
+                ):
+                    frames = src.readframes(src.getnframes())
+                    if frames and len(frames) <= max_pcm:
+                        out = io.BytesIO()
+                        with wave.open(out, "wb") as dst:
+                            dst.setnchannels(1)
+                            dst.setsampwidth(2)
+                            dst.setframerate(_VOICE_RATE)
+                            dst.writeframes(frames)
+                        duration_ms = round(len(frames) / (_VOICE_RATE * 2) * 1000)
+                        return out.getvalue(), duration_ms
+        except wave.Error:
+            pass
+
+    pcm = bytearray()
+    try:
+        with av.open(io.BytesIO(data), mode="r", options={"protocol_whitelist": ""}) as source:
+            if not source.streams.audio:
+                raise ValueError("音频缺少有效音轨。")
+            resampler = av.AudioResampler(format="s16", layout="mono", rate=_VOICE_RATE)
+            for frame in source.decode(audio=0):
+                for converted in resampler.resample(frame):
+                    pcm.extend(bytes(converted.planes[0])[: converted.samples * 2])
+                    if len(pcm) > max_pcm:
+                        raise ValueError("语音解码后超过时长限制。")
+            for converted in resampler.resample(None):
+                pcm.extend(bytes(converted.planes[0])[: converted.samples * 2])
+                if len(pcm) > max_pcm:
+                    raise ValueError("语音解码后超过时长限制。")
+    except (FFmpegError, OSError, ValueError) as error:
+        raise ValueError("不支持或损坏的语音内容。") from error
+    if not pcm:
+        raise ValueError("语音解码为空。")
+    output = io.BytesIO()
+    with wave.open(output, "wb") as wav:
+        wav.setnchannels(1)
+        wav.setsampwidth(2)
+        wav.setframerate(_VOICE_RATE)
+        wav.writeframes(pcm)
+    duration_ms = round(len(pcm) / (_VOICE_RATE * 2) * 1000)
+    return output.getvalue(), duration_ms
 
 
 class SocketPeer:
@@ -157,7 +227,7 @@ class PhoneServer:
         return JSONResponse(self.runtime.snapshot(), headers={"Cache-Control": "no-store"})
 
     async def upload(self, request: Request) -> JSONResponse:
-        """接管有界完整图片，不接受客户端路径或远程 URL。"""
+        """接管有界完整图片或语音（最大 8 MiB），不接受客户端路径或远程 URL。"""
         device = await self._device(request.headers.get("authorization", ""))
         if device is None:
             return JSONResponse({"error": "unauthorized"}, 401)
@@ -166,19 +236,34 @@ class PhoneServer:
             content.extend(chunk)
             if len(content) > 8 * 1024 * 1024:
                 return JSONResponse({"error": "media_too_large"}, 413)
+        raw = bytes(content)
+        if not raw:
+            return JSONResponse({"error": "invalid_media"}, 415)
+
+        declared = request.headers.get("content-type", "").split(";")[0].strip().lower()
+        if declared.startswith("audio/") or (raw[:4] == b"RIFF" and raw[8:12] == b"WAVE"):
+            try:
+                wav_bytes, duration_ms = normalize_phone_voice(raw)
+            except ValueError:
+                return JSONResponse({"error": "invalid_media"}, 415)
+            media_id = await self.runtime.store.put_media(device, wav_bytes, "audio/wav")
+            return JSONResponse(
+                {"media_id": media_id, "media_type": "audio/wav", "duration_ms": duration_ms}
+            )
+
         try:
-            with Image.open(io.BytesIO(content)) as image:
-                if image.width * image.height > 32_000_000 or image.format not in ("JPEG", "PNG"):
+            with Image.open(io.BytesIO(raw)) as image:
+                if image.width * image.height > 32_000_000 or image.format not in _IMAGE_FORMATS:
                     return JSONResponse({"error": "unsupported_media"}, 415)
-                media_type = "image/jpeg" if image.format == "JPEG" else "image/png"
+                media_type = _IMAGE_FORMATS[image.format]
                 image.verify()
         except (UnidentifiedImageError, OSError, Image.DecompressionBombError):
             return JSONResponse({"error": "invalid_media"}, 415)
-        media_id = await self.runtime.store.put_media(device, bytes(content), media_type)
+        media_id = await self.runtime.store.put_media(device, raw, media_type)
         return JSONResponse({"media_id": media_id, "media_type": media_type})
 
     async def media(self, request: Request) -> Response:
-        """认证设备只能读取自己的附件。"""
+        """设备可读取自己的附件及 Bot 当前头像，不能浏览或修改 Bot 贴纸库。"""
         device = await self._device(request.headers.get("authorization", ""))
         if device is None:
             return JSONResponse({"error": "unauthorized"}, 401)
@@ -228,9 +313,14 @@ class PhoneServer:
                 pass
             # 服务端也验证恢复游标；不能让客户端静默跳过未取得的未来事件。
             await self.runtime.store.acknowledge(device_id, cursor)
+            features: list[JsonValue] = ["engine_state", "rich_chat"]
             await peer.send(
                 "welcome",
-                {"device_id": device_id, "server_time": time.time(), "features": ["engine_state"]},
+                {
+                    "device_id": device_id,
+                    "server_time": time.time(),
+                    "features": features,
+                },
                 hello.id,
             )
             sender = asyncio.create_task(self.runtime.deliver(peer, cursor), name="phone-delivery")
@@ -257,6 +347,8 @@ class PhoneServer:
                     raise ValueError("旧连接帧不能复用。")
                 try:
                     await self._dispatch(peer, frame)
+                except StickerError:
+                    await peer.send("error", {"code": "sticker_missing"}, frame.id)
                 except StorageError as error:
                     if error.code in ("invalid_record", "unsupported_format"):
                         raise
@@ -387,14 +479,7 @@ class PhoneServer:
         }
 
     async def open_pairing(self) -> JsonObject:
-        """本机用户明确开启 120 秒窗口，和手机消费共用锁，旧二维码立即失效。
-
-        Returns:
-            当前窗口或已经配对的实际设备；不撤销已有配对和操控授权。
-
-        Raises:
-            HostStateError: 监听器未就绪或插件正在关闭。
-        """
+        """本机用户明确开启 120 秒窗口，和手机消费共用锁，旧二维码立即失效。"""
         async with self._pair_lock:
             if not self._ready or self.runtime.stopping:
                 raise HostStateError("Phone 监听器尚未就绪。")
@@ -404,29 +489,13 @@ class PhoneServer:
             return await self.pairing()
 
     async def replace_pairing(self, expected_device_id: str) -> JsonObject:
-        """本机用户确认后撤销旧手机并生成新的扫码窗口。
-
-        Args:
-            expected_device_id: 本机用户确认时看到的旧手机身份，不能撤销已被替换的配对。
-
-        Returns:
-            已完成凭据撤销后的新邀请。聊天、媒体和行动记录仍保留在 Engine。
-
-        Raises:
-            HostStateError: 监听器未就绪或插件正在关闭。
-            StorageError: 撤销未能提交；不生成新邀请或声称已成功重新配对。
-
-        Note:
-            已派发效果不能被撤销；在途观察转为 unknown，不能向新手机重放。
-        """
+        """本机用户确认后撤销旧手机并生成新的扫码窗口。"""
         async with self._pair_lock:
             if not self._ready or self.runtime.stopping:
                 raise HostStateError("Phone 监听器尚未就绪。")
             device = await self.runtime.store.device()
             if not device or device.get("device_id") != expected_device_id:
                 raise HostStateError("当前配对已改变，请重新读取后再确认。")
-            # 先撤销连接借用再等待落盘，避免等待期间继续派发新操作。
-            # epoch 同时拒绝在认证/accept 等待中跨过撤销边界的旧连接。
             self._pairing_epoch += 1
             self._invitation_deadline = 0
             peer = self.runtime.peer
@@ -435,7 +504,6 @@ class PhoneServer:
             try:
                 await self.runtime.store.revoke()
             finally:
-                # 即使落盘失败，也收回已经 detach 的网络借用；失败不会生成新邀请。
                 if (
                     isinstance(peer, SocketPeer)
                     and peer.socket.application_state == WebSocketState.CONNECTED
@@ -443,7 +511,6 @@ class PhoneServer:
                     try:
                         await peer.socket.close(code=4401)
                     except (WebSocketDisconnect, ConnectionError):
-                        # 网络已断开无需再关闭；是否撤销凭据仍由上面的账本事务决定。
                         pass
             self._open_window()
             return await self.pairing()

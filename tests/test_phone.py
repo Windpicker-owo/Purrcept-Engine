@@ -11,6 +11,7 @@ import httpx
 import pytest
 from PIL import Image
 from purrcept_core.models import TextBlock
+from pydantic import ValidationError
 from starlette.applications import Starlette
 from starlette.testclient import TestClient
 
@@ -33,6 +34,21 @@ from purrcept_engine.plugins.phone.protocol import ChatSubmission
 from purrcept_engine.plugins.phone.runtime import PhoneRuntime
 from purrcept_engine.plugins.phone.transport import PhoneServer
 from purrcept_engine.values import JsonObject
+
+
+@pytest.mark.parametrize("waveform", [[True], ["20"], [-1], [101], [20] * 65])
+def test_json_waveform_keeps_strict_sample_and_size_limits(waveform: list[object]) -> None:
+    """接受 JSON 容器不等于放宽波形元素类型、幅度或长度。"""
+    with pytest.raises(ValidationError):
+        ChatSubmission.model_validate(
+            {
+                "message_id": "invalid-waveform",
+                "text": "[语音消息]",
+                "occurred_at": "2026-11-16T00:00:00Z",
+                "kind": "voice",
+                "waveform": waveform,
+            }
+        )
 
 
 class DevicePeer:
@@ -369,5 +385,93 @@ async def test_screenshot_is_native_evidence_and_not_a_second_stimulus(tmp_path:
         assert outcome.state == "confirmed"
         assert outcome.media[0].media_id == media_id
         assert await ledger.events("device", 0) == []
+    finally:
+        await store.close()
+
+
+async def test_rich_chat_voice_sticker_and_reply_roundtrip(tmp_path: Path) -> None:
+    """手机端富媒体（16kHz WAV 语音、贴纸、引用回复）进入真实多模态输入，主脑亦可回复贴纸与语音。"""
+    import base64
+    import struct
+    import wave
+
+    from purrcept_engine.plugins.phone.transport import normalize_phone_voice
+
+    wav_buf = io.BytesIO()
+    with wave.open(wav_buf, "wb") as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(2)
+        wf.setframerate(16000)
+        wf.writeframes(struct.pack("<8000h", *([4200, -4200] * 4000)))
+    raw_wav = wav_buf.getvalue()
+    normalized, duration_ms = normalize_phone_voice(raw_wav)
+    assert normalized[:4] == b"RIFF" and 480 <= duration_ms <= 520
+
+    store = await Store.open(tmp_path / "rich_phone.sqlite3")
+    try:
+        ledger = store.phone("phone")
+        await ledger.pair("device", "Purrcept Go", "token_hash_rich")
+        voice_media_id = await ledger.put_media("device", normalized, "audio/wav")
+
+        png_buf = io.BytesIO()
+        Image.new("RGBA", (32, 32), (200, 230, 255, 255)).save(png_buf, format="PNG")
+        img_media_id = await ledger.put_media("device", png_buf.getvalue(), "image/png")
+
+        runtime = PhoneRuntime("phone", Inputs(store), ledger, subject_name="小白")
+
+        res_voice = await runtime.submit_chat(
+            "device",
+            ChatSubmission(
+                message_id="m_voice_1",
+                text="[语音消息 1″]",
+                occurred_at="2026-11-16T12:00:00+08:00",
+                kind="voice",
+                media_id=voice_media_id,
+                media_type="audio/wav",
+                duration_ms=duration_ms,
+                waveform=(20, 55, 80, 40),
+            ),
+        )
+        assert res_voice["duplicate"] is False
+
+        res_sticker = await runtime.submit_chat(
+            "device",
+            ChatSubmission(
+                message_id="m_stk_1",
+                text="[贴纸：摸摸头]",
+                occurred_at="2026-11-16T12:00:02+08:00",
+                kind="sticker",
+                sticker_id="pat_head",
+                media_id=img_media_id,
+                media_type="image/png",
+                reply_to_id="m_voice_1",
+            ),
+        )
+        assert res_sticker["duplicate"] is False
+
+        out_stk = await runtime.send_chat(
+            "",
+            CallContext("out_stk_1", "action_1", 999999999.0),
+            sticker="peek_curious",
+            reply_to="m_stk_1",
+        )
+        assert out_stk.state == "confirmed"
+
+        out_voice = await runtime.send_chat(
+            "听到了哟～",
+            CallContext("out_voice_1", "action_1", 999999999.0),
+            voice_base64=base64.b64encode(raw_wav).decode("ascii"),
+            reply_to="m_voice_1",
+        )
+        assert out_voice.state == "confirmed"
+
+        events = await ledger.events("device", 0)
+        assert len(events) == 4
+        assert events[0]["kind"] == "voice" and events[0]["waveform"] == [20, 55, 80, 40]
+        assert events[1]["sticker_id"] == "pat_head" and events[1]["reply_to_id"] == "m_voice_1"
+        assert events[2]["kind"] == "sticker" and events[2]["sticker_id"] == "peek_curious"
+        waveform = events[3]["waveform"]
+        assert events[3]["kind"] == "voice"
+        assert isinstance(waveform, list) and len(waveform) == 24
     finally:
         await store.close()

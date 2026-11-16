@@ -80,7 +80,7 @@ class Send(Target):
 
 
 class Read(Parameters):
-    """首读的 count 省略为 20；续读只允许原宿主 cursor。"""
+    """首读的 count 省略为 20；每页有界，续读只允许原宿主 cursor。"""
 
     chat: Chat | None = None
     target_id: QQId | None = None
@@ -189,9 +189,9 @@ class ComposeForward(Target):
 
 
 class SaveSticker(Parameters):
-    """标签保存到磁盘，沿用有效 URL 优先于消息身份的旧入口约定。"""
+    """从 QQ 消息或明确 URL 收集到共享库；实际 URL 优先于消息身份。"""
 
-    tag: Annotated[str, Field(pattern=r"^\S{1,64}$")]
+    tag: Annotated[str, Field(min_length=1, max_length=64, pattern=r"\S")]
     message_id: MessageId | Literal[""] = ""
     url: str = ""
 

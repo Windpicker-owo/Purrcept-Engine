@@ -77,7 +77,8 @@ me.bed.rest(...)  # 睡觉：普通刺激只记历史
 | `voice_input` | 收音、VAD 与 ASR | `voice-input` |
 | `live2d` | VTube Studio 身体表达（`me.live2d.*`） | `live2d` |
 
-看图能力 `me.view_image` 与音频文件读取 `me.listen_audio` 由宿主默认装配。
+看图能力 `me.view_image`、音频文件读取 `me.listen_audio` 和通用贴纸库 `me.stickers`
+由宿主默认装配。贴纸库支持收藏、分页检索、看图和删除，QQ 与手机聊天使用同一贴纸 ID。
 音频读取支持本地路径或 HTTP(S) WAV/MP3，最多20 MiB、10分钟，模型端点须支持音频输入。
 外部插件通过已安装包的 `module:attribute`
 或配置目录下的 `local/包名:factory` 显式加载。根目录 `plugins/` 是使用者自己的

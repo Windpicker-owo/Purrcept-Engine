@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import io
+import json
 import threading
 from collections.abc import AsyncIterator
 from pathlib import Path
@@ -275,6 +276,8 @@ async def test_real_worker_receipt_has_no_pixels_but_media_expands_from_same_sto
         assert result.result_json is not None and len(result.result_json) < 1000
         assert "base64" not in result.result_json
         assert result.calls[0].media
+        value = json.loads(result.result_json)
+        assert value["media_id"] == hashlib.sha256(data).hexdigest()
         assert await media_blocks(store, result.calls[0].media) == (
             ImageBlock(ImageBytes(data, "image/png")),
         )

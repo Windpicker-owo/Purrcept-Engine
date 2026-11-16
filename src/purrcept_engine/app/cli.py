@@ -156,7 +156,8 @@ def main() -> int:
             else:
                 print(
                     f"配置模板已写入 {config_path}。\n"
-                    f"请编辑文件中的 [models.main]，或运行 `purrcept-engine plugins` 查看各插件配置说明。"
+                    "请编辑文件中的 [models.main]，或运行 `purrcept-engine plugins` "
+                    "查看各插件配置说明。"
                 )
         elif args.command == "check":
             EngineHost(load_config(config_path))
@@ -173,7 +174,8 @@ def main() -> int:
         return 1
     except FileExistsError:
         print(
-            f"目标配置文件 {config_path} 已存在（如需备份并重新生成，请加 `--force`；或另选 `--config` 路径）。",
+            f"目标配置文件 {config_path} 已存在（如需备份并重新生成，请加 `--force`；"
+            "或另选 `--config` 路径）。",
             file=sys.stderr,
         )
         return 1
@@ -343,7 +345,8 @@ async def _run(config_path: Path, *, level_override: LogLevel | None = None) -> 
                 ComponentHealth("shutdown").fail(failure)
                 pending = host.query().pending_resources
                 if pending:
-                    # 若底层非 daemon 线程（如数据库或子进程）仍未释放，保留二次 Ctrl+C 强退处理器以免死锁卡死。
+                    # 底层非 daemon 线程尚未释放时，保留二次 Ctrl+C 强退处理器，
+                    # 使用户仍可结束卡在资源收尾中的进程。
                     print(
                         f"关闭失败，仍占用：{', '.join(pending)}。"
                         "再次 Ctrl+C 将强制退出本 Engine 进程。",

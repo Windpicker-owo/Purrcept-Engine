@@ -40,6 +40,7 @@ from purrcept_engine.domain.notebook.contracts import (
     NotebookStore,
 )
 from purrcept_engine.domain.phone.contracts import PhoneStore
+from purrcept_engine.domain.stickers import StickerLibrary
 from purrcept_engine.domain.subject.expression import ExpressionSink
 from purrcept_engine.domain.subject.models import InputProcessing
 from purrcept_engine.domain.time.ports import TimePort
@@ -262,6 +263,7 @@ class PluginPorts:
         notebook: 按当前插件身份绑定的笔记派生存储和检索端口。
         phone: 按插件身份绑定的可靠手机消息账本，不借出 SQL。
         subject_name: 供外部设备显示的当前角色名字，不包含角色卡正文或模型配置。
+        stickers: 宿主共享贴纸库；通道只借用，不创建各自的索引或负责关闭。
 
     Note:
         实例字段在构造后不可重新赋值；嵌套值的冻结范围由字段所属契约决定。
@@ -287,6 +289,7 @@ class PluginPorts:
     notebook: NotebookStore | None = None
     phone: PhoneStore | None = None
     subject_name: str | None = None
+    stickers: StickerLibrary | None = None
 
 
 @dataclass(frozen=True, slots=True)

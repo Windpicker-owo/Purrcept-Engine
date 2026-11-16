@@ -26,6 +26,7 @@ from purrcept_engine.domain.context.maintenance import (
 )
 from purrcept_engine.domain.health import ComponentHealth
 from purrcept_engine.domain.model_requests.models import BackgroundBudgetExceeded
+from purrcept_engine.domain.stickers import StickerError
 from purrcept_engine.errors import StorageError
 from purrcept_engine.infrastructure.sqlite.schema import initialize
 
@@ -391,7 +392,12 @@ class SqliteExecutor:
                 # 来源/批次/版本冲突可在原预算内纠正，不是数据库或程序故障。
                 # 该显式业务分类仍原样交回，其他未识别异常继续停止派发。
                 error_to_send = error
-            except (SummaryError, time_models.TimeError, controls_models.ControlError) as error:
+            except (
+                SummaryError,
+                time_models.TimeError,
+                controls_models.ControlError,
+                StickerError,
+            ) as error:
                 error_to_send = error
             except sqlite3.Error as error:
                 failure = self._storage_failure(error)
