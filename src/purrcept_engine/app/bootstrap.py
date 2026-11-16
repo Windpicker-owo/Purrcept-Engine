@@ -18,12 +18,13 @@ from purrcept_engine.app.activity import activity_capability
 from purrcept_engine.app.config import GenerationModelSettings
 from purrcept_engine.app.evidence import EvidenceAccess
 from purrcept_engine.app.host_state import EngineState
-from purrcept_engine.app.knowledge_resources import KnowledgeResources
 from purrcept_engine.app.lifecycle import HostLifecycle
+from purrcept_engine.app.notebook_resources import NotebookAccess, PluginModel
 from purrcept_engine.app.panel import PanelController
 from purrcept_engine.app.receipts import LateCallResults
 from purrcept_engine.app.subject import build_subject
 from purrcept_engine.domain.activities.service import ActivityService
+from purrcept_engine.domain.evidence.service import EvidenceService
 from purrcept_engine.domain.execution.models import ActionRecord
 from purrcept_engine.domain.execution.ports import ActionExecutor
 from purrcept_engine.errors import ConfigError, HostStateError
@@ -87,6 +88,10 @@ class EngineAssembly:
                 self.state.config.subject.foreground,
                 self.state.config.subject.reflection,
             }
+            for _, blueprint in self.state.prepared.blueprints:
+                model_names.update(
+                    requirement.model for requirement in blueprint.model_requirements
+                )
             if self.state.config.subject.attention is not None:
                 model_names.add(self.state.config.subject.attention)
             generation: dict[str, ModelBackend] = {}
@@ -124,18 +129,44 @@ class EngineAssembly:
                     capability_paths[capability.capability_id]
                     for capability in blueprint.capabilities
                 )
+                notebook_access = None
+                if blueprint.notebook is not None:
+                    notebook_access = NotebookAccess(
+                        self.state.store.notebook(instance_id),
+                        self.state.store.evidence,
+                        blueprint.notebook.embedding,
+                        embedding=self.state.plugin_embeddings.get(instance_id),
+                        reranker=self.state.plugin_rerankers.get(instance_id),
+                    )
+                    self.state.notebook_resources[instance_id] = notebook_access
+                background_models: dict[str, PluginModel] = {}
+                for requirement in blueprint.model_requirements:
+                    declaration = self.state.config.models[requirement.model]
+                    if not isinstance(declaration, GenerationModelSettings):
+                        raise TypeError("插件后台模型不是生成模型。")
+                    background_models[requirement.alias] = PluginModel(
+                        self.state.store,
+                        generation[requirement.model],
+                        declaration,
+                        self.state.config,
+                        f"plugin:{instance_id}:{requirement.alias}",
+                        self.lifecycle.check_owned_dispatch,
+                        requirement.retry,
+                    )
                 ports = PluginPorts(
                     self.host,
                     self.lifecycle.projection,
-                    EvidenceAccess(
-                        self.state.store.knowledge, self.state.config.context.page_chars
-                    ),
+                    EvidenceAccess(self.state.store.evidence, self.state.config.context.page_chars),
                     self.state.store.time,
                     LateCallResults(self.state.store, paths),
                     audio=self.state.store.audio,
                     native_audio_enabled=native_audio_enabled,
                     native_inputs=self.host,
                     captions=self.caption_snapshot,
+                    notebook=notebook_access,
+                    background_models=background_models,
+                    phone=self.state.store.phone(instance_id),
+                    subject_name=self.state.config.subject.character.name,
                 )
                 self.stage(f"plugin_build:{instance_id}")
                 runtime = await blueprint.build(ports)
@@ -215,15 +246,6 @@ class EngineAssembly:
                     self.state.config.host.data_dir / "scratch",
                 )
             execution_for_activity = self.state.execution
-            self.state.knowledge_resources = KnowledgeResources(
-                self.state.store.knowledge,
-                self.state.store,
-                self.state.config.knowledge.embedding,
-                page_chars=self.state.config.context.page_chars,
-                can_start=self.lifecycle.check_owned_dispatch,
-                embedding=self.state.embedding_provider,
-                reranker=self.state.reranker,
-            )
             self.stage("subject_restore")
             self.state.subject = await build_subject(
                 self.state.config,
@@ -235,7 +257,9 @@ class EngineAssembly:
                 plugins=self.state.plugins,
                 can_start=self.lifecycle.check_owned_dispatch,
                 wakeup_committed=self.state.work_changed.set,
-                knowledge=self.state.knowledge_resources.knowledge,
+                evidence=EvidenceService(
+                    self.state.store.evidence, page_chars=self.state.config.context.page_chars
+                ),
             )
             self.state.panel = PanelController(
                 self.state.instance_id,
@@ -259,8 +283,10 @@ class EngineAssembly:
             if self.state.phase == "running":
                 # 输入接入已可持久接管，但模型必须等全部主动插件连接完成，
                 # 防止新 WebUI 或恢复待办在其余资源尚未就绪时开始世界行动。
+                for runtime in self.state.plugins.values():
+                    if runtime.start_background is not None:
+                        await runtime.start_background()
                 self.stage("subject_start")
-                await self.state.knowledge_resources.start()
                 await self.state.subject.service.start()
             self.stage(None)
         except BaseException as startup_error:

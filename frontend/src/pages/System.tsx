@@ -78,10 +78,8 @@ export function System({ state, client, go }: { state: PanelState; client: Panel
       </div> : null}
       <SessionRow title="回应" description="处理新消息并决定怎么做。" session={s.foreground} />
       <SessionRow title="行为评审" description="每批独立检查近期互动，不继承上一批评审过程。" session={s.behavior_review} />
-      <SessionRow title="记忆整理" description="整理新增事实、偏好与经验，不影响回应新消息。" session={s.reflection} />
       <AnalysisRow title="行为评审" value={s.analysis?.behavior} enabled={s.analysis?.behavior_enabled} />
-      <AnalysisRow title="记忆整理" value={s.analysis?.memory} enabled={s.analysis?.memory_enabled} />
-      {s.knowledge !== null ? <div className="setting-row"><div><h3>记忆检索</h3></div><p>{s.knowledge.semantic_enabled === true ? "语义检索已启用" : "仅关键词检索"}{typeof s.knowledge.index_failure === "string" && s.knowledge.index_failure !== "" ? ` · 索引故障：${s.knowledge.index_failure}` : ""}</p></div> : null}
+      {Object.entries(s.notebooks).map(([name, notebook]) => <div className="setting-row" key={name}><div><h3>Notebook · {name}</h3><p>{notebook.consolidation_enabled === true ? "独立整理已启用" : "自动整理已关闭"} · {notebook.semantic_enabled === true ? "语义与关键词检索" : "关键词检索"}</p></div><p>待整理 {String(notebook.pending ?? 0)} 项 · {String(notebook.state ?? "未知")}{typeof notebook.error_type === "string" ? ` · ${notebook.error_type}` : typeof notebook.last_error === "string" ? ` · ${notebook.last_error}` : ""}</p></div>)}
     </Section>
 
     {s.supervision_observations.length ? <Section id="system-observations" title="建议后的观察">
@@ -111,7 +109,7 @@ export function System({ state, client, go }: { state: PanelState; client: Panel
     </Section>
 
     <section className="section" aria-label="技术细节">
-      <TechDetails items={[["宿主实例", s.instance_id], ["快照版本", s.host_version], ["阶段", s.phase], ["前台代次", s.foreground?.generation], ["反思代次", s.reflection?.generation], ["会话", s.sessions.map((item) => `${item.scope}@${item.version}${item.active_turn ? `:${item.active_turn}` : ""}`).join("，")], ["积压字节", `${s.pending_inputs.reduce((sum, item) => sum + item.logical_bytes, 0)} / ${s.pending_limits.logical_bytes}`], ["记忆索引", s.knowledge]]} />
+      <TechDetails items={[["宿主实例", s.instance_id], ["快照版本", s.host_version], ["阶段", s.phase], ["前台代次", s.foreground?.generation],  ["会话", s.sessions.map((item) => `${item.scope}@${item.version}${item.active_turn ? `:${item.active_turn}` : ""}`).join("，")], ["积压字节", `${s.pending_inputs.reduce((sum, item) => sum + item.logical_bytes, 0)} / ${s.pending_limits.logical_bytes}`], ["Notebook", s.notebooks]]} />
     </section>
   </>;
 }

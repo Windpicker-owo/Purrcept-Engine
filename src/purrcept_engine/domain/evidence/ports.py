@@ -1,7 +1,7 @@
-"""定义原文与认识账本、语义召回和候选重排的有限端口。
+"""定义共享原文、行为评审和监管计划的有限端口。
 
-KnowledgeService 与独立反思借用这些契约；应用注入同库实现和可选后端。
-原文读取、实际呈现与认识写入分开，协议不取得通用连接或模型客户端。
+应用借出同库实现；原文读取、模型实际呈现与评审结案分开确认。
+端口不取得通用连接，长期记忆写入和检索属于 Notebook 插件。
 """
 
 from __future__ import annotations
@@ -10,19 +10,13 @@ from typing import Literal, Protocol
 
 from purrcept_core.models import ContentBlock, Message
 
-from purrcept_engine.domain.knowledge.models import (
+from purrcept_engine.domain.evidence.models import (
     EvidenceDelivery,
     EvidencePage,
     EvidenceSlice,
     EvidenceSnapshot,
     FinishSubmission,
-    IndexJob,
-    KnowledgeCandidate,
-    KnowledgeReference,
-    MemoryPatch,
-    MemoryRecord,
     OperationalFinding,
-    PendingEvidence,
     ReflectionBatch,
     ReflectionReceipt,
     SupervisionNotice,
@@ -31,8 +25,8 @@ from purrcept_engine.domain.knowledge.models import (
 )
 
 
-class KnowledgeStore(Protocol):
-    """Store 专属线程提供的认识账本接口，所有写操作确认实际事务完成。
+class EvidenceStore(Protocol):
+    """Store 专属线程提供的共享证据与行为评审接口，写操作确认实际事务完成。
 
     取消等待不撤销提交，模型、网络和媒体解码不进入事务。校验来源/版本的
     业务冲突可纠正；权威存储及内部故障原样传出，不能翻译为空结果或输入错。
@@ -52,7 +46,7 @@ class KnowledgeStore(Protocol):
 
         Raises:
             StorageError: 权威提交或读取失败，不能以空结果替代。
-            KnowledgeInputError: 来源、版本、范围或业务字段不满足本次操作的要求。
+            EvidenceInputError: 来源、版本、范围或业务字段不满足本次操作的要求。
 
         Note:
             重复接管不改写原文。
@@ -118,13 +112,13 @@ class KnowledgeStore(Protocol):
             当前版本的一页正文、确切范围和下一游标；取得页面不等于已呈现给模型。
 
         Raises:
-            KnowledgeInputError: 来源、版本、范围或业务字段不满足本次操作的要求。
+            EvidenceInputError: 来源、版本、范围或业务字段不满足本次操作的要求。
             StorageError: 权威提交或读取失败，不能以空结果替代。
         """
         ...
 
     async def revoke_evidence(self, evidence_id: str, version: int) -> None:
-        """撤销引用资格，保留原文与全部认识版本。
+        """撤销指定版本的引用资格，保留全部原文快照和历史引用。
 
         Args:
             evidence_id: 已保存原文快照的稳定身份。
@@ -144,18 +138,7 @@ class KnowledgeStore(Protocol):
 
         Raises:
             StorageError: 权威提交或读取失败，不能以空结果替代。
-            KnowledgeInputError: 来源、版本、范围或业务字段不满足本次操作的要求。
-        """
-        ...
-
-    async def pending_reflection(self, *, limit: int = 32) -> tuple[PendingEvidence, ...]:
-        """读取有限可靠来源及已有范围结论，不确认交付。
-
-        Args:
-            limit: 本次读取或更新的最大条目数。 默认 32。
-
-        Returns:
-            本次有限读取的可靠待反思来源及已有范围结论。
+            EvidenceInputError: 来源、版本、范围或业务字段不满足本次操作的要求。
         """
         ...
 
@@ -165,7 +148,7 @@ class KnowledgeStore(Protocol):
         required_slice_refs: tuple[str, ...],
         findings: tuple[OperationalFinding, ...] = (),
         *,
-        purpose: Literal["memory", "behavior"] = "memory",
+        purpose: Literal["behavior"] = "behavior",
     ) -> ReflectionBatch:
         """冻结范围和异常，恢复代次不能借用旧资格。
 
@@ -175,12 +158,12 @@ class KnowledgeStore(Protocol):
             findings: 本批需要核验的实际异常或运行观察。 默认不附加此类条目。
 
         Returns:
-            冻结的反思范围与批次版本，后续修订须携带同一资格。
+            冻结的行为复核范围与批次版本，后续监管和结案须携带同一资格。
 
         Raises:
             StorageError: 权威提交或读取失败，不能以空结果替代。
-            KnowledgeInputError: 来源、版本、范围或业务字段不满足本次操作的要求。
-            KnowledgeConflict: 批次、来源或认识版本已变化，调用方须重读当前事实。
+            EvidenceInputError: 来源、版本、范围或业务字段不满足本次操作的要求。
+            EvidenceConflict: 批次资格或原文来源状态已变化，调用方须重读当前事实。
         """
         ...
 
@@ -192,7 +175,7 @@ class KnowledgeStore(Protocol):
             version: 当前反思批次的确切版本，旧代次不再拥有写入资格。
 
         Returns:
-            冻结的反思范围与批次版本，后续修订须携带同一资格。
+            冻结的行为复核范围与批次版本，后续监管和结案须携带同一资格。
 
         Raises:
             StorageError: 权威提交或读取失败，不能以空结果替代。
@@ -211,7 +194,7 @@ class KnowledgeStore(Protocol):
 
         Raises:
             StorageError: 权威提交或读取失败，不能以空结果替代。
-            KnowledgeConflict: 批次、来源或认识版本已变化，调用方须重读当前事实。
+            EvidenceConflict: 批次资格或原文来源状态已变化，调用方须重读当前事实。
         """
         ...
 
@@ -258,7 +241,7 @@ class KnowledgeStore(Protocol):
         ...
 
     async def abandon_reflection(self, batch_id: str, version: int, reason: str) -> ReflectionBatch:
-        """撤销失败代次写资格，保留已提交认识和未覆盖待办。
+        """撤销失败代次的评审写资格，保留已提交监管和未覆盖待办。
 
         Args:
             batch_id: 独立反思批次的身份，须与批次版本配对使用。
@@ -266,159 +249,10 @@ class KnowledgeStore(Protocol):
             reason: 供后续核对的明确处置原因。
 
         Returns:
-            冻结的反思范围与批次版本，后续修订须携带同一资格。
+            冻结的行为复核范围与批次版本，后续监管和结案须携带同一资格。
 
         Note:
             不自行安排重试。
-        """
-        ...
-
-    async def revise_memory(self, batch_id: str, version: int, patch: MemoryPatch) -> MemoryRecord:
-        """逐次原子修订，批次后续失败不回滚已写入认识。
-
-        Args:
-            batch_id: 独立反思批次的身份，须与批次版本配对使用。
-            version: 目标记录的确切版本，区别于可变的当前版本。
-            patch: 含原始证据、版本、关系与有效期的认识修订提案。
-
-        Returns:
-            包含原始依据、关系、有效期与确切版本的认识记录。
-
-        Raises:
-            StorageError: 权威提交或读取失败，不能以空结果替代。
-            KnowledgeInputError: 来源、版本、范围或业务字段不满足本次操作的要求。
-            KnowledgeConflict: 批次、来源或认识版本已变化，调用方须重读当前事实。
-        """
-        ...
-
-    async def get_memory(
-        self,
-        memory_id: str,
-        *,
-        version: int | None = None,
-        include_inactive: bool = False,
-        at: float | None = None,
-    ) -> MemoryRecord | None:
-        """默认读取当前有效认识，显式历史保留失效原因。
-
-        Args:
-            memory_id: 已保存认识的稳定身份。
-            version: 目标记录的确切版本，区别于可变的当前版本。 None 首读当前版本，
-                续读仍绑定游标的原版本。
-            include_inactive: 是否同时返回已失效的历史记录，并保留失效原因。 默认 False。
-            at: 核验记录有效性的 Unix 时间戳；None 使用当前时间。
-
-        Returns:
-            包含原始依据、关系、有效期与确切版本的认识记录。 未取得对应记录或素材时返回 None；
-            读取故障仍抛出。
-
-        Raises:
-            StorageError: 权威提交或读取失败，不能以空结果替代。
-        """
-        ...
-
-    async def search_knowledge(
-        self,
-        query: str,
-        *,
-        entities: tuple[str, ...] = (),
-        start: float | None = None,
-        end: float | None = None,
-        at: float | None = None,
-        include_inactive: bool = False,
-        limit: int = 40,
-    ) -> tuple[KnowledgeCandidate, ...]:
-        """取得权威核验后的关键词、关系、时间候选。
-
-        Args:
-            query: 用于关键词或语义检索的意图文本。
-            entities: 需要共同检索或关联的实体名称集合。 默认不附加此类条目。
-            start: 按发生时间筛选的起点；None 表示不限制此端。
-            end: 按发生时间筛选的终点；None 表示不限制此端。
-            at: 核验记录有效性的 Unix 时间戳；None 使用当前时间。
-            include_inactive: 是否同时返回已失效的历史记录，并保留失效原因。 默认 False。
-            limit: 本次读取或更新的最大条目数。 默认 40。
-
-        Returns:
-            已通过来源及版本核验的候选集合，保留各路线排名。
-        """
-        ...
-
-    async def get_candidate(
-        self,
-        reference: KnowledgeReference,
-        *,
-        include_inactive: bool = False,
-        at: float | None = None,
-    ) -> EvidenceSnapshot | MemoryRecord | None:
-        """异步检索返回后再核验确切版本及来源。
-
-        Args:
-            reference: 包含身份与确切版本的认识或原文引用。
-            include_inactive: 是否同时返回已失效的历史记录，并保留失效原因。 默认 False。
-            at: 核验记录有效性的 Unix 时间戳；None 使用当前时间。
-
-        Returns:
-            经权威版本核验的原文或认识记录。 未取得对应记录或素材时返回 None；读取故障仍抛出。
-
-        Raises:
-            StorageError: 权威提交或读取失败，不能以空结果替代。
-        """
-        ...
-
-    async def pending_index(
-        self, *, route: str | None = None, limit: int = 32
-    ) -> tuple[IndexJob, ...]:
-        """分页读取显式路线的可重建版本任务。
-
-        Args:
-            route: 派生索引路线名称，用于区分关键词与语义任务。 None
-                按此账本的全部可用路线读取。
-            limit: 本次读取或更新的最大条目数。 默认 32。
-
-        Returns:
-            本次有限读取的可重建索引任务。
-        """
-        ...
-
-    async def apply_index(
-        self,
-        reference: KnowledgeReference,
-        *,
-        terms: str,
-        vector: tuple[float, ...] | None = None,
-        model: str | None = None,
-    ) -> bool:
-        """只安装仍有效的同版本派生值，迟到任务不能复活认识。
-
-        Args:
-            reference: 包含身份与确切版本的认识或原文引用。
-            terms: 从同版本完整正文生成的关键词索引文本。
-            vector: 对应明确模型空间的有限数值向量。
-            model: 本次调用使用的显式模型名，不在领域层推断替代模型。
-        """
-        ...
-
-    async def refresh_keyword_index(self, *, limit: int = 100) -> int:
-        """提交有限本地关键词更新，不消费独立的语义计算任务。
-
-        Args:
-            limit: 本次读取或更新的最大条目数。 默认 100。
-        """
-        ...
-
-    async def semantic_search(
-        self, vector: tuple[float, ...], model: str, *, limit: int = 40
-    ) -> tuple[KnowledgeReference, ...]:
-        """以实际同模型向量召回，不从旧版本索引恢复失效认识。
-
-        Args:
-            vector: 对应明确模型空间的有限数值向量。
-            model: 本次调用使用的显式模型名，不在领域层推断替代模型。
-            limit: 本次读取或更新的最大条目数。 默认 40。
-
-        Returns:
-            按相关性排列的确切版本引用，使用前仍须复查权威资格。
         """
         ...
 
@@ -437,7 +271,7 @@ class KnowledgeStore(Protocol):
 
         Raises:
             StorageError: 权威提交或读取失败，不能以空结果替代。
-            KnowledgeInputError: 来源、版本、范围或业务字段不满足本次操作的要求。
+            EvidenceInputError: 来源、版本、范围或业务字段不满足本次操作的要求。
         """
         ...
 
@@ -467,8 +301,8 @@ class KnowledgeStore(Protocol):
 
         Raises:
             StorageError: 权威提交或读取失败，不能以空结果替代。
-            KnowledgeInputError: 来源、版本、范围或业务字段不满足本次操作的要求。
-            KnowledgeConflict: 批次、来源或认识版本已变化，调用方须重读当前事实。
+            EvidenceInputError: 来源、版本、范围或业务字段不满足本次操作的要求。
+            EvidenceConflict: 批次资格或原文来源状态已变化，调用方须重读当前事实。
         """
         ...
 
@@ -483,7 +317,7 @@ class KnowledgeStore(Protocol):
 
         Raises:
             StorageError: 权威提交或读取失败，不能以空结果替代。
-            KnowledgeInputError: 来源、版本、范围或业务字段不满足本次操作的要求。
+            EvidenceInputError: 来源、版本、范围或业务字段不满足本次操作的要求。
         """
         ...
 
@@ -500,7 +334,7 @@ class KnowledgeStore(Protocol):
 
         Raises:
             StorageError: 权威提交或读取失败，不能以空结果替代。
-            KnowledgeInputError: 来源、版本、范围或业务字段不满足本次操作的要求。
+            EvidenceInputError: 来源、版本、范围或业务字段不满足本次操作的要求。
         """
         ...
 
@@ -533,43 +367,6 @@ class KnowledgeStore(Protocol):
 
         Raises:
             StorageError: 权威提交或读取失败，不能以空结果替代。
-            KnowledgeInputError: 来源、版本、范围或业务字段不满足本次操作的要求。
-        """
-        ...
-
-
-class SemanticRetriever(Protocol):
-    """显式装配的可选语义路线，返回排名中的确切来源/认识版本。
-
-    实现借用自己的已配置 embedding 资源和派生向量；不能改写权威认识或
-    返回无版本身份。关闭属于 app，错误原样传出，未配置时不创建调用。
-    """
-
-    async def retrieve(self, query: str) -> tuple[KnowledgeReference, ...]:
-        """按语义相关性排序，主体在使用前复查来源和版本。
-
-        Args:
-            query: 用于关键词或语义检索的意图文本。
-
-        Returns:
-            按相关性排列的确切版本引用，使用前仍须复查权威资格。
-        """
-        ...
-
-
-class Reranker(Protocol):
-    """显式配置的可选重排，只能排列给出的冻结候选，不添加未知来源。"""
-
-    async def rank(
-        self, query: str, candidates: tuple[KnowledgeCandidate, ...]
-    ) -> tuple[KnowledgeReference, ...]:
-        """返回唯一候选身份序列，可省略候选而不能制造另一版本。
-
-        Args:
-            query: 用于关键词或语义检索的意图文本。
-            candidates: 已通过权威核验的冻结候选，重排不得新增来源。
-
-        Returns:
-            按相关性排列的确切版本引用，使用前仍须复查权威资格。
+            EvidenceInputError: 来源、版本、范围或业务字段不满足本次操作的要求。
         """
         ...

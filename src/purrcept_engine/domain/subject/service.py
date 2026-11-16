@@ -18,11 +18,11 @@ from purrcept_core.models import (
     SystemInstruction,
 )
 
+from purrcept_engine.domain.evidence.ports import EvidenceStore
+from purrcept_engine.domain.evidence.service import EvidenceService
 from purrcept_engine.domain.execution.catalog import Catalog
 from purrcept_engine.domain.health import ComponentHealth
 from purrcept_engine.domain.inputs.models import InputRecord
-from purrcept_engine.domain.knowledge.ports import KnowledgeStore
-from purrcept_engine.domain.knowledge.service import KnowledgeService
 from purrcept_engine.domain.model_requests.service import (
     ModelDecisionBackend,
     ModelGenerationBackend,
@@ -62,8 +62,8 @@ class SubjectService:
     def __init__(
         self,
         store: CoordinatorStore,
-        knowledge: KnowledgeService,
-        knowledge_store: KnowledgeStore,
+        evidence: EvidenceService,
+        evidence_store: EvidenceStore,
         catalog: Catalog,
         *,
         subject: SubjectModel,
@@ -84,8 +84,8 @@ class SubjectService:
 
         Args:
             store: 应用借出的领域存储端口，实际连接和关闭归资源所有者。
-            knowledge: 原文展开与认识召回服务，修订仍经过反思批次契约。
-            knowledge_store: 同库认识端口，模型或插件不取得通用 SQL 权限。
+            evidence: 共享原文的版本化阅读服务；Notebook 独立提供长期记忆能力。
+            evidence_store: 同库证据和行为评审端口，模型或插件不取得通用 SQL 权限。
             catalog: 全部已启用插件共同生成的冻结目录。
             subject: 前台使用的模型、容量与预算声明。
             attention: 可选的注意判断模型声明；None 使用明确的无模型处置。
@@ -102,8 +102,8 @@ class SubjectService:
             expression_sink: 批次采用后同步交付身体判断的有限借用，关闭归应用。
         """
         self.store = store
-        self.knowledge = knowledge
-        self.knowledge_store = knowledge_store
+        self.evidence = evidence
+        self.evidence_store = evidence_store
         self.catalog = catalog
         self.subject = subject
         self.attention = attention

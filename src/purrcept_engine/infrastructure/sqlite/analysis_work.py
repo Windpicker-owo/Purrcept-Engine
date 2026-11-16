@@ -113,7 +113,7 @@ def enqueue(
         "INSERT OR IGNORE INTO "
         "analysis_work(purpose,evidence_id,version,state,queued_at) "
         "VALUES(?,?,?,'pending',?)",
-        ((purpose, evidence_id, version, queued_at) for purpose in ("memory", "behavior")),
+        ((purpose, evidence_id, version, queued_at) for purpose in ("behavior",)),
     )
 
 
@@ -139,7 +139,7 @@ def settle(connection: sqlite3.Connection, batch_id: str, *, failure: str | None
                 "FROM knowledge_review_ranges r JOIN knowledge_slices s USING(slice_ref) "
                 "JOIN reflection_batches b ON r.batch_id=b.batch_id AND r.batch_version=b.version "
                 "JOIN analysis_work w ON w.evidence_id=s.evidence_id AND w.version=s.version "
-                "AND w.purpose=coalesce(json_extract(b.payload_json,'$.purpose'),'memory') "
+                "AND w.purpose=coalesce(json_extract(b.payload_json,'$.purpose'),'behavior') "
                 "WHERE r.batch_id=? AND b.state='completed' AND r.state='reviewed' "
                 "AND w.state NOT IN('processing','completed')",
                 (batch_id,),
@@ -165,7 +165,7 @@ def settle(connection: sqlite3.Connection, batch_id: str, *, failure: str | None
             # 下一页只从已完成批次的连续覆盖前缀恢复，不能采用领取时的 next_cursor。
             from purrcept_engine.infrastructure.sqlite import feedback
 
-            snapshot = feedback.knowledge.get_evidence(connection, identity, version=version)
+            snapshot = feedback.evidence.get_evidence(connection, identity, version=version)
             if snapshot is None:
                 raise feedback.StorageError("已领取来源缺失。", code="invalid_record")
             total = (
@@ -178,11 +178,11 @@ def settle(connection: sqlite3.Connection, batch_id: str, *, failure: str | None
                 "USING(slice_ref) JOIN reflection_batches b ON r.batch_id=b.batch_id AND "
                 "r.batch_version=b.version WHERE s.evidence_id=? AND s.version=? AND "
                 "r.state='reviewed' AND b.state='completed' AND "
-                "coalesce(json_extract(b.payload_json,'$.purpose'),'memory')=?",
+                "coalesce(json_extract(b.payload_json,'$.purpose'),'behavior')=?",
                 (identity, version, purpose),
             ).fetchall()
             fragments = [
-                feedback.knowledge_models.EvidenceSlice.model_validate_json(row[0]) for row in rows
+                feedback.evidence_models.EvidenceSlice.model_validate_json(row[0]) for row in rows
             ]
             frontier = 0
             for fragment in sorted(fragments, key=lambda item: (item.start, item.end)):
@@ -262,7 +262,7 @@ def model_budget(connection: sqlite3.Connection, now: float) -> tuple[int, float
         "SELECT count(*),min(a.created_at) FROM model_attempts a WHERE a.created_at>? "
         "AND EXISTS(SELECT 1 FROM model_requests r WHERE r.request_id=a.request_id AND "
         "json_extract(r.evidence_json,'$.scope.owner_id') "
-        "IN('reflection','behavior_review','memory_consolidation'))",
+        "IN('behavior_review'))",
         (now - 3600,),
     ).fetchone()
     return max(0, 32 - count), None if oldest is None else float(oldest) + 3600

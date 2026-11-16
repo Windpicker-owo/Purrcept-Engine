@@ -19,6 +19,7 @@ from test_host_subject import Backend, proposal, wait_processed
 from purrcept_engine.app.config import EngineConfig, PluginSettings
 from purrcept_engine.app.host import EngineHost
 from purrcept_engine.app.receipts import LateCallResults
+from purrcept_engine.domain.evidence.models import EvidenceSnapshot
 from purrcept_engine.domain.execution.catalog import CapabilityDeclaration, ObjectDeclaration
 from purrcept_engine.domain.execution.providers import (
     CallContext,
@@ -32,7 +33,6 @@ from purrcept_engine.domain.inputs.models import (
     MediaAsset,
     MediaReference,
 )
-from purrcept_engine.domain.knowledge.models import EvidenceSnapshot
 from purrcept_engine.infrastructure.sqlite.store import Store
 from purrcept_engine.plugin_system.contracts import (
     PluginBlueprint,

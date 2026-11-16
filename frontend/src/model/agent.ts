@@ -62,7 +62,7 @@ export function agentView(snapshot: Snapshot | null, online: boolean, attention:
   if (waiting > 0) return { state: "perceiving", headline: `收到 ${waiting} 条新消息`, detail: "正在判断要不要回应。", focus: null };
   if (listening) return { state: "perceiving", headline: "正在听", detail: "收音已开启。", focus: null };
   if (snapshot.behavior_review?.busy) return { state: "reasoning", headline: "正在回顾近期互动", detail: "行为评审独立运行，新的消息仍可处理。", focus: null };
-  if (snapshot.reflection?.busy) return { state: "reasoning", headline: "正在回顾和整理记忆", detail: "这是独立的反思，不影响她回应新消息。", focus: null };
+  if (Object.values(snapshot.notebooks).some((item) => item.state === "running")) return { state: "reasoning", headline: "正在回顾和整理记忆", detail: "Notebook 正在整理亲笔记录，不影响她回应新消息。", focus: null };
   const forUser = attention.filter((item) => item.needsUser);
   if (forUser.length > 0) return { state: "waiting-user", headline: `有 ${forUser.length} 件事需要你看一下`, detail: forUser[0]?.title ?? "", focus: "attention" };
   if (snapshot.health.components.some((component) => component.state === "failed")) return { state: "warning", headline: "部分后台工作已暂停", detail: "新的消息仍可处理，请查看系统中的组件故障。", focus: "attention" };

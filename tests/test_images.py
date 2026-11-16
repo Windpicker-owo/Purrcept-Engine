@@ -22,10 +22,10 @@ from purrcept_core.models import ImageBlock, ImageBytes
 from purrcept_engine.app.config import ExecutionSettings
 from purrcept_engine.app.evidence import EvidenceAccess
 from purrcept_engine.domain.context.materials import media_blocks
+from purrcept_engine.domain.evidence.models import EvidenceSnapshot
 from purrcept_engine.domain.execution.catalog import Catalog, ObjectDeclaration
 from purrcept_engine.domain.execution.providers import CallContext, CapabilityInputError
 from purrcept_engine.domain.inputs.models import Admission, InputRecord, InputSubmission, MediaAsset
-from purrcept_engine.domain.knowledge.models import EvidenceSnapshot
 from purrcept_engine.domain.subject.models import InputProcessing
 from purrcept_engine.errors import ConfigError, StorageError
 from purrcept_engine.infrastructure.execution.service import ExecutionService
@@ -69,7 +69,7 @@ async def store(tmp_path: Path) -> AsyncIterator[Store]:
 
 def ports(store: Store) -> PluginPorts:
     """仅借同库原文/媒体门面，不给看图能力通用可变数据库。"""
-    return PluginPorts(Inputs(), lambda: {}, EvidenceAccess(store.knowledge, 8000))
+    return PluginPorts(Inputs(), lambda: {}, EvidenceAccess(store.evidence, 8000))
 
 
 def context() -> CallContext:
@@ -113,7 +113,7 @@ async def test_local_images_keep_original_bytes_and_native_content(
         assert await store.get_media(result.media[0].media_id) == data
         blocks = await media_blocks(store, result.media)
         assert blocks == (ImageBlock(ImageBytes(data, result.media[0].media_type)),)
-        saved = await store.knowledge.read_evidence(str(result.value["evidence_ref"]))
+        saved = await store.evidence.read_evidence(str(result.value["evidence_ref"]))
         assert saved.snapshot is not None
         assert '"origin_media_id":"original-stimulus"' in saved.snapshot.source_json
         assert not await store.pending()
@@ -200,7 +200,7 @@ async def test_capture_failure_is_not_translated_to_input_error(
 
     (tmp_path / "local.png").write_bytes(pixels())
     runtime = await images.images_blueprint(tmp_path).build(
-        PluginPorts(Inputs(), lambda: {}, BrokenEvidence(store.knowledge, 8000))
+        PluginPorts(Inputs(), lambda: {}, BrokenEvidence(store.evidence, 8000))
     )
     try:
         with pytest.raises(StorageError, match="synthetic authority"):

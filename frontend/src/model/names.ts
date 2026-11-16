@@ -6,7 +6,7 @@ import type { Device, Snapshot } from "../contracts";
 
 /** 插件类别到用户名称；类别来自宿主快照，不由页面猜测。 */
 export const DEVICE_NAMES: Readonly<Record<string, string>> = {
-  qq: "QQ", voice_input: "收音", audio: "语音输出", computer: "电脑观察", live2d: "Live2D 身体",
+  phone: "安卓手机", qq: "QQ", voice_input: "收音", audio: "语音输出", computer: "电脑观察", live2d: "Live2D 身体",
 };
 /** 能力命名空间到用户名称；与插件类别分开，因为同一能力可能不属于设备。 */
 const NAMESPACES: Readonly<Record<string, string>> = {

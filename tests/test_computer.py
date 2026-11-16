@@ -143,7 +143,7 @@ async def controlled(
         "computer",
         lambda: driver,
         Inputs(store),
-        EvidenceAccess(store.knowledge, 8000),
+        EvidenceAccess(store.evidence, 8000),
         ObservationPolicy(),
         tmp_path / "preferences.json",
         screenshot_dir=tmp_path / ".purrcept" / "computer-screenshots",
@@ -220,7 +220,7 @@ async def test_screenshot_has_full_blob_authority_and_does_not_create_pending_in
         assert isinstance(result.value, dict)
         reference = result.value["evidence_ref"]
         assert isinstance(reference, str)
-        saved = await store.knowledge.get_evidence(reference)
+        saved = await store.evidence.get_evidence(reference)
         assert saved is not None and saved.media == result.media
         assert decode_object(saved.source_json.encode())["foreground"] == (
             driver.value.foreground.model_dump(mode="json")
@@ -263,7 +263,7 @@ async def test_screenshot_file_failure_keeps_original_evidence(
         assert await store.get_media(result.media[0].media_id) == driver.value.data
         reference = result.value["evidence_ref"]
         assert isinstance(reference, str)
-        evidence = await store.knowledge.get_evidence(reference)
+        evidence = await store.evidence.get_evidence(reference)
         assert evidence is not None and evidence.media == result.media
         if failure == "directory":
             assert directory.read_text(encoding="utf-8") == "existing user file"
@@ -391,7 +391,7 @@ async def test_background_disconnect_ends_blocked_capture_and_rejects_late_previ
         "computer",
         lambda: driver,
         Inputs(store),
-        EvidenceAccess(store.knowledge, 8000),
+        EvidenceAccess(store.evidence, 8000),
         ObservationPolicy(),
         tmp_path / "preferences.json",
         screenshot_dir=tmp_path / ".purrcept" / "computer-screenshots",
@@ -424,7 +424,7 @@ async def test_observation_preferences_survive_reopen_but_do_not_restore_connect
         "computer",
         lambda: driver,
         Inputs(store),
-        EvidenceAccess(store.knowledge, 8000),
+        EvidenceAccess(store.evidence, 8000),
         restored,
         tmp_path / "preferences.json",
         screenshot_dir=tmp_path / ".purrcept" / "computer-screenshots",
@@ -599,7 +599,7 @@ async def test_real_sampler_capture_failure_pauses_and_close_still_releases_driv
         "computer",
         lambda: driver,
         Inputs(store),
-        EvidenceAccess(store.knowledge, 8000),
+        EvidenceAccess(store.evidence, 8000),
         ObservationPolicy(),
         tmp_path / "preferences.json",
         screenshot_dir=tmp_path / ".purrcept" / "computer-screenshots",
@@ -629,7 +629,7 @@ async def test_real_sampler_capacity_failure_pauses_until_explicit_start(
         "computer",
         lambda: driver,
         Inputs(database),
-        EvidenceAccess(database.knowledge, 8000),
+        EvidenceAccess(database.evidence, 8000),
         ObservationPolicy(),
         tmp_path / "preferences.json",
         screenshot_dir=tmp_path / ".purrcept" / "computer-screenshots",

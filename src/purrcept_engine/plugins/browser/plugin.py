@@ -19,8 +19,8 @@ from purrcept_engine.plugin_system import (
     CallOutcome,
     CapabilityDeclaration,
     CapabilityInputError,
+    EvidenceInputError,
     FunctionCapability,
-    KnowledgeInputError,
     ObjectDeclaration,
     PluginBlueprint,
     PluginFactory,
@@ -88,7 +88,7 @@ async def _result(operation: Awaitable[JsonObject | CallOutcome]) -> CallOutcome
     """只转换明确业务输入拒绝，交互后失败带真实局部事实，不吞掉SDK/权威错误。"""
     try:
         result = await operation
-    except (BrowserInputError, KnowledgeInputError) as error:
+    except (BrowserInputError, EvidenceInputError) as error:
         raise CapabilityInputError(str(error)) from error
     except BrowserActionError as error:
         return CallOutcome("unknown", error.facts, type(error).__name__, str(error))

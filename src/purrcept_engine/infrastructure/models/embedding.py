@@ -10,11 +10,11 @@ from typing import cast
 
 import httpx
 
-from purrcept_engine.domain.knowledge.semantic import (
+from purrcept_engine.domain.notebook.embedding import (
     EmbeddingProtocolError,
     validate_vectors,
 )
-from purrcept_engine.domain.knowledge.settings import EmbeddingSettings
+from purrcept_engine.domain.notebook.settings import EmbeddingSettings
 from purrcept_engine.errors import HostStateError
 
 

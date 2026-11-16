@@ -26,10 +26,8 @@ from purrcept_engine import EngineConfig, EngineHost, InputSource, InputSubmissi
 from purrcept_engine.domain.execution.catalog import CapabilityDeclaration, ObjectDeclaration
 from purrcept_engine.domain.execution.providers import CallContext, CallOutcome, FunctionCapability
 from purrcept_engine.domain.inputs.models import InputContext
-from purrcept_engine.domain.knowledge.semantic import KnowledgeIndexWorker
 from purrcept_engine.domain.subject.models import SessionRecord, SessionScope
 from purrcept_engine.infrastructure.locking import InstanceLock
-from purrcept_engine.infrastructure.models.embedding import OpenAIEmbeddingResource
 from purrcept_engine.infrastructure.sqlite.store import Store
 from purrcept_engine.plugin_system.contracts import (
     PluginBlueprint,
@@ -258,7 +256,7 @@ def _config(
         "plugins": [{"instance_id": identity, "entry": identity} for identity in plugins],
     }
     if embedding:
-        raw["knowledge"] = {
+        raw["evidence"] = {
             "embedding": {
                 "model": "openai/local-embedding",
                 "model_id": "local-space",
@@ -641,58 +639,3 @@ async def test_unconfirmed_plugin_release_preserves_store_and_original_errors(
     with pytest.raises(BaseException) as repeated:
         await host.close()
     assert repeated.value is reported.value and plugin.close_count == 1
-
-
-async def test_knowledge_reported_failure_after_real_release_does_not_hold_store(
-    tmp_path: Path, resources: _Resources, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    failure = ArithmeticError("synthetic completed index submission failure")
-    original_close = KnowledgeIndexWorker.close
-
-    async def close_with_original_failure(indexer: KnowledgeIndexWorker) -> None:
-        await original_close(indexer)
-        raise failure
-
-    monkeypatch.setattr(KnowledgeIndexWorker, "close", close_with_original_failure)
-    host = EngineHost(_config(tmp_path, embedding=True), generation_backends={"main": _Backend()})
-    await host.start()
-    with pytest.raises(BaseException) as reported:
-        await host.close()
-    assert _leaves(reported.value) == (failure,)
-    assert host.query().phase == "failed" and host.query().pending_resources == ()
-    assert resources.store_closes == 1
-    await resources.assert_released(tmp_path)
-
-
-async def test_embedding_pool_close_failure_keeps_owner_even_without_inflight_request(
-    tmp_path: Path, resources: _Resources, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    failure = ArithmeticError("synthetic HTTP pool close failure")
-    original_close = OpenAIEmbeddingResource.close
-    transports: list[OpenAIEmbeddingResource] = []
-
-    async def reject_close(resource: OpenAIEmbeddingResource) -> None:
-        transports.append(resource)
-        raise failure
-
-    monkeypatch.setattr(OpenAIEmbeddingResource, "close", reject_close)
-    host = EngineHost(_config(tmp_path, embedding=True), generation_backends={"main": _Backend()})
-    await host.start()
-    try:
-        with pytest.raises(BaseException) as reported:
-            await host.close()
-        assert _leaves(reported.value) == (failure,)
-        snapshot = host.query()
-        assert snapshot.phase == "failed"
-        assert set(snapshot.pending_resources) == {"storage", "knowledge:0", "data_directory_lock"}
-        assert resources.store_closes == 0 and await host.query_action("missing") is None
-        with pytest.raises(InstanceLocked):
-            InstanceLock(tmp_path).acquire()
-        with pytest.raises(BaseException) as repeated:
-            await host.close()
-        assert repeated.value is reported.value
-        assert len(transports) == 1
-    finally:
-        # 测试已证明 Host 保留未知连接池；明确解除本地注入后再由夹具收库。
-        for resource in transports:
-            await original_close(resource)

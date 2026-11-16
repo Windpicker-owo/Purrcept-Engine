@@ -13,12 +13,13 @@ import threading
 import time
 from collections import deque
 from collections.abc import Callable
+from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
 import purrcept_engine.domain.controls.models as controls_models
-import purrcept_engine.domain.knowledge.models as knowledge_models
+import purrcept_engine.domain.evidence.models as evidence_models
 import purrcept_engine.domain.time.models as time_models
 from purrcept_engine.domain.context.maintenance import (
     SummaryError,
@@ -322,6 +323,14 @@ class SqliteExecutor:
         try:
             self._path.parent.mkdir(parents=True, exist_ok=True)
             connection = sqlite3.connect(self._path)
+            if connection.execute("PRAGMA user_version").fetchone() == (16,):
+                backup_path = self._path.with_name(self._path.name + ".v16-backup")
+                if backup_path.exists():
+                    raise StorageError(
+                        "格式16备份已存在，请核验并移走后再升级。", code="backup_exists"
+                    )
+                with closing(sqlite3.connect(backup_path)) as backup:
+                    connection.backup(backup)
             self._initialize(connection)
         except (OSError, sqlite3.Error, StorageError) as error:
             failure = self._storage_failure(error)
@@ -378,7 +387,7 @@ class SqliteExecutor:
             except BackgroundBudgetExceeded as error:
                 # 后台派发门槛是明确业务等待，不锁存为权威线程故障。
                 error_to_send = error
-            except knowledge_models.KnowledgeInputError as error:
+            except evidence_models.EvidenceInputError as error:
                 # 来源/批次/版本冲突可在原预算内纠正，不是数据库或程序故障。
                 # 该显式业务分类仍原样交回，其他未识别异常继续停止派发。
                 error_to_send = error

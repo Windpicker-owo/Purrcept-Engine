@@ -10,12 +10,14 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
+from types import MappingProxyType
 from typing import Protocol
 
 from pydantic import BaseModel
 
 from purrcept_engine.domain.activities.contracts import ActivityDefinition
 from purrcept_engine.domain.audio.ports import AudioPort
+from purrcept_engine.domain.evidence.models import EvidencePage, EvidenceSnapshot
 from purrcept_engine.domain.execution.catalog import CapabilityDeclaration, ObjectDeclaration
 from purrcept_engine.domain.execution.models import CallRecord
 from purrcept_engine.domain.execution.providers import (
@@ -23,6 +25,7 @@ from purrcept_engine.domain.execution.providers import (
     CallOutcome,
     CapabilityImplementation,
 )
+from purrcept_engine.domain.health import ComponentHealth
 from purrcept_engine.domain.inputs.models import (
     Admission,
     InputRecord,
@@ -30,14 +33,20 @@ from purrcept_engine.domain.inputs.models import (
     InputSubmission,
     MediaAsset,
 )
-from purrcept_engine.domain.knowledge.models import EvidencePage, EvidenceSnapshot
+from purrcept_engine.domain.notebook.contracts import (
+    BackgroundModels,
+    ModelRequirement,
+    NotebookRequirement,
+    NotebookStore,
+)
+from purrcept_engine.domain.phone.contracts import PhoneStore
 from purrcept_engine.domain.subject.expression import ExpressionSink
 from purrcept_engine.domain.subject.models import InputProcessing
 from purrcept_engine.domain.time.ports import TimePort
 from purrcept_engine.plugin_system.audio_port import AudioOutputPort
 from purrcept_engine.plugin_system.body_port import BodyPort
 from purrcept_engine.plugin_system.captions import SpeechCaption
-from purrcept_engine.plugin_system.panels import DevicePanel
+from purrcept_engine.plugin_system.panels import DevicePanel, PhonePairing
 from purrcept_engine.values import JsonObject
 
 
@@ -133,6 +142,21 @@ class EvidencePort(Protocol):
         """返回本实例统一页长，插件不另设会静默裁剪原文的上限。"""
         ...
 
+    async def record_document(self, snapshot: EvidenceSnapshot) -> EvidenceSnapshot:
+        """幂等保存完整文档，版本由宿主分配，重复阅读不产生新版本。
+
+        Args:
+            snapshot: 实际稳定取得的全文及固定来源元数据。
+
+        Returns:
+            与文件内容对应的确切不可变版本。
+        """
+        ...
+
+    async def read_slice(self, reference: str) -> EvidencePage:
+        """读取明确引用的确切原文范围，来源缺失或撤销时原样失败。"""
+        ...
+
     async def capture(
         self, snapshot: EvidenceSnapshot, assets: tuple[MediaAsset, ...]
     ) -> EvidenceSnapshot:
@@ -168,6 +192,7 @@ class EvidencePort(Protocol):
         level: str = "evidence",
         cursor: str | None = None,
         max_chars: int = 8000,
+        version: int | None = None,
     ) -> EvidencePage:
         """读取指定快照范围，页面带确切来源、版本与下一游标。
 
@@ -235,6 +260,10 @@ class PluginPorts:
         native_audio_enabled: 宿主确认前台模型显式声明音频传输能力，可接管原声输入。
         native_inputs: 按原生事件身份查询首次接管事实的有限端口。
         captions: 查询已明确发布的当前播放台词；不查询主脑文本或工具结果。
+        background_models: 仅包含 Blueprint 声明的模型别名，调用任务归插件。
+        notebook: 按当前插件身份绑定的笔记派生存储和检索端口。
+        phone: 按插件身份绑定的可靠手机消息账本，不借出 SQL。
+        subject_name: 供外部设备显示的当前角色名字，不包含角色卡正文或模型配置。
 
     Note:
         实例字段在构造后不可重新赋值；嵌套值的冻结范围由字段所属契约决定。
@@ -256,6 +285,10 @@ class PluginPorts:
     native_audio_enabled: bool = False
     native_inputs: NativeInputPort | None = None
     captions: Callable[[], tuple[SpeechCaption, ...]] | None = None
+    background_models: BackgroundModels = MappingProxyType({})
+    notebook: NotebookStore | None = None
+    phone: PhoneStore | None = None
+    subject_name: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -270,11 +303,14 @@ class PluginRuntime:
         snapshot: 只读已提交状态的同步投影，用于诊断与面板。
         prepare_request: 每次请求前提供有限业务状态的异步函数。
         panel: 本机有限控制与预览的投影服务。
+        phone_pairing: 仅供本机 WebUI 借用的 Phone 配对端口，不进入主体上下文。
         audio_output: 可选的实际声音所有者借用，不转移播放器资源所有权。
         body: 可选身体端口；缺省时声音资源仍独立工作。
         resources_released: 仅在全部真实资源确认归还时返回 True 的显式证明入口。
         caption: 可选的当前真实播放台词投影，声音结束或被撤销时返回 None。
         expression_sink: 可选的注意判断接收方；仅接收已采用批次，不调用模型或阻塞设备。
+        start_background: 所有插件 start 完成后调用，供插件启动依赖模型的后台任务。
+        health: 可选的组件首次故障事实，由插件所有者锁存。
 
     Note:
         实例字段在构造后不可重新赋值；嵌套值的冻结范围由字段所属契约决定。
@@ -303,11 +339,14 @@ class PluginRuntime:
     snapshot: Callable[[], JsonObject] | None = None
     prepare_request: Callable[[], Awaitable[JsonObject]] | None = None
     panel: DevicePanel | None = None
+    phone_pairing: PhonePairing | None = None
     audio_output: AudioOutputPort | None = None
     body: BodyPort | None = None
     resources_released: Callable[[], bool] | None = None
     caption: Callable[[], SpeechCaption | None] | None = None
     expression_sink: ExpressionSink | None = None
+    start_background: Callable[[], Awaitable[None]] | None = None
+    health: ComponentHealth | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -324,6 +363,8 @@ class PluginBlueprint:
     Note:
         实例字段在构造后不可重新赋值；嵌套值的冻结范围由字段所属契约决定。
 
+        model_requirements 显式声明模型别名和配置名；应用只借出对应有限模型端口。
+        notebook 声明是否需要按实例隔离的派生存储与可选向量资源。
         required_modules 是明确启用时必须可导入的依赖，不用于自动安装。对象父链
         与能力声明经统一 Catalog 核验；build 返回的实现须精确对应这些声明。
         工厂可把已校验配置保存在 build 闭包，不能在声明阶段打开设备或网络。
@@ -336,6 +377,8 @@ class PluginBlueprint:
     build: Callable[[PluginPorts], Awaitable[PluginRuntime]]
     required_modules: tuple[str, ...] = ()
     activities: tuple[ActivityDefinition, ...] = ()
+    model_requirements: tuple[ModelRequirement, ...] = ()
+    notebook: NotebookRequirement | None = None
 
 
 @dataclass(frozen=True, slots=True)

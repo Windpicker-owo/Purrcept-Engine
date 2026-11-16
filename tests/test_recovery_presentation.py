@@ -25,7 +25,7 @@ from purrcept_engine.domain.context.delivery import (
     ToolDeliveryGate,
     presented_evidence_calls,
 )
-from purrcept_engine.domain.knowledge.models import EvidencePage, EvidenceSnapshot
+from purrcept_engine.domain.evidence.models import EvidencePage, EvidenceSnapshot
 from purrcept_engine.infrastructure.models.compiler import compile_materials
 from purrcept_engine.serialization import encode
 from purrcept_engine.values import JsonObject

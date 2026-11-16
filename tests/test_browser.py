@@ -20,10 +20,10 @@ from pydantic import ValidationError
 
 from purrcept_engine import EngineConfig, EngineHost
 from purrcept_engine.app.evidence import EvidenceAccess
+from purrcept_engine.domain.evidence.models import EvidenceInputError, EvidenceSnapshot
 from purrcept_engine.domain.execution.catalog import Catalog, ObjectDeclaration
 from purrcept_engine.domain.execution.providers import CallContext, CapabilityInputError
 from purrcept_engine.domain.inputs.models import Admission, InputRecord, InputSubmission, MediaAsset
-from purrcept_engine.domain.knowledge.models import EvidenceSnapshot, KnowledgeInputError
 from purrcept_engine.domain.subject.models import InputProcessing
 from purrcept_engine.errors import ConfigError
 from purrcept_engine.infrastructure.sqlite.store import Store
@@ -186,7 +186,7 @@ def session(store: Store, tmp_path: Path, driver: OfflineDriver) -> BrowserSessi
         "browser",
         driver,
         BrowserSettings(user_data_dir=tmp_path / "profile"),
-        EvidenceAccess(store.knowledge, 8000),
+        EvidenceAccess(store.evidence, 8000),
     )
 
 
@@ -201,9 +201,9 @@ async def test_read_full_original_pagination_and_repeated_cursor_remain_old_page
     try:
         page = await browser.read(mode="text", max_chars=97)
         assert len(str(page["content"])) == 97 and not page["complete"]
-        snapshot = await store.knowledge.get_evidence(str(page["evidence_ref"]))
+        snapshot = await store.evidence.get_evidence(str(page["evidence_ref"]))
         assert snapshot is not None and len(snapshot.text) > 8000
-        raw = await store.knowledge.get_evidence(str(page["raw_ref"]))
+        raw = await store.evidence.get_evidence(str(page["raw_ref"]))
         assert raw is not None and raw.text == driver.content
         cursor = page["next_cursor"]
         assert isinstance(cursor, str)
@@ -248,7 +248,7 @@ async def test_cursor_rejects_new_mode_other_instance_and_unknown(
         cursor = str(first["next_cursor"])
         with pytest.raises(BrowserInputError, match="mode"):
             await browser.read(mode="markdown", cursor=cursor)
-        with pytest.raises(KnowledgeInputError):
+        with pytest.raises(EvidenceInputError):
             await browser.read(cursor="unknown")
         other = BrowserSession("other", driver, browser.settings, browser.evidence)
         with pytest.raises(BrowserInputError, match="另一"):
@@ -318,7 +318,7 @@ async def test_native_screenshot_and_save_preserve_media_without_input(
         assert isinstance(saved.value, dict) and saved.value["width"] == 17
         assert await asyncio.to_thread(Path(str(saved.value["path"])).read_bytes) == driver.data
         assert await store.pending() == ()
-        evidence = await store.knowledge.get_evidence(str(saved.value["evidence_ref"]))
+        evidence = await store.evidence.get_evidence(str(saved.value["evidence_ref"]))
         assert evidence is not None and evidence.media == saved.media
         assert ("screenshot", True) in driver.calls
     finally:
@@ -353,7 +353,7 @@ async def test_screenshot_cache_only_cleans_owned_files_and_retains_blob(
 ) -> None:
     driver = OfflineDriver()
     settings = BrowserSettings(user_data_dir=tmp_path / "profile", screenshot_max_files=2)
-    browser = BrowserSession("browser", driver, settings, EvidenceAccess(store.knowledge, 8000))
+    browser = BrowserSession("browser", driver, settings, EvidenceAccess(store.evidence, 8000))
     await browser.start()
     try:
         user_file = settings.user_data_dir / "screenshots" / "mine.png"
@@ -381,7 +381,7 @@ async def test_cache_cleanup_failure_preserves_new_image_receipt(
 ) -> None:
     driver = OfflineDriver()
     settings = BrowserSettings(user_data_dir=tmp_path / "profile", screenshot_max_files=1)
-    browser = BrowserSession("browser", driver, settings, EvidenceAccess(store.knowledge, 8000))
+    browser = BrowserSession("browser", driver, settings, EvidenceAccess(store.evidence, 8000))
     await browser.start()
     try:
         first = await browser.image(ref=None)
@@ -412,7 +412,7 @@ async def test_cancelled_capture_observer_close_waits_actual_blob_commit(
 ) -> None:
     class GateEvidence(EvidenceAccess):
         def __init__(self) -> None:
-            super().__init__(store.knowledge, 8000)
+            super().__init__(store.evidence, 8000)
             self.entered, self.release = asyncio.Event(), asyncio.Event()
             self.saved: EvidenceSnapshot | None = None
 
@@ -476,7 +476,7 @@ async def test_lazy_browser_failure_is_owned_until_runtime_close(
     driver.start_error = BrowserError("offline start failure")
     blueprint = plugin.make_factory(lambda _: driver).prepare("browser", {}, tmp_path)
     runtime = await blueprint.build(
-        PluginPorts(Inputs(store), lambda: {}, EvidenceAccess(store.knowledge, 8000))
+        PluginPorts(Inputs(store), lambda: {}, EvidenceAccess(store.evidence, 8000))
     )
     assert driver.closed == 0
     methods = {item.declaration.name: item for item in runtime.capabilities}
@@ -497,7 +497,7 @@ async def test_capability_parameters_and_partial_effect_classification(
     driver = OfflineDriver()
     blueprint = plugin.make_factory(lambda _: driver).prepare("browser", {}, tmp_path)
     runtime = await blueprint.build(
-        PluginPorts(Inputs(store), lambda: {}, EvidenceAccess(store.knowledge, 8000))
+        PluginPorts(Inputs(store), lambda: {}, EvidenceAccess(store.evidence, 8000))
     )
     methods = {item.declaration.name: item for item in runtime.capabilities}
     context = CallContext("call", "action", 1e10)
@@ -667,7 +667,7 @@ async def test_real_host_worker_all_browser_paths_and_native_receipts(tmp_path: 
         assert await reopened.get_media(saved.calls[-1].media[0].media_id) == driver.data
         assert saved.calls[2].result_json is not None
         page = decode_object(saved.calls[2].result_json.encode())
-        evidence = await reopened.knowledge.get_evidence(str(page["evidence_ref"]))
+        evidence = await reopened.evidence.get_evidence(str(page["evidence_ref"]))
         assert evidence is not None and len(evidence.text) > 8000
     finally:
         await reopened.close()

@@ -26,13 +26,13 @@ from purrcept_engine.plugin_system import (
     Admission,
     CallContext,
     CallOutcome,
+    EvidenceInputError,
     EvidencePage,
     EvidencePort,
     EvidenceSnapshot,
     InputContext,
     InputSource,
     InputSubmission,
-    KnowledgeInputError,
     NativeInputPort,
     PluginPorts,
 )
@@ -915,7 +915,7 @@ class QQService:
             page = await self.evidence.read_evidence(
                 saved.evidence_id, max_chars=self.evidence.page_chars
             )
-        except KnowledgeInputError as error:
+        except EvidenceInputError as error:
             return CallOutcome(
                 "failed",
                 {
@@ -1001,14 +1001,14 @@ class QQService:
             实际确认、失败或未知结论，以及可 JSON 化的业务值和原生媒体引用。
 
         Raises:
-            KnowledgeInputError: 游标不是 QQ 历史快照；QQ 历史游标不属于当前插件。
+            EvidenceInputError: 游标不是 QQ 历史快照；QQ 历史游标不属于当前插件。
         """
         snapshot = page.snapshot
-        if snapshot is None or snapshot.kind != "qq.history":
-            raise KnowledgeInputError("游标不是 QQ 历史快照。")
+        if snapshot.kind != "qq.history":
+            raise EvidenceInputError("游标不是 QQ 历史快照。")
         metadata = decode_object(snapshot.source_json.encode())
         if metadata.get("plugin") != self.instance_id or metadata.get("kind") != "qq.history":
-            raise KnowledgeInputError("QQ 历史游标不属于当前插件。")
+            raise EvidenceInputError("QQ 历史游标不属于当前插件。")
         raw_items: object = json.loads(page.text)
         items = decode_object(encode_json({"items": raw_items}))["items"]
         value: JsonObject = {

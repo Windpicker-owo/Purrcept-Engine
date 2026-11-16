@@ -1,23 +1,19 @@
-"""以内容版本约束 Notebook 文件修改，以宿主不可变证据提供分页读取。
+"""Notebook 的记忆文件、分层阅读与插件生命周期入口。
 
-工厂只产生纯声明，build 后才创建目录与原有示例。文件 I/O 统一在有所有者的
-to_thread 任务中执行；同一 Notebook 串行修改，外部编辑通过稳定读取与最终
-版本核验发现。临时文件发布是原子替换，但版本比较与替换之间仍可能被外部
-编辑器原子替换，不能把它宣称为跨编辑器 CAS。移动/删除有同样的最终核验窗口。
-ReplaceFileW 或成功后的备份清理失败时保留恢复文件和观测状态，回执为 unknown；
-恢复须核对实际文件版本，不能把代码回退当作文件自动回滚。
+Markdown 是记忆权威：journal/ 保存亲笔随笔，memory/ 保存后台专题，技能仍按
+description 判定，attachments/ 只保存原始附件。工厂只生成纯声明，build 创建
+文件所有者；全部插件接入完成后才启动 notebook_memory 中的独立扫描与整理任务。
 
-技能目录在 prepare_request 异步阶段重新扫描，仅交名称、适用说明与读取入口；
-正文不进入固定能力前缀。首读完整保存 EvidenceSnapshot，续读只通过宿主游标，
-没有插件分页缓存。原始读取与模型实际交付由宿主分别记录。
+确认的文件发布交给宿主幂等快照及实例隔离的派生账本。prepare_request 只提供
+有界目录与摘要，search 只检索当前文件，read 的正文分页绑定不可变快照。
+整理提案必须核验来源和目标版本，后台只写 memory/，不改亲笔日记或运行行为反思。
 
-局部编辑通过 edit 精确替换已读取版本中的文字，仅传入旧/新片段，不重复输出
-整篇文件。匹配检查和结果字节额度先于原子发布；串行所有权、最终版本复核与
-发布未知的恢复语义沿用完整写入路径。
+文件 I/O 由串行锁和实际线程任务持有，取消观察必须等真实操作归还。
+Windows 原子替换不等于跨编辑器 CAS；发布不确定时保留恢复文件，盘库登记失败
+也明确报告文件可能已经生效，不能盲目重放 append。文件系统和 SQLite 不共享事务。
 
-原文件下载使用独立字节和时间预算，完整接收后才在 attachments/ 原子新建。
-附件目录只展示文件元信息，外来 Markdown 不自动成为技能。HTTP 客户端按需
-创建并由 Notebook 关闭，网络与磁盘发布共用串行所有权，二进制不进入 Worker。
+附件下载使用独立字节与时间预算，网络响应及磁盘发布由本插件拥有并在关闭时归还。
+附件不参与技能、记忆目录或后台整理，原始字节不进入 Worker JSON。
 """
 
 from __future__ import annotations
@@ -34,6 +30,7 @@ from collections.abc import Awaitable, Callable, Generator, Iterator
 from contextlib import contextmanager
 from ctypes import wintypes
 from dataclasses import dataclass
+from datetime import datetime, timedelta
 from functools import cache
 from pathlib import Path
 from typing import BinaryIO, Literal, Protocol
@@ -42,7 +39,17 @@ from uuid import uuid4
 import httpx
 from pydantic import BaseModel, ConfigDict, Field
 
-from purrcept_engine.errors import EngineError, HostStateError
+from purrcept_engine.domain.notebook.contracts import (
+    BackgroundModel,
+    Document,
+    ModelRequirement,
+    NotebookRequirement,
+    NotebookStore,
+    Revision,
+)
+from purrcept_engine.domain.notebook.search import query_terms, search_snippet
+from purrcept_engine.domain.notebook.settings import EmbeddingSettings
+from purrcept_engine.errors import EngineError, HostStateError, StorageError
 from purrcept_engine.infrastructure.files import DownloadError, download_file
 from purrcept_engine.plugin_system import (
     CallContext,
@@ -59,7 +66,12 @@ from purrcept_engine.plugin_system import (
     PluginRuntime,
     typed_factory,
 )
-from purrcept_engine.plugins.skills import ParsedNote, parse_note
+from purrcept_engine.plugins.notebook_memory import (
+    ConsolidationSettings,
+    NotebookMemory,
+    render_revision,
+)
+from purrcept_engine.plugins.skills import ParsedNote, note_overview, note_preview, parse_note
 from purrcept_engine.values import JsonObject, JsonValue, decode_object, encode_json
 
 _SUFFIXES = frozenset({".md", ".markdown"})
@@ -113,6 +125,15 @@ class NotebookPublicationError(EngineError):
         super().__init__(str(native_error) + "；发布结果须核对实际文件，恢复位置见回执。")
         self.native_error = native_error
         self.recovery = recovery
+
+
+class NotebookRegistrationError(EngineError):
+    """文件已发布但派生登记失败；保留真实文件结果及原型，禁止盲目重放。"""
+
+    def __init__(self, error: StorageError | NotebookError, result: JsonObject) -> None:
+        """绑定已确认的文件结果与失败的盘库交接，不声称文件已经回滚。"""
+        super().__init__("文件已发布，但快照或索引登记失败；请核对文件，不要重复追加。")
+        self.error, self.result = error, result
 
 
 class _Function(Protocol):
@@ -291,6 +312,7 @@ class _Scan:
     entries: tuple[JsonValue, ...]
     skills: tuple[JsonObject, ...]
     issues: tuple[JsonObject, ...]
+    notes: tuple[ParsedNote, ...] = ()
 
 
 class _Files:
@@ -574,6 +596,7 @@ class _Files:
         try:
             with self.opened(target) as source:
                 data = self.stable(target, source)
+                modified_at = os.fstat(source.fileno()).st_mtime
             content = data.decode("utf-8")
         except UnicodeDecodeError as error:
             raise NotebookError("笔记不是有效 UTF-8。", code="invalid_encoding") from error
@@ -586,7 +609,7 @@ class _Files:
             content,
             version=_version(data),
             byte_count=len(data),
-            occurred_at=time.time(),
+            occurred_at=modified_at,
         )
 
     def read(self, raw: str) -> ParsedNote:
@@ -648,6 +671,7 @@ class _Files:
         target = self.target(raw)
         issues: list[JsonObject] = []
         skills: list[JsonObject] = []
+        notes: list[ParsedNote] = []
         count = 0
 
         def file_entry(path: Path) -> JsonObject:
@@ -670,6 +694,7 @@ class _Files:
             except NotebookError as error:
                 issues.append({"path": rel, "code": error.code, "error": str(error)})
                 return {"path": rel, "type": "file", "unavailable": True}
+            notes.append(note)
             if note.skill:
                 skills.append(note.catalog_entry("me.notebook.read"))
             return {
@@ -750,6 +775,7 @@ class _Files:
             tuple(entries),
             tuple(sorted(skills, key=lambda item: str(item["path"]))),
             tuple(issues),
+            tuple(notes),
         )
 
     def _expected(self, target: Path, source: BinaryIO, expected: str | None) -> None:
@@ -779,6 +805,36 @@ class _Files:
         except NotebookError as error:
             return {**observed, "state": "unavailable", "code": error.code, "error": str(error)}
         return {**observed, "state": "stable", "version": note.version, "bytes": note.byte_count}
+
+    def append(self, raw: str, content: str, *, timestamp: bool, now: datetime) -> JsonObject:
+        """串行读取当前文件后原子追加；无预读哈希要求，但保留外部版本冲突检查。"""
+        if not content.strip():
+            raise NotebookError("追加内容必须含非空白正文。", code="append_empty")
+        path = raw or f"journal/{now:%Y-%m-%d}.md"
+        target = self.target(path, note=True)
+        if target.is_relative_to(self.root / "attachments"):
+            raise NotebookError("附件不能作为随笔写入。", code="attachment_boundary")
+        self.parents(path)
+        current = self.read_target(target) if target.exists() else None
+        title = f"# {now:%Y-%m-%d} 随笔\n" if current is None else current.content
+        block = f"\n\n### {now:%H:%M:%S}\n{content}" if timestamp else "\n\n" + content
+        try:
+            return self.write(path, title + block, None if current is None else current.version)
+        except NotebookError as error:
+            if error.code == "file_too_large":
+                raise NotebookError(
+                    "追加超过单文件字节上限，请指定新的分片路径。", code=error.code
+                ) from error
+            raise
+
+    def parents(self, raw: str) -> None:
+        """逐级核验后建立父目录；链接不能通过 mkdir 转换成受信任路径。"""
+        parts = _parts(raw)
+        for index in range(1, len(parts)):
+            target = self.target("/".join(parts[:index]))
+            if target.is_symlink() or target.is_junction():
+                raise NotebookError("父目录不能是链接。", code="linked_directory")
+            target.mkdir(exist_ok=True)
 
     def edit(
         self, raw: str, old_text: str, new_text: str, expected: str, *, replace_all: bool
@@ -1046,7 +1102,7 @@ class _Files:
 
 
 class Notebook:
-    """插件拥有的异步文件边界与只读技能快照，不拥有主脑或分页数据库。
+    """插件拥有的记忆文件、目录与独立整理任务，不拥有主脑或宿主数据库。
 
     Host build 创建，所有方法在同一事件循环调用；每项磁盘操作串行交给实际
     工作线程。取消观察仍等待该线程结束再传播取消，close 不提前收回文件任务。
@@ -1066,6 +1122,11 @@ class Notebook:
         seed_examples: bool = True,
         file_max_bytes: int = 20 * 1024 * 1024,
         file_timeout_seconds: float = 30.0,
+        store: NotebookStore | None = None,
+        model: BackgroundModel | None = None,
+        consolidation: ConsolidationSettings | None = None,
+        notes_index_limit: int = 32,
+        notes_summary_chars: int = 140,
     ) -> None:
         """绑定明确目录与宿主证据端口，构造不建立目录或扫描文件。
 
@@ -1080,6 +1141,11 @@ class Notebook:
             seed_examples: 是否在初始化空笔记区域时创建内置示例。 默认 True。
             file_max_bytes: 下载和核验原始附件的独立字节上限，默认 20 MiB。
             file_timeout_seconds: 一次完整 HTTP 下载的总秒数，默认 30 秒。
+            store: 按实例隔离的派生存储；None 用于独立文件边界，不启动后台整理。
+            model: 显式借入的整理模型端口；文件操作不需要模型。
+            consolidation: 当前插件的整理开关及预算，缺省关闭。
+            notes_index_limit: 每请求最多提供的普通笔记摘要条数，0 关闭目录注入。
+            notes_summary_chars: 每条普通笔记摘要的字符上限。
         """
         self._files = _Files(
             root,
@@ -1088,14 +1154,20 @@ class Notebook:
             max_depth=max_depth,
             file_max_bytes=file_max_bytes,
         )
-        self._evidence = evidence
+        self.evidence = evidence
         self._instance_id = instance_id
+        self.instance_id = instance_id
         self._skills_dir = skills_dir
         self._seed_examples = seed_examples
         self._lock = asyncio.Lock()
         self._closing = False
         self._file_timeout_seconds = file_timeout_seconds
         self._download_client: httpx.AsyncClient | None = None
+        self._store = store
+        self._notes_index_limit = notes_index_limit
+        self._notes_summary_chars = notes_summary_chars
+        self.memory = NotebookMemory(self, store, model, consolidation or ConsolidationSettings())
+        self._close_task: asyncio.Task[None] | None = None
 
     async def _file_work[Result](self, operation: Callable[[], Result]) -> Result:
         """调用方持锁，取消也等实际磁盘线程结束，防止并发发布与提前关闭。"""
@@ -1125,12 +1197,248 @@ class Notebook:
         """创建固定根与原示例，目标存在时始终保留已有内容。"""
         await self._io(lambda: self._files.start(self._seed_examples))
 
+    @property
+    def max_bytes(self) -> int:
+        """返回笔记正文的实际 UTF-8 字节额度，完整读取不得静默截断专题。"""
+        return self._files.max_bytes
+
+    async def start_background(self) -> None:
+        """在宿主全部装配完成后启动 Notebook 唯一后台所有者。"""
+        await self.synchronize()
+        await self.memory.start()
+
+    def snapshot(self) -> JsonObject:
+        """投影本插件的整理状态；不把诊断队列自动送入主脑。"""
+        return self.memory.snapshot()
+
     async def close(self) -> None:
-        """停止新借用，等待有界下载和实际磁盘线程后关闭专属 HTTP 客户端。"""
+        """先撤销后台生成，再等待已接管发布和 HTTP 借用实际归还。"""
+        if self._close_task is None:
+            self._close_task = asyncio.create_task(self._close(), name="notebook-close")
+        await asyncio.shield(self._close_task)
+
+    async def _close(self) -> None:
+        await self.memory.close()
         self._closing = True
         async with self._lock:
             if self._download_client is not None:
                 await self._download_client.aclose()
+
+    async def _register(self, note: ParsedNote) -> EvidenceSnapshot:
+        """锁内登记稳定字节；访问别名和访问时间不参与文档快照身份。"""
+        source = encode_json(
+            {
+                "plugin": self._instance_id,
+                "path": note.path,
+                "file_version": note.version,
+                "name": note.name,
+                "description": note.description,
+                "body_start": note.body_start,
+                "bytes": note.byte_count,
+                "scope": "complete-file",
+                "method": "stable-utf8-read-v1",
+            }
+        ).decode("utf-8")
+        snapshot = await self.evidence.record_document(
+            EvidenceSnapshot(
+                evidence_id=f"notebook:{self._instance_id}:{note.path}",
+                version=1,
+                kind="notebook",
+                text=note.content,
+                source_json=source,
+                occurred_at=note.occurred_at,
+                summary=note_preview(note),
+                overview=note_overview(note),
+            )
+        )
+        if self._store is not None and note.path.split("/", 1)[0].casefold() != "attachments":
+            generated = note.path.split("/", 1)[0].casefold() == "memory"
+            await self._store.register(
+                Document(
+                    path=note.path,
+                    file_version=note.version,
+                    evidence_id=snapshot.evidence_id,
+                    version=snapshot.version,
+                    summary=snapshot.summary,
+                    updated_at=note.occurred_at,
+                    generated=generated,
+                    skill=note.skill,
+                ),
+                needs_work=not generated and not note.skill,
+            )
+        return snapshot
+
+    async def synchronize(self) -> _Scan:
+        """有界扫描与持久目录对账；不完整扫描不能确认未见路径已经删除。"""
+        async with self._lock:
+            scan = await self._file_work(lambda: self._files.scan(""))
+            if self._store is not None:
+                known = {doc.path: doc for doc in await self._store.documents()}
+                for note in scan.notes:
+                    prior = known.get(note.path)
+                    if prior is None or prior.file_version != note.version:
+                        await self._register(note)
+                if not scan.issues:
+                    present = {note.path for note in scan.notes}
+                    await self._store.remove(tuple(path for path in known if path not in present))
+            return scan
+
+    async def _mutate(
+        self, operation: Callable[[], JsonObject], *, rescan: bool = False
+    ) -> JsonObject:
+        """文件确认后继续完成登记，取消观察不在盘库交接之间丢失所有者。"""
+
+        async def publish() -> JsonObject:
+            async with self._lock:
+                if self._closing:
+                    raise HostStateError("Notebook 已开始关闭。")
+                result = await self._file_work(operation)
+                path = result.get("path")
+                if not rescan and isinstance(path, str):
+                    try:
+                        await self._register(await self._file_work(lambda: self._files.read(path)))
+                    except (StorageError, NotebookError) as error:
+                        # 文件效果已确认；后续失败不能伪装为没有发生写入。
+                        raise NotebookRegistrationError(error, result) from error
+            if rescan:
+                try:
+                    await self.synchronize()
+                except (StorageError, NotebookError) as error:
+                    raise NotebookRegistrationError(error, result) from error
+            return result
+
+        task = asyncio.create_task(publish(), name="notebook-file-commit")
+        cancelled: asyncio.CancelledError | None = None
+        while True:
+            try:
+                result = await asyncio.shield(task)
+                break
+            except asyncio.CancelledError as error:
+                if task.cancelled():
+                    raise
+                cancelled = error
+        if cancelled is not None:
+            raise cancelled
+        return result
+
+    async def append(self, content: str, path: str = "", *, timestamp: bool = True) -> JsonObject:
+        """无需预读地追加随笔；默认按宿主本地日期写入 journal/YYYY-MM-DD.md。"""
+        now = datetime.now().astimezone()
+        return await self._mutate(
+            lambda: self._files.append(path, content, timestamp=timestamp, now=now)
+        )
+
+    async def search(self, query: str, path: str = "", *, limit: int = 12) -> JsonObject:
+        """检索当前笔记，返回摘要及最多 240 字的连续原文，完整阅读仍使用 read。
+
+        Args:
+            query: 1 至 512 字的关键词或自然句，中文长句不使用孤立单字扩大召回。
+            path: 可选的当前目录或文件相对路径；空值检索整个 Notebook。
+            limit: 返回条数上限，默认 12，范围 1 至 100。
+
+        Returns:
+            有界结果与扫描、语义索引缺口。snippet_range 为完整文件的字符半开区间；
+            snippet_matched=False 表示无词面位置，片段取正文开头，不冒充命中高亮。
+
+        Raises:
+            NotebookError: 查询、条数或路径不合法。
+            StorageError: 快照或派生索引读取失败。
+
+        Note:
+            片段在异步排名后的文件版本复核完成后生成，不授予原文 slice_ref 阅读资格。
+        """
+        if not 1 <= limit <= 100:
+            raise NotebookError("检索条数必须在 1 至 100 之间。", code="invalid_limit")
+        if not query.strip() or len(query) > 512:
+            raise NotebookError("检索文字必须非空且不超过 512 字。", code="invalid_query")
+        prefix = "/".join(_parts(path))
+        scan = await self.synchronize()
+        notes = {note.path: note for note in scan.notes}
+        items: list[JsonValue] = []
+        candidates: tuple[EvidenceSnapshot, ...] = ()
+        if self._store is not None:
+            candidates = await self._store.search(query, path=prefix, limit=100)
+            paths = [decode_object(item.source_json.encode()).get("path") for item in candidates]
+        else:
+            # 未借入派生账本的独立文件实例仍使用同一查询词规则，按不同词覆盖
+            # 排列扫描结果；宿主实例的 BM25 和向量融合继续由有限存储端口提供。
+            terms = query_terms(query)
+            matched_paths: list[tuple[int, str]] = []
+            for note in scan.notes:
+                folded = note.content.casefold()
+                coverage = sum(term in folded for term in terms)
+                if coverage:
+                    matched_paths.append((coverage, note.path))
+            paths = [
+                path for _, path in sorted(matched_paths, key=lambda item: (-item[0], item[1]))
+            ]
+        if self._store is not None:
+            scan = await self.synchronize()
+            notes = {note.path: note for note in scan.notes}
+            versions = {
+                decode_object(item.source_json.encode()).get("path"): decode_object(
+                    item.source_json.encode()
+                ).get("file_version")
+                for item in candidates
+            }
+            paths = [
+                path
+                for path in paths
+                if isinstance(path, str)
+                and path in notes
+                and notes[path].version == versions.get(path)
+            ]
+        for candidate in paths:
+            if not isinstance(candidate, str) or candidate not in notes:
+                continue
+            if prefix and candidate != prefix and not candidate.startswith(prefix + "/"):
+                continue
+            note = notes[candidate]
+            snippet = search_snippet(note.content, query, body_start=note.body_start)
+            items.append(
+                {
+                    "path": note.path,
+                    "name": note.name,
+                    "summary": note_preview(note),
+                    "version": note.version,
+                    "bytes": note.byte_count,
+                    "snippet": snippet.text,
+                    "snippet_range": {
+                        "unit": "character",
+                        "start": snippet.start,
+                        "end": snippet.end,
+                    },
+                    "snippet_matched": snippet.matched,
+                }
+            )
+            if len(items) == limit:
+                break
+        coverage = {} if self._store is None else await self._store.status()
+        return {
+            "items": items,
+            "semantic_enabled": coverage.get("semantic_enabled", False),
+            "semantic_pending": coverage.get("semantic_pending", 0),
+            "incomplete": bool(scan.issues),
+            "issues": list(scan.issues),
+        }
+
+    async def publish_revision(self, revision: Revision, sources: tuple[Document, ...]) -> None:
+        """仅向 memory/ 发布有据整理页；输入和目标版本须在同一文件锁内重核。"""
+        if not revision.path.startswith("memory/") or revision.path.startswith(
+            "memory/attachments/"
+        ):
+            raise NotebookError("后台只能写入 memory/ 整理区域。", code="memory_target")
+        content = render_revision(revision)
+
+        def write() -> JsonObject:
+            for source in sources:
+                current = self._files.read(source.path)
+                if current.version != source.file_version:
+                    raise NotebookError("整理来源已变化，保留新版本待办。", code="version_conflict")
+            self._files.parents(revision.path)
+            return self._files.write(revision.path, content, revision.expected_version)
+
+        await self._mutate(write)
 
     async def save_file(self, url: str, path: str) -> JsonObject:
         """下载原文件到 attachments/，保留字节并返回可用于 QQ 发送的实际路径。
@@ -1183,31 +1491,48 @@ class Notebook:
         return await self._io(lambda: self._files.file_info(path))
 
     async def prepare_request(self) -> JsonObject:
-        """每次逻辑请求前重新取得技能目录。
+        """每次逻辑请求前取得技能和普通笔记的有界摘要目录。
 
         Returns:
-            业务对象，按实际结果提供 skills、skills_directory、incomplete、issues 字段。
+            skills 与 skills_directory 描述技能；notes_index 提供普通笔记及整理页摘要。
+            notes_truncated 表示摘要条数达到上限，incomplete 与 issues 明确扫描缺口。
 
         Note:
-            正文和普通笔记不进入动态目录。
+            正文不进入目录；普通笔记只提供路径、摘要和实际文件修改时间。
         """
-        try:
-            scan = await self._io(lambda: self._files.scan(self._skills_dir))
-        except NotebookError as error:
-            # 目录缺失或逃逸只形成本次不完整材料，不把旧缓存当成新目录。
-            scan = _Scan(
-                "dir",
-                (),
-                (),
-                ({"path": self._skills_dir, "code": error.code, "error": str(error)},),
-            )
-        payload: JsonObject = {
-            "skills": list(scan.skills),
+        scan = await self.synchronize()
+        now = datetime.now().astimezone()
+        recent = {f"journal/{now:%Y-%m-%d}.md", f"journal/{now - timedelta(days=1):%Y-%m-%d}.md"}
+        notes = sorted(
+            (note for note in scan.notes if not note.skill),
+            key=lambda note: (
+                0 if note.path in recent else 1 if Path(note.path).name == ".overview.md" else 2,
+                -note.occurred_at,
+                note.path,
+            ),
+        )
+        index: list[JsonValue] = [
+            {
+                "path": note.path,
+                "name": note.name,
+                "summary": note_preview(note, max_chars=self._notes_summary_chars),
+                "bytes": note.byte_count,
+                "updated_at": note.occurred_at,
+            }
+            for note in notes[: self._notes_index_limit]
+        ]
+        skill_scan = (
+            await self._io(lambda: self._files.scan(self._skills_dir)) if self._skills_dir else scan
+        )
+        skills = list(skill_scan.skills)
+        return {
+            "skills": list[JsonValue](skills),
             "skills_directory": self._skills_dir,
             "incomplete": bool(scan.issues),
             "issues": list(scan.issues),
+            "notes_index": index,
+            "notes_truncated": len(notes) > self._notes_index_limit,
         }
-        return payload
 
     async def tree(self, path: str = "") -> JsonObject:
         """保留目录层级，不显示正文。
@@ -1231,12 +1556,18 @@ class Notebook:
         }
 
     async def read(
-        self, path: str, *, cursor: str | None = None, max_chars: int | None = None
+        self,
+        path: str,
+        *,
+        cursor: str | None = None,
+        max_chars: int | None = None,
+        level: Literal["summary", "overview", "content"] = "content",
     ) -> JsonObject:
         """首次取得稳定全文并保存证据。
 
         Args:
             path: 根目录内的相对笔记路径，实际访问拒绝越界和链接逃逸。
+            level: summary 读摘要，overview 读概览，content 按不可变快照分页。
             cursor: 宿主签发并保存的不透明续读游标，续读同一快照版本。 None 表示首次读取。
             max_chars: 本页正文的字符上限；分页游标继续绑定原快照。 None
                 使用本实例配置的统一页长。
@@ -1244,48 +1575,39 @@ class Notebook:
         Note:
             续读不再访问文件或重新解析别名。
         """
+        if cursor is not None and level != "content":
+            raise NotebookError("概览和摘要不接受正文游标。", code="invalid_cursor")
         requested = "/".join(_parts(path))
-        page_chars = self._evidence.page_chars if max_chars is None else max_chars
+        page_chars = self.evidence.page_chars if max_chars is None else max_chars
         if cursor is None:
             note = await self._io(lambda: self._files.read(path))
-            source = encode_json(
-                {
-                    "plugin": self._instance_id,
+            snapshot = await self._register(note)
+            if level != "content":
+                text = snapshot.summary if level == "summary" else snapshot.overview
+                return {
                     "path": note.path,
-                    "requested_path": requested,
-                    "file_version": note.version,
-                    "name": note.name,
-                    "description": note.description,
-                    "body_start": note.body_start,
-                    "bytes": note.byte_count,
-                    "scope": "complete-file",
-                    "method": "stable-utf8-read-v1",
+                    "version": note.version,
+                    "level": level,
+                    "text": text,
+                    "next_cursor": None,
+                    "derived": True,
                 }
-            ).decode("utf-8")
-            snapshot = EvidenceSnapshot(
-                evidence_id="notebook-" + uuid4().hex,
-                version=1,
-                kind="notebook",
-                text=note.content,
-                source_json=source,
-                occurred_at=note.occurred_at,
+            page = await self.evidence.read_evidence(
+                snapshot.evidence_id, version=snapshot.version, max_chars=page_chars
             )
-            await self._evidence.put_evidence(snapshot)
-            page = await self._evidence.read_evidence(snapshot.evidence_id, max_chars=page_chars)
         else:
-            page = await self._evidence.read_evidence_cursor(cursor, max_chars=page_chars)
+            page = await self.evidence.read_evidence_cursor(cursor, max_chars=page_chars)
         return self._page(page, requested)
 
     def _page(self, page: EvidencePage, requested: str) -> JsonObject:
         """核游标来源，并只交付当前片段，旧 body 字段也不能重新带出整篇正文。"""
         snapshot = page.snapshot
-        if snapshot is None:
-            raise RuntimeError("Notebook 原文页不能用认识记录代替文件快照。")
         source = decode_object(snapshot.source_json.encode("utf-8"))
         if (
             snapshot.kind != "notebook"
             or source.get("plugin") != self._instance_id
-            or requested not in (source.get("path"), source.get("requested_path"))
+            or requested
+            not in (source.get("path"), source.get("name"), Path(str(source.get("path"))).stem)
         ):
             raise NotebookError("续读游标不属于同一笔记路径。", code="cursor_binding")
         fragment = page.slice
@@ -1304,6 +1626,7 @@ class Notebook:
             "body": body,
             "source": source,
             "evidence_ref": snapshot.evidence_id,
+            "evidence_version": snapshot.version,
             "slice_ref": fragment.slice_ref,
             "range": {"unit": fragment.unit, "start": fragment.start, "end": fragment.end},
             "next_cursor": page.next_cursor,
@@ -1321,7 +1644,7 @@ class Notebook:
             expected_version: 提交前观察到的版本，用于拒绝并发覆盖。 None 表示未提供先前版本，
                 创建与覆盖规则由具体提交入口核验。
         """
-        return await self._io(lambda: self._files.write(path, content, expected_version))
+        return await self._mutate(lambda: self._files.write(path, content, expected_version))
 
     async def edit(
         self,
@@ -1352,7 +1675,7 @@ class Notebook:
         Note:
             单次编辑共用原文件操作锁和线程所有者，取消等待不撤销已开始的发布。
         """
-        return await self._io(
+        return await self._mutate(
             lambda: self._files.edit(
                 path, old_text, new_text, expected_version, replace_all=replace_all
             )
@@ -1378,7 +1701,9 @@ class Notebook:
         Note:
             目标不存在才可移动。
         """
-        return await self._io(lambda: self._files.move(src, dest, expected_version))
+        return await self._mutate(
+            lambda: self._files.move(src, dest, expected_version), rescan=True
+        )
 
     async def delete(self, path: str, *, expected_version: str | None = None) -> JsonObject:
         """只删除已核版本的文件或空目录，不能递归删除根和非空目录。
@@ -1388,7 +1713,7 @@ class Notebook:
             expected_version: 提交前观察到的版本，用于拒绝并发覆盖。 None 表示未提供先前版本，
                 创建与覆盖规则由具体提交入口核验。
         """
-        return await self._io(lambda: self._files.delete(path, expected_version))
+        return await self._mutate(lambda: self._files.delete(path, expected_version), rescan=True)
 
 
 class NotebookSettings(BaseModel):
@@ -1403,6 +1728,10 @@ class NotebookSettings(BaseModel):
     max_entries: int = Field(default=500, gt=0)
     max_depth: int = Field(default=8, gt=0)
     seed_examples: bool = True
+    notes_index_limit: int = Field(default=32, ge=0)
+    notes_summary_chars: int = Field(default=140, gt=0)
+    consolidation: ConsolidationSettings = Field(default_factory=ConsolidationSettings)
+    embedding: EmbeddingSettings | None = None
 
 
 class _Parameters(BaseModel):
@@ -1414,9 +1743,22 @@ class _Tree(_Parameters):
 
 
 class _Read(_Parameters):
+    level: Literal["summary", "overview", "content"] = "content"
     path: str
     cursor: str | None = None
     max_chars: int | None = Field(default=None, gt=0)
+
+
+class _Append(_Parameters):
+    content: str = Field(min_length=1, pattern=r"\S")
+    path: str = ""
+    timestamp: bool = True
+
+
+class _Search(_Parameters):
+    query: str = Field(min_length=1, max_length=512)
+    path: str = ""
+    limit: int = Field(default=12, ge=1, le=100)
 
 
 class _Write(_Parameters):
@@ -1489,6 +1831,21 @@ def _declare(instance_id: str, settings: NotebookSettings, base_dir: Path) -> Pl
             concurrency="target_serial",
         )
 
+    append = declaration(
+        "append",
+        _Append,
+        "无需预读地追加随笔，省略 path 按天写入 journal/YYYY-MM-DD.md。",
+        'await me.notebook.append(content="今天想记下的事情")',
+        "日常随手记录优先 append；结果未知先核对文件，不自动重放。",
+    )
+    search = declaration(
+        "search",
+        _Search,
+        "检索本笔记本当前笔记及整理页，返回摘要和最多240字的原文片段。",
+        'await me.notebook.search(query="共同约定")',
+        "snippet_range 是文件字符位置；snippet_matched=false 表示语义候选没有词面命中，"
+        "此时只展示正文开头。先看片段，再按需 read(level=overview) 或正文；片段不授予阅读凭据。",
+    )
     tree = declaration(
         "tree", _Tree, "查看笔记目录层级、名称和技能说明，不含正文。", "await me.notebook.tree()"
     )
@@ -1572,6 +1929,11 @@ def _declare(instance_id: str, settings: NotebookSettings, base_dir: Path) -> Pl
             seed_examples=settings.seed_examples,
             file_max_bytes=settings.file_max_bytes,
             file_timeout_seconds=settings.file_timeout_seconds,
+            store=ports.notebook,
+            model=ports.background_models.get("consolidation"),
+            consolidation=settings.consolidation,
+            notes_index_limit=settings.notes_index_limit,
+            notes_summary_chars=settings.notes_summary_chars,
         )
         await notebook.start()
 
@@ -1579,12 +1941,33 @@ def _declare(instance_id: str, settings: NotebookSettings, base_dir: Path) -> Pl
             """只翻译明确文件业务拒绝；存储和程序错误仍交回真实执行边界。"""
             try:
                 return CallOutcome("confirmed", await operation)
+            except NotebookRegistrationError as error:
+                return CallOutcome(
+                    "unknown",
+                    {"file_published": True, "file": error.result, "registration": "failed"},
+                    type(error.error).__name__,
+                    str(error),
+                )
             except NotebookPublicationError as error:
                 return CallOutcome(
                     "unknown", error.recovery, type(error.native_error).__name__, str(error)
                 )
             except NotebookError as error:
                 return CallOutcome("failed", {"code": error.code}, type(error).__name__, str(error))
+
+        async def run_append(parameters: _Append, context: CallContext) -> CallOutcome:
+            """以插件持有的文件事务追加随笔并登记整理待办。"""
+            del context
+            return await outcome(
+                notebook.append(parameters.content, parameters.path, timestamp=parameters.timestamp)
+            )
+
+        async def run_search(parameters: _Search, context: CallContext) -> CallOutcome:
+            """检索当前笔记的摘要和有界原文片段，不交付全文。"""
+            del context
+            return await outcome(
+                notebook.search(parameters.query, parameters.path, limit=parameters.limit)
+            )
 
         async def run_tree(parameters: _Tree, context: CallContext) -> CallOutcome:
             """读取受限根目录内的笔记目录树。"""
@@ -1606,7 +1989,10 @@ def _declare(instance_id: str, settings: NotebookSettings, base_dir: Path) -> Pl
             del context
             return await outcome(
                 notebook.read(
-                    parameters.path, cursor=parameters.cursor, max_chars=parameters.max_chars
+                    parameters.path,
+                    cursor=parameters.cursor,
+                    max_chars=parameters.max_chars,
+                    level=parameters.level,
                 )
             )
 
@@ -1657,6 +2043,8 @@ def _declare(instance_id: str, settings: NotebookSettings, base_dir: Path) -> Pl
 
         return PluginRuntime(
             (
+                FunctionCapability(append, run_append),
+                FunctionCapability(search, run_search),
                 FunctionCapability(tree, run_tree),
                 FunctionCapability(save_file, run_save_file),
                 FunctionCapability(file_info, run_file_info),
@@ -1667,14 +2055,27 @@ def _declare(instance_id: str, settings: NotebookSettings, base_dir: Path) -> Pl
                 FunctionCapability(move, run_move),
                 FunctionCapability(delete, run_delete),
             ),
+            start_background=notebook.start_background,
             close=notebook.close,
+            snapshot=notebook.snapshot,
+            health=notebook.memory.health,
             prepare_request=notebook.prepare_request,
         )
 
     return PluginBlueprint(
         (ObjectDeclaration(object_id, "notebook", "笔记本", "subject"),),
-        (tree, read, write, edit, mkdir, move, delete, save_file, file_info),
+        (tree, read, write, edit, mkdir, move, delete, save_file, file_info, append, search),
         build,
+        model_requirements=()
+        if settings.consolidation.model is None
+        else (
+            ModelRequirement(
+                alias="consolidation",
+                model=settings.consolidation.model,
+                retry=settings.consolidation.retry,
+            ),
+        ),
+        notebook=NotebookRequirement(embedding=settings.embedding),
     )
 
 

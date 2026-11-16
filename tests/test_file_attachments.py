@@ -40,7 +40,7 @@ async def notebook(tmp_path: Path) -> AsyncIterator[Notebook]:
     store = await Store.open(tmp_path / "state.sqlite3")
     notes = Notebook(
         tmp_path / "notes",
-        EvidenceAccess(store.knowledge, 8000),
+        EvidenceAccess(store.evidence, 8000),
         instance_id="notes",
         seed_examples=False,
         file_max_bytes=1024,
@@ -177,7 +177,7 @@ async def test_download_deadline_closes_partial_stream_without_file(
     store = await Store.open(tmp_path / "timeout.sqlite3")
     notes = Notebook(
         tmp_path / "timeout-notes",
-        EvidenceAccess(store.knowledge, 8000),
+        EvidenceAccess(store.evidence, 8000),
         instance_id="timeout",
         seed_examples=False,
         file_timeout_seconds=0.02,

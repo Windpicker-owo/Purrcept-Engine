@@ -3,6 +3,7 @@
  * 打开或刷新页面只查询；开始、停止与恢复都由明确点击发起，结果以宿主回执为准。
  * 全部原始字段在 Inspector 的技术细节中，卡片不平铺实现标识。
  */
+import { PhoneConnection } from "./PhoneConnection";
 import { useEffect, useState } from "react";
 import type { ReactElement } from "react";
 import { Button, Field, Switch, isLive } from "@purrcept/cel";
@@ -130,6 +131,7 @@ export function Devices({ client, state, selected, go }: { client: PanelClient; 
   const liveId = state.online ? devices.find((device) => isLive(deviceMark(device).state))?.instance_id : undefined;
   return <>
     <PageHeading title="设备">她的连接与感官。打开或刷新这个页面不会启动任何设备。</PageHeading>
+    <PhoneConnection client={client} online={state.online} target={devices.find((device) => device.kind === "phone")?.instance_id} />
     {devices.length === 0 ? <EmptyState icon="device" title="还没有启用设备">在配置文件的 plugins 中启用 QQ、收音、语音输出等插件，重启后会出现在这里。</EmptyState>
       : <div className="object-grid">{devices.map((device) => {
         const status = state.online ? deviceMark(device) : { state: "warning" as const,

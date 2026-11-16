@@ -154,7 +154,7 @@ async def test_once_admission_consumption_and_occurrence_identity_survive_reopen
         assert payload["at"] == scheduled.at.isoformat() and payload["late_seconds"] == 7200.0
         assert pending[0].source.native_event_id == scheduled.occurrence_id
         assert pending[0].source.sender_id is None and pending[0].context.minimum_wake
-        assert await reopened.knowledge.get_evidence(firing.input_id) is not None
+        assert await reopened.evidence.get_evidence(firing.input_id) is not None
     finally:
         await reopened.close()
     again = await Store.open(path)

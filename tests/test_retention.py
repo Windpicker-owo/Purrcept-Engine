@@ -30,7 +30,7 @@ def _open_database(path: Path) -> sqlite3.Connection:
     connection.execute("CREATE TABLE authority (kind TEXT PRIMARY KEY,evidence TEXT NOT NULL)")
     connection.executemany(
         "INSERT INTO authority VALUES (?,?)",
-        ((name, f"original-{name}") for name in ("input", "receipt", "knowledge", "activity")),
+        ((name, f"original-{name}") for name in ("input", "receipt", "evidence", "activity")),
     )
     connection.execute("INSERT INTO media VALUES ('media',?)", (b"original-owned-media",))
     connection.execute(

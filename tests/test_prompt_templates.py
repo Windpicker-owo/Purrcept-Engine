@@ -104,7 +104,9 @@ def test_attention_and_summary_prompt_text_match_frozen_material() -> None:
 
 def test_analysis_prompts_have_separate_writing_responsibilities() -> None:
     """拆分后的固定规则不能同时要求记忆修订和监管，旧反思样本仅留作效果对照。"""
-    memory = reflection_instructions("memory")[0].content[0]
+    from purrcept_engine.plugins.notebook_memory import CONSOLIDATION_PROMPT
+
+    memory = CONSOLIDATION_PROMPT.instruction().content[0]
     behavior = reflection_instructions("behavior")[0].content[0]
     assert isinstance(memory, TextBlock) and isinstance(behavior, TextBlock)
     assert "没有监管和世界行动权限" in memory.text

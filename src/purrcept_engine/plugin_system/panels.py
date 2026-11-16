@@ -7,7 +7,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Literal
 
@@ -93,7 +93,27 @@ class DevicePanel:
         返回已经取得的缓存，不能调用截图、网络或设备读取。所有调用在宿主循环上。
     """
 
-    kind: Literal["computer", "qq", "voice_input", "audio", "live2d"]
+    kind: Literal["computer", "qq", "voice_input", "audio", "live2d", "phone"]
     controls: tuple[PanelControl, ...]
     revision: Callable[[], str]
     preview: Callable[[], PreviewFrame | None] | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class PhonePairing:
+    """Phone 插件交给本机 WebUI 的配对端口，不进入能力目录或普通快照。
+
+    read 只读取当前窗口和已配对事实；open 由本机用户明确点击后开启或刷新
+    120 秒窗口。replace 撤销旧设备凭据与连接，再开放新窗口，保留历史记录。
+    replace 必须传入 read 观察到的 device_id；目标变化时拒绝，避免旧确认撤销新配对。
+    三个入口在宿主循环上调用，可能抛出存储或生命周期错误。返回值
+    可含短时邀请，调用方只能在同源、禁止缓存的配对响应内使用。关闭监听器
+    后不得借用此端口；主体和远程手机均不能通过模型能力调用它。
+    """
+
+    read: Callable[[], Awaitable[JsonObject]]
+    open: Callable[[], Awaitable[JsonObject]]
+    replace: Callable[[str], Awaitable[JsonObject]]
+
+
+type PairingOperation = Literal["read", "open", "replace"]

@@ -173,12 +173,14 @@ class HostQueries:
         state = self.state
         owners = [state.startup_health, state.input_health, state.maintenance_health]
         subject = state.subject
+        owners.extend(
+            runtime.health for runtime in state.plugins.values() if runtime.health is not None
+        )
         if subject is not None:
             owners.extend(
                 (
                     subject.service.health,
                     subject.background.health,
-                    subject.background.reflection_service.health,
                     subject.background.behavior_service.health,
                 )
             )
@@ -211,8 +213,8 @@ class HostQueries:
 
         Returns:
             业务对象，按实际结果提供 instance_id、host_version、phase、pending_resources、
-            authority_available、input_handoff_failure、devices、foreground、reflection、
-            knowledge 等 字段。
+            authority_available、input_handoff_failure、devices、foreground、behavior、
+            notebooks 等字段。
 
         Raises:
             HostStateError: 宿主面板尚未就绪或已收回。
@@ -240,27 +242,20 @@ class HostQueries:
             else type(self.state.input_failure).__name__,
             "devices": devices,
             "foreground": None if subject is None else subject.service.session.snapshot(),
-            "reflection": None if subject is None else subject.background.session.snapshot(),
             "behavior_review": None
             if subject is None
             else subject.background.behavior_session.snapshot(),
             "analysis": None
             if subject is None
             else {
-                "memory_enabled": subject.background.settings.memory_enabled,
                 "behavior_enabled": subject.background.settings.behavior_enabled,
-                "memory": subject.background.reflection_service.snapshot(),
                 "behavior": subject.background.behavior_service.snapshot(),
             },
             "proactive_thinking": None if subject is None else subject.service.proactive.snapshot(),
-            "knowledge": None
-            if self.state.knowledge_resources is None
-            else {
-                "semantic_enabled": self.state.config.knowledge.embedding is not None,
-                "pending_resources": self.state.knowledge_resources.pending_resources,
-                "index_failure": None
-                if self.state.knowledge_resources.failure is None
-                else type(self.state.knowledge_resources.failure).__name__,
+            "notebooks": {
+                name: runtime.snapshot()
+                for name, runtime in self.state.plugins.items()
+                if name in self.state.notebook_resources and runtime.snapshot is not None
             },
             "pending_limits": {
                 "count": self.state.config.execution.max_pending_inputs,

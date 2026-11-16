@@ -21,20 +21,20 @@ from purrcept_engine.domain.context.capacity import CapacityError
 from purrcept_engine.domain.context.delivery import ToolDeliveryGate
 from purrcept_engine.domain.context.history_preparation import preview_request
 from purrcept_engine.domain.context.materials import UnsupportedMaterial
-from purrcept_engine.domain.health import ComponentHealth
-from purrcept_engine.domain.knowledge.models import (
+from purrcept_engine.domain.evidence.models import (
+    EvidenceConflict,
+    EvidenceInputError,
     EvidencePage,
-    KnowledgeConflict,
-    KnowledgeInputError,
     OperationalFinding,
     ReflectionBatch,
 )
-from purrcept_engine.domain.knowledge.semantic import EmbeddingProtocolError
+from purrcept_engine.domain.health import ComponentHealth
 from purrcept_engine.domain.model_requests.service import (
     RequestBudget,
     RequestBudgetExceeded,
     prepare_off_loop,
 )
+from purrcept_engine.domain.notebook.embedding import EmbeddingProtocolError
 from purrcept_engine.domain.subject.feedback_models import ReflectionSource, ReflectionState
 from purrcept_engine.domain.subject.reflection_tools import (
     EvidenceDeliveries,
@@ -64,25 +64,23 @@ class ReflectionService:
 
     Note:
         BackgroundService 持有该协作者和反思会话；批次内共用原预算与材料
-        呈现登记。认识逐次提交，结案依赖结构化回执，不提供世界执行工具。
+        呈现登记。有据监管逐次提交，结案依赖结构化回执，不提供世界执行工具。
     """
 
     def __init__(
-        self, runtime: BackgroundService, *, purpose: Literal["memory", "behavior"] = "memory"
+        self, runtime: BackgroundService, *, purpose: Literal["behavior"] = "behavior"
     ) -> None:
         """借用同一协调状态，不复制会话、生成资格或失败事实。
 
         Args:
             runtime: 创建此协作者的领域或执行运行实例，不跨实例共享状态。
-            purpose: 决定独立队列、会话、工具和结案责任的用途。
+            purpose: 固定为 behavior，标识独立行为评审会话与结案责任。
         """
         self.runtime = runtime
-        self.purpose: Literal["memory", "behavior"] = purpose
-        self.model = runtime.reflection if purpose == "memory" else runtime.behavior
-        self.session = runtime.session if purpose == "memory" else runtime.behavior_session
-        self.instructions = (
-            runtime.instructions if purpose == "memory" else reflection_instructions("behavior")
-        )
+        self.purpose: Literal["behavior"] = purpose
+        self.model = runtime.behavior
+        self.session = runtime.behavior_session
+        self.instructions = reflection_instructions("behavior")
         self.health = ComponentHealth(purpose)
         self.task: asyncio.Task[None] | None = None
         self.wait_reason = "initializing"
@@ -152,16 +150,8 @@ class ReflectionService:
                 )
                 await self.runtime.wait(revision, delay)
                 continue
-            batch_seconds = (
-                self.runtime.settings.batch_seconds
-                if self.purpose == "behavior"
-                else self.runtime.settings.memory_batch_seconds
-            )
-            batch_turns = (
-                self.runtime.settings.successful_turns
-                if self.purpose == "behavior"
-                else self.runtime.settings.memory_batch_turns
-            )
+            batch_seconds = self.runtime.settings.batch_seconds
+            batch_turns = self.runtime.settings.successful_turns
             deadline = state.oldest_queued_at + batch_seconds
             due = (
                 state.priority
@@ -192,7 +182,7 @@ class ReflectionService:
             state: 当前所有者持有的状态或待提交状态值。
 
         Raises:
-            KnowledgeConflict: 后台候选必须对应确切原文版本和真实范围。
+            EvidenceConflict: 后台候选必须对应确切原文版本和真实范围。
 
         Note:
             准备期限耗尽转为有界持久冷却，不向外冒充任务崩溃。
@@ -227,7 +217,7 @@ class ReflectionService:
         ):
             return
         batch = await self.runtime.commit(
-            self.runtime.knowledge_store.begin_reflection(
+            self.runtime.evidence_store.begin_reflection(
                 batch_id,
                 tuple(references),
                 tuple(finding for finding in findings if set(finding.evidence) <= set(references)),
@@ -236,10 +226,10 @@ class ReflectionService:
         )
         delivery = ToolDeliveryGate(compiler=self.model.compiler)
         tools = ReflectionTools(
-            self.runtime.knowledge_store,
+            self.runtime.evidence_store,
             batch,
             self.runtime,
-            knowledge=self.runtime.knowledge,
+            evidence=self.runtime.evidence,
             page_chars=self.runtime.settings.page_chars,
             deliveries=EvidenceDeliveries(),
             delivery=delivery,
@@ -253,11 +243,11 @@ class ReflectionService:
             # Ordering: Core 已恢复并完成容量检查的真实请求决定当前历史。
             # 即使发生进程恢复或摘要安装，也只接回其中完整存在的原交付。
             """核对当前请求完整材料与持久交付记录，再提交真实呈现范围。"""
-            restored = await self.runtime.knowledge_store.deliveries_for_history(request.messages)
+            restored = await self.runtime.evidence_store.deliveries_for_history(request.messages)
             tools.deliveries.restore_history(restored)
             tools.deliveries.retain_history(request.messages)
             await self.runtime.commit(
-                self.runtime.knowledge_store.mark_presented(
+                self.runtime.evidence_store.mark_presented(
                     batch.batch_id,
                     batch.version,
                     tools.presented_refs(request),
@@ -294,7 +284,7 @@ class ReflectionService:
         except (
             ModelError,
             CapacityError,
-            KnowledgeInputError,
+            EvidenceInputError,
             UnsupportedMaterial,
             ToolLoopLimitError,
             TimeoutError,
@@ -302,7 +292,7 @@ class ReflectionService:
             EmbeddingProtocolError,
         ) as error:
             await self.runtime.commit(
-                self.runtime.knowledge_store.abandon_reflection(
+                self.runtime.evidence_store.abandon_reflection(
                     batch.batch_id,
                     batch.version,
                     type(error).__name__,
@@ -312,16 +302,16 @@ class ReflectionService:
         finally:
             if self.runtime.closing:
                 await self.runtime.commit(
-                    self.runtime.knowledge_store.abandon_reflection(
+                    self.runtime.evidence_store.abandon_reflection(
                         batch.batch_id,
                         batch.version,
                         "host_closing",
                     )
                 )
-        current = await self.runtime.knowledge_store.get_reflection(batch.batch_id, batch.version)
+        current = await self.runtime.evidence_store.get_reflection(batch.batch_id, batch.version)
         if current.state != "completed":
             await self.runtime.commit(
-                self.runtime.knowledge_store.abandon_reflection(
+                self.runtime.evidence_store.abandon_reflection(
                     batch.batch_id,
                     batch.version,
                     "finish_reflection_not_submitted",
@@ -344,13 +334,13 @@ class ReflectionService:
         selected_sources: list[ReflectionSource] = []
         for source in sources:
             try:
-                page = await self.runtime.knowledge_store.read_evidence(
+                page = await self.runtime.evidence_store.read_evidence(
                     source.evidence_id,
                     version=source.version,
                     cursor=source.cursor,
                     max_chars=self.runtime.settings.page_chars,
                 )
-            except KnowledgeInputError:
+            except EvidenceInputError:
                 await self.runtime.feedback.block_reflection(
                     source_id=source.evidence_id,
                     version=source.version,
@@ -358,12 +348,8 @@ class ReflectionService:
                     purpose=self.purpose,
                 )
                 continue
-            if (
-                page.slice is None
-                or page.snapshot is None
-                or page.snapshot.version != source.version
-            ):
-                raise KnowledgeConflict("后台候选必须对应确切原文版本和真实范围。")
+            if page.slice is None or page.snapshot.version != source.version:
+                raise EvidenceConflict("后台候选必须对应确切原文版本和真实范围。")
             selected_sources.append(source)
             pages.append(page)
             references.append(page.slice.slice_ref)
@@ -393,18 +379,16 @@ class ReflectionService:
                 ),
             )
             preview_tools = ReflectionTools(
-                self.runtime.knowledge_store,
+                self.runtime.evidence_store,
                 candidate,
                 self.runtime,
-                knowledge=self.runtime.knowledge,
+                evidence=self.runtime.evidence,
                 page_chars=self.runtime.settings.page_chars,
             )
             try:
                 related = (
                     await self.runtime.feedback.behavior_context(
-                        tuple(
-                            page.snapshot.evidence_id for page in pages if page.snapshot is not None
-                        )
+                        tuple(page.snapshot.evidence_id for page in pages)
                     )
                     if self.purpose == "behavior"
                     else None
@@ -450,13 +434,13 @@ class ReflectionService:
                     smaller = max(256, len(page.text) // 2)
                     source = selected_sources[0]
                     try:
-                        smaller_page = await self.runtime.knowledge_store.read_evidence(
+                        smaller_page = await self.runtime.evidence_store.read_evidence(
                             source.evidence_id,
                             version=source.version,
                             cursor=source.cursor,
                             max_chars=smaller,
                         )
-                    except KnowledgeInputError:
+                    except EvidenceInputError:
                         # 结构化证据不能任意截断；缩页已无合法边界时保留待办。
                         smaller_page = None
                     if smaller_page is not None and smaller_page.slice is not None:

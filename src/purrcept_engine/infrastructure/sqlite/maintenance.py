@@ -57,7 +57,7 @@ SCHEMA = (
 
 
 def _scope(owner_id: str) -> SessionScope:
-    if owner_id not in ("foreground", "reflection"):
+    if owner_id not in ("foreground", "behavior_review"):
         raise SummaryError("摘要所有者不是正式前台或反思会话。")
     return owner_id
 

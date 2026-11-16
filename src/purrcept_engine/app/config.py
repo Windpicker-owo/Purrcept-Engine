@@ -29,7 +29,6 @@ from pydantic import (
 )
 
 from purrcept_engine.domain.execution.settings import ExecutionSettings
-from purrcept_engine.domain.knowledge.settings import EmbeddingSettings
 from purrcept_engine.domain.model_requests.contents import ContentKind, validate_supported_contents
 from purrcept_engine.errors import ConfigError
 from purrcept_engine.values import JsonObject, decode_object, encode_json
@@ -44,7 +43,6 @@ __all__ = [
     "ExecutionSettings",
     "GenerationModelSettings",
     "HostSettings",
-    "KnowledgeSettings",
     "LoggingSettings",
     "PluginSettings",
     "RetrySettings",
@@ -231,9 +229,6 @@ class SubjectSettings(_Settings):
     reflection_batch_seconds: PositiveSeconds = 60.0
     reflection_batch_turns: PositiveInt = 8
     behavior_review_enabled: bool = True
-    memory_consolidation_enabled: bool = True
-    memory_batch_seconds: PositiveSeconds = 1800.0
-    memory_batch_turns: PositiveInt = 32
 
 
 class CharacterSettings(_Settings):
@@ -336,12 +331,6 @@ class PluginSettings(_Settings):
         return decode_object(self.config_json.encode("utf-8"))
 
 
-class KnowledgeSettings(_Settings):
-    """可选向量资源；缺省只使用本地检索，不隐含选择 embedding 模型。"""
-
-    embedding: EmbeddingSettings | None = None
-
-
 class WebSettings(_Settings):
     """CLI 本机面板接入配置，绑定范围固定为回环且不启动第二个宿主。
 
@@ -367,7 +356,6 @@ class EngineConfig(_Settings):
     context: ContextSettings = Field(default_factory=ContextSettings)
     execution: ExecutionSettings = Field(default_factory=ExecutionSettings)
     activities: ActivitySettings = Field(default_factory=ActivitySettings)
-    knowledge: KnowledgeSettings = Field(default_factory=KnowledgeSettings)
     diagnostics: DiagnosticSettings = Field(default_factory=DiagnosticSettings)
     logging: LoggingSettings = Field(default_factory=LoggingSettings)
     console: bool = True
@@ -430,7 +418,13 @@ class EngineConfig(_Settings):
             descriptions: list[str] = []
             for issue in issues:
                 location = ".".join(str(part) for part in issue["loc"]) or "config"
-                descriptions.append(f"{location}: {issue['msg']}")
+                if location == "knowledge":
+                    descriptions.append("knowledge 已移除；向量配置改用 plugins.config.embedding。")
+                elif location.startswith("subject.memory_"):
+                    descriptions.append(location + " 已移除；改用 plugins.config.consolidation。")
+                    descriptions.append("须显式选择模型；触发计数按笔记变更计算。")
+                else:
+                    descriptions.append(f"{location}: {issue['msg']}")
             raise ConfigError("配置校验失败：" + "; ".join(descriptions)) from None
         return config.resolve(base_dir=base_dir)
 
@@ -463,7 +457,6 @@ class EngineConfig(_Settings):
             context=self.context,
             execution=self.execution,
             activities=self.activities,
-            knowledge=self.knowledge,
             diagnostics=self.diagnostics,
             logging=self.logging,
             console=self.console,

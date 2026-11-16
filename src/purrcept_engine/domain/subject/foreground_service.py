@@ -32,7 +32,7 @@ from purrcept_engine.domain.context.materials import UnsupportedMaterial, input_
 from purrcept_engine.domain.context.presentation import render_material
 from purrcept_engine.domain.execution.models import ActionRecord
 from purrcept_engine.domain.inputs.models import InputRecord, MediaReference
-from purrcept_engine.domain.knowledge.semantic import EmbeddingProtocolError
+from purrcept_engine.domain.notebook.embedding import EmbeddingProtocolError
 from purrcept_engine.domain.subject.attention import NativeMedia
 from purrcept_engine.domain.subject.foreground_tools import ForegroundTools
 from purrcept_engine.domain.subject.models import (
@@ -380,8 +380,8 @@ class ForegroundService:
             delivery,
         )
         tools = ForegroundTools(
-            self.runtime.knowledge,
-            self.runtime.knowledge_store,
+            self.runtime.evidence,
+            self.runtime.evidence_store,
             ports,
             check=lambda: self.check_turn(generation),
             delivery=delivery,

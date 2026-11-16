@@ -11,7 +11,7 @@ from collections.abc import Awaitable, Callable
 from typing import Literal, Protocol
 
 import purrcept_engine.domain.subject.feedback_models as subject_feedback_models
-from purrcept_engine.domain.knowledge.models import EvidencePage, SupervisionRecord
+from purrcept_engine.domain.evidence.models import EvidencePage, SupervisionRecord
 from purrcept_engine.infrastructure.sqlite import analysis_work, behavior_review
 from purrcept_engine.infrastructure.sqlite import feedback as sql
 from purrcept_engine.infrastructure.sqlite.time import AdmitInput
@@ -30,8 +30,8 @@ def _limit(value: int) -> None:
 
 
 def _validate_purpose(value: str) -> None:
-    if value not in ("memory", "behavior"):
-        raise ValueError("后台用途只能为 memory 或 behavior。")
+    if value not in ("behavior",):
+        raise ValueError("后台用途只能为 behavior。")
 
 
 class Submit(Protocol):
@@ -148,7 +148,7 @@ class FeedbackLedger:
         return await self._submit(sql.next_plan_at)
 
     async def reflection_state(
-        self, *, purpose: Literal["memory", "behavior"] = "memory"
+        self, *, purpose: Literal["behavior"] = "behavior"
     ) -> subject_feedback_models.ReflectionState:
         """读取独立来源和真正成功轮数，不改变复核资格。
 
@@ -166,7 +166,7 @@ class FeedbackLedger:
         epoch: int,
         limit: int = 32,
         after: int = 0,
-        purpose: Literal["memory", "behavior"] = "memory",
+        purpose: Literal["behavior"] = "behavior",
     ) -> tuple[subject_feedback_models.ReflectionSource, ...]:
         """分页读取具体版本。
 
@@ -202,7 +202,7 @@ class FeedbackLedger:
         epoch: int,
         pages: tuple[EvidencePage, ...],
         successful_turns: int,
-        purpose: Literal["memory", "behavior"] = "memory",
+        purpose: Literal["behavior"] = "behavior",
     ) -> bool:
         """在实际模型请求前持久接管原文范围。
 
@@ -243,7 +243,7 @@ class FeedbackLedger:
         self,
         sources: tuple[subject_feedback_models.ReflectionSource, ...],
         *,
-        purpose: Literal["memory", "behavior"],
+        purpose: Literal["behavior"],
         reason: str,
     ) -> None:
         """将准备超时作为持久冷却提交，不让预检反复取得新的整批预算。"""
@@ -267,7 +267,7 @@ class FeedbackLedger:
         source_id: str,
         version: int,
         reason: str,
-        purpose: Literal["memory", "behavior"] = "memory",
+        purpose: Literal["behavior"] = "behavior",
     ) -> None:
         """在同一提交队列保留容量拒绝，不将原文伪装为已复核。"""
         _validate_purpose(purpose)
@@ -298,7 +298,7 @@ class FeedbackLedger:
             """持久策略与重新排队共享一次事务，不清除重试或派发记录。"""
             with connection:
                 connection.execute("BEGIN IMMEDIATE")
-                for purpose in ("memory", "behavior"):
+                for purpose in ("behavior",):
                     row = connection.execute(
                         "SELECT capacity_key FROM analysis_policy WHERE purpose=?", (purpose,)
                     ).fetchone()

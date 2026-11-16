@@ -40,7 +40,7 @@ class _Fixture:
 @pytest.fixture
 async def fixture(tmp_path: Path) -> AsyncIterator[_Fixture]:
     store = await Store.open(tmp_path / "evidence.sqlite3")
-    evidence = EvidenceAccess(store.knowledge, 8)
+    evidence = EvidenceAccess(store.evidence, 8)
     root = tmp_path / "notebook"
     notebook = Notebook(root, evidence, instance_id="notes", seed_examples=False)
     await notebook.start()
@@ -76,6 +76,8 @@ def test_factory_is_pure_and_declares_notebook_and_attachment_paths(tmp_path: Pa
         (ObjectDeclaration("subject", "me", "主体"), *blueprint.objects), blueprint.capabilities
     )
     assert set(catalog.bindings) == {
+        "me.notebook.append",
+        "me.notebook.search",
         "me.notebook.tree",
         "me.notebook.read",
         "me.notebook.write",
@@ -134,7 +136,11 @@ async def test_edit_changes_only_exact_fragment_and_keeps_original_evidence(
     assert edited["version"] != written["version"] and edited["replacements"] == 1
     assert edited["changed"] is True and "content" not in edited and "body" not in edited
     assert len(str(edited)) < len(content)
-    old = await fixture.evidence.read_evidence(_text(page, "evidence_ref"), max_chars=10000)
+    evidence_version = page["evidence_version"]
+    assert isinstance(evidence_version, int)
+    old = await fixture.evidence.read_evidence(
+        _text(page, "evidence_ref"), version=evidence_version, max_chars=10000
+    )
     assert old.text == content
 
 
@@ -341,7 +347,8 @@ async def test_each_request_refreshes_skills_and_reports_bad_files(fixture: _Fix
     assert first["incomplete"] is False
     skills = first["skills"]
     assert isinstance(skills, list) and len(skills) == 1
-    assert "秘密正文" not in str(first) and "普通笔记正文" not in str(first)
+    assert "秘密正文" not in str(first)
+    assert "普通笔记正文" in str(first["notes_index"])
     (fixture.root / "skill.md").write_text(
         "---\nname: 新名\ndescription: 新说明\n---\n新正文", encoding="utf-8"
     )
@@ -438,8 +445,8 @@ async def test_final_replace_window_is_an_explicit_platform_limit(
 
     monkeypatch.setattr(os.path, "samestat", editor_after_last_stat)
     await fixture.notebook.write("note.md", "ours", expected_version=_text(written, "version"))
-    assert observed == ["unobserved external edit"]
-    assert (fixture.root / "note.md").read_text(encoding="utf-8") == "ours"
+    assert observed and set(observed) == {"unobserved external edit"}
+    assert (fixture.root / "note.md").read_text(encoding="utf-8") == "unobserved external edit"
 
 
 async def test_external_junction_is_rejected_without_reading_body(fixture: _Fixture) -> None:

@@ -40,7 +40,7 @@ from purrcept_engine.domain.context.maintenance import (
     candidate_checkpoint,
     freeze_summary_source,
 )
-from purrcept_engine.domain.knowledge.models import EvidenceSnapshot
+from purrcept_engine.domain.evidence.models import EvidenceSnapshot
 from purrcept_engine.domain.model_requests.models import (
     AttemptEvidence,
     AttemptStart,
@@ -48,7 +48,7 @@ from purrcept_engine.domain.model_requests.models import (
     RequestScope,
 )
 from purrcept_engine.errors import StorageError
-from purrcept_engine.infrastructure.sqlite import knowledge, maintenance, model_requests, subject
+from purrcept_engine.infrastructure.sqlite import evidence, maintenance, model_requests, subject
 from purrcept_engine.infrastructure.sqlite.checkpoints import intern_checkpoint, restore_checkpoint
 from purrcept_engine.serialization import encode
 
@@ -62,7 +62,7 @@ def connection(tmp_path: Path) -> Iterator[sqlite3.Connection]:
     for statement in (
         *model_requests.SCHEMA,
         *subject.SCHEMA,
-        *knowledge.SCHEMA,
+        *evidence.SCHEMA,
         *maintenance.SCHEMA,
     ):
         database.execute(statement)
@@ -104,7 +104,7 @@ def checkpoint() -> ConversationCheckpoint:
 
 def saved_source(connection: sqlite3.Connection, *, version: int = 3) -> SummarySource:
     original = checkpoint()
-    knowledge.put_evidence(
+    evidence.put_evidence(
         connection,
         EvidenceSnapshot(
             evidence_id="input-source",
@@ -395,8 +395,8 @@ def test_revoked_exact_source_version_cannot_be_requalified_by_new_version(
     source = saved_source(connection)
     assert maintenance.reserve_summary(connection, source) == "reserved"
     candidate = proposal(connection, source)
-    knowledge.revoke_evidence(connection, "input-source", 1)
-    knowledge.put_evidence(
+    evidence.revoke_evidence(connection, "input-source", 1)
+    evidence.put_evidence(
         connection,
         EvidenceSnapshot(
             evidence_id="input-source",
@@ -416,8 +416,8 @@ def test_revocation_before_reservation_cannot_borrow_newer_fact(
     connection: sqlite3.Connection,
 ) -> None:
     source = saved_source(connection)
-    knowledge.revoke_evidence(connection, "input-source", 1)
-    knowledge.put_evidence(
+    evidence.revoke_evidence(connection, "input-source", 1)
+    evidence.put_evidence(
         connection,
         EvidenceSnapshot(
             evidence_id="input-source",
@@ -536,7 +536,7 @@ def test_shared_ancestor_revocation_during_model_wait_still_blocks_installation(
     source = shared_ancestor_source(connection)
     assert maintenance.reserve_summary(connection, source) == "reserved"
     candidate = proposal(connection, source, request_id="after-ancestors")
-    knowledge.revoke_evidence(connection, "input-source", 1)
+    evidence.revoke_evidence(connection, "input-source", 1)
     version = subject.session(connection, "foreground").version
     with pytest.raises(SummaryError, match="撤销"):
         maintenance.install_summary(connection, candidate)

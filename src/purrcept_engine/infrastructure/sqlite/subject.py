@@ -679,7 +679,7 @@ def finish_turn(
             connection.execute(
                 "UPDATE failed_turns SET presented_in=? WHERE turn_id=?", (turn.turn_id, failure_id)
             )
-    if turn.scope in ("memory_consolidation", "behavior_review"):
+    if turn.scope in ("behavior_review",):
         return session_state(connection, turn.scope)
     return session(connection, turn.scope)
 
@@ -753,9 +753,8 @@ def get_turn(connection: sqlite3.Connection, turn_id: str) -> TurnRecord | None:
     state = _string(row[3])
     if scope not in (
         "foreground",
-        "reflection",
         "behavior_review",
-        "memory_consolidation",
+        "behavior_review",
     ) or state not in (
         "running",
         "succeeded",

@@ -27,10 +27,10 @@ from purrcept_engine.app.evidence import EvidenceAccess
 from purrcept_engine.app.host import EngineHost
 from purrcept_engine.domain.context.materials import media_blocks
 from purrcept_engine.domain.context.token_estimation import estimate_tokens
+from purrcept_engine.domain.evidence.models import EvidenceSnapshot
 from purrcept_engine.domain.execution.catalog import Catalog, ObjectDeclaration
 from purrcept_engine.domain.execution.providers import CapabilityInputError
 from purrcept_engine.domain.inputs.models import InputSource, InputSubmission, MediaAsset
-from purrcept_engine.domain.knowledge.models import EvidenceSnapshot
 from purrcept_engine.errors import ConfigError, StorageError
 from purrcept_engine.infrastructure.audio.wav import encode_wav
 from purrcept_engine.infrastructure.execution.service import ExecutionService
@@ -108,7 +108,7 @@ async def test_local_audio_keeps_actual_bytes_and_can_expand_native_blocks(
         )
         identity = result.value["evidence_ref"]
         assert isinstance(identity, str)
-        saved = await store.knowledge.get_evidence(identity)
+        saved = await store.evidence.get_evidence(identity)
         assert saved is not None and '"origin_media_id":"origin"' in saved.source_json
         assert await store.pending() == ()
     finally:
@@ -228,7 +228,7 @@ async def test_storage_failure_is_not_translated_to_a_file_input_error(
 
     (tmp_path / "recording.wav").write_bytes(audio())
     runtime = await audio_files.audio_files_blueprint(tmp_path).build(
-        PluginPorts(Inputs(), lambda: {}, BrokenEvidence(store.knowledge, 8000))
+        PluginPorts(Inputs(), lambda: {}, BrokenEvidence(store.evidence, 8000))
     )
     try:
         with pytest.raises(StorageError, match="synthetic storage"):
@@ -320,7 +320,6 @@ async def test_foreground_receives_native_audio_after_explicit_file_read(
                 "foreground": "main",
                 "reflection": "main",
                 "behavior_review_enabled": False,
-                "memory_consolidation_enabled": False,
             },
         },
         base_dir=tmp_path,

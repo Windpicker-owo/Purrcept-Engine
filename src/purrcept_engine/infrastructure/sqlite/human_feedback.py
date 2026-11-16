@@ -14,10 +14,10 @@ import sqlite3
 import time
 
 from purrcept_engine.domain.controls.models import ControlError
-from purrcept_engine.domain.knowledge.models import EvidenceSnapshot
+from purrcept_engine.domain.evidence.models import EvidenceSnapshot
 from purrcept_engine.domain.subject.human_feedback import HumanFeedback
 from purrcept_engine.errors import StorageError
-from purrcept_engine.infrastructure.sqlite import execution, feedback, knowledge
+from purrcept_engine.infrastructure.sqlite import evidence, execution, feedback
 from purrcept_engine.infrastructure.sqlite.feedback_port import Submit
 from purrcept_engine.infrastructure.sqlite.projections import action_projection
 from purrcept_engine.serialization import encode
@@ -179,7 +179,7 @@ def _history(connection: sqlite3.Connection, action_id: str) -> list[JsonValue]:
     ).fetchall()
     result: list[JsonValue] = []
     for identity, version in rows:
-        snapshot = knowledge.get_evidence(connection, identity, version=version)
+        snapshot = evidence.get_evidence(connection, identity, version=version)
         if snapshot is None:
             raise StorageError("人工评价原文缺失。", code="invalid_record")
         result.append(
@@ -367,7 +367,7 @@ class HumanFeedbackLedger:
             """去重必须先于版本校验，让已保存评价不因后来回执变化而变成失败。"""
             with connection:
                 connection.execute("BEGIN IMMEDIATE")
-                existing = knowledge.get_evidence(connection, identity, version=1)
+                existing = evidence.get_evidence(connection, identity, version=1)
                 if existing is not None:
                     if existing.source_json != encode_json(source).decode():
                         raise ControlError("评价身份对应不同参数。", code="control_conflict")

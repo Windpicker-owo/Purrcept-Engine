@@ -21,6 +21,7 @@ from test_qq_transport import Connector, Socket
 
 from purrcept_engine.app.evidence import EvidenceAccess
 from purrcept_engine.app.receipts import LateCallResults
+from purrcept_engine.domain.evidence.models import EvidenceInputError, EvidenceSnapshot
 from purrcept_engine.domain.execution.providers import CallContext
 from purrcept_engine.domain.inputs.models import (
     Admission,
@@ -28,7 +29,6 @@ from purrcept_engine.domain.inputs.models import (
     InputSource,
     InputSubmission,
 )
-from purrcept_engine.domain.knowledge.models import EvidenceSnapshot, KnowledgeInputError
 from purrcept_engine.domain.subject.models import InputProcessing
 from purrcept_engine.infrastructure.audio.wav import encode_wav
 from purrcept_engine.infrastructure.sqlite.store import Store
@@ -108,7 +108,7 @@ async def rig(tmp_path: Path) -> AsyncIterator[Rig]:
     settings = QQSettings(
         mode="direct", group_list_type="whitelist", group_list=("123",), ban_user_id=("999",)
     )
-    evidence = EvidenceAccess(store.knowledge, 700)
+    evidence = EvidenceAccess(store.evidence, 700)
     ports = PluginPorts(
         inputs,
         lambda: {},
@@ -463,7 +463,7 @@ async def test_history_cursor_keeps_same_snapshot_and_does_not_refetch(rig: Rig)
     await rig.service.evidence.put_evidence(other)
     page = await rig.service.evidence.read_evidence("other", max_chars=2)
     assert page.next_cursor is not None
-    with pytest.raises(KnowledgeInputError, match="当前插件"):
+    with pytest.raises(EvidenceInputError, match="当前插件"):
         await rig.service.read(Read(cursor=page.next_cursor), context)
 
 

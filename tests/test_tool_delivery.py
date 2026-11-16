@@ -24,7 +24,6 @@ from purrcept_core.models import (
     ImageBlock,
     ImageBytes,
     Message,
-    ModelRequest,
     SystemInstruction,
     TextBlock,
     ToolCallBlock,
@@ -39,6 +38,12 @@ from purrcept_engine.domain.context.capacity import (
     check_capacity,
 )
 from purrcept_engine.domain.context.delivery import ToolDeliveryGate
+from purrcept_engine.domain.evidence.models import (
+    EvidenceSnapshot,
+    SupervisionRecord,
+    WakeupPlan,
+)
+from purrcept_engine.domain.evidence.service import EvidenceService
 from purrcept_engine.domain.execution.models import ActionRecord, CallOutcome
 from purrcept_engine.domain.inputs.models import (
     InputContext,
@@ -47,18 +52,9 @@ from purrcept_engine.domain.inputs.models import (
     MediaAsset,
     MediaReference,
 )
-from purrcept_engine.domain.knowledge.models import (
-    EvidenceSnapshot,
-    KnowledgeInputError,
-    MemoryPatch,
-    SupervisionRecord,
-    WakeupPlan,
-)
-from purrcept_engine.domain.knowledge.service import KnowledgeService
 from purrcept_engine.domain.model_requests.service import RequestBudget
 from purrcept_engine.domain.subject.foreground_tools import ForegroundTools
 from purrcept_engine.domain.subject.models import SessionScope
-from purrcept_engine.domain.subject.reflection_tools import ReflectionTools
 from purrcept_engine.domain.subject.session import (
     CapacityCheck,
     ContinuousSession,
@@ -181,7 +177,7 @@ class Ports:
 
 
 async def source(store: Store, identity: str, text: str) -> None:
-    await store.knowledge.put_evidence(
+    await store.evidence.put_evidence(
         EvidenceSnapshot(
             evidence_id=identity,
             version=1,
@@ -268,8 +264,8 @@ async def run(
 
 def foreground(store: Store, gate: ToolDeliveryGate, ports: Ports | None = None) -> ForegroundTools:
     return ForegroundTools(
-        KnowledgeService(store.knowledge),
-        store.knowledge,
+        EvidenceService(store.evidence),
+        store.evidence,
         ports or Ports(store),
         check=lambda: None,
         delivery=gate,
@@ -334,7 +330,7 @@ async def test_oversized_page_can_retry_and_reused_call_id_does_not_rewrite_hist
     later_delivery = obj(items(transport.payloads[3]["messages"])[3])
     assert first_delivery["content"] == later_delivery["content"]
     assert first_delivery["tool_call_id"] == later_delivery["tool_call_id"] == "reused"
-    stored = await store.knowledge.get_evidence("large")
+    stored = await store.evidence.get_evidence("large")
     assert stored is not None and stored.text == text
     requests = await store.requests_for_turn("foreground", "actual-turn")
     assert len(requests) == 4
@@ -401,61 +397,6 @@ def png_pixels(size: int) -> bytes:
     return buffer.getvalue()
 
 
-async def test_oversized_media_keeps_native_blob_and_does_not_grant_reflection_coverage(
-    store: Store,
-) -> None:
-    await source(store, "initial", "已有材料")
-    initial = await store.knowledge.read_evidence("initial")
-    assert initial.slice is not None
-    batch = await store.knowledge.begin_reflection("batch", (initial.slice.slice_ref,))
-    asset = MediaAsset(png_pixels(4096), "image/png")
-    reference = MediaReference(
-        hashlib.sha256(asset.content).hexdigest(), "image/png", len(asset.content)
-    )
-    await store.knowledge.capture(
-        EvidenceSnapshot(
-            evidence_id="image",
-            version=1,
-            kind="native-image",
-            text="原生媒体",
-            source_json='{"source":"test"}',
-            occurred_at=10.0,
-            media=(reference,),
-        ),
-        (asset,),
-    )
-    gate = ToolDeliveryGate(compiler=compile_materials)
-    tools = ReflectionTools(store.knowledge, batch, Ports(store), delivery=gate)
-
-    async def presented(request: ModelRequest) -> None:
-        await store.knowledge.mark_presented(
-            batch.batch_id, batch.version, tools.presented_refs(request)
-        )
-
-    result, transport = await run(
-        store,
-        tools.toolset(),
-        gate,
-        ((ToolCallBlock("image-read", "read_evidence", arguments={"id": "image"}),), "结束"),
-        scope="reflection",
-        presented=presented,
-    )
-    block = delivered(result)[0]
-    assert block.is_error and obj(payload(block)["capacity"])["code"] == "over_capacity"
-    assert payload(block)["stored_ref"] == {"id": "image", "version": 1}
-    assert await store.get_media(reference.media_id) == asset.content
-    assert tools.presented_refs(ModelRequest(result.checkpoint.history.messages)) == ()
-    page = await store.knowledge.read_evidence("image")
-    assert page.slice is not None
-    with pytest.raises(KnowledgeInputError, match=r"呈现|来源"):
-        await store.knowledge.revise_memory(
-            batch.batch_id,
-            batch.version,
-            MemoryPatch(id="unread-memory", content="不应写入", sources=(page.slice.slice_ref,)),
-        )
-    assert "image_url" not in encode(transport.payloads[1]["messages"])
-
-
 async def test_action_capacity_receipt_preserves_each_actual_effect_and_saved_original(
     store: Store,
 ) -> None:
@@ -477,7 +418,7 @@ async def test_action_capacity_receipt_preserves_each_actual_effect_and_saved_or
         {"call_id": "actual-call-1", "state": "unknown", "receipt_revision": 1},
     ]
     assert obj(receipt["capacity"])["code"] == "over_capacity" and ports.actions == 1
-    original = await store.knowledge.get_evidence("action_result:actual-action")
+    original = await store.evidence.get_evidence("action_result:actual-action")
     action = await store.get_action("actual-action")
     assert action is not None and original is not None and original.text == encode(action)
     assert action.source == "return 1" and action.calls[1].state == "unknown"
@@ -546,7 +487,7 @@ async def test_capacity_receipt_itself_cannot_hide_an_unusable_existing_request(
         )
     assert caught.value.code == "over_capacity"
     assert len(await store.requests_for_turn("foreground", "actual-turn")) == 1
-    snapshot = await store.knowledge.get_evidence("source")
+    snapshot = await store.evidence.get_evidence("source")
     assert snapshot is not None and snapshot.text == "X" * 60_000
 
 
@@ -554,7 +495,7 @@ async def test_native_media_and_adjacent_tool_order_survive_accepted_delivery(st
     """媒体实际 SDK 附件与全部相邻工具结果一并计量，Gate 不自行重排协议。"""
     content = png_pixels(32)
     reference = MediaReference(hashlib.sha256(content).hexdigest(), "image/png", len(content))
-    await store.knowledge.capture(
+    await store.evidence.capture(
         EvidenceSnapshot(
             evidence_id="native",
             version=1,
@@ -622,7 +563,7 @@ async def test_action_snapshot_save_failure_keeps_actual_effect_and_original_err
     ) -> EvidenceSnapshot:
         raise failure
 
-    monkeypatch.setattr(store.knowledge, "put_evidence", reject)
+    monkeypatch.setattr(store.evidence, "put_evidence", reject)
     with pytest.raises(StorageError) as caught:
         await run(
             store,
@@ -637,64 +578,8 @@ async def test_action_snapshot_save_failure_keeps_actual_effect_and_original_err
     action = await store.get_action("actual-action")
     assert action is not None and action.state == "completed"
     assert [call.state for call in action.calls] == ["confirmed", "unknown"]
-    assert await store.knowledge.get_evidence("action_result:actual-action") is None
+    assert await store.evidence.get_evidence("action_result:actual-action") is None
     assert len(await store.requests_for_turn("foreground", "actual-turn")) == 1
-
-
-async def test_reflection_small_retry_grants_only_the_actually_presented_range(
-    store: Store,
-) -> None:
-    await source(store, "initial", "初始材料")
-    initial = await store.knowledge.read_evidence("initial")
-    assert initial.slice is not None
-    batch = await store.knowledge.begin_reflection("batch", (initial.slice.slice_ref,))
-    await source(store, "large", "L" * 60_000)
-    gate = ToolDeliveryGate(compiler=compile_materials)
-    tools = ReflectionTools(store.knowledge, batch, Ports(store), delivery=gate)
-    observed: list[tuple[str, ...]] = []
-
-    async def presented(request: ModelRequest) -> None:
-        references = tools.presented_refs(request)
-        observed.append(references)
-        await store.knowledge.mark_presented(batch.batch_id, batch.version, references)
-
-    result, _ = await run(
-        store,
-        tools.toolset(),
-        gate,
-        (
-            (
-                ToolCallBlock(
-                    "read", "read_evidence", arguments={"id": "large", "max_chars": 60000}
-                ),
-            ),
-            (ToolCallBlock("read", "read_evidence", arguments={"id": "large", "max_chars": 16}),),
-            "结束",
-        ),
-        scope="reflection",
-        presented=presented,
-    )
-    first, second = delivered(result)
-    assert first.is_error and not second.is_error
-    small_reference = payload(second)["slice_ref"]
-    assert isinstance(small_reference, str)
-    assert observed == [(), (), (small_reference,)]
-    memory = await store.knowledge.revise_memory(
-        batch.batch_id,
-        batch.version,
-        MemoryPatch(id="actually-read", content="只根据十六字符", sources=(small_reference,)),
-    )
-    assert memory.version == 1
-    full_page = await store.knowledge.read_evidence("large", max_chars=60000)
-    assert full_page.slice is not None
-    with pytest.raises(KnowledgeInputError, match=r"呈现|来源"):
-        await store.knowledge.revise_memory(
-            batch.batch_id,
-            batch.version,
-            MemoryPatch(
-                id="not-read", content="不能引用全页", sources=(full_page.slice.slice_ref,)
-            ),
-        )
 
 
 class WorkPorts(Ports):
@@ -845,7 +730,7 @@ async def test_current_tail_does_not_duplicate_or_bypass_frozen_action_delivery(
             context=InputContext(minimum_wake=True),
         )
     )
-    await store.knowledge.plan_wakeup(
+    await store.evidence.plan_wakeup(
         WakeupPlan(
             id="unfinished-plan",
             due=time.time() + 1000,
@@ -886,9 +771,9 @@ async def test_current_tail_does_not_duplicate_or_bypass_frozen_action_delivery(
     transmitted = encode(transport.payloads[1]["messages"])
     assert transmitted.count("L" * 60_000) == (2 if full_delivery else 0)
     assert ("platform-confirmed-42" in transmitted) is full_delivery
-    original = await store.knowledge.get_evidence("action_result:work-action")
+    original = await store.evidence.get_evidence("action_result:work-action")
     assert original is not None
-    page = await store.knowledge.read_evidence(original.evidence_id, max_chars=len(original.text))
+    page = await store.evidence.read_evidence(original.evidence_id, max_chars=len(original.text))
     assert page.text == original.text and "platform-confirmed-42" in page.text
     if not full_delivery:
         instruction = obj(payload(delivered(result)[0])["retry"])["instruction"]
@@ -943,7 +828,7 @@ async def test_current_tail_does_not_duplicate_or_bypass_frozen_action_delivery(
     if not full_delivery:
         # 真实 bridge 之后才有最新调用原文；旧 action_result 仍固定在未知版。
         await store.feedback.bridge(now=time.time())
-        receipt_page = await store.knowledge.read_evidence("call:unknown-send:2")
+        receipt_page = await store.evidence.read_evidence("call:unknown-send:2")
         assert receipt_page.next_cursor is None and "platform-late-99" in receipt_page.text
         receipt_gate = ToolDeliveryGate(compiler=compile_materials)
         receipt_tools = foreground(store, receipt_gate)
@@ -1015,7 +900,7 @@ async def test_legacy_audio_receipt_is_projected_before_sdk_delivery_and_origina
     assert encoded not in encode(transport.payloads)
     assert "音频编码未交付" in encode(transport.payloads)
     assert encoded not in encode(result.checkpoint)
-    saved = await store.knowledge.get_evidence("action_result:legacy-audio")
+    saved = await store.evidence.get_evidence("action_result:legacy-audio")
     assert saved is not None and encoded in saved.text
     page = await tools.read_evidence("action_result:legacy-audio", max_chars=8000)
     text = encode(page)

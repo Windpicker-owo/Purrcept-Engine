@@ -21,7 +21,7 @@ from test_audio_files import audio
 
 from purrcept_engine.domain.context.audio_receipts import audio_text_view, evidence_text_view
 from purrcept_engine.domain.context.media_history import expire_history_media
-from purrcept_engine.domain.knowledge.models import EvidencePage, EvidenceSlice, EvidenceSnapshot
+from purrcept_engine.domain.evidence.models import EvidencePage, EvidenceSlice, EvidenceSnapshot
 from purrcept_engine.infrastructure.audio.wav import encode_wav
 
 

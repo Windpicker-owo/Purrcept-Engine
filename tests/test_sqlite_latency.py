@@ -16,7 +16,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from purrcept_engine.domain.knowledge.models import (
+from purrcept_engine.domain.evidence.models import (
+    BehaviorConclusion,
     EvidenceSlice,
     EvidenceSnapshot,
     FinishSubmission,
@@ -25,7 +26,7 @@ from purrcept_engine.domain.knowledge.models import (
     Review,
 )
 from purrcept_engine.domain.model_requests.models import AttemptStart, RequestEvidence, RequestScope
-from purrcept_engine.infrastructure.sqlite import analysis_work, feedback, knowledge, queue, schema
+from purrcept_engine.infrastructure.sqlite import analysis_work, evidence, feedback, queue, schema
 from purrcept_engine.infrastructure.sqlite.schema import initialize
 from purrcept_engine.infrastructure.sqlite.store import Store
 from purrcept_engine.serialization import encode
@@ -40,7 +41,7 @@ def test_hourly_budget_uses_attempt_time_index_and_counts_retries(tmp_path: Path
             identity = f"old-{number}"
             request = RequestEvidence(
                 identity,
-                RequestScope("memory_consolidation", "turn"),
+                RequestScope("behavior_review", "turn"),
                 "generation",
                 "synthetic",
                 None,
@@ -59,8 +60,8 @@ def test_hourly_budget_uses_attempt_time_index_and_counts_retries(tmp_path: Path
                 (attempt.attempt_id, identity, encode(attempt)),
             )
         for identity, owner, stamp, attempts in (
-            ("boundary", "memory_consolidation", now - 3600, 1),
-            ("memory", "memory_consolidation", now - 60, 2),
+            ("boundary", "behavior_review", now - 3600, 1),
+            ("memory", "behavior_review", now - 60, 2),
             ("behavior", "behavior_review", now - 30, 1),
             ("foreground", "foreground", now - 10, 1),
         ):
@@ -239,7 +240,7 @@ async def test_current_work_locates_originals_without_scanning_historical_json(
         await store.close()
 
 
-def test_source_indexes_install_atomically_on_existing_format16(
+def test_source_indexes_install_atomically_on_existing_format17(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """旧库补派生索引失败时回滚；重开不重写来源或改变数据库格式。"""
@@ -254,7 +255,7 @@ def test_source_indexes_install_atomically_on_existing_format16(
             source_json="{}",
             occurred_at=1.0,
         )
-        knowledge.put_evidence(connection, original, needs_reflection=False)
+        evidence.put_evidence(connection, original, needs_reflection=False)
         for name in names:
             connection.execute(f"DROP INDEX {name}")
         connection.commit()
@@ -275,8 +276,8 @@ def test_source_indexes_install_atomically_on_existing_format16(
             row[0]
             for row in connection.execute("SELECT name FROM sqlite_master WHERE type='index'")
         }
-        assert connection.execute("PRAGMA user_version").fetchone() == (16,)
-        assert knowledge.get_evidence(connection, "retained") == original
+        assert connection.execute("PRAGMA user_version").fetchone() == (17,)
+        assert evidence.get_evidence(connection, "retained") == original
 
 
 def test_reflection_prefix_and_finish_do_not_scan_unrelated_range_history(tmp_path: Path) -> None:
@@ -291,7 +292,7 @@ def test_reflection_prefix_and_finish_do_not_scan_unrelated_range_history(tmp_pa
             source_json="{}",
             occurred_at=1.0,
         )
-        knowledge.put_evidence(connection, historical, needs_reflection=False)
+        evidence.put_evidence(connection, historical, needs_reflection=False)
         fragments = tuple(
             EvidenceSlice(
                 slice_ref=f"old-{n}", evidence_id="historical", version=1, start=n, end=n + 1
@@ -304,12 +305,29 @@ def test_reflection_prefix_and_finish_do_not_scan_unrelated_range_history(tmp_pa
         )
         references = tuple(fragment.slice_ref for fragment in fragments)
         submission = FinishSubmission(
+            behavior=BehaviorConclusion(
+                decision="no_intervention",
+                conclusion="对照已交付原文完成复核。",
+                evidence=tuple(
+                    ref
+                    for review in (
+                        (
+                            Review(
+                                issue="历史复核",
+                                evidence=references,
+                                conclusion="已复核历史范围。",
+                                reason="无新增认识。",
+                            ),
+                        )
+                    )
+                    for ref in review.evidence
+                ),
+            ),
             reviews=(
                 Review(
                     issue="历史复核",
                     evidence=references,
                     conclusion="已复核历史范围。",
-                    memory_decision="no_change",
                     reason="无新增认识。",
                 ),
             ),
@@ -339,29 +357,46 @@ def test_reflection_prefix_and_finish_do_not_scan_unrelated_range_history(tmp_pa
             ((ref, batch.batch_id) for ref in references),
         )
         connection.commit()
-        knowledge.put_evidence(
+        evidence.put_evidence(
             connection,
             historical.model_copy(
                 update={"evidence_id": "current", "text": "1234567890abcdefghij"}
             ),
         )
-        page = knowledge.read_evidence(connection, "current", max_chars=10)
+        page = evidence.read_evidence(connection, "current", max_chars=10)
         assert page.slice is not None and page.next_cursor is not None
-        current = knowledge.begin_reflection(connection, "current-batch", (page.slice.slice_ref,))
-        knowledge.mark_presented(connection, current.batch_id, 1, (page.slice.slice_ref,))
+        current = evidence.begin_reflection(connection, "current-batch", (page.slice.slice_ref,))
+        evidence.mark_presented(connection, current.batch_id, 1, (page.slice.slice_ref,))
         statements: list[str] = []
         connection.set_trace_callback(statements.append)
-        knowledge.finish_reflection(
+        evidence.finish_reflection(
             connection,
             current.batch_id,
             1,
             FinishSubmission(
+                behavior=BehaviorConclusion(
+                    decision="no_intervention",
+                    conclusion="对照已交付原文完成复核。",
+                    evidence=tuple(
+                        ref
+                        for review in (
+                            (
+                                Review(
+                                    issue="本次复核",
+                                    evidence=(page.slice.slice_ref,),
+                                    conclusion="首段完成。",
+                                    reason="无需写入。",
+                                ),
+                            )
+                        )
+                        for ref in review.evidence
+                    ),
+                ),
                 reviews=(
                     Review(
                         issue="本次复核",
                         evidence=(page.slice.slice_ref,),
                         conclusion="首段完成。",
-                        memory_decision="no_change",
                         reason="无需写入。",
                     ),
                 ),
@@ -382,7 +417,7 @@ def test_reflection_prefix_and_finish_do_not_scan_unrelated_range_history(tmp_pa
                 )
             )
         ]
-        assert len(lookups) == 2
+        assert len(lookups) == 1
         for sql in lookups:
             plan = connection.execute("EXPLAIN QUERY PLAN " + sql).fetchall()
             assert any("knowledge_slices_source" in row[3] for row in plan)

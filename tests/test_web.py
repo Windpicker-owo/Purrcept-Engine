@@ -12,7 +12,7 @@ import pytest
 from purrcept_engine.app.panel import ControlRequest
 from purrcept_engine.app.web import WebServer, create_app
 from purrcept_engine.domain.controls.models import ControlRecord
-from purrcept_engine.plugin_system.panels import PreviewFrame
+from purrcept_engine.plugin_system.panels import PairingOperation, PreviewFrame
 from purrcept_engine.values import JsonObject, encode_json
 
 
@@ -31,6 +31,15 @@ class Host:
             "startup_stage": "sqlite",
             "components": [],
         }
+
+    async def phone_pairing(
+        self,
+        target: str,
+        *,
+        operation: PairingOperation = "read",
+        expected_device_id: str | None = None,
+    ) -> JsonObject:
+        return {"status": "closed"}
 
     async def query_panel(self) -> JsonObject:
         return {"instance_id": "current", "phase": "running"}

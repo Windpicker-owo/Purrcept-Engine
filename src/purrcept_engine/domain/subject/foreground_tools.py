@@ -1,8 +1,8 @@
-"""前台的六个 Core 工具及固定指令，不拥有模型循环或设备客户端。
+"""前台的五个 Core 工具及固定指令，不拥有模型循环或设备客户端。
 
 调用方为一次连续处理绑定资格和有限执行入口；只有 play_action 产生世界
-效果。其余工具检索原文/认识或提交计划/监管回应。最终模型文字保持内部
-结果，不自动复制到控制台、QQ 或音频。认识修订只存在于独立反思工具集。
+效果。其余工具展开共享原文或提交计划/监管回应。最终模型文字保持内部
+结果，不自动复制到控制台、QQ 或音频。Notebook 检索和记录经插件行动调用。
 """
 
 from collections.abc import Callable
@@ -20,12 +20,12 @@ from purrcept_engine.domain.context.delivery import (
 )
 from purrcept_engine.domain.context.presentation import action_timeline, render_material
 from purrcept_engine.domain.context.tool_errors import model_input_boundary
+from purrcept_engine.domain.evidence.models import EvidenceSnapshot, Version, WakeupPlan
+from purrcept_engine.domain.evidence.ports import EvidenceStore
+from purrcept_engine.domain.evidence.service import EvidenceService
 from purrcept_engine.domain.execution.catalog import Catalog
 from purrcept_engine.domain.execution.models import ActionRecord
 from purrcept_engine.domain.inputs.models import MediaReference
-from purrcept_engine.domain.knowledge.models import EvidenceSnapshot, Version, WakeupPlan
-from purrcept_engine.domain.knowledge.ports import KnowledgeStore
-from purrcept_engine.domain.knowledge.service import KnowledgeService, recall_payload
 from purrcept_engine.domain.subject.prompts import (
     CATALOG_INSTRUCTION_PROMPT,
     CHARACTER_CARD_PROMPT,
@@ -115,12 +115,12 @@ def foreground_instructions(
 
 
 class ForegroundTools:
-    """一次前台批次的工具绑定，固定顺序与参数名，不携带认识写入权限。"""
+    """一次前台批次的工具绑定，固定顺序与参数名；笔记能力由插件目录提供。"""
 
     def __init__(
         self,
-        knowledge: KnowledgeService,
-        store: KnowledgeStore,
+        evidence: EvidenceService,
+        store: EvidenceStore,
         ports: ForegroundPorts,
         *,
         check: Callable[[], None],
@@ -129,13 +129,13 @@ class ForegroundTools:
         """绑定现有子系统和本轮资格，Core 在其自身工具循环中调用。
 
         Args:
-            knowledge: 原文展开与认识召回服务，修订仍经过反思批次契约。
+            evidence: 共享原文的版本化阅读服务，不提供长期记忆检索。
             store: 应用借出的领域存储端口，实际连接和关闭归资源所有者。
             ports: 应用显式借出的有限端口，不包含设备客户端或通用服务定位器。
             check: 在提交或派发前复核本轮资格的同步函数。
             delivery: 本轮工具原文交付门槛；None 不执行候选交付替换。
         """
-        self.knowledge = knowledge
+        self.evidence = evidence
         self.store = store
         self.ports = ports
         self.check = check
@@ -146,7 +146,6 @@ class ForegroundTools:
                 FunctionTool(
                     self._deliver_action, name="play_action", description=self.play_action.__doc__
                 ),
-                FunctionTool(self.recall),
                 FunctionTool(
                     self._deliver_evidence,
                     name="read_evidence",
@@ -268,60 +267,7 @@ class ForegroundTools:
             return proposal.result
         return self.delivery.stage(context.call, proposal)
 
-    # 维护者契约（工具说明参与模型请求，保持下方 docstring 原文）。
-    # 检索长期记忆与事实经历。
-    #
-    # Args:
-    #     query: 用于关键词或语义检索的意图文本。
-    #     entities_json: 已编码为 JSON 字符串数组的实体过滤条件。 默认 '[]'。
-    #     start: 按发生时间筛选的起点；None 表示不限制此端。
-    #     end: 按发生时间筛选的终点；None 表示不限制此端。
-    #     at: 核验记录有效性的 Unix 时间戳；None 使用当前时间。
-    #     include_inactive: 是否同时返回已失效的历史记录，并保留失效原因。 默认 False。
-    #
-    # Note:
-    #     在回答前主动唤醒关于用户的偏好习惯、过往承诺、情感羁绊或特定经历，深化陪伴默契。
-    #     query 为检索意图，entities_json 是实体数组，start/end 为发生时间，at 为事实有效时间。
-    @model_input_boundary
-    async def recall(
-        self,
-        query: str,
-        entities_json: str = "[]",
-        start: float | None = None,
-        end: float | None = None,
-        at: float | None = None,
-        include_inactive: bool = False,
-    ) -> str:
-        """检索长期记忆与事实经历。
-        在回答前主动唤醒关于用户的偏好习惯、过往承诺、情感羁绊或特定经历，深化陪伴默契。
-        query 为检索意图，entities_json 是实体数组，start/end 为发生时间，at 为事实有效时间。
-        """
-        self.check()
-        result = await self.knowledge.recall(
-            query, entities_json, start, end, at, include_inactive=include_inactive
-        )
-        return recall_payload(result)
-
-    # 维护者契约（工具说明参与模型请求，保持下方 docstring 原文）。
-    # 展开已存原文或认识的确切版本，深入查阅未展开细节与原生媒体。
-    #
-    # Args:
-    #     id: 当前工具定位的认识、原文或计划身份。
-    #     level: 需要展开的材料层级，具体允许值由认识服务校验。 默认 'evidence'。
-    #     cursor: 宿主签发并保存的不透明续读游标，续读同一快照版本。 None 表示首次读取。
-    #     max_chars: 本页正文的字符上限；分页游标继续绑定原快照。 None
-    #         使用本实例配置的统一页长。
-    #     version: 目标记录的确切版本，区别于可变的当前版本。 None 首读当前版本，
-    #         续读仍绑定游标的原版本。
-    #
-    # Returns:
-    #     完整工具内容和错误标记；引用回执可能要求继续展开原文。
-    #
-    # Note:
-    #     在需要准确核验用户原始输入、对话细节或特定记忆版本时调用，省略 version 首读当前版本。
-    #
-    #     历史冲突引用可指定 version；cursor 绑定同一版本，不能用新的版本
-    #     改写后续页。认识、summary 和 overview 均不授予原文阅读资格。
+    # 工具说明参与固定请求前缀；修改时须同步验证协议与提示词测试。
     @model_input_boundary
     async def read_evidence(
         self,
@@ -331,11 +277,11 @@ class ForegroundTools:
         max_chars: int | None = None,
         version: Version | None = None,
     ) -> ToolResult:
-        """展开已存原文或认识的确切版本，深入查阅未展开细节与原生媒体。
-        在需要准确核验用户原始输入、对话细节或特定记忆版本时调用，省略 version 首读当前版本。
+        """展开已存原文的确切版本，深入查阅未展开细节与原生媒体。
+        在需要准确核验用户原始输入、对话细节或笔记引用原文时调用，省略 version 首读当前版本。
 
-        历史冲突引用可指定 version；cursor 绑定同一版本，不能用新的版本
-        改写后续页。认识、summary 和 overview 均不授予原文阅读资格。
+        历史引用可指定 version；cursor 绑定同一版本，不能用新的版本
+        改写后续页。summary 和 overview 均不授予原文阅读资格。
         """
         return (await self._evidence_result(id, level, cursor, max_chars, version)).result
 
@@ -349,40 +295,23 @@ class ForegroundTools:
     ) -> ToolDelivery:
         """构造不可拆的正文/媒体候选，有限回执始终定位原页而非下一页。"""
         self.check()
-        page = await self.knowledge.read_evidence(id, level, cursor, max_chars, version)
+        page = await self.evidence.read_evidence(id, level, cursor, max_chars, version)
         snapshot = page.snapshot
-        memory = page.memory
-        if snapshot is not None:
-            item = {
-                "id": snapshot.evidence_id,
-                "version": snapshot.version,
-                "kind": snapshot.kind,
-                "text": evidence_text_view(page),
-                "source": decode_object(snapshot.source_json.encode("utf-8")),
-                "occurred_at": snapshot.occurred_at,
-                "valid": snapshot.valid,
-                "media": snapshot.media,
-            }
-        elif memory is not None:
-            item = {
-                "id": memory.patch.id,
-                "version": memory.version,
-                "kind": memory.patch.kind,
-                "text": evidence_text_view(page),
-                "sources": memory.patch.sources,
-                "active": memory.active,
-                "inactive_reason": memory.inactive_reason,
-                "conflicts": [relation.model_dump(mode="json") for relation in memory.conflicts],
-            }
-        else:
-            raise RuntimeError("原文页面缺少权威快照或认识版本。")
+        item = {
+            "id": snapshot.evidence_id,
+            "version": snapshot.version,
+            "kind": snapshot.kind,
+            "text": evidence_text_view(page),
+            "source": decode_object(snapshot.source_json.encode("utf-8")),
+            "occurred_at": snapshot.occurred_at,
+            "valid": snapshot.valid,
+            "media": snapshot.media,
+        }
         # 页长约束作用于真实交付正文，不能再把 snapshot.text 全文塞回元数据。
         payload = {
             "item": item,
-            "derived": memory is not None,
-            "evidence_ref": None
-            if snapshot is None
-            else {"id": snapshot.evidence_id, "version": snapshot.version},
+            "derived": False,
+            "evidence_ref": {"id": snapshot.evidence_id, "version": snapshot.version},
             "slice_ref": None if page.slice is None else page.slice.slice_ref,
             "range": None
             if page.slice is None
@@ -391,7 +320,7 @@ class ForegroundTools:
             "next_cursor": page.next_cursor,
         }
         blocks: list[ContentBlock] = [TextBlock(encode(payload))]
-        if page.slice is not None and page.snapshot is not None:
+        if page.slice is not None:
             selected = tuple(
                 media for media in page.snapshot.media if media.media_id in page.slice.media_ids
             )

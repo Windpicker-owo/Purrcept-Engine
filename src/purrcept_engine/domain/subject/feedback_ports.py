@@ -3,7 +3,7 @@
 from typing import Literal, Protocol
 
 import purrcept_engine.domain.subject.feedback_models as subject_feedback_models
-from purrcept_engine.domain.knowledge.models import EvidencePage, SupervisionRecord
+from purrcept_engine.domain.evidence.models import EvidencePage, SupervisionRecord
 from purrcept_engine.values import JsonObject
 
 
@@ -14,7 +14,7 @@ class FeedbackPort(Protocol):
         self,
         sources: tuple[subject_feedback_models.ReflectionSource, ...],
         *,
-        purpose: Literal["memory", "behavior"],
+        purpose: Literal["behavior"],
         reason: str,
     ) -> None:
         """准备阶段耗尽批次预算时保留未领取范围，按三次有界退避等待。
@@ -67,7 +67,7 @@ class FeedbackPort(Protocol):
         ...
 
     async def reflection_state(
-        self, *, purpose: Literal["memory", "behavior"] = "memory"
+        self, *, purpose: Literal["behavior"] = "behavior"
     ) -> subject_feedback_models.ReflectionState:
         """读取独立来源和真正成功轮数，不改变复核资格。
 
@@ -82,7 +82,7 @@ class FeedbackPort(Protocol):
         epoch: int,
         limit: int = 32,
         after: int = 0,
-        purpose: Literal["memory", "behavior"] = "memory",
+        purpose: Literal["behavior"] = "behavior",
     ) -> tuple[subject_feedback_models.ReflectionSource, ...]:
         """分页读取具体版本。
 
@@ -106,7 +106,7 @@ class FeedbackPort(Protocol):
         epoch: int,
         pages: tuple[EvidencePage, ...],
         successful_turns: int,
-        purpose: Literal["memory", "behavior"] = "memory",
+        purpose: Literal["behavior"] = "behavior",
     ) -> bool:
         """在实际模型请求前持久接管原文范围。
 
@@ -127,7 +127,7 @@ class FeedbackPort(Protocol):
         source_id: str,
         version: int,
         reason: str,
-        purpose: Literal["memory", "behavior"] = "memory",
+        purpose: Literal["behavior"] = "behavior",
     ) -> None:
         """标记单项容量阻塞，保留原文且让其他可容纳来源继续排队。"""
         ...

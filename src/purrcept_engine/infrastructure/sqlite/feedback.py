@@ -17,8 +17,8 @@ from typing import Literal
 
 from pydantic import ValidationError
 
+import purrcept_engine.domain.evidence.models as evidence_models
 import purrcept_engine.domain.execution.models as execution_models
-import purrcept_engine.domain.knowledge.models as knowledge_models
 from purrcept_engine.domain.inputs.models import (
     InputContext,
     InputSource,
@@ -34,7 +34,7 @@ from purrcept_engine.domain.subject.feedback_models import (
 )
 from purrcept_engine.domain.subject.models import TurnRecord
 from purrcept_engine.errors import StorageError
-from purrcept_engine.infrastructure.sqlite import activities, analysis_work, execution, knowledge
+from purrcept_engine.infrastructure.sqlite import activities, analysis_work, evidence, execution
 from purrcept_engine.infrastructure.sqlite.time import AdmitInput
 from purrcept_engine.serialization import encode
 from purrcept_engine.values import decode_object
@@ -57,15 +57,6 @@ SCHEMA = (
     "CREATE TABLE feedback_supervision_signals(identity TEXT PRIMARY KEY "
     "REFERENCES knowledge_supervision(id),observed_generation INTEGER NOT "
     "NULL,notified INTEGER NOT NULL CHECK(notified IN(0,1)))",
-    "CREATE TABLE feedback_reflection_attempts (batch_id TEXT NOT NULL,slice_ref "
-    "TEXT NOT NULL REFERENCES knowledge_slices(slice_ref),epoch INTEGER NOT "
-    "NULL,successful_turns INTEGER NOT NULL,PRIMARY KEY(slice_ref,epoch))",
-    "CREATE TABLE feedback_reflection_epochs(epoch INTEGER PRIMARY KEY,batch_id "
-    "TEXT NOT NULL,successful_turns INTEGER NOT NULL)",
-    "CREATE TABLE feedback_reflection_cursors (evidence_id TEXT NOT NULL,version "
-    "INTEGER NOT NULL,epoch INTEGER NOT NULL,cursor TEXT,exhausted INTEGER NOT "
-    "NULL CHECK(exhausted IN(0,1)),PRIMARY KEY(evidence_id,version),FOREIGN "
-    "KEY(evidence_id,version) REFERENCES knowledge_evidence(evidence_id,version))",
 )
 
 
@@ -87,7 +78,7 @@ def _number(value: object) -> float:
     return float(value)
 
 
-def _decode[Record: knowledge_models.SupervisionNotice | knowledge_models.WakeupPlan](
+def _decode[Record: evidence_models.SupervisionNotice | evidence_models.WakeupPlan](
     value: object, model: type[Record]
 ) -> Record:
     try:
@@ -160,10 +151,10 @@ def prepare(connection: sqlite3.Connection, *, now: float, limit: int = 16) -> F
         "(SELECT 1 FROM feedback_deliveries d WHERE d.kind='supervision' AND "
         "d.identity=s.id) ORDER BY created_at,id"
     )
-    notices: list[knowledge_models.SupervisionRecord] = []
+    notices: list[evidence_models.SupervisionRecord] = []
     while notice_rows := notice_cursor.fetchmany(32):
         for notice_row in notice_rows:
-            record = knowledge.get_supervision(connection, _text(notice_row[0]))
+            record = evidence.get_supervision(connection, _text(notice_row[0]))
             if record is not None and record.active:
                 notices.append(record)
                 if len(notices) == limit:
@@ -180,7 +171,7 @@ def prepare(connection: sqlite3.Connection, *, now: float, limit: int = 16) -> F
         calls,
         tuple(merged.values()),
         tuple(failures),
-        tuple(_decode(row[0], knowledge_models.WakeupPlan) for row in plan_rows),
+        tuple(_decode(row[0], evidence_models.WakeupPlan) for row in plan_rows),
         tuple(notices),
         deliveries,
     )
@@ -188,7 +179,7 @@ def prepare(connection: sqlite3.Connection, *, now: float, limit: int = 16) -> F
 
 def _source(
     connection: sqlite3.Connection,
-    snapshot: knowledge_models.EvidenceSnapshot,
+    snapshot: evidence_models.EvidenceSnapshot,
     *,
     priority: bool,
     related_input_id: str | None = None,
@@ -201,7 +192,7 @@ def _source(
         ).fetchone()
         is not None
     )
-    knowledge.put_evidence_in_transaction(connection, snapshot)
+    evidence.put_evidence_in_transaction(connection, snapshot)
     if not exists and related_input_id is not None:
         analysis_work.relate_input(
             connection, snapshot.evidence_id, snapshot.version, related_input_id
@@ -235,7 +226,7 @@ def _delivery(
 
 
 def record_human_feedback(
-    connection: sqlite3.Connection, snapshot: knowledge_models.EvidenceSnapshot
+    connection: sqlite3.Connection, snapshot: evidence_models.EvidenceSnapshot
 ) -> None:
     """在调用方事务中接管人工原文、优先反思和前台可靠投递。
 
@@ -270,7 +261,7 @@ def _admit_deliveries(
     for row in rows:
         kind, identity = _text(row[0]), _text(row[1])
         if kind == "supervision":
-            notice = knowledge.get_supervision(connection, identity)
+            notice = evidence.get_supervision(connection, identity)
             if notice is None or not notice.active:
                 connection.execute(
                     "DELETE FROM feedback_delivery_media WHERE kind=? AND identity=?",
@@ -286,7 +277,7 @@ def _admit_deliveries(
             ).fetchone()
             if (
                 current is None
-                or _decode(current[0], knowledge_models.WakeupPlan).state != "pending"
+                or _decode(current[0], evidence_models.WakeupPlan).state != "pending"
             ):
                 connection.execute(
                     "DELETE FROM feedback_deliveries WHERE kind=? AND identity=?", (kind, identity)
@@ -331,9 +322,7 @@ def _admit_deliveries(
             (admission.input_id, kind, identity),
         )
         # 派生输入用于唤醒前台，不再次证明同一事实；其不可变原文仍完整保留。
-        connection.execute(
-            "DELETE FROM pending_knowledge WHERE evidence_id=? AND version=1", (admission.input_id,)
-        )
+
         connection.execute(
             "DELETE FROM analysis_work WHERE evidence_id=? AND version=1", (admission.input_id,)
         )
@@ -395,7 +384,7 @@ def bridge(
             )
             _source(
                 connection,
-                knowledge_models.EvidenceSnapshot(
+                evidence_models.EvidenceSnapshot(
                     evidence_id=identity,
                     version=1,
                     kind="call_receipt",
@@ -425,7 +414,7 @@ def bridge(
             payload = encode({"source": "actual_activity_feedback", "feedback": item})
             _source(
                 connection,
-                knowledge_models.EvidenceSnapshot(
+                evidence_models.EvidenceSnapshot(
                     evidence_id=identity,
                     version=1,
                     kind="activity_feedback",
@@ -462,7 +451,7 @@ def bridge(
                 raise StorageError("失败轮次缺少结束时刻。", code="invalid_record")
             _source(
                 connection,
-                knowledge_models.EvidenceSnapshot(
+                evidence_models.EvidenceSnapshot(
                     evidence_id=identity,
                     version=1,
                     kind="foreground_failure",
@@ -562,7 +551,7 @@ def call_material(call: execution_models.CallRecord) -> dict[str, object]:
 def dispatch_supervision(
     connection: sqlite3.Connection,
     admit: AdmitInput,
-    record: knowledge_models.SupervisionRecord,
+    record: evidence_models.SupervisionRecord,
     *,
     observed_generation: int,
 ) -> FeedbackBridge:
@@ -580,7 +569,7 @@ def dispatch_supervision(
     Note:
         已交接意见不再取得紧急抢占身份。
     """
-    current = knowledge.get_supervision(connection, record.notice.id)
+    current = evidence.get_supervision(connection, record.notice.id)
     if current is None or not current.active or not record.active or record.duplicate:
         return FeedbackBridge()
     with connection:
@@ -644,7 +633,7 @@ def next_plan_at(connection: sqlite3.Connection) -> float | None:
 
 
 def reflection_state(
-    connection: sqlite3.Connection, *, purpose: Literal["memory", "behavior"] = "memory"
+    connection: sqlite3.Connection, *, purpose: Literal["behavior"] = "behavior"
 ) -> ReflectionState:
     """观察当前用途的可领取来源、冷却和全局额度，不以队列水位吞掉溢出。"""
     now = time.time()
@@ -712,7 +701,7 @@ def _resume_cursor(
     evidence_id: str,
     version: int,
     *,
-    purpose: Literal["memory", "behavior"] = "memory",
+    purpose: Literal["behavior"] = "behavior",
 ) -> str | None:
     """从真实已复核范围的连续前缀续读；失败或暂缓的尝试不能跳过原页。
 
@@ -725,15 +714,15 @@ def _resume_cursor(
         "knowledge_slices s USING(slice_ref) JOIN reflection_batches b ON "
         "r.batch_id=b.batch_id AND r.batch_version=b.version WHERE s.evidence_id=? AND "
         "s.version=? AND b.state='completed' AND "
-        "coalesce(json_extract(b.payload_json,'$.purpose'),'memory')=? ORDER BY "
+        "coalesce(json_extract(b.payload_json,'$.purpose'),'behavior')=? ORDER BY "
         "json_extract(b.receipt_json,'$.completed_at')",
         (evidence_id, version, purpose),
     ).fetchall()
     effective = {_text(row[0]): _text(row[1]) for row in rows}
-    fragments: list[knowledge_models.EvidenceSlice] = []
+    fragments: list[evidence_models.EvidenceSlice] = []
     deferred_start: int | None = None
     for reference, state in effective.items():
-        fragment = knowledge.get_slice(connection, reference)
+        fragment = evidence.get_slice(connection, reference)
         if fragment is None:
             raise StorageError("反思覆盖缺少原文范围。", code="invalid_record")
         if state == "reviewed":
@@ -744,7 +733,7 @@ def _resume_cursor(
             )
         else:
             raise StorageError("反思范围结论损坏。", code="invalid_record")
-    snapshot = knowledge.get_evidence(connection, evidence_id, version=version)
+    snapshot = evidence.get_evidence(connection, evidence_id, version=version)
     if snapshot is None:
         raise StorageError("反思候选缺少有效原文版本。", code="invalid_record")
     reviewed_media = {identity for fragment in fragments for identity in fragment.media_ids}
@@ -775,7 +764,7 @@ def reflection_sources(
     epoch: int,
     limit: int = 32,
     after: int = 0,
-    purpose: Literal["memory", "behavior"] = "memory",
+    purpose: Literal["behavior"] = "behavior",
 ) -> tuple[ReflectionSource, ...]:
     """优先人工材料并为普通来源保留一席；失败范围只在持久冷却后重试。"""
     rows = connection.execute(
@@ -818,9 +807,9 @@ def reserve_reflection(
     *,
     batch_id: str,
     epoch: int,
-    pages: tuple[knowledge_models.EvidencePage, ...],
+    pages: tuple[evidence_models.EvidencePage, ...],
     successful_turns: int,
-    purpose: Literal["memory", "behavior"] = "memory",
+    purpose: Literal["behavior"] = "behavior",
 ) -> bool:
     """原子领取实际页面；相同观察水位仍可领取未尝试的其他来源或下一页。"""
     with connection:
@@ -868,8 +857,5 @@ def initialize(connection: sqlite3.Connection) -> None:
         ("evidence_id,version,priority", "feedback_sources"),
         ("turn_id", "feedback_failed_turns"),
         ("identity,observed_generation,notified", "feedback_supervision_signals"),
-        ("batch_id,slice_ref,epoch,successful_turns", "feedback_reflection_attempts"),
-        ("epoch,batch_id,successful_turns", "feedback_reflection_epochs"),
-        ("evidence_id,version,epoch,cursor,exhausted", "feedback_reflection_cursors"),
     ):
         connection.execute(f"SELECT {columns} FROM {table} LIMIT 0")

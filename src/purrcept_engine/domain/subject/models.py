@@ -9,7 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
-type SessionScope = Literal["foreground", "reflection", "behavior_review", "memory_consolidation"]
+type SessionScope = Literal["foreground", "behavior_review"]
 
 
 type InputStage = Literal[
@@ -89,7 +89,7 @@ class SessionRecord:
     """同一会话的已提交版本及完整 Core 检查点编码，不包含临时轮次。
 
     Attributes:
-        scope: 目标连续会话，foreground 与 reflection 拥有独立历史。
+        scope: 目标连续会话，foreground 与 behavior 拥有独立历史。
         version: 目标记录的确切版本，区别于可变的当前版本。
         checkpoint_json: 完整 Core 检查点的编码；失败轮次可不安装新历史。
         active_turn: 当前被接管且尚未结束的轮次身份；None 表示会话空闲。
@@ -110,7 +110,7 @@ class TurnRecord:
 
     Attributes:
         turn_id: 连续会话中本轮处理的身份。
-        scope: 目标连续会话，foreground 与 reflection 拥有独立历史。
+        scope: 目标连续会话，foreground 与 behavior 拥有独立历史。
         session_version: 轮次开始前的已提交会话版本。
         generation: 当前会话或设备的代次，用于拒绝迟到结果更新新状态。
         state: 当前所有者持有的状态或待提交状态值。

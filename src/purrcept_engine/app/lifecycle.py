@@ -149,8 +149,7 @@ class HostLifecycle:
             if self.state.subject is not None:
                 resources.append(f"subject:{self.state.subject.service.pending_resources}")
                 resources.append(f"background:{self.state.subject.background.pending_resources}")
-            if self.state.knowledge_resources is not None:
-                resources.append(f"knowledge:{self.state.knowledge_resources.pending_resources}")
+            resources.extend(f"notebook:{name}" for name in self.state.notebook_resources)
             resources.extend(f"model:{name}" for name in self.state.models)
             if self.state.owns_lock:
                 resources.append("data_directory_lock")
@@ -333,19 +332,7 @@ class HostLifecycle:
 
         # 主体借用认识服务和 SDK，执行/控制借用插件。上游未确认归还时
         # 只保留其依赖；其他已独立结束的所有者仍可继续释放。
-        if self.state.subject is None and self.state.knowledge_resources is not None:
-            if self.state.knowledge_close_task is None:
-                self.state.knowledge_close_task = asyncio.create_task(
-                    self.state.knowledge_resources.close()
-                )
-            try:
-                await asyncio.shield(self.state.knowledge_close_task)
-            except BaseException as error:
-                errors.append(error)
-                if self.state.knowledge_resources.resources_released:
-                    self.state.knowledge_resources = None
-            else:
-                self.state.knowledge_resources = None
+
         if (
             self.state.execution is None
             and self.state.activities is None
@@ -373,9 +360,23 @@ class HostLifecycle:
                         if released is not True:
                             continue
                 del self.state.plugins[name]
+        if not self.state.plugins and self.state.notebook_resources:
+            for instance_id, resource in tuple(self.state.notebook_resources.items()):
+                try:
+                    await resource.close()
+                except BaseException as error:
+                    errors.append(error)
+                else:
+                    del self.state.notebook_resources[instance_id]
+
         if not self.state.plugins:
             self.state.audio_output = None
-        if self.state.subject is None:
+        model_borrowers = {
+            name
+            for name, blueprint in self.state.prepared.blueprints
+            if blueprint.model_requirements
+        }
+        if self.state.subject is None and not model_borrowers.intersection(self.state.plugins):
             for name in reversed(tuple(self.state.models)):
                 task = self.state.model_close_tasks.get(name)
                 if task is None:
@@ -394,7 +395,7 @@ class HostLifecycle:
             or self.state.activities is not None
             or self.state.subject is not None
             or self.state.panel is not None
-            or self.state.knowledge_resources is not None
+            or bool(self.state.notebook_resources)
         )
         if not borrowers_remain and self.state.store is not None:
             try:
@@ -449,7 +450,6 @@ class HostLifecycle:
         borrowers = tuple(
             await asyncio.gather(
                 subject.service.session.close(),
-                subject.background.session.close(),
                 subject.background.behavior_session.close(),
                 subject.foreground_history.close(),
                 subject.sleep_history.close(),

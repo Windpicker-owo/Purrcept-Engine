@@ -98,7 +98,7 @@ async def test_review_contains_whole_turn_and_original_media_but_not_later_input
         await store.human_feedback.submit(
             "whole-turn", "action", revision(detail), HumanFeedback(rating="bad")
         )
-        evidence = await store.knowledge.get_evidence("human-feedback:whole-turn", version=1)
+        evidence = await store.evidence.get_evidence("human-feedback:whole-turn", version=1)
         assert evidence is not None
         frozen = decode_object(evidence.text.encode())["reviewed_context"]
         assert isinstance(frozen, dict)
@@ -134,7 +134,7 @@ async def test_review_freezes_receipt_and_retransmission_survives_later_confirma
         assert revision(detail) != old
         assert detail is not None and isinstance(detail["feedback"], list)
         assert len(detail["feedback"]) == 1
-        snapshot = await store.knowledge.get_evidence("human-feedback:review-one", version=1)
+        snapshot = await store.evidence.get_evidence("human-feedback:review-one", version=1)
         assert snapshot is not None
         frozen = decode_object(snapshot.text.encode())["reviewed_context"]
         assert isinstance(frozen, dict) and isinstance(frozen["action"], dict)
@@ -148,7 +148,7 @@ async def test_review_freezes_receipt_and_retransmission_survives_later_confirma
                 "review-one", "action", old, HumanFeedback(rating="good")
             )
         assert conflict.value.code == "control_conflict"
-        assert await store.knowledge.get_evidence("human-feedback:stale", version=1) is None
+        assert await store.evidence.get_evidence("human-feedback:stale", version=1) is None
     finally:
         await store.close()
 
@@ -187,11 +187,11 @@ async def test_full_input_queue_retains_both_consumers_across_restart(tmp_path: 
         assert not (await reopened.feedback.bridge(now=time.time())).foreground_ids
         with sqlite3.connect(path) as connection:
             assert connection.execute(
-                "SELECT state FROM pending_knowledge WHERE evidence_id='human-feedback:review'"
+                "SELECT state FROM analysis_work WHERE evidence_id='human-feedback:review'"
             ).fetchone() == ("pending",)
             assert (
                 connection.execute(
-                    "SELECT 1 FROM pending_knowledge WHERE evidence_id=?", (record.input_id,)
+                    "SELECT 1 FROM analysis_work WHERE evidence_id=?", (record.input_id,)
                 ).fetchone()
                 is None
             )
@@ -208,7 +208,7 @@ async def test_outbox_failure_rolls_back_evidence_and_reflection_ownership(
     original = feedback_sql.record_human_feedback
 
     def fail(
-        connection: sqlite3.Connection, snapshot: feedback_sql.knowledge_models.EvidenceSnapshot
+        connection: sqlite3.Connection, snapshot: feedback_sql.evidence_models.EvidenceSnapshot
     ):
         """在两个责任均写入后拒绝，证明外层事务不会留下半份评价。"""
         original(connection, snapshot)
@@ -224,7 +224,7 @@ async def test_outbox_failure_rolls_back_evidence_and_reflection_ownership(
                 revision(await store.human_feedback.detail("action")),
                 HumanFeedback(rating="good"),
             )
-        assert await store.knowledge.get_evidence("human-feedback:rollback", version=1) is None
+        assert await store.evidence.get_evidence("human-feedback:rollback", version=1) is None
         with sqlite3.connect(tmp_path / "state.sqlite3") as connection:
             assert (
                 connection.execute(

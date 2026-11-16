@@ -19,7 +19,7 @@ from purrcept_core.models import DecisionBackend, ModelBackend
 from purrcept_engine.app.assembly import prepare_plugins
 from purrcept_engine.app.config import EngineConfig, GenerationModelSettings
 from purrcept_engine.app.host_types import ExecutorFactory, HostPhase
-from purrcept_engine.app.knowledge_resources import KnowledgeResources
+from purrcept_engine.app.notebook_resources import NotebookAccess
 from purrcept_engine.app.panel import PanelController
 from purrcept_engine.app.subject import SubjectAssembly
 from purrcept_engine.domain.activities.service import ActivityService
@@ -31,8 +31,7 @@ from purrcept_engine.domain.health import ComponentHealth
 from purrcept_engine.domain.inputs.models import (
     Admission,
 )
-from purrcept_engine.domain.knowledge.ports import Reranker
-from purrcept_engine.domain.knowledge.semantic import EmbeddingProvider
+from purrcept_engine.domain.notebook.embedding import EmbeddingProvider, Reranker
 from purrcept_engine.errors import ConfigError, HostStateError
 from purrcept_engine.infrastructure.locking import InstanceLock
 from purrcept_engine.infrastructure.models.clients import DecisionResource, OpenAIGenerationResource
@@ -54,8 +53,8 @@ class EngineState:
         console_output: Callable[[str], None] = print,
         generation_backends: Mapping[str, ModelBackend] | None = None,
         decision_backends: Mapping[str, DecisionBackend] | None = None,
-        embedding_provider: EmbeddingProvider | None = None,
-        reranker: Reranker | None = None,
+        plugin_embeddings: Mapping[str, EmbeddingProvider] | None = None,
+        plugin_rerankers: Mapping[str, Reranker] | None = None,
         on_data_dir_acquired: Callable[[Path], None] | None = None,
     ) -> None:
         """保存配置并核验纯声明。
@@ -98,9 +97,19 @@ class EngineState:
         self.executor_factory = executor_factory
         self.generation_backends = MappingProxyType(dict(generation_backends or {}))
         self.decision_backends = MappingProxyType(dict(decision_backends or {}))
-        if embedding_provider is not None and config.knowledge.embedding is None:
-            raise ConfigError("knowledge.embedding: 借入向量后端仍须显式声明配置。")
-        self.embedding_provider, self.reranker = embedding_provider, reranker
+        self.plugin_embeddings = dict(plugin_embeddings or {})
+        self.plugin_rerankers = dict(plugin_rerankers or {})
+        instances = {
+            instance_id
+            for instance_id, blueprint in self.prepared.blueprints
+            if blueprint.notebook is not None
+        }
+        if not (set(self.plugin_embeddings) | set(self.plugin_rerankers)) <= instances:
+            raise ConfigError("向量和重排资源必须绑定已声明 Notebook 资源的插件实例。")
+        for instance_id, blueprint in self.prepared.blueprints:
+            for requirement in blueprint.model_requirements:
+                if not isinstance(config.models.get(requirement.model), GenerationModelSettings):
+                    raise ConfigError(f"plugins.{instance_id}: 后台模型必须引用已声明生成模型。")
         for name in self.generation_backends:
             if not isinstance(config.models.get(name), GenerationModelSettings):
                 raise ConfigError("生成后端必须绑定已声明的生成配置名。")
@@ -133,7 +142,7 @@ class EngineState:
         self.execution: ActionExecutor | None = None
         self.activities: ActivityService | None = None
         self.subject: SubjectAssembly | None = None
-        self.knowledge_resources: KnowledgeResources | None = None
+        self.notebook_resources: dict[str, NotebookAccess] = {}
         self.panel: PanelController | None = None
         self.panel_close_task: asyncio.Task[None] | None = None
         self.subject_close_task: asyncio.Task[None] | None = None
@@ -141,7 +150,6 @@ class EngineState:
         self.work_changed = asyncio.Event()
         self.activity_close_task: asyncio.Task[None] | None = None
         self.execution_close_task: asyncio.Task[None] | None = None
-        self.knowledge_close_task: asyncio.Task[None] | None = None
         self.plugin_stop_tasks: dict[str, asyncio.Task[None]] = {}
         self.plugin_close_tasks: dict[str, asyncio.Task[None]] = {}
         self.model_close_tasks: dict[str, asyncio.Task[None]] = {}

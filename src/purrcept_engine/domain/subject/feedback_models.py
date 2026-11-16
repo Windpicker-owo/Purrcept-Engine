@@ -9,8 +9,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import purrcept_engine.domain.activities.models as activities_models
+import purrcept_engine.domain.evidence.models as evidence_models
 import purrcept_engine.domain.execution.models as execution_models
-import purrcept_engine.domain.knowledge.models as knowledge_models
 from purrcept_engine.domain.subject.models import TurnRecord
 
 
@@ -33,8 +33,8 @@ class FeedbackWork:
     calls: tuple[execution_models.CallRecord, ...]
     activity: tuple[activities_models.ActivityFeedback, ...]
     failures: tuple[TurnRecord, ...]
-    plans: tuple[knowledge_models.WakeupPlan, ...]
-    supervision: tuple[knowledge_models.SupervisionRecord, ...]
+    plans: tuple[evidence_models.WakeupPlan, ...]
+    supervision: tuple[evidence_models.SupervisionRecord, ...]
     deliveries: bool
 
     @property

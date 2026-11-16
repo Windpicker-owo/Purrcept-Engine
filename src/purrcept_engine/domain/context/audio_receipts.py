@@ -15,7 +15,7 @@ from dataclasses import replace
 
 from purrcept_core.models import ContentBlock, Message, MessageRole, TextBlock, ToolResultBlock
 
-from purrcept_engine.domain.knowledge.models import EvidencePage
+from purrcept_engine.domain.evidence.models import EvidencePage
 
 _ENCODED = re.compile(r"(?:base64://)?(?P<data>[A-Za-z0-9+/]{128,}={0,2})")
 
@@ -94,7 +94,7 @@ def evidence_text_view(page: EvidencePage) -> str:
         行动或调用回执的模型正文视图；其它来源保持原文。
     """
     snapshot = page.snapshot
-    if snapshot is None or snapshot.kind not in ("action_result", "call_receipt"):
+    if snapshot.kind not in ("action_result", "call_receipt"):
         return page.text
     if page.slice is not None and page.slice.unit == "characters":
         return audio_text_view(snapshot.text, start=page.slice.start, end=page.slice.end)

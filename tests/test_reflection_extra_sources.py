@@ -10,7 +10,7 @@ from typing import Literal
 
 import pytest
 
-from purrcept_engine.domain.knowledge.models import (
+from purrcept_engine.domain.evidence.models import (
     BehaviorConclusion,
     EvidenceSnapshot,
     FinishSubmission,
@@ -19,17 +19,17 @@ from purrcept_engine.domain.knowledge.models import (
 from purrcept_engine.infrastructure.sqlite.store import Store
 
 
-@pytest.mark.parametrize("purpose", ["memory", "behavior"])
+@pytest.mark.parametrize("purpose", ["behavior"])
 @pytest.mark.parametrize("page_chars", [4, 8000])
 @pytest.mark.parametrize("extra_claimed", [False, True])
 async def test_extra_review_settles_only_covered_source_and_purpose(
-    tmp_path: Path, purpose: Literal["memory", "behavior"], page_chars: int, extra_claimed: bool
+    tmp_path: Path, purpose: Literal["behavior"], page_chars: int, extra_claimed: bool
 ) -> None:
     """补读完整页离开待办，补读前缀从确切下一页继续，另一用途仍从头读取。"""
     store = await Store.open(tmp_path / "engine.sqlite3")
     try:
         for identity in ("assigned", "extra"):
-            await store.knowledge.put_evidence(
+            await store.evidence.put_evidence(
                 EvidenceSnapshot(
                     evidence_id=identity,
                     version=1,
@@ -39,8 +39,8 @@ async def test_extra_review_settles_only_covered_source_and_purpose(
                     occurred_at=1.0,
                 )
             )
-        assigned = await store.knowledge.read_evidence("assigned")
-        extra = await store.knowledge.read_evidence("extra", max_chars=page_chars)
+        assigned = await store.evidence.read_evidence("assigned")
+        extra = await store.evidence.read_evidence("extra", max_chars=page_chars)
         assert assigned.slice is not None and extra.slice is not None
         state = await store.feedback.reflection_state(purpose=purpose)
         if extra_claimed:
@@ -58,14 +58,14 @@ async def test_extra_review_settles_only_covered_source_and_purpose(
             successful_turns=0,
             purpose=purpose,
         )
-        batch = await store.knowledge.begin_reflection(
+        batch = await store.evidence.begin_reflection(
             "review",
             (assigned.slice.slice_ref,),
             purpose=purpose,
         )
         references = (assigned.slice.slice_ref, extra.slice.slice_ref)
-        await store.knowledge.mark_presented(batch.batch_id, batch.version, references)
-        await store.knowledge.finish_reflection(
+        await store.evidence.mark_presented(batch.batch_id, batch.version, references)
+        await store.evidence.finish_reflection(
             batch.batch_id,
             batch.version,
             FinishSubmission(
@@ -74,7 +74,6 @@ async def test_extra_review_settles_only_covered_source_and_purpose(
                         issue="补读复核",
                         evidence=references,
                         conclusion="已核对实际材料。",
-                        memory_decision="no_change",
                         reason="无需新增认识。",
                     ),
                 ),
@@ -106,14 +105,10 @@ async def test_extra_review_settles_only_covered_source_and_purpose(
         elif page_chars == 4:
             assert len(sources) == 1 and sources[0].evidence_id == "extra"
             assert sources[0].cursor == extra.next_cursor
-            next_page = await store.knowledge.read_evidence("extra", cursor=sources[0].cursor)
+            next_page = await store.evidence.read_evidence("extra", cursor=sources[0].cursor)
             assert next_page.text == "efgh"
         else:
             assert extra.next_cursor is None and sources == ()
-        other: Literal["memory", "behavior"] = "behavior" if purpose == "memory" else "memory"
-        independent = await store.feedback.reflection_sources(epoch=state.epoch, purpose=other)
-        assert {source.evidence_id for source in independent} == {"assigned", "extra"}
-        assert all(source.cursor is None for source in independent)
         assert store.authority_available
     finally:
         await store.close()

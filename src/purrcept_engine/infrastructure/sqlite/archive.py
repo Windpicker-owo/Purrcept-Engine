@@ -56,7 +56,6 @@ SCHEMA = (
     "CHECK(id=1),payload_json TEXT NOT NULL)",
     "CREATE INDEX actions_recent ON actions(created_at DESC,action_id DESC)",
     "CREATE INDEX turn_inputs_reverse ON turn_inputs(input_id,turn_id)",
-    "CREATE INDEX knowledge_index_model ON knowledge_index(model,kind,id,version)",
     "CREATE INDEX model_attempts_recent ON model_attempts(created_at,request_id)",
     "CREATE INDEX calls_recent ON calls(prepared_at DESC,call_id DESC)",
     "CREATE TABLE human_feedback_links(evidence_id TEXT NOT NULL,version INTEGER "
@@ -138,103 +137,6 @@ def read(connection: sqlite3.Connection, kind: str, identity: str) -> tuple[str 
     ):
         raise StorageError("模型正文与摘要或淘汰状态不一致。", code="invalid_record")
     return content, BodyStatus(content is not None, expected, size, expired, reason, summary)
-
-
-def migrate(connection: sqlite3.Connection) -> None:
-    """格式15升级事务拆出完整正文，不改变身份、结果、因果关系和媒体引用。"""
-    from purrcept_engine.infrastructure.sqlite import model_requests
-
-    connection.execute("INSERT OR IGNORE INTO retained_body_totals VALUES(1,0)")
-    connection.execute(
-        "UPDATE retained_body_totals SET bytes=(SELECT "
-        "coalesce(sum(length(CAST(events_json AS BLOB))),0) FROM "
-        "model_attempt_diagnostics WHERE expired_at IS NULL) WHERE id=1"
-    )
-    # 迁移仍是单个原子事务，但逐行搬运大正文，避免把整个历史载入内存。
-    requests = connection.execute("SELECT request_id,evidence_json,created_at FROM model_requests")
-    for identity, encoded, created in requests:
-        # 先核对旧记录契约，再拆出正文；不能让置空字段掩盖既有格式损坏。
-        model_requests.decode_request(encoded)
-        metadata = decode_object(encoded.encode())
-        content = metadata["materials_json"]
-        if not isinstance(content, str):
-            raise StorageError("迁移请求正文无效。", code="invalid_record")
-        # 额度按还原后的完整材料计量，媒体指针不能使诊断正文绕过容量上限。
-        restored = model_requests.restore_request_media(connection, content)
-        put(
-            connection,
-            "request",
-            identity,
-            content,
-            encoded,
-            created,
-            original_bytes=len(restored.encode("utf-8")),
-        )
-        metadata["materials_json"] = None
-        connection.execute(
-            "UPDATE model_requests SET evidence_json=? WHERE request_id=?",
-            (json.dumps(metadata, ensure_ascii=False, separators=(",", ":")), identity),
-        )
-    attempts = connection.execute(
-        "SELECT attempt_id,result_json,created_at FROM model_attempts WHERE result_json IS NOT NULL"
-    )
-    for identity, encoded, created in attempts:
-        model_requests.decode_attempt(encoded)
-        metadata = decode_object(encoded.encode())
-        content = json.dumps(
-            {
-                "response_json": metadata["response_json"],
-                "argument_events_json": metadata["argument_events_json"],
-            },
-            ensure_ascii=False,
-            separators=(",", ":"),
-        )
-        response = metadata["response_json"]
-        restored_response = (
-            None
-            if response is None
-            else model_requests.restore_core_media(
-                connection,
-                str(response),
-            )
-        )
-        restored = json.dumps(
-            {
-                "response_json": restored_response,
-                "argument_events_json": metadata["argument_events_json"],
-            },
-            ensure_ascii=False,
-            separators=(",", ":"),
-        )
-        put(
-            connection,
-            "attempt",
-            identity,
-            content,
-            encoded,
-            created,
-            original_bytes=len(restored.encode("utf-8")),
-        )
-        response = metadata["response_json"]
-        usage = None if response is None else decode_object(str(response).encode()).get("usage")
-        metadata["usage_json"] = (
-            None if usage is None else json.dumps(usage, ensure_ascii=False, separators=(",", ":"))
-        )
-        metadata["response_json"], metadata["argument_events_json"] = None, None
-        connection.execute(
-            "UPDATE model_attempts SET result_json=? WHERE attempt_id=?",
-            (json.dumps(metadata, ensure_ascii=False, separators=(",", ":")), identity),
-        )
-    for owner, coverage in connection.execute(
-        "SELECT owner_id,coverage_id FROM summary_attempts WHERE installed_at IS NOT NULL"
-    ).fetchall():
-        detach_summary(connection, owner, coverage)
-    connection.execute(
-        "INSERT INTO human_feedback_links SELECT "
-        "evidence_id,version,'action',json_extract(json_extract(payload_json,"
-        "'$.source_json'),'$.action_id'),created_at FROM knowledge_evidence "
-        "WHERE json_extract(payload_json,'$.kind')='human_feedback'"
-    )
 
 
 def cleanup(

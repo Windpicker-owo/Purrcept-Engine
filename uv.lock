@@ -214,6 +214,21 @@ wheels = [
 ]
 
 [[package]]
+name = "cryptography"
+version = "47.0.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "cffi", marker = "platform_python_implementation != 'PyPy' and sys_platform == 'win32'" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/ef/b2/7ffa7fe8207a8c42147ffe70c3e360b228160c1d85dc3faff16aaa3244c0/cryptography-47.0.0.tar.gz", hash = "sha256:9f8e55fe4e63613a5e1cc5819030f27b97742d720203a087802ce4ce9ceb52bb", size = 830863, upload-time = "2026-04-24T19:54:57.056Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/54/ed/5f524db1fade9c013aa618e1c99c6ed05e8ffc9ceee6cda22fed22dda3f4/cryptography-47.0.0-cp311-abi3-win32.whl", hash = "sha256:7fda2f02c9015db3f42bb8a22324a454516ed10a8c29ca6ece6cdbb5efe2a203", size = 3258581, upload-time = "2026-04-24T19:53:31.058Z" },
+    { url = "https://files.pythonhosted.org/packages/b2/dc/1b901990b174786569029f67542b3edf72ac068b6c3c8683c17e6a2f5363/cryptography-47.0.0-cp311-abi3-win_amd64.whl", hash = "sha256:f5c3296dab66202f1b18a91fa266be93d6aa0c2806ea3d67762c69f60adc71aa", size = 3775309, upload-time = "2026-04-24T19:53:33.054Z" },
+    { url = "https://files.pythonhosted.org/packages/06/bd/0a9d3edbf5eadbac926d7b9b3cd0c4be584eeeae4a003d24d9eda4affbbd/cryptography-47.0.0-cp38-abi3-win32.whl", hash = "sha256:ed67ea4e0cfb5faa5bc7ecb6e2b8838f3807a03758eec239d6c21c8769355310", size = 3248487, upload-time = "2026-04-24T19:54:33.494Z" },
+    { url = "https://files.pythonhosted.org/packages/60/80/5681af756d0da3a599b7bdb586fac5a1540f1bcefd2717a20e611ddade45/cryptography-47.0.0-cp38-abi3-win_amd64.whl", hash = "sha256:835d2d7f47cdc53b3224e90810fb1d36ca94ea29cc1801fb4c1bc43876735769", size = 3755737, upload-time = "2026-04-24T19:54:35.408Z" },
+]
+
+[[package]]
 name = "dateparser"
 version = "1.4.3"
 source = { registry = "https://pypi.org/simple" }
@@ -784,6 +799,14 @@ browser = [
 live2d = [
     { name = "websockets", marker = "sys_platform == 'win32'" },
 ]
+phone = [
+    { name = "cryptography", marker = "sys_platform == 'win32'" },
+    { name = "qrcode", marker = "sys_platform == 'win32'" },
+    { name = "starlette", marker = "sys_platform == 'win32'" },
+    { name = "tomlkit", marker = "sys_platform == 'win32'" },
+    { name = "uvicorn", marker = "sys_platform == 'win32'" },
+    { name = "websockets", marker = "sys_platform == 'win32'" },
+]
 qq = [
     { name = "websockets", marker = "sys_platform == 'win32'" },
 ]
@@ -797,8 +820,12 @@ voice-input = [
     { name = "websockets", marker = "sys_platform == 'win32'" },
 ]
 web = [
+    { name = "cryptography", marker = "sys_platform == 'win32'" },
+    { name = "qrcode", marker = "sys_platform == 'win32'" },
     { name = "starlette", marker = "sys_platform == 'win32'" },
+    { name = "tomlkit", marker = "sys_platform == 'win32'" },
     { name = "uvicorn", marker = "sys_platform == 'win32'" },
+    { name = "websockets", marker = "sys_platform == 'win32'" },
 ]
 
 [package.dev-dependencies]
@@ -814,6 +841,8 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "av", specifier = "==16.1.0" },
+    { name = "cryptography", marker = "extra == 'phone'", specifier = ">=44,<48" },
+    { name = "cryptography", marker = "extra == 'web'", specifier = ">=44,<48" },
     { name = "httpx", specifier = "==0.28.1" },
     { name = "litellm", specifier = "==1.105.0" },
     { name = "numpy", marker = "extra == 'voice-input'", specifier = "==2.5.1" },
@@ -824,16 +853,24 @@ requires-dist = [
     { name = "purrcept-core", specifier = ">=0.6.0,<0.7" },
     { name = "purrcept-litellm", path = "vendor/purrcept_litellm-0.2.2-py3-none-any.whl" },
     { name = "pydantic", specifier = "==2.13.4" },
+    { name = "qrcode", marker = "extra == 'phone'", specifier = "==8.2" },
+    { name = "qrcode", marker = "extra == 'web'", specifier = "==8.2" },
     { name = "sounddevice", marker = "extra == 'voice-input'", specifier = "==0.5.6" },
+    { name = "starlette", marker = "extra == 'phone'", specifier = "==0.49.3" },
     { name = "starlette", marker = "extra == 'web'", specifier = "==0.49.3" },
+    { name = "tomlkit", marker = "extra == 'phone'", specifier = "==0.15.1" },
+    { name = "tomlkit", marker = "extra == 'web'", specifier = "==0.15.1" },
     { name = "trafilatura", marker = "extra == 'browser'", specifier = ">=2,<3" },
     { name = "tzdata", marker = "extra == 'time'", specifier = "==2026.5" },
+    { name = "uvicorn", marker = "extra == 'phone'", specifier = "==0.39.0" },
     { name = "uvicorn", marker = "extra == 'web'", specifier = "==0.39.0" },
     { name = "websockets", marker = "extra == 'live2d'", specifier = "==15.0.1" },
+    { name = "websockets", marker = "extra == 'phone'", specifier = "==15.0.1" },
     { name = "websockets", marker = "extra == 'qq'", specifier = "==15.0.1" },
     { name = "websockets", marker = "extra == 'voice-input'", specifier = "==15.0.1" },
+    { name = "websockets", marker = "extra == 'web'", specifier = "==15.0.1" },
 ]
-provides-extras = ["qq", "time", "browser", "web", "voice-input", "live2d"]
+provides-extras = ["qq", "time", "browser", "web", "phone", "voice-input", "live2d"]
 
 [package.metadata.requires-dev]
 dev = [
@@ -1032,6 +1069,18 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/74/93/7baea19427dcfbe1e5a372d81473250b379f04b1bd3c4c5ff825e2327202/pyyaml-6.0.3-cp312-cp312-win32.whl", hash = "sha256:96b533f0e99f6579b3d4d4995707cf36df9100d67e0c8303a0c55b27b5f99bc5", size = 137658, upload-time = "2025-09-25T21:32:20.209Z" },
     { url = "https://files.pythonhosted.org/packages/86/bf/899e81e4cce32febab4fb42bb97dcdf66bc135272882d1987881a4b519e9/pyyaml-6.0.3-cp312-cp312-win_amd64.whl", hash = "sha256:5fcd34e47f6e0b794d17de1b4ff496c00986e1c83f7ab2fb8fcfe9616ff7477b", size = 154003, upload-time = "2025-09-25T21:32:21.167Z" },
     { url = "https://files.pythonhosted.org/packages/1a/08/67bd04656199bbb51dbed1439b7f27601dfb576fb864099c7ef0c3e55531/pyyaml-6.0.3-cp312-cp312-win_arm64.whl", hash = "sha256:64386e5e707d03a7e172c0701abfb7e10f0fb753ee1d773128192742712a98fd", size = 140344, upload-time = "2025-09-25T21:32:22.617Z" },
+]
+
+[[package]]
+name = "qrcode"
+version = "8.2"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "colorama", marker = "sys_platform == 'win32'" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/8f/b2/7fc2931bfae0af02d5f53b174e9cf701adbb35f39d69c2af63d4a39f81a9/qrcode-8.2.tar.gz", hash = "sha256:35c3f2a4172b33136ab9f6b3ef1c00260dd2f66f858f24d88418a015f446506c", size = 43317, upload-time = "2025-05-01T15:44:24.726Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/dd/b8/d2d6d731733f51684bbf76bf34dab3b70a9148e8f2cef2bb544fccec681a/qrcode-8.2-py3-none-any.whl", hash = "sha256:16e64e0716c14960108e85d853062c9e8bba5ca8252c0b4d0231b9df4060ff4f", size = 45986, upload-time = "2025-05-01T15:44:22.781Z" },
 ]
 
 [[package]]

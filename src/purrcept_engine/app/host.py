@@ -30,13 +30,12 @@ from purrcept_engine.domain.inputs.models import (
     InputSource,
     InputSubmission,
 )
-from purrcept_engine.domain.knowledge.ports import Reranker
-from purrcept_engine.domain.knowledge.semantic import EmbeddingProvider
 from purrcept_engine.domain.model_requests.models import RequestRecord
+from purrcept_engine.domain.notebook.embedding import EmbeddingProvider, Reranker
 from purrcept_engine.domain.subject.models import InputProcessing
 from purrcept_engine.errors import HostStateError
 from purrcept_engine.plugin_system.contracts import PluginFactory
-from purrcept_engine.plugin_system.panels import PreviewFrame
+from purrcept_engine.plugin_system.panels import PairingOperation, PreviewFrame
 from purrcept_engine.values import JsonObject
 
 
@@ -57,8 +56,8 @@ class EngineHost:
         console_output: Callable[[str], None] = print,
         generation_backends: Mapping[str, ModelBackend] | None = None,
         decision_backends: Mapping[str, DecisionBackend] | None = None,
-        embedding_provider: EmbeddingProvider | None = None,
-        reranker: Reranker | None = None,
+        plugin_embeddings: Mapping[str, EmbeddingProvider] | None = None,
+        plugin_rerankers: Mapping[str, Reranker] | None = None,
         on_data_dir_acquired: Callable[[Path], None] | None = None,
     ) -> None:
         """校验配置与插件声明，创建尚未启动的宿主实例。
@@ -88,8 +87,8 @@ class EngineHost:
             console_output=console_output,
             generation_backends=generation_backends,
             decision_backends=decision_backends,
-            embedding_provider=embedding_provider,
-            reranker=reranker,
+            plugin_embeddings=plugin_embeddings,
+            plugin_rerankers=plugin_rerankers,
             on_data_dir_acquired=on_data_dir_acquired,
         )
         self._lifecycle = HostLifecycle(self._state)
@@ -421,6 +420,36 @@ class EngineHost:
     def query_health(self) -> JsonObject:
         """读取启动和组件健康，不打开数据库、插件或模型资源。"""
         return self._queries.query_health()
+
+    async def phone_pairing(
+        self,
+        target: str,
+        *,
+        operation: PairingOperation = "read",
+        expected_device_id: str | None = None,
+    ) -> JsonObject:
+        """查询、开启或确认重建已装配 Phone 插件的配对窗口。
+
+        Args:
+            target: 当前宿主的 Phone 插件实例身份。
+            operation: read 只查询；open 明确开启窗口；replace 确认后撤销旧凭据并开放新窗口。
+            expected_device_id: replace 时必须是本机用户确认的旧手机身份。
+
+        Returns:
+            当前配对状态，窗口有效时含一次性邀请。不得写入普通快照或日志。
+
+        Raises:
+            HostStateError: 宿主未运行或目标未提供 Phone 配对端口。
+        """
+        runtime = self._state.plugins.get(target)
+        if self._state.phase != "running" or runtime is None or runtime.phone_pairing is None:
+            raise HostStateError("Phone 尚未启用。请在设备页保存手机设置，再正常重启 Engine。")
+        pairing = runtime.phone_pairing
+        if operation == "replace":
+            if expected_device_id is None:
+                raise HostStateError("重新配对需要当前手机身份，请先读取配对状态。")
+            return await pairing.replace(expected_device_id)
+        return await (pairing.open() if operation == "open" else pairing.read())
 
     async def query_panel(self) -> JsonObject:
         """读取有限真实概况与设备缓存状态。

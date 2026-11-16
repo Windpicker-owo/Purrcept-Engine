@@ -125,8 +125,8 @@ export interface Snapshot {
   storage_statistics: ObjectValue | null; supervision_observations: ObjectValue[];
   proactive_thinking: ProactiveThinking | null;
   instance_id: string; host_version: number; phase: string; pending_resources: string[];
-  authority_available: boolean; devices: Device[]; foreground: Session | null; reflection: Session | null;
-  knowledge: ObjectValue | null; pending_limits: { count: number; logical_bytes: number };
+  authority_available: boolean; devices: Device[]; foreground: Session | null;
+  notebooks: Record<string, ObjectValue>; pending_limits: { count: number; logical_bytes: number };
   pending_inputs: { stage: string; count: number; logical_bytes: number }[];
   sessions: { scope: string; version: number; active_turn: string | null }[];
   recent_actions: Action[]; activities: Activity[];
@@ -293,8 +293,8 @@ export function snapshot(value: unknown): Snapshot {
     }),
     instance_id: text(v.instance_id, "instance_id"), host_version: integer(v.host_version, "host_version"), phase: text(v.phase, "phase"),
     pending_resources: list(v.pending_resources, "pending_resources", text), authority_available: bool(v.authority_available, "authority_available"),
-    devices: list(v.devices, "devices", device), foreground: nullable(v.foreground, "foreground", session), reflection: nullable(v.reflection, "reflection", session),
-    knowledge: nullable(v.knowledge, "knowledge", jsonObject), pending_limits: { count: integer(limits.count, "pending_limits.count"), logical_bytes: integer(limits.logical_bytes, "pending_limits.logical_bytes") },
+    devices: list(v.devices, "devices", device), foreground: nullable(v.foreground, "foreground", session),
+    notebooks: Object.fromEntries(Object.entries(jsonObject(v.notebooks, "notebooks")).map(([key, value]) => [key, jsonObject(value, `notebooks.${key}`)])), pending_limits: { count: integer(limits.count, "pending_limits.count"), logical_bytes: integer(limits.logical_bytes, "pending_limits.logical_bytes") },
     pending_inputs: list(v.pending_inputs, "pending_inputs", (entry, at) => {
       const p = object(entry, at);
       return { stage: text(p.stage, at), count: integer(p.count, at), logical_bytes: integer(p.logical_bytes, at) };

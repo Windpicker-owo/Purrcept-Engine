@@ -306,7 +306,7 @@ class BrowserSession:
     def _page(self, page: EvidencePage) -> JsonObject:
         """只交真实片段，原始HTML引用不变；跨插件游标不当作当前浏览器快照。"""
         snapshot, fragment = page.snapshot, page.slice
-        if snapshot is None or fragment is None or snapshot.kind != "browser.read":
+        if fragment is None or snapshot.kind != "browser.read":
             raise BrowserInputError("cursor不是浏览器正文快照。")
         source = decode_object(snapshot.source_json.encode())
         if source.get("plugin") != self.instance_id:

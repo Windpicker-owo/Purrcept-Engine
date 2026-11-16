@@ -55,7 +55,7 @@ def maintain(
             checked = check_database(connection)
             if command == "db-check":
                 return checked
-            if connection.execute("PRAGMA user_version").fetchone() != (16,):
+            if connection.execute("PRAGMA user_version").fetchone() != (17,):
                 raise StorageError(
                     "请先用当前 Engine 升级数据库格式，再运行维护。", code="unsupported_format"
                 )

@@ -29,6 +29,11 @@ export function deviceSummary(device: Device): string[] {
   const s = device.state;
   const lines: string[] = [];
   switch (device.kind) {
+    case "phone": {
+      if (typeof s.online === "boolean") lines.push(s.online ? "手机聊天连接已建立" : "等待手机连接");
+      if (typeof s.control_connected === "boolean") lines.push(s.control_connected ? "主脑已建立手机操作会话" : "手机操控会话尚未建立");
+      break;
+    }
     case "qq": {
       if (s.mode === "reverse") lines.push("等待 QQ 端主动连入");
       else if (s.mode !== undefined) lines.push("由 Engine 主动连接 QQ 端");

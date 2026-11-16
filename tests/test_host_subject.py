@@ -111,23 +111,36 @@ async def test_configured_embedding_failure_ends_one_turn_and_preserves_host(
     assert isinstance(main, GenerationModelSettings)
     raw["models"]["reflection"] = main.model_dump()
     raw["subject"]["reflection"] = "reflection"
-    raw["knowledge"] = {
-        "embedding": {
-            "model": "openai/synthetic",
-            "model_id": "explicit-test-space",
-            "api_base": "http://127.0.0.1:9999/v1",
+    raw["plugins"] = [
+        {
+            "instance_id": "notes",
+            "entry": "notebook",
+            "config": {
+                "notebook_dir": str(tmp_path / "notes"),
+                "seed_examples": False,
+                "embedding": {
+                    "model": "openai/synthetic",
+                    "model_id": "explicit-test-space",
+                    "api_base": "http://127.0.0.1:9999/v1",
+                },
+            },
         }
-    }
+    ]
     backend = Backend(
         (
-            proposal("recall", "recall", {"query": "needle"}),
+            proposal(
+                "search",
+                "play_action",
+                {"action_code": 'from world import me\nawait me.notebook.search(query="needle")'},
+            ),
+            ModelResponse(Message.assistant("本轮正常收尾。")),
             ModelResponse(Message.assistant("新输入正常结束。")),
         )
     )
     host = EngineHost(
-        EngineConfig.validate(raw),
+        EngineConfig.validate(raw, base_dir=tmp_path),
         generation_backends={"main": backend, "reflection": Reflection()},
-        embedding_provider=Embedding(),
+        plugin_embeddings={"notes": Embedding()},
     )
     await host.start()
     try:
@@ -137,14 +150,14 @@ async def test_configured_embedding_failure_ends_one_turn_and_preserves_host(
         )
         await wait_processed(host, first.input_id)
         failed = await host.query_processing(first.input_id)
-        assert failed is not None and failed.stage == "failed"
+        assert failed is not None and failed.stage == "processed"
         second = await host.submit(
             InputSubmission(InputSource("test", "a", "c", "text", "second"), "新独立输入", now, now)
         )
         await wait_processed(host, second.input_id)
         completed = await host.query_processing(second.input_id)
         assert completed is not None and completed.stage == "processed"
-        assert host.query().phase == "running" and len(backend.requests) == 2
+        assert host.query().phase == "running" and len(backend.requests) == 3
     finally:
         await host.close()
 
@@ -187,7 +200,6 @@ async def test_host_uses_real_core_worker_and_continuous_history(tmp_path: Path)
         assert backend.requests[0].instructions == backend.requests[2].instructions
         assert tuple(tool.name for tool in backend.requests[0].tools) == (
             "play_action",
-            "recall",
             "read_evidence",
             "plan_wakeup",
             "resolve_plan",
@@ -284,7 +296,9 @@ async def test_generation_attention_uses_model_configured_output_budget(tmp_path
             ModelResponse(Message.assistant("内部处理完成")),
         )
     )
-    host = EngineHost(EngineConfig.validate(raw), generation_backends={"main": backend})
+    host = EngineHost(
+        EngineConfig.validate(raw, base_dir=tmp_path), generation_backends={"main": backend}
+    )
     await host.start()
     try:
         now = datetime.now(UTC)

@@ -1,7 +1,7 @@
-"""定义原文、片段、认识版本与独立反思的不可变记录。
+"""定义原文快照、精确片段、行为评审批次、监管与计划的不可变值。
 
-原文阅读范围、认识有效性和反思写资格分别表达，并保留确切证据与版本。
-这里只校验值，不查询存储、不调用检索模型或提交认识修订。
+原文获取、实际呈现和行为结案分别表达；这些值不取得数据库或模型资源。
+Markdown 长期记忆和整理提案位于 domain.notebook，不在此保存第二套认识。
 """
 
 from __future__ import annotations
@@ -26,27 +26,14 @@ Version = Annotated[int, Field(ge=1, strict=True)]
 Finite = Annotated[float, Field(allow_inf_nan=False, strict=True)]
 
 
-MemoryKind = Literal[
-    "statement",
-    "observation",
-    "belief",
-    "preference",
-    "relationship",
-    "experience",
-    "self_understanding",
-    "document",
-    "episode",
-]
-
-
 RangeUnit = Literal["characters", "items"]
 
 
-class KnowledgeInputError(ValueError):
+class EvidenceInputError(ValueError):
     """来源、范围或参数不符合公开阅读契约，可在原批次预算内纠正。"""
 
 
-class KnowledgeConflict(KnowledgeInputError):
+class EvidenceConflict(EvidenceInputError):
     """来源、版本或批次已变化，必须重读实际状态，不能盲目重放修订。"""
 
 
@@ -193,142 +180,33 @@ class EvidenceSlice(_Record):
 
 # 维护者属性契约（类说明参与 schema，保持原 docstring）。
 # Attributes:
-#     snapshot: 原文页的确切快照，与 memory 只能存在一项。
-#     memory: 认识页的确切版本，不生成新的原文阅读资格。
-#     slice: 真正原文范围的凭据；概要或认识展开不凭空生成此值。
+#     snapshot: 这一页对应的确切原文快照。
+#     slice: 真正原文范围的凭据；概要展开不凭空生成此值。
 #     next_cursor: 继续读取同一版本的宿主游标；None 表示已读到末尾。
 class EvidencePage(_Record):
     """一次完整阅读结果；摘要没有 slice，创建原文 slice 也不表示模型已读。"""
 
-    snapshot: EvidenceSnapshot | None = None
-    memory: MemoryRecord | None = None
+    snapshot: EvidenceSnapshot
     slice: EvidenceSlice | None
     text: str
     level: Literal["summary", "overview", "evidence"]
     next_cursor: str | None = None
 
-    @model_validator(mode="after")
-    def one_source(self) -> Self:
-        """认识展开是派生页面，不能伪装成新的原文阅读资格。
 
-        Returns:
-            校验完成的当前值或解析后的新配置，具体是否复制由实现说明。
-
-        Raises:
-            ValueError: 页面必须且只能对应原文或认识版本；认识正文不能成为独立原文片段。
-        """
-        if (self.snapshot is None) == (self.memory is None):
-            raise ValueError("页面必须且只能对应原文或认识版本。")
-        if self.memory is not None and self.slice is not None:
-            raise ValueError("认识正文不能成为独立原文片段。")
-        return self
-
-
-class KnowledgeReference(_Record):
+class EvidenceReference(_Record):
     """权威材料的确切版本引用，异步排名后仍须核验当前版本与来源资格。"""
 
-    kind: Literal["evidence", "memory"]
+    kind: Literal["evidence"]
     id: Text
     version: Version
 
 
-class MemoryConflictTarget(_Record):
-    """反思明确提出的对方认识版本，原文来源仍由修订的 sources 单独核验。"""
-
-    kind: Literal["memory"]
-    id: Text
-    version: Version
-
-
-class MemoryConflict(MemoryConflictTarget):
-    """保留的未决关系及对方确切版本当前资格，不推断冲突已经消解。"""
-
-    status: Literal["unresolved"] = "unresolved"
-    active: bool
-    inactive_reason: str | None = None
-
-
-# 维护者属性契约（类说明参与 schema，保持原 docstring）。
-# Attributes:
-#     base_version: 当前修订基于的认识版本；首次创建为 0。
-#     sources: 已实际呈现且仍可引用的原文片段身份。
-#     conflicts: 保留未决反证的目标和确切版本，不自动替代对方。
-#     valid_from: 事实有效时间下界，不是认识写入时间。
-#     valid_until: 事实有效时间上界；None 不设显式上界。
-class MemoryPatch(_Record):
-    """本批有据修订；原文来源、替代和未决版本关系由同一事务确认。
-
-    sources 只接受实际呈现的原文片段。conflicts 指向当前有效的确切认识版本，
-    不授予对方原文的阅读资格，也不将未决反证解释为自动替代。
-    """
-
-    id: Text
-    content: Text
-    sources: tuple[Text, ...] = Field(min_length=1, strict=False)
-    base_version: Annotated[int, Field(ge=0)] = 0
-    kind: MemoryKind = "belief"
-    scope: Text = "subject"
-    summary: str = ""
-    overview: str = ""
-    entities: tuple[Text, ...] = Field(default=(), strict=False)
-    valid_from: Finite | None = None
-    valid_until: Finite | None = None
-    supersedes: Text | None = None
-    conflicts: tuple[MemoryConflictTarget, ...] = Field(default=(), strict=False)
-
-    @model_validator(mode="after")
-    def consistent_revision(self) -> Self:
-        """有效期、明确替代与未决关系必须表达相容且无重复的修订。
-
-        Returns:
-            校验完成的当前值或解析后的新配置，具体是否复制由实现说明。
-
-        Raises:
-            ValueError: 参数值或组合不满足本入口的明确约束，错误正文指出具体字段。
-        """
-        if self.valid_from is not None and self.valid_until is not None:
-            if self.valid_until <= self.valid_from:
-                raise ValueError("认识有效时间区间为空。")
-        if self.supersedes == self.id:
-            raise ValueError("认识不能替代自身。")
-        if len(set(self.conflicts)) != len(self.conflicts):
-            raise ValueError("冲突认识版本不能重复。")
-        if any(item.id == self.id for item in self.conflicts):
-            raise ValueError("认识不能与自身登记未决冲突。")
-        if any(item.id == self.supersedes for item in self.conflicts):
-            raise ValueError("同一认识不能同时被替代并登记为未决反证。")
-        return self
-
-
-class MemoryRecord(_Record):
-    """保留的认识版本及双向未决关系，失效历史不会自动转移到新版本。
-
-    active 由版本、时间、替代和来源共同计算；conflicts 显示对方确切版本的
-    同时点资格，不包含对方正文，也不撤销双方已经保存的来源。
-    """
-
-    patch: MemoryPatch
-    version: Version
-    learned_at: Finite
-    active: bool
-    inactive_reason: str | None = None
-    conflicts: tuple[MemoryConflict, ...] = Field(default=(), strict=False)
-
-
-class KnowledgeCandidate(_Record):
+class EvidenceCandidate(_Record):
     """一条权威检索候选及其有限路线排名，排名不能授予来源资格。"""
 
-    reference: KnowledgeReference
-    record: EvidenceSnapshot | MemoryRecord
+    reference: EvidenceReference
+    record: EvidenceSnapshot
     ranks: tuple[tuple[str, int], ...] = Field(default=(), strict=False)
-
-
-class IndexJob(_Record):
-    """可重建索引的版本任务，完成旧任务不得复活失效认识。"""
-
-    reference: KnowledgeReference
-    queued_at: Finite
-    route: Literal["keyword", "semantic"]
 
 
 class OperationalFinding(_Record):
@@ -340,12 +218,11 @@ class OperationalFinding(_Record):
 
 
 class Review(_Record):
-    """一项有明确范围的复核与知识处理取舍，不手抄修订 ID/版本。"""
+    """一项有明确范围的行为复核结论，不手抄修订 ID/版本。"""
 
     issue: Annotated[str, Field(min_length=1, max_length=300)]
     evidence: tuple[Text, ...] = Field(min_length=1, strict=False)
     conclusion: Annotated[str, Field(min_length=1, max_length=1200)]
-    memory_decision: Literal["written", "no_change", "defer"]
     reason: Annotated[str, Field(min_length=1, max_length=600)]
 
 
@@ -362,15 +239,6 @@ class FindingAssessment(_Record):
     id: Text
     status: Literal["confirmed", "uncertain"]
     reason: Annotated[str, Field(min_length=1, max_length=600)]
-
-
-class AbandonedMemoryWrite(_Record):
-    """明确撤回一次失败的记忆写入意图；不能代替成功写入或伪造原文资格。"""
-
-    id: Text = Field(description="本批失败的 revise_memory 调用中使用的记忆 id。")
-    reason: Annotated[str, Field(min_length=1, max_length=600, pattern=r"\S")] = Field(
-        description="重新判断不应写入的具体理由；来源错误本身不等于没有记忆价值。"
-    )
 
 
 class ObservationAssessment(_Record):
@@ -392,12 +260,11 @@ class BehaviorConclusion(_Record):
 
 
 class FinishSubmission(_Record):
-    """按用途提交的完成输入，范围核验和真实修订关联由事务完成。"""
+    """行为评审的完成输入，范围核验与结案由存储事务完成。"""
 
     reviews: tuple[Review, ...] = Field(strict=False)
     deferred: tuple[Deferred, ...] = Field(strict=False)
     findings: tuple[FindingAssessment, ...] = Field(strict=False)
-    abandoned_writes: tuple[AbandonedMemoryWrite, ...] = Field(default=(), strict=False)
     behavior: BehaviorConclusion | None = None
 
 
@@ -408,7 +275,6 @@ class ReflectionReceipt(_Record):
     version: Version
     completed_at: Finite
     submission: FinishSubmission
-    written: tuple[KnowledgeReference, ...] = Field(default=(), strict=False)
     coverage: tuple[Text, ...] = Field(default=(), strict=False)
 
 
@@ -423,7 +289,7 @@ class ReflectionBatch(_Record):
     batch_id: Text
     version: Version
     required_slice_refs: tuple[Text, ...] = Field(min_length=1, strict=False)
-    purpose: Literal["memory", "behavior"] = "memory"
+    purpose: Literal["behavior"] = "behavior"
     created_at: Finite | None = None
     findings: tuple[OperationalFinding, ...] = Field(default=(), strict=False)
     state: Literal["running", "completed", "interrupted"] = "running"

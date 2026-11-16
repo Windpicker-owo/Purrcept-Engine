@@ -170,7 +170,12 @@ async def _run(config_path: Path) -> None:
         if config.web.enabled:
             from purrcept_engine.app.web import WebServer
 
-            web = WebServer(host, port=config.web.port)
+            web = WebServer(
+                host,
+                port=config.web.port,
+                config_path=config_path,
+                owner_data_dir=config.host.data_dir,
+            )
             web_started = time.perf_counter()
             await web.start()
             early_timings["web"] = (time.perf_counter() - web_started) * 1000

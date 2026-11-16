@@ -17,3 +17,6 @@ purrcept.toml
 
 node_modules/
 frontend/.test-tmp/
+
+# Phone configuration backups contain the same credentials as the local configuration.
+purrcept.toml.phone-backup-*

@@ -1,12 +1,8 @@
-"""按分析用途选择 Core 工具及追踪实际材料呈现，不另写模型循环。
+"""为行为评审装配原文阅读、监管建议与结构化结案工具。
 
-工具创建原文片段与请求实际呈现分开：read_evidence 只登记完整工具候选，
-容量 Gate 选择交付后，成功门槛通过 presented_refs 对照真实 ModelRequest，再由 Store
-mark_presented 提交资格。同一响应先读后修订不能引用尚未送入下一请求的片段。
-记忆整理提供修订与来源结案；行为评审提供监管与结构化评审结案。两者都能
-取证和读取相关记忆，但不能代替对方结案。认识和监管逐次生效。
-每个工具实例还拥有本批写入失败的处置门槛：成功修正、明确延期或具名放弃后
-才能结案。失败意图不授予来源资格；预算耗尽/关闭仍由批次所有者保留未复核待办。
+完整材料登记和实际呈现分开：真正成功请求核对内容后才提交阅读资格。
+本批工具不能执行世界行动，也没有记忆修订或 Notebook 写入权限。
+原始媒体与文本作为不可拆的交付候选，容量不足保留确切原页引用。
 """
 
 from __future__ import annotations
@@ -29,7 +25,7 @@ from purrcept_core.models import (
     ToolResultBlock,
 )
 from purrcept_core.models.tools import FunctionTool, ToolContext, ToolResult, ToolSet
-from pydantic import Field, StrictBool, StrictStr, ValidationError
+from pydantic import Field, ValidationError
 
 from purrcept_engine.domain.context.audio_receipts import evidence_text_view
 from purrcept_engine.domain.context.delivery import (
@@ -37,20 +33,15 @@ from purrcept_engine.domain.context.delivery import (
     ToolDeliveryGate,
     evidence_fallback,
 )
-from purrcept_engine.domain.inputs.models import MediaReference
-from purrcept_engine.domain.knowledge.models import (
-    AbandonedMemoryWrite,
+from purrcept_engine.domain.evidence.models import (
     BehaviorConclusion,
     Deferred,
     EvidenceDelivery,
+    EvidenceInputError,
     EvidencePage,
     FindingAssessment,
     FinishSubmission,
     Finite,
-    KnowledgeInputError,
-    MemoryConflictTarget,
-    MemoryKind,
-    MemoryPatch,
     ObservationAssessment,
     ObservationScope,
     ReflectionBatch,
@@ -59,12 +50,12 @@ from purrcept_engine.domain.knowledge.models import (
     SupervisionRecord,
     Text,
 )
-from purrcept_engine.domain.knowledge.ports import KnowledgeStore
-from purrcept_engine.domain.knowledge.service import KnowledgeService, recall_payload
+from purrcept_engine.domain.evidence.ports import EvidenceStore
+from purrcept_engine.domain.evidence.service import EvidenceService
+from purrcept_engine.domain.inputs.models import MediaReference
 from purrcept_engine.domain.subject.prompts import (
     BEHAVIOR_REVIEW_PROMPT,
     HUMAN_FEEDBACK_PROMPT,
-    MEMORY_CONSOLIDATION_PROMPT,
 )
 from purrcept_engine.values import JsonObject
 
@@ -73,18 +64,17 @@ Positive = Annotated[int, Field(gt=0, strict=True)]
 
 
 def reflection_instructions(
-    purpose: Literal["memory", "behavior"] = "memory",
+    purpose: Literal["behavior"] = "behavior",
 ) -> tuple[SystemInstruction, ...]:
     """构造当前分析用途的固定规则，完成确认属于工具，原文仍是 user 材料。
 
     Args:
-        purpose: 决定记忆修订或行为建议的独立职责，不能混用工具权限。
+        purpose: 固定为 behavior，与持久化行为评审批次使用同一用途标记。
 
     Returns:
         按固定顺序组成 system 前缀的完整指令与能力目录。
     """
-    prompt = MEMORY_CONSOLIDATION_PROMPT if purpose == "memory" else BEHAVIOR_REVIEW_PROMPT
-    return (prompt.instruction(), HUMAN_FEEDBACK_PROMPT.instruction())
+    return (BEHAVIOR_REVIEW_PROMPT.instruction(), HUMAN_FEEDBACK_PROMPT.instruction())
 
 
 class ReflectionPorts(Protocol):
@@ -131,14 +121,6 @@ class _Delivery:
 
     content: tuple[ContentBlock, ...]
     slice_refs: tuple[str, ...]
-
-
-@dataclass(frozen=True, slots=True)
-class _FailedMemoryWrite:
-    """本批未解决的失败意图与保守延期范围，真实工具错误另存于请求证据。"""
-
-    sources: tuple[str, ...]
-    defer_refs: tuple[str, ...]
 
 
 class EvidenceDeliveries:
@@ -275,7 +257,7 @@ def _json(value: object) -> str:
 
 
 def _input_error(
-    error: KnowledgeInputError | ValidationError,
+    error: EvidenceInputError | ValidationError,
     *,
     memory_recovery: dict[str, object] | None = None,
 ) -> ToolResult:
@@ -303,12 +285,12 @@ class ReflectionTools:
 
     def __init__(
         self,
-        store: KnowledgeStore,
+        store: EvidenceStore,
         batch: ReflectionBatch,
         ports: ReflectionPorts,
         *,
         page_chars: int = 8000,
-        knowledge: KnowledgeService | None = None,
+        evidence: EvidenceService | None = None,
         deliveries: EvidenceDeliveries | None = None,
         delivery: ToolDeliveryGate | None = None,
     ) -> None:
@@ -319,30 +301,24 @@ class ReflectionTools:
             batch: 当前独立反思批次及其冻结范围。
             ports: 应用显式借出的有限端口，不包含设备客户端或通用服务定位器。
             page_chars: 本实例统一的正文分页字符上限。 默认 8000。
-            knowledge: 原文展开与召回服务；None 创建同一账本上的 KnowledgeService。 None
-                表示未借入认识服务。
+            evidence: 原文版本阅读服务；None 创建同一证据端口上的 EvidenceService。
             deliveries: 当前批次复用的完整材料登记；None 创建本实例登记。
             delivery: 本轮工具原文交付门槛；None 不执行候选交付替换。
         """
         self.store = store
         self.batch = batch
         self.ports = ports
-        self.knowledge = knowledge or KnowledgeService(store, page_chars=page_chars)
+        self.evidence = evidence or EvidenceService(store, page_chars=page_chars)
         self.deliveries = deliveries or EvidenceDeliveries()
         self.delivery = delivery
         # 这是本批提示与结案状态，不是持久已读凭据。旧批次不会跨进程恢复运行；
         # 未结案时原文待办仍由账本保留，新批次重新复核，不依赖内存继续旧预算。
         self._source_catalog: dict[str, tuple[str, int]] = {}
-        self._failed_writes: dict[str, _FailedMemoryWrite] = {}
-        operations = [FunctionTool(self.recall), FunctionTool(self.read_evidence)]
-        if batch.purpose == "behavior":
-            operations.extend(
-                (FunctionTool(self.supervise), FunctionTool(self.submit_behavior_review))
-            )
-        else:
-            operations.extend(
-                (FunctionTool(self.revise_memory), FunctionTool(self.finish_reflection))
-            )
+        operations = [
+            FunctionTool(self.read_evidence),
+            FunctionTool(self.supervise),
+            FunctionTool(self.submit_behavior_review),
+        ]
         self._toolset = ToolSet(tuple(operations))
 
     def toolset(self) -> ToolSet:
@@ -415,11 +391,7 @@ class ReflectionTools:
             MessageRole.USER,
             tuple(blocks),
             metadata={
-                "evidence": tuple(
-                    dict.fromkeys(
-                        page.snapshot.evidence_id for page in pages if page.snapshot is not None
-                    )
-                ),
+                "evidence": tuple(dict.fromkeys(page.snapshot.evidence_id for page in pages)),
                 "source_slice_refs": tuple(references),
                 "reflection_batch": self.batch.batch_id,
             },
@@ -441,29 +413,35 @@ class ReflectionTools:
         conclusion: str,
         evidence: tuple[str, ...],
         observations: tuple[ObservationAssessment, ...] = (),
+        deferred: tuple[Deferred, ...] = (),
     ) -> str | ToolResult:
         """提交局部评审结果；suggestion 必须已有本批实际保存的监管建议。
 
         证据必须真实呈现，未覆盖材料仍需逐项明确复核；意见是否接受与后续行为是否改善分别保存。
         """
         try:
-            behavior = BehaviorConclusion(
-                decision=decision,
-                conclusion=conclusion,
-                evidence=evidence,
-                observations=observations,
+            behavior = (
+                None
+                if not evidence and deferred
+                else BehaviorConclusion(
+                    decision=decision,
+                    conclusion=conclusion,
+                    evidence=evidence,
+                    observations=observations,
+                )
             )
             submission = FinishSubmission(
-                reviews=(
+                reviews=()
+                if behavior is None
+                else (
                     Review(
                         issue="局部行为评审",
                         evidence=evidence,
                         conclusion=conclusion,
-                        memory_decision="no_change",
                         reason=decision,
                     ),
                 ),
-                deferred=(),
+                deferred=deferred,
                 findings=tuple(
                     FindingAssessment(id=item.id, status="uncertain", reason=conclusion)
                     for item in self.batch.findings
@@ -474,40 +452,13 @@ class ReflectionTools:
                 self.batch.batch_id, self.batch.version, submission
             )
             return _json(receipt.model_dump(mode="json"))
-        except (KnowledgeInputError, ValidationError) as error:
+        except (EvidenceInputError, ValidationError) as error:
             return _input_error(error)
 
     async def _page_content(self, page: EvidencePage) -> tuple[ContentBlock, ...]:
         """来源 JSON 与实际原生媒体共同构成一份不可拆的交付资格。"""
         snapshot = page.snapshot
         payload: dict[str, object]
-        if snapshot is None:
-            memory = page.memory
-            if memory is None:
-                raise RuntimeError("认识页面缺少对应版本。")
-            patch = memory.patch
-            payload = {
-                "item": {
-                    "id": patch.id,
-                    "version": memory.version,
-                    "kind": patch.kind,
-                    "text": evidence_text_view(page),
-                    "sources": patch.sources,
-                    "active": memory.active,
-                    "inactive_reason": memory.inactive_reason,
-                    "conflicts": [
-                        relation.model_dump(mode="json") for relation in memory.conflicts
-                    ],
-                },
-                "derived": True,
-                "evidence_ref": None,
-                "slice_ref": None,
-                "memory_sources": [],
-                "range": None,
-                "level": page.level,
-                "next_cursor": page.next_cursor,
-            }
-            return (TextBlock(_json(payload)),)
         payload = {
             "item": {
                 "id": snapshot.evidence_id,
@@ -529,7 +480,7 @@ class ReflectionTools:
             },
             "evidence_ref": {"id": snapshot.evidence_id, "version": snapshot.version},
             "slice_ref": None if page.slice is None else page.slice.slice_ref,
-            "memory_sources": [] if page.slice is None else [page.slice.slice_ref],
+            "source_slice_refs": [] if page.slice is None else [page.slice.slice_ref],
             "range": None
             if page.slice is None
             else {"unit": page.slice.unit, "start": page.slice.start, "end": page.slice.end},
@@ -566,85 +517,12 @@ class ReflectionTools:
             self._source_catalog[page.slice.slice_ref] = (snapshot.evidence_id, snapshot.version)
         return (TextBlock(_json(payload)), *native)
 
-    def _memory_recovery(self, sources: tuple[str, ...] = ()) -> dict[str, object]:
-        """返回原样可复制的当前材料引用，不猜测或自动修补错误来源。"""
-        return {
-            "supplied_sources": sources,
-            "available_sources": [
-                {"evidence_id": identity, "version": version, "memory_sources": (reference,)}
-                for reference, (identity, version) in self._source_catalog.items()
-            ],
-            "unresolved_writes": [
-                {
-                    "id": identity,
-                    "supplied_sources": failure.sources,
-                    "required_deferred_refs": failure.defer_refs,
-                }
-                for identity, failure in self._failed_writes.items()
-            ],
-        }
-
-    def _check_failed_writes(self, submission: FinishSubmission) -> None:
-        """阻止将失败意图静默改为 no_change，允许有据重判或保留延期。"""
-        abandoned = [item.id for item in submission.abandoned_writes]
-        if len(abandoned) != len(set(abandoned)) or any(
-            identity not in self._failed_writes for identity in abandoned
-        ):
-            raise KnowledgeInputError(
-                "abandoned_writes 必须逐项对应本批未解决的失败写入，不能重复或编造。"
-            )
-        deferred = {reference for item in submission.deferred for reference in item.evidence}
-        for identity, failure in self._failed_writes.items():
-            if identity not in abandoned and not set(failure.defer_refs).issubset(deferred):
-                raise KnowledgeInputError(
-                    "存在未解决的记忆写入失败；请按 memory_recovery 修正后重试同一 id，"
-                    "或将 required_deferred_refs 明确延期；重新判断无需写入时须以 "
-                    "abandoned_writes 的 id 和 reason 明确说明，不能仅用 no_change 结案。"
-                )
-
-    # 维护者契约（工具说明参与模型请求，保持下方 docstring 原文）。
-    # 检索长时记忆库中有效认识及原始来源。
-    #
-    # Args:
-    #     query: 用于关键词或语义检索的意图文本。
-    #     entities_json: 已编码为 JSON 字符串数组的实体过滤条件。 默认 '[]'。
-    #     start: 按发生时间筛选的起点；None 表示不限制此端。
-    #     end: 按发生时间筛选的终点；None 表示不限制此端。
-    #     at: 核验记录有效性的 Unix 时间戳；None 使用当前时间。
-    #     include_inactive: 是否同时返回已失效的历史记录，并保留失效原因。 默认 False。
-    #
-    # Returns:
-    #     成功时的编码业务结果，或含原生内容与错误标记的完整工具结果。
-    #
-    # Note:
-    #     在更新认识前查重，判断新材料是补充、确认还是推翻旧认识；历史记录须明确
-    #     include_inactive。
-    async def recall(
-        self,
-        query: StrictStr,
-        entities_json: str = "[]",
-        start: Finite | None = None,
-        end: Finite | None = None,
-        at: Finite | None = None,
-        include_inactive: StrictBool = False,
-    ) -> str | ToolResult:
-        """检索长时记忆库中有效认识及原始来源。
-        在更新认识前查重，判断新材料是补充、确认还是推翻旧认识；历史记录须明确 include_inactive。
-        """
-        try:
-            result = await self.knowledge.recall(
-                query, entities_json, start, end, at, include_inactive
-            )
-        except KnowledgeInputError as error:
-            return _input_error(error)
-        return recall_payload(result)
-
     # 维护者契约（工具说明参与模型请求，保持下方 docstring 原文）。
     # 展开本批候选或引用的确切原文版本，查阅完整对话上下文与原生媒体。
     #
     # Args:
-    #     id: 当前工具定位的认识、原文或计划身份。
-    #     level: 需要展开的材料层级，具体允许值由认识服务校验。 默认 'evidence'。
+    #     id: 当前工具定位的原文身份。
+    #     level: 原文阅读层级，由证据服务校验。 默认 'evidence'。
     #     cursor: 宿主签发并保存的不透明续读游标，续读同一快照版本。 None 表示首次读取。
     #     max_chars: 本页正文的字符上限；分页游标继续绑定原快照。 None
     #         使用本实例配置的统一页长。
@@ -671,7 +549,7 @@ class ReflectionTools:
         省略 version 首读当前版本；历史冲突引用可指定 version。cursor 始终绑定原快照。
         """
         try:
-            page = await self.knowledge.read_evidence(id, level, cursor, max_chars, version)
+            page = await self.evidence.read_evidence(id, level, cursor, max_chars, version)
             content = await self._page_content(page)
             result = ToolResult(content=content)
             if page.slice is not None:
@@ -682,7 +560,7 @@ class ReflectionTools:
                     material=result.content,
                     slice_refs=(page.slice.slice_ref,),
                 )
-        except KnowledgeInputError as error:
+        except EvidenceInputError as error:
             return _input_error(error)
         if page.slice is not None:
             self.deliveries.register_result(context.call.id, result, (page.slice.slice_ref,))
@@ -695,98 +573,14 @@ class ReflectionTools:
         return result
 
     # 维护者契约（工具说明参与模型请求，保持下方 docstring 原文）。
-    # 原子沉淀或修订有据认识（preference/relationship/episode/experience/belief等）。
-    #
-    # Args:
-    #     id: 当前工具定位的认识、原文或计划身份。
-    #     content: 本次明确写入的完整正文。
-    #     sources: 逐字复制原文页 memory_sources 中的完整 slice_ref，不使用证据/调用 ID。
-    #     base_version: 本次认识修订所基于的版本，首次创建使用 0。 默认 0。
-    #     kind: 此业务值所属的稳定种类。 默认 'belief'。
-    #     scope: 本次监管意见所约束的明确业务范围。 默认 'subject'。
-    #     summary: 已冻结的摘要文本或消息，不替代原文已读证明。 默认 ''。
-    #     overview: 用于召回的简短概览，不替代完整正文。 默认 ''。
-    #     entities: 需要共同检索或关联的实体名称集合。 默认不附加此类条目。
-    #     valid_from: 认识事实的生效时间；None 表示未指定下界。
-    #     valid_until: 认识事实的失效时间；None 表示未指定上界。
-    #     supersedes: 本次修订明确替代的旧认识身份。
-    #     conflicts: 与本次认识保持未决反证关系的目标及确切版本。 默认不附加此类条目。
-    #
-    # Returns:
-    #     成功时的编码业务结果，或含原生内容与错误标记的完整工具结果。
-    #
-    # Note:
-    #     sources 必须是本轮已呈现的原文片段引用，base_version 严格对齐当前版本；
-    #     保留时间范围与反例。
-    async def revise_memory(
-        self,
-        id: Text,
-        content: Text,
-        sources: Annotated[
-            tuple[Text, ...],
-            Field(
-                description=(
-                    "逐字复制原文页 memory_sources 数组中的完整 slice_ref；"
-                    "不是 evidence_ref.id、input_id、call_id 或截短前缀。"
-                )
-            ),
-        ],
-        base_version: Nonnegative = 0,
-        kind: MemoryKind = "belief",
-        scope: Text = "subject",
-        summary: str = "",
-        overview: str = "",
-        entities: tuple[Text, ...] = (),
-        valid_from: Finite | None = None,
-        valid_until: Finite | None = None,
-        supersedes: Text | None = None,
-        conflicts: tuple[MemoryConflictTarget, ...] = (),
-    ) -> str | ToolResult:
-        """原子沉淀或修订有据认识（preference/relationship/episode/experience/belief等）。
-        sources 逐字复制原文页 memory_sources（完整 slice_ref），
-        不要填写 evidence_ref.id、input_id、call_id 或截短引用。
-        本轮实际呈现后才可引用；先 read_evidence 后写入须跨模型请求。
-        base_version 严格对齐当前版本；保留时间范围与反例。
-        """
-        try:
-            patch = MemoryPatch(
-                id=id,
-                content=content,
-                sources=sources,
-                base_version=base_version,
-                kind=kind,
-                scope=scope,
-                summary=summary,
-                overview=overview,
-                entities=entities,
-                valid_from=valid_from,
-                valid_until=valid_until,
-                supersedes=supersedes,
-                conflicts=conflicts,
-            )
-            record = await self.store.revise_memory(self.batch.batch_id, self.batch.version, patch)
-        except (KnowledgeInputError, ValidationError) as error:
-            # 错误引用不能被自动改成另一个事实的引用。无法确定尝试对应范围时，
-            # 延期路径保守覆盖本批必需范围；模型也可以具名说明为何撤回此意图。
-            defer_refs = (
-                sources
-                if sources and all(reference in self._source_catalog for reference in sources)
-                else self.batch.required_slice_refs
-            )
-            self._failed_writes[id] = _FailedMemoryWrite(sources, defer_refs)
-            return _input_error(error, memory_recovery=self._memory_recovery(sources))
-        self._failed_writes.pop(id, None)
-        return _json(record.model_dump(mode="json"))
-
-    # 维护者契约（工具说明参与模型请求，保持下方 docstring 原文）。
     # 向前台提交有据监管意见，纠偏客服腔、未履行的约定或认知冲突。
     #
     # Args:
-    #     id: 当前工具定位的认识、原文或计划身份。
+    #     id: 本次监管意见的稳定身份。
     #     issue: 监管意见指出的具体问题。
     #     evidence: 本次工具给出的原文片段身份集合。
     #     suggestion: 基于实际证据提出的修正建议。
-    #     level: 需要展开的材料层级，具体允许值由认识服务校验。 默认 'reminder'。
+    #     level: 监管等级，urgent 请求主体重新思考。 默认 'reminder'。
     #     activity_id: 已创建活动的稳定身份。 None 只适用于不需要已有活动身份的控制。
     #     activity_version: 监管意见所约束的活动版本，须与活动身份同时提供。
     #     expires_at: 监管意见的有效截止时刻；None 表示无显式期限。
@@ -831,53 +625,11 @@ class ReflectionTools:
             )
             observed_generation = self.ports.foreground_generation()
             record = await self.store.supervise(self.batch.batch_id, self.batch.version, notice)
-        except (KnowledgeInputError, ValidationError) as error:
+        except (EvidenceInputError, ValidationError) as error:
             return _input_error(error)
         if record.active and not record.duplicate:
             await self.ports.supervision_committed(record, observed_generation=observed_generation)
         return _json(record.model_dump(mode="json"))
-
-    # 维护者契约（工具说明参与模型请求，保持下方 docstring 原文）。
-    # 原子提交本批反思结案、暂缓和程序异常评估。
-    #
-    # Args:
-    #     reviews: 对本批已复核原文范围给出的结论。
-    #     deferred: 本批未完成范围及明确的延期理由。
-    #     findings: 本批需要核验的实际异常或运行观察。
-    #     abandoned_writes: 本批失败写入经重新判断不应继续时，具名记录 id 和具体理由。
-    #
-    # Returns:
-    #     成功时的编码业务结果，或含原生内容与错误标记的完整工具结果。
-    #
-    # Note:
-    #     written 必须真实对应本批 revise_memory 产生的有效修订，每项材料明确交代处置决定。
-    #     失败意图必须修正、延期或具名放弃；门槛限定当前工具实例所属批次，不跨批重用预算。
-    async def finish_reflection(
-        self,
-        reviews: tuple[Review, ...],
-        deferred: tuple[Deferred, ...],
-        findings: tuple[FindingAssessment, ...],
-        abandoned_writes: tuple[AbandonedMemoryWrite, ...] = (),
-    ) -> str | ToolResult:
-        """原子提交本批反思结案、暂缓和程序异常评估。
-        written 必须真实对应本批 revise_memory 产生的有效修订，每项材料明确交代处置决定。
-        失败写入须修正成功、将 required_deferred_refs 放入 deferred，
-        或以 abandoned_writes 中的 id、reason 具名说明为何不再写入；不能只改成 no_change。
-        """
-        try:
-            submission = FinishSubmission(
-                reviews=reviews,
-                deferred=deferred,
-                findings=findings,
-                abandoned_writes=abandoned_writes,
-            )
-            self._check_failed_writes(submission)
-            receipt = await self.store.finish_reflection(
-                self.batch.batch_id, self.batch.version, submission
-            )
-        except (KnowledgeInputError, ValidationError) as error:
-            return _input_error(error, memory_recovery=self._memory_recovery())
-        return _json(receipt.model_dump(mode="json"))
 
 
 __all__ = ["EvidenceDeliveries", "ReflectionPorts", "ReflectionTools"]

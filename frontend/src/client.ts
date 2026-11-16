@@ -8,6 +8,8 @@ import { controlRequest, controlResult, credentials, snapshot, review, reviewPag
 import type { Review, Action, Health } from "./contracts";
 import type { ControlRequest, ControlResult, ObjectValue, Snapshot } from "./contracts";
 
+import { phonePairing, phoneSetup } from "./model/phone";
+
 /** 本标签页持有的原控制与观察进度，业务所有权仍归宿主。 */
 export interface Entry {
   request: ControlRequest; title: string; result: ControlResult | null;
@@ -83,6 +85,25 @@ export class PanelClient {
   }
   /** React 获取不可变顶层展示快照；业务缓存不在组件内重建。 */
   getState = (): PanelState => this.state;
+
+  /** 配对与配置使用独立的本机端口；短时邀请不进入控制历史或浏览器存储。 */
+  phoneSettings = async () => phoneSetup(await responseJson(await this.get("/api/phone/setup")));
+  phonePairing = async (target: string, renew = false) => phonePairing(await responseJson(await this.get(
+    `/api/phone/${encodeURIComponent(target)}/pairing`, renew ? await this.phoneWrite({}) : undefined,
+  )));
+  /** 撤销确认时看到的旧设备，再开放新窗口；旧确认不能撤销另一标签页的新配对。 */
+  replacePhonePairing = async (target: string, deviceId: string) => phonePairing(await responseJson(await this.get(
+    `/api/phone/${encodeURIComponent(target)}/pairing/replace`, await this.phoneWrite({ device_id: deviceId }),
+  )));
+  phoneConfigure = async (value: ObjectValue): Promise<Record<string, unknown>> => {
+    const result = await responseJson(await this.get("/api/phone/setup", await this.phoneWrite(value)));
+    if (typeof result !== "object" || result === null || Array.isArray(result)) throw new ContractError("phone.configure");
+    return result as Record<string, unknown>;
+  };
+  private async phoneWrite(value: ObjectValue): Promise<RequestInit> {
+    if (!this.state.online || this.session === null) throw new Error("连接中断，请等待 Engine 重新连接。");
+    return { method: "POST", headers: { "Content-Type": "application/json", "X-Purrcept-Token": this.session.token }, body: JSON.stringify(value) };
+  }
 
   /** 历史审查只读取材料，失败交给对应区域显示，不能伪装空列表。 */
   reviews = async (before: string | null = null): Promise<{ items: Action[]; next_cursor: string | null }> =>

@@ -13,8 +13,8 @@ export function host(instance = "host-1"): Snapshot {
     health: { instance_id: instance, phase: "running", can_process: true, startup_stage: null, components: [] },
     proactive_thinking: { enabled: false, revision: "0", idle_seconds: 300, waiting_for_idle: false, last_idle_at: null, last_error: null },
     instance_id: instance, host_version: 1, phase: "running", authority_available: true, pending_resources: [], devices: [],
-    foreground: { scope: "foreground", generation: 1, busy: false, closing: false, budgets: [] }, reflection: null,
-    knowledge: null, pending_limits: { count: 8, logical_bytes: 2048 }, pending_inputs: [], sessions: [], recent_actions: [], activities: [paused],
+    foreground: { scope: "foreground", generation: 1, busy: false, closing: false, budgets: [] },
+    notebooks: {}, pending_limits: { count: 8, logical_bytes: 2048 }, pending_inputs: [], sessions: [], recent_actions: [], activities: [paused],
   };
 }
 export function request(): ControlRequest {

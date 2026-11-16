@@ -12,8 +12,8 @@ from purrcept_core.models import TextBlock
 from purrcept_core.models.tools import ToolResult
 from pydantic import ValidationError
 
+from purrcept_engine.domain.evidence.models import EvidenceInputError
 from purrcept_engine.domain.execution.validation import ActionSourceError
-from purrcept_engine.domain.knowledge.models import KnowledgeInputError
 from purrcept_engine.serialization import encode
 
 
@@ -34,7 +34,7 @@ def model_input_boundary[**P, R](
         """在已有业务边界内调用原入口，保留已分类失败和真实回执。"""
         try:
             return await function(*args, **kwargs)
-        except (KnowledgeInputError, ActionSourceError, ValidationError) as error:
+        except (EvidenceInputError, ActionSourceError, ValidationError) as error:
             if isinstance(error, ValidationError):
                 issues = error.errors(include_input=False, include_context=False, include_url=False)
                 description = "; ".join(

@@ -25,8 +25,8 @@ from pathlib import Path
 from typing import Literal
 from uuid import uuid4
 
+import purrcept_engine.domain.evidence.models as evidence_models
 import purrcept_engine.domain.execution.record_validation as record_validation
-import purrcept_engine.domain.knowledge.models as knowledge_models
 import purrcept_engine.serialization as serialization
 from purrcept_engine.domain.activities.models import (
     ActivityCommand,
@@ -74,9 +74,9 @@ from purrcept_engine.domain.time.models import RestState
 from purrcept_engine.errors import StorageError
 from purrcept_engine.infrastructure.sqlite import activities as activity_storage
 from purrcept_engine.infrastructure.sqlite import archive
+from purrcept_engine.infrastructure.sqlite import evidence as evidence_storage
 from purrcept_engine.infrastructure.sqlite import execution as execution_storage
 from purrcept_engine.infrastructure.sqlite import feedback as feedback_storage
-from purrcept_engine.infrastructure.sqlite import knowledge as knowledge_storage
 from purrcept_engine.infrastructure.sqlite import maintenance as maintenance_storage
 from purrcept_engine.infrastructure.sqlite import model_requests as model_storage
 from purrcept_engine.infrastructure.sqlite import projections as projection_storage
@@ -85,9 +85,11 @@ from purrcept_engine.infrastructure.sqlite import subject as subject_storage
 from purrcept_engine.infrastructure.sqlite import time as time_storage
 from purrcept_engine.infrastructure.sqlite.audio_port import AudioLedger
 from purrcept_engine.infrastructure.sqlite.controls import ControlLedger
+from purrcept_engine.infrastructure.sqlite.evidence_port import EvidenceLedger
 from purrcept_engine.infrastructure.sqlite.feedback_port import FeedbackLedger
 from purrcept_engine.infrastructure.sqlite.human_feedback import HumanFeedbackLedger
-from purrcept_engine.infrastructure.sqlite.knowledge_port import KnowledgeLedger
+from purrcept_engine.infrastructure.sqlite.notebook import NotebookLedger
+from purrcept_engine.infrastructure.sqlite.phone import PhoneLedger
 from purrcept_engine.infrastructure.sqlite.queue import SqliteExecutor
 from purrcept_engine.infrastructure.sqlite.time_port import TimeLedger
 from purrcept_engine.values import ActionProtocolError, JsonObject, JsonValue, decode_object
@@ -215,7 +217,7 @@ def _positive(value: int, field: str) -> None:
 
 def _active_supervision(
     connection: sqlite3.Connection,
-) -> Iterator[knowledge_models.SupervisionRecord]:
+) -> Iterator[evidence_models.SupervisionRecord]:
     """分块扫描全部未回应意见，逐项核验来源、期限及活动版本。
 
     32 只是数据库读取块大小，不是主体当前材料的选择上限。此迭代在一个
@@ -226,7 +228,7 @@ def _active_supervision(
     )
     while rows := cursor.fetchmany(32):
         for row in rows:
-            record = knowledge_storage.get_supervision(connection, _text(row[0]))
+            record = evidence_storage.get_supervision(connection, _text(row[0]))
             if record is None:
                 raise StorageError("监管投影引用缺失意见。", code="invalid_record")
             if record.active:
@@ -235,7 +237,7 @@ def _active_supervision(
 
 def _action_snapshot(
     connection: sqlite3.Connection,
-    snapshot: knowledge_models.EvidenceSnapshot,
+    snapshot: evidence_models.EvidenceSnapshot,
     *,
     current: ActionRecord | None = None,
 ) -> ActionRecord:
@@ -319,7 +321,7 @@ def _call_original_refs(
     )
     while rows := cursor.fetchmany(32):
         for row in rows:
-            snapshot = knowledge_storage.get_evidence(
+            snapshot = evidence_storage.get_evidence(
                 connection, _text(row[0]), version=_integer(row[1])
             )
             if snapshot is None:
@@ -354,7 +356,7 @@ def _call_receipt_ref(
         (call.call_id, action.action_id, call.receipt_revision),
     ).fetchall()
     for row in rows:
-        snapshot = knowledge_storage.get_evidence(
+        snapshot = evidence_storage.get_evidence(
             connection, _text(row[0]), version=_integer(row[1])
         )
         if snapshot is None:
@@ -387,7 +389,7 @@ def _evidence_inputs(connection: sqlite3.Connection, references: tuple[str, ...]
     """沿真实原文、片段和宿主回执记录取得输入关系，不解析正文中的身份。
 
     call_receipt 只有带可靠反馈登记的来源才关联行动；即时 action_result 则
-    重新核验完整行动快照。这里仅用于未决保护，不授予行动或认识写入资格。
+    重新核验完整行动快照。这里仅用于未决保护，不授予行动或行为评审写入资格。
     """
     encoded = json.dumps(references)
     roots = (
@@ -413,7 +415,7 @@ def _evidence_inputs(connection: sqlite3.Connection, references: tuple[str, ...]
         (encoded, encoded),
     ).fetchall()
     for row in snapshots:
-        snapshot = knowledge_storage.get_evidence(
+        snapshot = evidence_storage.get_evidence(
             connection, _text(row[0]), version=_integer(row[1]), include_inactive=True
         )
         if snapshot is None:
@@ -630,9 +632,9 @@ def admit_in_transaction(
     )
     if record_only:
         _record_sleep_input(connection, input_id)
-    knowledge_storage.put_evidence_in_transaction(
+    evidence_storage.put_evidence_in_transaction(
         connection,
-        knowledge_models.EvidenceSnapshot(
+        evidence_models.EvidenceSnapshot(
             evidence_id=input_id,
             version=1,
             kind="input",
@@ -671,12 +673,20 @@ class Store:
         self._max_input_bytes = max_input_bytes
         self._queue = SqliteExecutor(path, max_inputs, max_input_bytes)
         self._submit = self._queue.submit
-        self._knowledge = KnowledgeLedger(self._submit)
+        self._evidence = EvidenceLedger(self._submit)
+
+    def notebook(self, instance_id: str) -> NotebookLedger:
+        """为应用装配返回按插件实例隔离的 Notebook 派生账本。"""
+        return NotebookLedger(self._submit, instance_id)
+
+    def phone(self, instance_id: str) -> PhoneLedger:
+        """借出同一数据库队列上的手机实例账本，不打开设备。"""
+        return PhoneLedger(self._submit, instance_id)
 
     @property
-    def knowledge(self) -> KnowledgeLedger:
-        """借出同连接的认识账本端口，其关闭和权威资格始终归本 Store。"""
-        return self._knowledge
+    def evidence(self) -> EvidenceLedger:
+        """借出同连接的共享证据端口，其关闭和权威资格始终归本 Store。"""
+        return self._evidence
 
     @property
     def time(self) -> TimeLedger:
@@ -1330,7 +1340,7 @@ class Store:
         """还原完整已提交检查点媒体，不返回丢失内容的空历史。
 
         Args:
-            scope: 目标连续会话，foreground 与 reflection 拥有独立历史。
+            scope: 目标连续会话，foreground 与 behavior 拥有独立历史。
 
         Returns:
             会话已提交版本与完整检查点，不包含尚未提交的临时历史。
@@ -1384,7 +1394,7 @@ class Store:
                     "json_extract(payload_json,'$.state')='pending'"
                 ).fetchone()[0]
             )
-            plans = () if count == 0 else knowledge_storage.pending_plans(connection, limit=count)
+            plans = () if count == 0 else evidence_storage.pending_plans(connection, limit=count)
             supervision = tuple(_active_supervision(connection))
             activities = activity_storage.activity_records(connection)
             protected = _protected_inputs(connection, None)
@@ -1582,7 +1592,7 @@ class Store:
 
         Args:
             turn_id: 连续会话中本轮处理的身份。
-            scope: 目标连续会话，foreground 与 reflection 拥有独立历史。
+            scope: 目标连续会话，foreground 与 behavior 拥有独立历史。
             expected_version: 提交前观察到的版本，用于拒绝并发覆盖。
             generation: 当前会话或设备的代次，用于拒绝迟到结果更新新状态。
             input_ids: 本轮接管的输入身份集合，保留真实因果关联。
@@ -1649,7 +1659,7 @@ class Store:
         """读取待承接的失败经历，实际效果另按行动与调用身份读取。
 
         Args:
-            scope: 目标连续会话，foreground 与 reflection 拥有独立历史。
+            scope: 目标连续会话，foreground 与 behavior 拥有独立历史。
 
         Returns:
             条目集合：本轮接管身份、来源输入、生成代次与当前结论。

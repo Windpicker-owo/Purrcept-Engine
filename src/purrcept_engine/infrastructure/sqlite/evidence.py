@@ -1,9 +1,8 @@
-"""在 Store 的唯一连接中保存原文、认识版本与独立反思提交。
+"""在 Store 唯一线程保存原文快照、分页凭据和行为评审事实。
 
-原文快照和片段身份不可覆盖；创建片段与模型实际呈现分开记录。认识修订
-核验当前批次、来源覆盖和 base_version，提交即生效，索引更新不决定有效性。
-finish_reflection 原子确认范围、真实修订及邮箱；普通模型文字没有确认作用。
-本模块只提供不可变值、SCHEMA 和短事务，不打开连接或调用模型。
+文档快照幂等登记，旧版本保留供确切引用；创建片段不代表已向模型呈现。
+行为评审在原事务确认范围及监管，普通模型文字不能结案。
+本模块还保存显式计划，不保存长期认识或调度 Notebook 整理任务。
 """
 
 from __future__ import annotations
@@ -11,7 +10,6 @@ from __future__ import annotations
 import hashlib
 import json
 import math
-import re
 import sqlite3
 import time
 from collections.abc import Sequence
@@ -21,20 +19,14 @@ from purrcept_core.models import ContentBlock, Message, MessageRole, ToolResultB
 from pydantic import BaseModel, ValidationError
 
 from purrcept_engine.domain.context.checkpoints import decode_content, decode_message
-from purrcept_engine.domain.knowledge.models import (
+from purrcept_engine.domain.evidence.models import (
+    EvidenceConflict,
     EvidenceDelivery,
+    EvidenceInputError,
     EvidencePage,
     EvidenceSlice,
     EvidenceSnapshot,
     FinishSubmission,
-    IndexJob,
-    KnowledgeCandidate,
-    KnowledgeConflict,
-    KnowledgeInputError,
-    KnowledgeReference,
-    MemoryConflict,
-    MemoryPatch,
-    MemoryRecord,
     OperationalFinding,
     PendingEvidence,
     RangeUnit,
@@ -73,25 +65,6 @@ SCHEMA = (
     "CREATE TABLE knowledge_cursors (cursor TEXT PRIMARY KEY, evidence_id TEXT NOT NULL, "
     "version INTEGER NOT NULL, start INTEGER NOT NULL, page_chars INTEGER NOT NULL, kind "
     "TEXT NOT NULL)",
-    "CREATE TABLE pending_knowledge (evidence_id TEXT NOT NULL, version INTEGER NOT NULL, "
-    "queued_at REAL NOT NULL, state TEXT NOT NULL CHECK(state "
-    "IN('pending','reviewed','deferred')), "
-    "reason TEXT, PRIMARY KEY(evidence_id,version))",
-    "CREATE TABLE memories (memory_id TEXT NOT NULL, version INTEGER NOT NULL, payload_json "
-    "TEXT NOT NULL, learned_at REAL NOT NULL, retired TEXT, PRIMARY KEY(memory_id,version))",
-    "CREATE TABLE memory_sources (memory_id TEXT NOT NULL, version INTEGER NOT NULL, slice_ref "
-    "TEXT NOT NULL REFERENCES knowledge_slices(slice_ref), PRIMARY "
-    "KEY(memory_id,version,slice_ref), "
-    "FOREIGN KEY(memory_id,version) REFERENCES memories(memory_id,version))",
-    "CREATE TABLE memory_conflicts (left_id TEXT NOT NULL, left_version INTEGER NOT NULL, "
-    "right_id TEXT NOT NULL, right_version INTEGER NOT NULL, "
-    "PRIMARY KEY(left_id,left_version,right_id,right_version))",
-    "CREATE TABLE knowledge_index (kind TEXT NOT NULL, id TEXT NOT NULL, version INTEGER NOT "
-    "NULL, terms TEXT NOT NULL, vector_json TEXT, model TEXT, PRIMARY KEY(kind,id,version))",
-    "CREATE TABLE pending_knowledge_index (kind TEXT NOT NULL, id TEXT NOT NULL, version INTEGER "
-    "NOT NULL, queued_at REAL NOT NULL, route TEXT NOT NULL, PRIMARY KEY(kind,id,version,route))",
-    "CREATE VIRTUAL TABLE knowledge_search USING fts5(kind UNINDEXED,id UNINDEXED,version "
-    "UNINDEXED,terms)",
     "CREATE TABLE knowledge_review_ranges (slice_ref TEXT NOT NULL REFERENCES "
     "knowledge_slices(slice_ref), "
     "batch_id TEXT NOT NULL,batch_version INTEGER NOT NULL,state TEXT NOT NULL,reason TEXT, "
@@ -102,9 +75,6 @@ SCHEMA = (
     "CREATE TABLE reflection_presented (batch_id TEXT NOT NULL, version INTEGER NOT NULL, "
     "slice_ref TEXT NOT NULL REFERENCES knowledge_slices(slice_ref), "
     "PRIMARY KEY(batch_id,version,slice_ref))",
-    "CREATE TABLE reflection_writes (batch_id TEXT NOT NULL, batch_version INTEGER NOT NULL, "
-    "memory_id TEXT NOT NULL, memory_version INTEGER NOT NULL, "
-    "PRIMARY KEY(batch_id,batch_version,memory_id,memory_version))",
     "CREATE TABLE reflection_deliveries(delivery_id TEXT PRIMARY KEY,batch_id TEXT NOT NULL,"
     "version INTEGER NOT NULL,kind TEXT NOT NULL CHECK(kind IN('initial','tool')),"
     "tool_call_id TEXT,payload_json TEXT NOT NULL,fingerprint TEXT NOT NULL,"
@@ -129,19 +99,19 @@ SCHEMA = (
 
 def _text(value: object) -> str:
     if not isinstance(value, str):
-        raise StorageError("认识账本字符串字段损坏。", code="invalid_record")
+        raise StorageError("证据存储字符串字段损坏。", code="invalid_record")
     return value
 
 
 def _integer(value: object) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or value < 1:
-        raise StorageError("认识账本版本字段损坏。", code="invalid_record")
+        raise StorageError("证据存储版本字段损坏。", code="invalid_record")
     return value
 
 
 def _number(value: object) -> float:
     if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
-        raise StorageError("认识账本时间字段损坏。", code="invalid_record")
+        raise StorageError("证据存储时间字段损坏。", code="invalid_record")
     return float(value)
 
 
@@ -152,13 +122,7 @@ def _optional_text(value: object) -> str | None:
 def _page_limit(value: int) -> None:
     """SQLite 负 LIMIT 表示无限；所有公开分页入口必须先拒绝该形状。"""
     if isinstance(value, bool) or not isinstance(value, int) or value < 1:
-        raise KnowledgeInputError("limit 必须是正整数。")
-
-
-def _kind(value: object) -> Literal["evidence", "memory"]:
-    if value not in ("evidence", "memory"):
-        raise StorageError("认识索引类型损坏。", code="invalid_record")
-    return value
+        raise EvidenceInputError("limit 必须是正整数。")
 
 
 def _notice_state(value: object) -> Literal["open", "accept", "partial", "reject"]:
@@ -167,22 +131,12 @@ def _notice_state(value: object) -> Literal["open", "accept", "partial", "reject
     return value
 
 
-def _queue_index(
-    connection: sqlite3.Connection, kind: str, identity: str, version: int, now: float
-) -> None:
-    """两条派生路线独立排队，关键词提交不能吞掉尚未计算的语义更新。"""
-    connection.executemany(
-        "INSERT INTO pending_knowledge_index VALUES(?,?,?,?,?)",
-        ((kind, identity, version, now, route) for route in ("keyword", "semantic")),
-    )
-
-
 def _decode[Record: BaseModel](value: object, model: type[Record]) -> Record:
     """持久化读取是独立边界，坏记录不能降级成空检索结果。"""
     try:
         return model.model_validate_json(_text(value))
     except ValidationError as error:
-        raise StorageError("认识账本记录形状损坏。", code="invalid_record") from error
+        raise StorageError("证据存储记录形状损坏。", code="invalid_record") from error
 
 
 def _one(
@@ -245,7 +199,7 @@ def put_evidence_in_transaction(
 
     Raises:
         RuntimeError: 原文接管必须处于调用方拥有的事务中。
-        KnowledgeConflict: 原文身份与认识身份冲突；原文版本已有不同内容。
+        EvidenceConflict: 同一原文身份和版本已有不同内容。
         StorageError: 原文引用的权威媒体缺失；原文引用的权威媒体摘要或长度不匹配。
 
     Note:
@@ -254,8 +208,6 @@ def put_evidence_in_transaction(
     """
     if not connection.in_transaction:
         raise RuntimeError("原文接管必须处于调用方拥有的事务中。")
-    if _one(connection, "SELECT 1 FROM memories WHERE memory_id=?", (snapshot.evidence_id,)):
-        raise KnowledgeConflict("原文身份与认识身份冲突。")
     for reference in snapshot.media:
         row = _one(connection, "SELECT content FROM media WHERE media_id=?", (reference.media_id,))
         if row is None or not isinstance(row[0], bytes):
@@ -268,7 +220,7 @@ def put_evidence_in_transaction(
     existing = _evidence(connection, snapshot.evidence_id, snapshot.version)
     if existing is not None:
         if existing.model_dump(exclude={"valid"}) != snapshot.model_dump(exclude={"valid"}):
-            raise KnowledgeConflict("原文版本已有不同内容。")
+            raise EvidenceConflict("原文版本已有不同内容。")
         return existing
     now = time.time()
     connection.execute(
@@ -288,12 +240,7 @@ def put_evidence_in_transaction(
             for position, item in enumerate(snapshot.media)
         ),
     )
-    _queue_index(connection, "evidence", snapshot.evidence_id, snapshot.version, now)
     if needs_reflection and snapshot.valid:
-        connection.execute(
-            "INSERT INTO pending_knowledge VALUES(?,?,?,'pending',NULL)",
-            (snapshot.evidence_id, snapshot.version, now),
-        )
         analysis_work.enqueue(connection, snapshot.evidence_id, snapshot.version, now)
     return snapshot
 
@@ -421,24 +368,24 @@ def read_evidence(
         当前版本的一页正文、确切范围和下一游标；取得页面不等于已呈现给模型。
 
     Raises:
-        KnowledgeInputError: 来源、版本、时间范围或材料引用不满足当前操作要求。
+        EvidenceInputError: 来源、版本、时间范围或材料引用不满足当前操作要求。
         StorageError: 保存的续读资格损坏。
-        KnowledgeConflict: 原文或认识版本不存在；原文已撤销。
+        EvidenceConflict: 原文版本不存在或引用资格已撤销。
 
     Note:
-        认识/摘要页面不生成原文引用资格。
+        摘要和概览页面不生成原文引用资格。
     """
     if level not in ("summary", "overview", "evidence"):
-        raise KnowledgeInputError("level 只接受 summary、overview 或 evidence。")
+        raise EvidenceInputError("level 只接受 summary、overview 或 evidence。")
     if isinstance(max_chars, bool) or not isinstance(max_chars, int) or max_chars < 1:
-        raise KnowledgeInputError("max_chars 必须是正整数。")
+        raise EvidenceInputError("max_chars 必须是正整数。")
     if version is not None and (
         isinstance(version, bool) or not isinstance(version, int) or version < 1
     ):
-        raise KnowledgeInputError("version 必须是正整数。")
+        raise EvidenceInputError("version 必须是正整数。")
     with connection:
         connection.execute("BEGIN IMMEDIATE")
-        start, kind = 0, None
+        start = 0
         if cursor is not None:
             row = _one(
                 connection,
@@ -447,43 +394,22 @@ def read_evidence(
                 (cursor,),
             )
             if row is None or row[0] != evidence_id or level != "evidence":
-                raise KnowledgeInputError("续读必须对应同一来源、版本及层次。")
+                raise EvidenceInputError("续读必须对应同一来源、版本及层次。")
             if version is not None and version != row[1]:
-                raise KnowledgeInputError("续读不能替换原游标的确切版本。")
+                raise EvidenceInputError("续读不能替换原游标的确切版本。")
             if (
                 isinstance(row[2], bool)
                 or not isinstance(row[2], int)
                 or row[2] < 0
-                or row[4] not in ("evidence", "memory")
+                or row[4] != "evidence"
             ):
                 raise StorageError("保存的续读资格损坏。", code="invalid_record")
-            start, version, kind = row[2], _integer(row[1]), row[4]
-        snapshot = None if kind == "memory" else _evidence(connection, evidence_id, version)
+            start, version = row[2], _integer(row[1])
+        snapshot = _evidence(connection, evidence_id, version)
         if snapshot is None:
-            memory = _memory(connection, evidence_id, version, time.time())
-            if memory is None:
-                raise KnowledgeConflict("原文或认识版本不存在。")
-            content = memory.patch.content
-            if level != "evidence":
-                text = (
-                    memory.patch.summary if level == "summary" else memory.patch.overview
-                ) or content
-                return EvidencePage(memory=memory, slice=None, text=text, level=level)
-            end = min(len(content), start + max_chars)
-            next_cursor = (
-                _cursor(connection, evidence_id, memory.version, end, max_chars, "memory")
-                if end < len(content)
-                else None
-            )
-            return EvidencePage(
-                memory=memory,
-                slice=None,
-                text=content[start:end],
-                level="evidence",
-                next_cursor=next_cursor,
-            )
+            raise EvidenceConflict("原文版本不存在；旧认识引用不可用。")
         if not snapshot.valid:
-            raise KnowledgeConflict("原文已撤销。")
+            raise EvidenceConflict("原文已撤销。")
         if level != "evidence":
             text = (
                 (snapshot.summary if level == "summary" else snapshot.overview)
@@ -513,9 +439,7 @@ def read_evidence(
                 proposed_chars = page_chars + len(encoded) + int(bool(parts))
                 if proposed_chars > max_chars:
                     if end == start:
-                        raise KnowledgeInputError(
-                            "单个结构化条目超过页长，原文已保留且未登记交付。"
-                        )
+                        raise EvidenceInputError("单个结构化条目超过页长，原文已保留且未登记交付。")
                     break
                 parts.append(encoded)
                 page_chars, end = proposed_chars, end + 1
@@ -546,11 +470,11 @@ def read_evidence_cursor(
         当前版本的一页正文、确切范围和下一游标；取得页面不等于已呈现给模型。
 
     Raises:
-        KnowledgeInputError: 续读游标不存在。
+        EvidenceInputError: 续读游标不存在。
     """
     row = _one(connection, "SELECT evidence_id FROM knowledge_cursors WHERE cursor=?", (cursor,))
     if row is None:
-        raise KnowledgeInputError("续读游标不存在。")
+        raise EvidenceInputError("续读游标不存在。")
     return read_evidence(connection, _text(row[0]), cursor=cursor, max_chars=max_chars)
 
 
@@ -562,10 +486,10 @@ def _require_slices(
     for reference in dict.fromkeys(references):
         fragment = get_slice(connection, reference)
         if fragment is None:
-            raise KnowledgeConflict("引用的原文片段不存在。")
+            raise EvidenceConflict("引用的原文片段不存在。")
         snapshot = _evidence(connection, fragment.evidence_id, fragment.version)
         if snapshot is None or not snapshot.valid:
-            raise KnowledgeConflict("引用的来源版本已失效。")
+            raise EvidenceConflict("引用的来源版本已失效。")
         total = (
             len(snapshot.text)
             if fragment.unit == "characters"
@@ -581,54 +505,6 @@ def _require_slices(
     return tuple(result)
 
 
-def pending_reflection(
-    connection: sqlite3.Connection, *, limit: int = 32
-) -> tuple[PendingEvidence, ...]:
-    """读取有限可靠来源及已有范围结论，局部一页不冒充整份复核。
-
-    Args:
-        connection: 仅在 Store 专属线程当前短事务中借用的连接，不在回调中等待设备或模型。
-        limit: 本次读取或更新的最大条目数。 默认 32。
-
-    Returns:
-        本次有限读取的可靠待反思来源及已有范围结论。
-    """
-    _page_limit(limit)
-    rows: list[tuple[object, ...]] = connection.execute(
-        "SELECT p.evidence_id,p.version,p.queued_at FROM pending_knowledge p JOIN "
-        "knowledge_evidence e "
-        "ON p.evidence_id=e.evidence_id AND p.version=e.version WHERE p.state='pending' "
-        "AND e.valid=1 "
-        "ORDER BY p.queued_at,p.evidence_id LIMIT ?",
-        (limit,),
-    ).fetchall()
-    result: list[PendingEvidence] = []
-    for row in rows:
-        ranges: list[tuple[object, ...]] = connection.execute(
-            "SELECT r.slice_ref,r.state FROM knowledge_review_ranges r JOIN "
-            "knowledge_slices s ON r.slice_ref=s.slice_ref "
-            "JOIN reflection_batches b ON r.batch_id=b.batch_id AND r.batch_version=b.version "
-            "WHERE s.evidence_id=? AND s.version=? ORDER BY "
-            "json_extract(b.receipt_json,'$.completed_at')",
-            (row[0], row[1]),
-        ).fetchall()
-        effective = {_text(item[0]): _text(item[1]) for item in ranges}
-        result.append(
-            PendingEvidence(
-                evidence_id=_text(row[0]),
-                version=_integer(row[1]),
-                queued_at=_number(row[2]),
-                reviewed_slice_refs=tuple(
-                    reference for reference, state in effective.items() if state == "reviewed"
-                ),
-                deferred_slice_refs=tuple(
-                    reference for reference, state in effective.items() if state == "deferred"
-                ),
-            )
-        )
-    return tuple(result)
-
-
 # ---------------------------------------------------------------------------
 # 反思代次与实际呈现资格
 # ---------------------------------------------------------------------------
@@ -640,7 +516,7 @@ def begin_reflection(
     required_slice_refs: tuple[str, ...],
     findings: tuple[OperationalFinding, ...] = (),
     *,
-    purpose: Literal["memory", "behavior"] = "memory",
+    purpose: Literal["behavior"] = "behavior",
 ) -> ReflectionBatch:
     """冻结本批范围。
 
@@ -654,7 +530,7 @@ def begin_reflection(
         冻结的反思范围与批次版本，后续修订须携带同一资格。
 
     Raises:
-        KnowledgeConflict: 反思批次身份与既有范围冲突。
+        EvidenceConflict: 反思批次身份与既有范围冲突。
 
     Note:
         中断恢复以新版本取代资格，已完成批次直接返回回执。
@@ -676,7 +552,7 @@ def begin_reflection(
                 or current.findings != findings
                 or current.purpose != purpose
             ):
-                raise KnowledgeConflict("反思批次身份与既有范围冲突。")
+                raise EvidenceConflict("反思批次身份与既有范围冲突。")
             if row[2] != "interrupted":
                 return get_reflection(connection, batch_id, _integer(row[0]))
             version = _integer(row[0]) + 1
@@ -707,7 +583,7 @@ def get_reflection(connection: sqlite3.Connection, batch_id: str, version: int) 
         冻结的反思范围与批次版本，后续修订须携带同一资格。
 
     Raises:
-        KnowledgeConflict: 反思批次不存在。
+        EvidenceConflict: 反思批次不存在。
         StorageError: 反思批次状态损坏。
     """
     row = _one(
@@ -717,7 +593,7 @@ def get_reflection(connection: sqlite3.Connection, batch_id: str, version: int) 
         (batch_id, version),
     )
     if row is None:
-        raise KnowledgeConflict("反思批次不存在。")
+        raise EvidenceConflict("反思批次不存在。")
     if row[1] not in ("running", "completed", "interrupted"):
         raise StorageError("反思批次状态损坏。", code="invalid_record")
     return _decode(row[0], ReflectionBatch).model_copy(
@@ -743,14 +619,14 @@ def abandon_reflection(
         冻结的反思范围与批次版本，后续修订须携带同一资格。
 
     Raises:
-        KnowledgeInputError: 中断批次需要明确原因。
+        EvidenceInputError: 中断批次需要明确原因。
 
     Note:
         首次中断原因保存在该代次 payload。完成事实不可退回；重复中断不覆盖
         原因。下一批是否可开始由主体依据新事实决定，此入口不产生重试或唤醒。
     """
     if not reason.strip():
-        raise KnowledgeInputError("中断批次需要明确原因。")
+        raise EvidenceInputError("中断批次需要明确原因。")
     with connection:
         connection.execute("BEGIN IMMEDIATE")
         batch = get_reflection(connection, batch_id, version)
@@ -776,7 +652,7 @@ def _active_batch(connection: sqlite3.Connection, batch_id: str, version: int) -
         connection, "SELECT MAX(version) FROM reflection_batches WHERE batch_id=?", (batch_id,)
     )
     if batch.state != "running" or latest != (version,):
-        raise KnowledgeConflict("反思批次已结束或处理代次过期。")
+        raise EvidenceConflict("反思批次已结束或处理代次过期。")
     return batch
 
 
@@ -792,12 +668,12 @@ def mark_presented(
         slice_refs: 当前材料实际覆盖的原文片段身份。
 
     Raises:
-        KnowledgeConflict: 呈现候选的原文片段不存在。
+        EvidenceConflict: 呈现候选的原文片段不存在。
         StorageError: 呈现候选缺少原文版本。
 
     Note:
         已提交连续历史可以保留后来撤销的来源。它仍是曾经交付的事实，但不再
-        取得认识引用资格；这一项不能阻断同请求里的有效新来源。缺失关系和有效
+        取得行为评审引用资格；这一项不能阻断同请求里的有效新来源。缺失关系和有效
         候选的坏范围仍是明确故障，revise/finish 继续核验真正引用的来源和版本。
     """
     with connection:
@@ -810,7 +686,7 @@ def mark_presented(
         for reference in dict.fromkeys(slice_refs):
             fragment = get_slice(connection, reference)
             if fragment is None:
-                raise KnowledgeConflict("呈现候选的原文片段不存在。")
+                raise EvidenceConflict("呈现候选的原文片段不存在。")
             snapshot = _evidence(connection, fragment.evidence_id, fragment.version)
             if snapshot is None:
                 raise StorageError("呈现候选缺少原文版本。", code="invalid_record")
@@ -910,8 +786,8 @@ def record_delivery(
         本次完整材料与精确原文范围的持久交付登记。
 
     Raises:
-        KnowledgeInputError: 来源、版本、时间范围或材料引用不满足当前操作要求。
-        KnowledgeConflict: 相同交付身份已有不同完整材料或切片关系。
+        EvidenceInputError: 来源、版本、时间范围或材料引用不满足当前操作要求。
+        EvidenceConflict: 相同交付身份已有不同完整材料或切片关系。
 
     Note:
         本入口由 ReflectionTools 在构造完整初始输入或原文工具结果后调用。
@@ -919,16 +795,16 @@ def record_delivery(
         Core 实际工具上下文提供。媒体缩为同库 BLOB，关系与材料同事务保存。
     """
     if not slice_refs or len(slice_refs) != len(set(slice_refs)):
-        raise KnowledgeInputError("真实交付需要非空且唯一的切片关系。")
+        raise EvidenceInputError("真实交付需要非空且唯一的切片关系。")
     if isinstance(material, Message):
         if material.role is not MessageRole.USER or tool_call_id is not None:
-            raise KnowledgeInputError("初始交付需要完整 user Message，不能携带调用身份。")
+            raise EvidenceInputError("初始交付需要完整 user Message，不能携带调用身份。")
         kind = "initial"
         encoded = encode(material)
         decode_message(encoded)
     else:
         if not tool_call_id or not tool_call_id.strip():
-            raise KnowledgeInputError("原文工具交付需要真实调用身份。")
+            raise EvidenceInputError("原文工具交付需要真实调用身份。")
         kind = "tool"
         encoded = encode(material)
         decode_content(encoded)
@@ -948,7 +824,7 @@ def record_delivery(
         if row is not None:
             existing = _delivery(connection, row)
             if existing.material != material or existing.slice_refs != slice_refs:
-                raise KnowledgeConflict("相同交付身份已有不同完整材料或切片关系。")
+                raise EvidenceConflict("相同交付身份已有不同完整材料或切片关系。")
             return existing
         stored, media_ids = intern_core_media(connection, encoded)
         connection.execute(
@@ -1052,195 +928,17 @@ def _presented(
         if snapshot.valid:
             seen.append(fragment)
     if any(not _covered(item, seen) for item in wanted):
-        raise KnowledgeConflict("原文范围尚未实际呈现给本批模型。")
+        raise EvidenceConflict("原文范围尚未实际呈现给本批模型。")
     return wanted
 
 
 # ---------------------------------------------------------------------------
-# 认识版本、替代与未决关系
+# 原文引用资格撤销
 # ---------------------------------------------------------------------------
 
 
-def _memory_version(
-    connection: sqlite3.Connection, memory_id: str, version: int | None, at: float
-) -> MemoryRecord | None:
-    """计算单个确切版本的资格，不递归展开相邻冲突图。
-
-    相邻版本也用这套来源和有效性规则；将关系装配留给 _memory，避免双向
-    冲突形成递归读取或将对方完整正文嵌入当前认识。
-    """
-    row = _one(
-        connection,
-        "SELECT version,payload_json,learned_at,retired FROM memories WHERE memory_id=? "
-        + ("ORDER BY version DESC LIMIT 1" if version is None else "AND version=?"),
-        (memory_id,) if version is None else (memory_id, version),
-    )
-    if row is None:
-        return None
-    patch = _decode(row[1], MemoryPatch)
-    revision = _integer(row[0])
-    latest = _one(connection, "SELECT MAX(version) FROM memories WHERE memory_id=?", (memory_id,))
-    reason = None if row[3] is None else _text(row[3])
-    if latest != (revision,):
-        reason = "revised"
-    if reason is None:
-        for source in patch.sources:
-            fragment = get_slice(connection, source)
-            snapshot = (
-                None
-                if fragment is None
-                else _evidence(connection, fragment.evidence_id, fragment.version)
-            )
-            if fragment is None or snapshot is None:
-                raise StorageError("认识缺少对应的原文关系。", code="invalid_record")
-            if not snapshot.valid:
-                reason = "source_revoked"
-                break
-    if reason is None and patch.valid_from is not None and at < patch.valid_from:
-        reason = "not_yet_valid"
-    if reason is None and patch.valid_until is not None and at >= patch.valid_until:
-        reason = "expired"
-    return MemoryRecord(
-        patch=patch,
-        version=revision,
-        learned_at=_number(row[2]),
-        active=reason is None,
-        inactive_reason=reason,
-    )
-
-
-def _memory(
-    connection: sqlite3.Connection, memory_id: str, version: int | None, at: float
-) -> MemoryRecord | None:
-    """从权威版本装配双向未决关系，双方资格使用同一查询时点。
-
-    对方失效只改变资格投影，不能按时间自动删除关系或改指较新版本。
-    关系引用的版本缺失属于权威记录损坏，不伪装为正常失效。
-    """
-    record = _memory_version(connection, memory_id, version, at)
-    if record is None:
-        return None
-    rows: list[tuple[object, ...]] = connection.execute(
-        "SELECT right_id,right_version FROM memory_conflicts WHERE left_id=? AND "
-        "left_version=? UNION SELECT left_id,left_version FROM memory_conflicts WHERE "
-        "right_id=? AND right_version=? ORDER BY 1,2",
-        (memory_id, record.version, memory_id, record.version),
-    ).fetchall()
-    conflicts: list[MemoryConflict] = []
-    for item in rows:
-        other_id, other_version = _text(item[0]), _integer(item[1])
-        other = _memory_version(connection, other_id, other_version, at)
-        if other is None:
-            raise StorageError("未决冲突缺少对应的认识版本。", code="invalid_record")
-        conflicts.append(
-            MemoryConflict(
-                kind="memory",
-                id=other_id,
-                version=other_version,
-                active=other.active,
-                inactive_reason=other.inactive_reason,
-            )
-        )
-    return record.model_copy(update={"conflicts": tuple(conflicts)})
-
-
-def get_memory(
-    connection: sqlite3.Connection,
-    memory_id: str,
-    *,
-    version: int | None = None,
-    include_inactive: bool = False,
-    at: float | None = None,
-) -> MemoryRecord | None:
-    """显式历史查询保留版本和失效理由，默认只返回当前有效认识。
-
-    Args:
-        connection: 仅在 Store 专属线程当前短事务中借用的连接，不在回调中等待设备或模型。
-        memory_id: 已保存认识的稳定身份。
-        version: 目标记录的确切版本，区别于可变的当前版本。 None 首读当前版本，
-            续读仍绑定游标的原版本。
-        include_inactive: 是否同时返回已失效的历史记录，并保留失效原因。 默认 False。
-        at: 核验记录有效性的 Unix 时间戳；None 使用当前时间。
-
-    Returns:
-        包含原始依据、关系、有效期与确切版本的认识记录。 未取得对应记录或素材时返回 None；
-        读取故障仍抛出。
-    """
-    result = _memory(connection, memory_id, version, time.time() if at is None else at)
-    return result if result is not None and (result.active or include_inactive) else None
-
-
-def revise_memory(
-    connection: sqlite3.Connection, batch_id: str, version: int, patch: MemoryPatch
-) -> MemoryRecord:
-    """原子提交版本、来源、替代、未决关系、索引及本批真实整合回执。
-
-    Args:
-        connection: 仅在 Store 专属线程当前短事务中借用的连接，不在回调中等待设备或模型。
-        batch_id: 独立反思批次的身份，须与批次版本配对使用。
-        version: 目标记录的确切版本，区别于可变的当前版本。
-        patch: 含原始证据、版本、关系与有效期的认识修订提案。
-
-    Returns:
-        包含原始依据、关系、有效期与确切版本的认识记录。
-
-    Raises:
-        KnowledgeConflict: 批次、来源或认识版本已变化，不能采用本次提交。
-        StorageError: 新认识缺少事务内记录。
-
-    Note:
-        关系目标必须仍是有效确切版本；拒绝迟到提案而非改指最新版本。对方
-        认识不是新原文来源，不将关系或认识正文登记成已读原文。
-    """
-    with connection:
-        connection.execute("BEGIN IMMEDIATE")
-        _active_batch(connection, batch_id, version)
-        _presented(connection, batch_id, version, patch.sources)
-        if _one(connection, "SELECT 1 FROM knowledge_evidence WHERE evidence_id=?", (patch.id,)):
-            raise KnowledgeConflict("认识身份与原文身份冲突。")
-        row = _one(connection, "SELECT MAX(version) FROM memories WHERE memory_id=?", (patch.id,))
-        current_version = 0 if row is None or row[0] is None else _integer(row[0])
-        if current_version != patch.base_version:
-            raise KnowledgeConflict("base_version 与当前认识版本不一致。")
-        now = time.time()
-        for reference in patch.conflicts:
-            other = _memory_version(connection, reference.id, reference.version, now)
-            if other is None or not other.active:
-                raise KnowledgeConflict("冲突认识版本不存在或已经失效，必须重新核对。")
-        if patch.supersedes is not None:
-            old = _memory_version(connection, patch.supersedes, None, now)
-            if old is None or not old.active:
-                raise KnowledgeConflict("要替代的认识不存在或已经失效。")
-            connection.execute(
-                "UPDATE memories SET retired='superseded' WHERE memory_id=? AND version=?",
-                (patch.supersedes, old.version),
-            )
-        next_version = patch.base_version + 1
-        connection.execute(
-            "INSERT INTO memories VALUES(?,?,?,?,NULL)",
-            (patch.id, next_version, patch.model_dump_json(), now),
-        )
-        connection.executemany(
-            "INSERT INTO memory_sources VALUES(?,?,?)",
-            ((patch.id, next_version, source) for source in dict.fromkeys(patch.sources)),
-        )
-        connection.executemany(
-            "INSERT INTO memory_conflicts VALUES(?,?,?,?)",
-            ((patch.id, next_version, other.id, other.version) for other in patch.conflicts),
-        )
-        _queue_index(connection, "memory", patch.id, next_version, now)
-        connection.execute(
-            "INSERT INTO reflection_writes VALUES(?,?,?,?)",
-            (batch_id, version, patch.id, next_version),
-        )
-        result = _memory(connection, patch.id, next_version, now)
-        if result is None:
-            raise StorageError("新认识缺少事务内记录。", code="invalid_record")
-        return result
-
-
 def revoke_evidence(connection: sqlite3.Connection, evidence_id: str, version: int) -> None:
-    """立即撤销该来源资格，原文、片段、认识历史及已有索引全部保留。
+    """立即撤销该来源资格，保留原文、片段和已有引用以供审计。
 
     Args:
         connection: 仅在 Store 专属线程当前短事务中借用的连接，不在回调中等待设备或模型。
@@ -1248,591 +946,16 @@ def revoke_evidence(connection: sqlite3.Connection, evidence_id: str, version: i
         version: 目标记录的确切版本，区别于可变的当前版本。
 
     Raises:
-        KnowledgeConflict: 撤销的原文版本不存在。
+        EvidenceConflict: 撤销的原文版本不存在。
     """
     with connection:
         connection.execute("BEGIN IMMEDIATE")
         if _evidence(connection, evidence_id, version) is None:
-            raise KnowledgeConflict("撤销的原文版本不存在。")
+            raise EvidenceConflict("撤销的原文版本不存在。")
         connection.execute(
             "UPDATE knowledge_evidence SET valid=0 WHERE evidence_id=? AND version=?",
             (evidence_id, version),
         )
-
-
-# ---------------------------------------------------------------------------
-# 可重建索引与有限召回
-# ---------------------------------------------------------------------------
-
-
-def pending_index(
-    connection: sqlite3.Connection, *, route: str | None = None, limit: int = 32
-) -> tuple[IndexJob, ...]:
-    """分页读取独立关键词/语义任务，消费一条路线不丢另一条更新。
-
-    Args:
-        connection: 仅在 Store 专属线程当前短事务中借用的连接，不在回调中等待设备或模型。
-        route: 派生索引路线名称，用于区分关键词与语义任务。 None 按此账本的全部可用路线读取。
-        limit: 本次读取或更新的最大条目数。 默认 32。
-
-    Returns:
-        本次有限读取的可重建索引任务。
-
-    Raises:
-        ValueError: 未知索引路线。
-        StorageError: 索引任务路线损坏。
-    """
-    _page_limit(limit)
-    if route not in (None, "keyword", "semantic"):
-        raise ValueError("未知索引路线。")
-    sql = "SELECT kind,id,version,queued_at,route FROM pending_knowledge_index "
-    parameters: tuple[object, ...] = (limit,)
-    if route is not None:
-        sql += "WHERE route=? "
-        parameters = (route, limit)
-    rows: list[tuple[object, ...]] = connection.execute(
-        sql + "ORDER BY queued_at,kind,id,version LIMIT ?", parameters
-    ).fetchall()
-    result: list[IndexJob] = []
-    for row in rows:
-        if row[4] not in ("keyword", "semantic"):
-            raise StorageError("索引任务路线损坏。", code="invalid_record")
-        result.append(
-            IndexJob(
-                reference=KnowledgeReference(
-                    kind=_kind(row[0]), id=_text(row[1]), version=_integer(row[2])
-                ),
-                queued_at=_number(row[3]),
-                route=row[4],
-            )
-        )
-    return tuple(result)
-
-
-def get_candidate(
-    connection: sqlite3.Connection,
-    reference: KnowledgeReference,
-    *,
-    include_inactive: bool = False,
-    at: float | None = None,
-) -> EvidenceSnapshot | MemoryRecord | None:
-    """当前索引只采用最新有效版本。
-
-    Args:
-        connection: 仅在 Store 专属线程当前短事务中借用的连接，不在回调中等待设备或模型。
-        reference: 包含身份与确切版本的认识或原文引用。
-        include_inactive: 是否同时返回已失效的历史记录，并保留失效原因。 默认 False。
-        at: 核验记录有效性的 Unix 时间戳；None 使用当前时间。
-
-    Returns:
-        经权威版本核验的原文或认识记录。 未取得对应记录或素材时返回 None；读取故障仍抛出。
-
-    Note:
-        显式历史保留原快照和真实撤销标记。
-
-        原文历史自身的 valid 不等于授权当前索引继续使用旧向量。历史查询不修改
-        保存事实，默认安装/排名入口仍会再次核验最新版本和来源状态。
-    """
-    if reference.kind == "memory":
-        current = get_memory(
-            connection,
-            reference.id,
-            version=reference.version,
-            include_inactive=include_inactive,
-            at=at,
-        )
-        return current
-    snapshot = get_evidence(
-        connection, reference.id, version=reference.version, include_inactive=include_inactive
-    )
-    if snapshot is not None and not include_inactive:
-        latest = _one(
-            connection,
-            "SELECT MAX(version) FROM knowledge_evidence WHERE evidence_id=?",
-            (reference.id,),
-        )
-        if latest != (reference.version,):
-            return None
-    return snapshot
-
-
-def semantic_rebuild_candidates(
-    connection: sqlite3.Connection, model_id: str, *, limit: int = 32
-) -> tuple[KnowledgeReference, ...]:
-    """有限扫描当前空间缺少的版本。
-
-    Args:
-        connection: 仅在 Store 专属线程当前短事务中借用的连接，不在回调中等待设备或模型。
-        model_id: 标识实际向量空间及其版本的模型身份。
-        limit: 本次读取或更新的最大条目数。 默认 32。
-
-    Returns:
-        按相关性排列的确切版本引用，使用前仍须复查权威资格。
-
-    Raises:
-        ValueError: 向量重建需要明确空间版本。
-
-    Note:
-        旧模型向量保留，不成为当前排名的依据。
-    """
-    _page_limit(limit)
-    if not model_id.strip():
-        raise ValueError("向量重建需要明确空间版本。")
-    cursor = connection.execute(
-        "SELECT 'evidence' AS kind,e.evidence_id AS id,e.version AS version "
-        "FROM knowledge_evidence e "
-        "LEFT JOIN knowledge_index i ON i.kind='evidence' AND i.id=e.evidence_id AND "
-        "i.version=e.version WHERE e.valid=1 AND e.version=(SELECT MAX(version) FROM "
-        "knowledge_evidence WHERE evidence_id=e.evidence_id) AND "
-        "(i.model IS NULL OR i.model<>? OR i.vector_json IS NULL) AND NOT EXISTS "
-        "(SELECT 1 FROM pending_knowledge_index p WHERE p.kind='evidence' AND p.id=e.evidence_id "
-        "AND p.version=e.version AND p.route='semantic') UNION ALL "
-        "SELECT 'memory',m.memory_id,m.version FROM memories m LEFT JOIN knowledge_index i "
-        "ON i.kind='memory' AND i.id=m.memory_id AND i.version=m.version WHERE "
-        "m.retired IS NULL AND m.version=(SELECT MAX(version) FROM memories WHERE "
-        "memory_id=m.memory_id) AND (i.model IS NULL OR i.model<>? OR i.vector_json IS NULL) "
-        "AND NOT EXISTS(SELECT 1 FROM pending_knowledge_index p WHERE p.kind='memory' AND "
-        "p.id=m.memory_id AND p.version=m.version AND p.route='semantic') ORDER BY kind,id,version",
-        (model_id, model_id),
-    )
-    result: list[KnowledgeReference] = []
-    while rows := cursor.fetchmany(32):
-        for row in cast(list[tuple[object, ...]], rows):
-            reference = KnowledgeReference(
-                kind=_kind(row[0]), id=_text(row[1]), version=_integer(row[2])
-            )
-            if get_candidate(connection, reference) is not None:
-                result.append(reference)
-                if len(result) == limit:
-                    return tuple(result)
-    return tuple(result)
-
-
-def queue_semantic_rebuild(
-    connection: sqlite3.Connection, model_id: str, references: tuple[KnowledgeReference, ...]
-) -> int:
-    """原子补齐有限派生任务，等待期间已经失效或被安装的候选不再重复排队。
-
-    Args:
-        connection: 仅在 Store 专属线程当前短事务中借用的连接，不在回调中等待设备或模型。
-        model_id: 标识实际向量空间及其版本的模型身份。
-        references: 包含身份与确切版本的引用集合。
-
-    Raises:
-        ValueError: 向量重建需要明确空间版本和至多 32 个候选。
-    """
-    if not model_id.strip() or not 1 <= len(references) <= 32:
-        raise ValueError("向量重建需要明确空间版本和至多 32 个候选。")
-    with connection:
-        connection.execute("BEGIN IMMEDIATE")
-        count = 0
-        for reference in references:
-            if get_candidate(connection, reference) is None:
-                continue
-            installed = _one(
-                connection,
-                "SELECT model,vector_json FROM knowledge_index WHERE kind=? AND id=? AND version=?",
-                (reference.kind, reference.id, reference.version),
-            )
-            if installed is not None and installed[0] == model_id and installed[1] is not None:
-                continue
-            cursor = connection.execute(
-                "INSERT OR IGNORE INTO pending_knowledge_index VALUES(?,?,?,?,'semantic')",
-                (reference.kind, reference.id, reference.version, time.time()),
-            )
-            count += cursor.rowcount
-        return count
-
-
-def discard_stale_index(
-    connection: sqlite3.Connection, reference: KnowledgeReference, *, route: str
-) -> bool:
-    """只确认当前仍失效的原版本任务。
-
-    Args:
-        connection: 仅在 Store 专属线程当前短事务中借用的连接，不在回调中等待设备或模型。
-        reference: 包含身份与确切版本的认识或原文引用。
-        route: 派生索引路线名称，用于区分关键词与语义任务。
-
-    Raises:
-        ValueError: 未知索引路线。
-
-    Note:
-        不向 apply_index 填入合成向量。
-    """
-    if route not in ("keyword", "semantic"):
-        raise ValueError("未知索引路线。")
-    with connection:
-        connection.execute("BEGIN IMMEDIATE")
-        if get_candidate(connection, reference) is not None:
-            return False
-        result = connection.execute(
-            "DELETE FROM pending_knowledge_index WHERE kind=? AND id=? AND version=? AND route=?",
-            (reference.kind, reference.id, reference.version, route),
-        )
-        return result.rowcount > 0
-
-
-def _install_index(
-    connection: sqlite3.Connection,
-    reference: KnowledgeReference,
-    terms: str,
-    vector: tuple[float, ...] | None,
-    model: str | None,
-) -> bool:
-    """在已有短事务中安装派生值；路线独立，历史索引仍保留可审计。"""
-    route = "keyword" if vector is None else "semantic"
-    current = get_candidate(connection, reference)
-    connection.execute(
-        "DELETE FROM pending_knowledge_index WHERE kind=? AND id=? AND version=? AND route=?",
-        (reference.kind, reference.id, reference.version, route),
-    )
-    if current is None:
-        return False
-    if vector is None:
-        connection.execute(
-            "INSERT INTO knowledge_index(kind,id,version,terms) VALUES(?,?,?,?) ON "
-            "CONFLICT(kind,id,version) DO UPDATE SET terms=excluded.terms",
-            (reference.kind, reference.id, reference.version, terms),
-        )
-        connection.execute(
-            "DELETE FROM knowledge_search WHERE kind=? AND id=? AND version=?",
-            (reference.kind, reference.id, reference.version),
-        )
-        connection.execute(
-            "INSERT INTO knowledge_search VALUES(?,?,?,?)",
-            (reference.kind, reference.id, reference.version, terms),
-        )
-    else:
-        connection.execute(
-            "INSERT INTO knowledge_index VALUES(?,?,?,?,?,?) ON CONFLICT(kind,id,version) "
-            "DO UPDATE SET vector_json=excluded.vector_json,model=excluded.model",
-            (
-                reference.kind,
-                reference.id,
-                reference.version,
-                terms,
-                json.dumps(vector, allow_nan=False),
-                model,
-            ),
-        )
-    return True
-
-
-def _unit(vector: tuple[float, ...]) -> tuple[float, ...]:
-    """有限非零向量归一化，避免 NaN/溢出在排序中伪装成有效相关性。"""
-    if not vector or any(isinstance(value, bool) or not math.isfinite(value) for value in vector):
-        raise ValueError("向量必须非空且有限。")
-    norm = math.hypot(*vector)
-    if not norm or not math.isfinite(norm):
-        raise ValueError("向量范数必须有限且非零。")
-    return tuple(value / norm for value in vector)
-
-
-def apply_index(
-    connection: sqlite3.Connection,
-    reference: KnowledgeReference,
-    *,
-    terms: str,
-    vector: tuple[float, ...] | None = None,
-    model: str | None = None,
-) -> bool:
-    """异步计算后只安装仍有效的同版本索引，不复活撤销或被替代认识。
-
-    Args:
-        connection: 仅在 Store 专属线程当前短事务中借用的连接，不在回调中等待设备或模型。
-        reference: 包含身份与确切版本的认识或原文引用。
-        terms: 从同版本完整正文生成的关键词索引文本。
-        vector: 对应明确模型空间的有限数值向量。
-        model: 本次调用使用的显式模型名，不在领域层推断替代模型。
-
-    Raises:
-        ValueError: 向量必须绑定明确模型；无向量不能标记向量模型。
-    """
-    normalized = None
-    if vector is not None:
-        if not model:
-            raise ValueError("向量必须绑定明确模型。")
-        normalized = _unit(vector)
-    elif model is not None:
-        raise ValueError("无向量不能标记向量模型。")
-    with connection:
-        connection.execute("BEGIN IMMEDIATE")
-        return _install_index(connection, reference, terms, normalized, model)
-
-
-def refresh_keyword_index(connection: sqlite3.Connection, *, limit: int = 100) -> int:
-    """仅提交有限本地关键词任务，不消费语义计算，也不等待外部服务。
-
-    Args:
-        connection: 仅在 Store 专属线程当前短事务中借用的连接，不在回调中等待设备或模型。
-        limit: 本次读取或更新的最大条目数。 默认 100。
-    """
-    with connection:
-        connection.execute("BEGIN IMMEDIATE")
-        jobs = pending_index(connection, route="keyword", limit=limit)
-        for job in jobs:
-            record = get_candidate(connection, job.reference)
-            text = (
-                ""
-                if record is None
-                else record.items_json or record.text
-                if isinstance(record, EvidenceSnapshot)
-                else record.patch.content
-            )
-            _install_index(connection, job.reference, " ".join(_terms(text)), None, None)
-        return len(jobs)
-
-
-def semantic_search(
-    connection: sqlite3.Connection, vector: tuple[float, ...], model: str, *, limit: int = 40
-) -> tuple[KnowledgeReference, ...]:
-    """对同模型派生向量做有限候选选择，读取前核验当前版本及来源。
-
-    Args:
-        connection: 仅在 Store 专属线程当前短事务中借用的连接，不在回调中等待设备或模型。
-        vector: 对应明确模型空间的有限数值向量。
-        model: 本次调用使用的显式模型名，不在领域层推断替代模型。
-        limit: 本次读取或更新的最大条目数。 默认 40。
-
-    Returns:
-        按相关性排列的确切版本引用，使用前仍须复查权威资格。
-
-    Raises:
-        StorageError: 权威记录缺失、版本不一致、载荷无效或提交条件不成立。
-    """
-    import heapq
-
-    _page_limit(limit)
-    query = _unit(vector)
-    cursor = connection.execute(
-        "SELECT kind,id,version,vector_json FROM knowledge_index WHERE model=? AND "
-        "vector_json IS NOT NULL",
-        (model,),
-    )
-    ranked: list[tuple[float, str, str, int, KnowledgeReference]] = []
-    while True:
-        rows: list[tuple[object, ...]] = cursor.fetchmany(32)
-        if not rows:
-            break
-        for row in rows:
-            reference = KnowledgeReference(
-                kind=_kind(row[0]), id=_text(row[1]), version=_integer(row[2])
-            )
-            if get_candidate(connection, reference) is None:
-                continue
-            try:
-                raw: object = json.loads(_text(row[3]))
-            except json.JSONDecodeError as error:
-                raise StorageError("派生向量不是有效JSON。", code="invalid_index") from error
-            if not isinstance(raw, list):
-                raise StorageError("派生向量形状损坏。", code="invalid_index")
-            values: list[float] = []
-            for value in cast(list[object], raw):
-                values.append(_number(value))
-            try:
-                stored = _unit(tuple(values))
-            except ValueError as error:
-                raise StorageError("派生向量无有效方向。", code="invalid_index") from error
-            if len(stored) != len(query):
-                raise StorageError("同模型向量维度不一致。", code="invalid_index")
-            score = sum(left * right for left, right in zip(query, stored, strict=True))
-            heapq.heappush(
-                ranked, (score, reference.id, reference.kind, reference.version, reference)
-            )
-            if len(ranked) > limit:
-                heapq.heappop(ranked)
-    return tuple(item[-1] for item in sorted(ranked, reverse=True))
-
-
-def vector_candidates(
-    connection: sqlite3.Connection,
-    model: str,
-    after: tuple[str, str, int] | None,
-    *,
-    limit: int = 128,
-) -> tuple[tuple[KnowledgeReference, str], ...]:
-    """按模型索引稳定分页，只在数据库线程核验来源，不解析或计算向量。"""
-    rows = connection.execute(
-        "SELECT kind,id,version,vector_json FROM knowledge_index WHERE "
-        "model=? AND vector_json IS NOT NULL "
-        + ("AND (kind,id,version)>(?,?,?) " if after is not None else "")
-        + "ORDER BY kind,id,version LIMIT ?",
-        (model, *(after or ()), limit),
-    ).fetchall()
-    return tuple(
-        (
-            KnowledgeReference(kind=_kind(row[0]), id=_text(row[1]), version=_integer(row[2])),
-            _text(row[3]),
-        )
-        for row in rows
-    )
-
-
-def rank_vectors(
-    query: tuple[float, ...],
-    rows: tuple[tuple[KnowledgeReference, str], ...],
-    previous: tuple[tuple[float, str, str, int, KnowledgeReference], ...],
-    limit: int,
-) -> tuple[tuple[float, str, str, int, KnowledgeReference], ...]:
-    """在线程外用有界堆计算相同的精确排名，不改变完整候选召回语义。"""
-    import heapq
-
-    ranked = list(previous)
-    unit = _unit(query)
-    for reference, encoded in rows:
-        try:
-            raw: object = json.loads(encoded)
-        except json.JSONDecodeError as error:
-            raise StorageError("派生向量不是有效JSON。", code="invalid_index") from error
-        if not isinstance(raw, list):
-            raise StorageError("派生向量形状损坏。", code="invalid_index")
-        stored = _unit(tuple(_number(value) for value in cast(list[object], raw)))
-        if len(stored) != len(unit):
-            raise StorageError("同模型向量维度不一致。", code="invalid_index")
-        score = sum(left * right for left, right in zip(unit, stored, strict=True))
-        heapq.heappush(ranked, (score, reference.id, reference.kind, reference.version, reference))
-        if len(ranked) > limit:
-            heapq.heappop(ranked)
-    return tuple(ranked)
-
-
-def _terms(text: str) -> tuple[str, ...]:
-    """沿用中文单字、二元组和规范化拉丁词，关键词不依赖 token 猜测。"""
-    terms: list[str] = []
-    for word in re.findall(r"[\u3400-\u9fff]+|[a-z0-9_]+", text.casefold()):
-        if "\u3400" <= word[0] <= "\u9fff":
-            terms.extend(word)
-            terms.extend(word[index : index + 2] for index in range(len(word) - 1))
-        else:
-            terms.append(word)
-    return tuple(dict.fromkeys(terms))
-
-
-def _route_records(
-    connection: sqlite3.Connection,
-    sql: str,
-    parameters: Sequence[object],
-    limit: int,
-    include_inactive: bool,
-    at: float | None,
-) -> tuple[tuple[KnowledgeReference, EvidenceSnapshot | MemoryRecord], ...]:
-    """游标小批读取，失效项在路线排名前剔除，不挤掉后面的有效候选。"""
-    cursor = connection.execute(sql, parameters)
-    result: list[tuple[KnowledgeReference, EvidenceSnapshot | MemoryRecord]] = []
-    while len(result) < limit:
-        rows: list[tuple[object, ...]] = cursor.fetchmany(32)
-        if not rows:
-            break
-        for row in rows:
-            reference = KnowledgeReference(
-                kind=_kind(row[0]), id=_text(row[1]), version=_integer(row[2])
-            )
-            record = get_candidate(connection, reference, include_inactive=include_inactive, at=at)
-            if record is not None:
-                result.append((reference, record))
-                if len(result) == limit:
-                    break
-    return tuple(result)
-
-
-def search_knowledge(
-    connection: sqlite3.Connection,
-    query: str,
-    *,
-    entities: tuple[str, ...] = (),
-    start: float | None = None,
-    end: float | None = None,
-    at: float | None = None,
-    include_inactive: bool = False,
-    limit: int = 40,
-) -> tuple[KnowledgeCandidate, ...]:
-    """保留 BM25 关键词、明确一跳关系、原文发生时间路线，并在排名前核验资格。
-
-    Args:
-        connection: 仅在 Store 专属线程当前短事务中借用的连接，不在回调中等待设备或模型。
-        query: 用于关键词或语义检索的意图文本。
-        entities: 需要共同检索或关联的实体名称集合。 默认不附加此类条目。
-        start: 按发生时间筛选的起点；None 表示不限制此端。
-        end: 按发生时间筛选的终点；None 表示不限制此端。
-        at: 核验记录有效性的 Unix 时间戳；None 使用当前时间。
-        include_inactive: 是否同时返回已失效的历史记录，并保留失效原因。 默认 False。
-        limit: 本次读取或更新的最大条目数。 默认 40。
-
-    Returns:
-        已通过来源及版本核验的候选集合，保留各路线排名。
-    """
-    _page_limit(limit)
-    routes: dict[str, tuple[tuple[KnowledgeReference, EvidenceSnapshot | MemoryRecord], ...]] = {}
-    terms = _terms(query)
-    if terms:
-        expression = " OR ".join('"' + term + '"' for term in terms)
-        routes["keyword"] = _route_records(
-            connection,
-            "SELECT kind,id,CAST(version AS INTEGER) FROM knowledge_search WHERE "
-            "knowledge_search MATCH ? ORDER BY bm25(knowledge_search)",
-            (expression,),
-            limit,
-            include_inactive,
-            at,
-        )
-    if entities:
-        placeholders = ",".join("?" for _ in entities)
-        sql = (
-            "SELECT DISTINCT 'memory',m.memory_id,m.version FROM memories m WHERE "
-            "EXISTS(SELECT 1 FROM json_each(json_extract(m.payload_json,'$.entities')) e "
-            "WHERE e.value IN(" + placeholders + ")) "
-            "OR EXISTS(SELECT 1 FROM memory_sources ms JOIN knowledge_slices s ON "
-            "ms.slice_ref=s.slice_ref "
-            "WHERE ms.memory_id=m.memory_id AND ms.version=m.version AND (s.evidence_id IN("
-            + placeholders
-            + ") OR s.slice_ref IN("
-            + placeholders
-            + "))) "
-            "UNION SELECT DISTINCT 'evidence',s.evidence_id,s.version FROM "
-            "knowledge_slices s JOIN memory_sources ms ON s.slice_ref=ms.slice_ref WHERE "
-            "ms.memory_id IN(" + placeholders + ")"
-        )
-        routes["relation"] = _route_records(
-            connection,
-            sql,
-            (*entities, *entities, *entities, *entities),
-            limit,
-            include_inactive,
-            at,
-        )
-    if start is not None and end is not None:
-        routes["time"] = _route_records(
-            connection,
-            "SELECT 'evidence',evidence_id,version FROM knowledge_evidence WHERE "
-            "json_extract(payload_json,'$.occurred_at') BETWEEN ? AND ? ORDER BY "
-            "json_extract(payload_json,'$.occurred_at') DESC",
-            (start, end),
-            limit,
-            include_inactive,
-            at,
-        )
-    ranking: dict[KnowledgeReference, list[tuple[str, int]]] = {}
-    values: dict[KnowledgeReference, EvidenceSnapshot | MemoryRecord] = {}
-    for route, candidates in routes.items():
-        for rank, (reference, record) in enumerate(candidates, 1):
-            ranking.setdefault(reference, []).append((route, rank))
-            values[reference] = record
-    ordered = sorted(
-        ranking,
-        key=lambda reference: (
-            -sum(1 / (60 + rank) for _, rank in ranking[reference]),
-            reference.kind,
-            reference.id,
-            reference.version,
-        ),
-    )
-    return tuple(
-        KnowledgeCandidate(
-            reference=reference, record=values[reference], ranks=tuple(ranking[reference])
-        )
-        for reference in ordered[:limit]
-    )
 
 
 # ---------------------------------------------------------------------------
@@ -1870,7 +993,7 @@ def finish_reflection(
         实际已提交的结案回执，重复完成复用原结果。
 
     Raises:
-        KnowledgeInputError: 来源、版本、时间范围或材料引用不满足当前操作要求。
+        EvidenceInputError: 来源、版本、时间范围或材料引用不满足当前操作要求。
         StorageError: 批次来源缺失。
     """
     with connection:
@@ -1889,48 +1012,20 @@ def finish_reflection(
         deferred = _require_slices(
             connection, tuple(ref for item in submission.deferred for ref in item.evidence)
         )
-        # 尚未读的材料可以明确暂缓，不能据此引用具体内容或写入认识。
+        # 尚未读的材料可以明确暂缓，不能据此引用具体内容或提出有据监管。
         if any(_overlap(left, right) for left in reviewed for right in deferred):
-            raise KnowledgeInputError("同一范围不能同时复核和暂缓。")
+            raise EvidenceInputError("同一范围不能同时复核和暂缓。")
         if any(not _covered(fragment, (*reviewed, *deferred)) for fragment in required):
-            raise KnowledgeInputError("本批每个分配范围必须复核或明确暂缓。")
+            raise EvidenceInputError("本批每个分配范围必须复核或明确暂缓。")
         expected = {finding.id for finding in batch.findings}
         if {finding.id for finding in submission.findings} != expected or len(
             submission.findings
         ) != len(expected):
-            raise KnowledgeInputError("本批程序异常必须逐项判断。")
-        decisions: list[tuple[EvidenceSlice, str]] = []
-        writes: list[tuple[object, ...]] = connection.execute(
-            "SELECT memory_id,memory_version FROM reflection_writes WHERE batch_id=? AND "
-            "batch_version=?",
-            (batch_id, version),
-        ).fetchall()
-        written: list[KnowledgeReference] = []
-        for review in submission.reviews:
-            scopes = _presented(connection, batch_id, version, review.evidence)
-            for scope in scopes:
-                if any(
-                    _overlap(scope, prior) and decision != review.memory_decision
-                    for prior, decision in decisions
-                ):
-                    raise KnowledgeInputError("同一范围的知识处理取舍互相矛盾。")
-                decisions.append((scope, review.memory_decision))
-            if review.memory_decision == "written":
-                actual: list[EvidenceSlice] = []
-                for row in writes:
-                    memory = _memory(connection, _text(row[0]), _integer(row[1]), time.time())
-                    if memory is not None and memory.active:
-                        actual.extend(_require_slices(connection, memory.patch.sources))
-                        reference = KnowledgeReference(
-                            kind="memory", id=memory.patch.id, version=memory.version
-                        )
-                        if reference not in written:
-                            written.append(reference)
-                if any(not _covered(scope, actual) for scope in scopes):
-                    raise KnowledgeInputError("written 缺少本批实际有效修订及对应来源范围。")
-        if batch.purpose == "behavior":
-            if submission.behavior is None:
-                raise KnowledgeInputError("行为评审必须提交明确结论。")
+            raise EvidenceInputError("本批程序异常必须逐项判断。")
+        if submission.behavior is None:
+            if submission.reviews or not submission.deferred:
+                raise EvidenceInputError("行为评审必须提交明确结论或明确暂缓全部范围。")
+        else:
             _presented(connection, batch_id, version, submission.behavior.evidence)
             for observation in submission.behavior.observations:
                 _presented(connection, batch_id, version, observation.evidence)
@@ -1940,7 +1035,6 @@ def finish_reflection(
             version=version,
             completed_at=time.time(),
             submission=submission,
-            written=tuple(written),
             coverage=tuple(
                 dict.fromkeys(
                     (
@@ -1973,54 +1067,6 @@ def finish_reflection(
                     for reference in dict.fromkeys(item.evidence)
                 ),
             )
-        source_keys = dict.fromkeys(
-            (fragment.evidence_id, fragment.version)
-            for fragment in (*required, *reviewed, *deferred)
-        )
-        for identity, source_version in source_keys:
-            snapshot = _evidence(connection, identity, source_version)
-            if snapshot is None:
-                raise StorageError("批次来源缺失。", code="invalid_record")
-            rows: list[tuple[object, ...]] = connection.execute(
-                "SELECT r.slice_ref,r.state,r.reason FROM knowledge_review_ranges r JOIN "
-                "knowledge_slices s ON r.slice_ref=s.slice_ref JOIN reflection_batches b "
-                "ON r.batch_id=b.batch_id AND r.batch_version=b.version WHERE "
-                "s.evidence_id=? AND s.version=? AND "
-                "coalesce(json_extract(b.payload_json,'$.purpose'),'memory')=? "
-                "ORDER BY "
-                "json_extract(b.receipt_json,'$.completed_at')",
-                (identity, source_version, batch.purpose),
-            ).fetchall()
-            effective: dict[str, tuple[str, str | None]] = {}
-            for row in rows:
-                effective[_text(row[0])] = (_text(row[1]), _optional_text(row[2]))
-            scopes = _require_slices(connection, tuple(effective))
-            unit: RangeUnit = "characters" if snapshot.items_json is None else "items"
-            total = (
-                len(snapshot.text)
-                if unit == "characters"
-                else len(cast(list[object], json.loads(snapshot.items_json or "[]")))
-            )
-            full = EvidenceSlice(
-                slice_ref=required[0].slice_ref,
-                evidence_id=identity,
-                version=source_version,
-                start=0,
-                end=total,
-                unit=unit,
-                media_ids=tuple(item.media_id for item in snapshot.media),
-            )
-            if _covered(full, scopes) and batch.purpose == "memory":
-                deferred_ranges = [item for item in effective.values() if item[0] == "deferred"]
-                state = "deferred" if deferred_ranges else "reviewed"
-                reasons = (
-                    "；".join(reason for _, reason in deferred_ranges if reason is not None) or None
-                )
-                connection.execute(
-                    "UPDATE pending_knowledge SET state=?,reason=? WHERE evidence_id=? AND "
-                    "version=?",
-                    (state, reasons, identity, source_version),
-                )
         analysis_work.settle(connection, batch_id)
         return receipt
 
@@ -2047,7 +1093,7 @@ def _notice_active(connection: sqlite3.Connection, notice: SupervisionNotice) ->
             return False
     try:
         _require_slices(connection, notice.evidence)
-    except KnowledgeConflict:
+    except EvidenceConflict:
         return False
     return True
 
@@ -2067,7 +1113,7 @@ def supervise(
         包含原始依据、活动版本约束和当前回应的监管记录。
 
     Raises:
-        KnowledgeConflict: 监管来源、期限或活动版本已失效；监管身份已有不同意见。
+        EvidenceConflict: 监管来源、期限或活动版本已失效；监管身份已有不同意见。
     """
     with connection:
         connection.execute("BEGIN IMMEDIATE")
@@ -2076,7 +1122,7 @@ def supervise(
         if batch.purpose == "behavior":
             notice = behavior_review.normalize_notice(batch, notice)
             if notice.generalized and len({fragment.evidence_id for fragment in fragments}) < 2:
-                raise KnowledgeInputError("泛化纠偏至少需要两项独立来源。")
+                raise EvidenceInputError("泛化纠偏至少需要两项独立来源。")
             same = connection.execute(
                 "SELECT n.id FROM supervision_outcomes o JOIN "
                 "knowledge_supervision n ON n.id=o.notice_id WHERE o.dedup_key=? "
@@ -2093,7 +1139,7 @@ def supervise(
                 )
                 return existing.model_copy(update={"duplicate": True})
         if not _notice_active(connection, notice):
-            raise KnowledgeConflict("监管来源、期限或活动版本已失效。")
+            raise EvidenceConflict("监管来源、期限或活动版本已失效。")
         row = _one(
             connection,
             "SELECT payload_json,state,response,created_at FROM knowledge_supervision WHERE id=?",
@@ -2101,7 +1147,7 @@ def supervise(
         )
         if row is not None:
             if _decode(row[0], SupervisionNotice) != notice:
-                raise KnowledgeConflict("监管身份已有不同意见。")
+                raise EvidenceConflict("监管身份已有不同意见。")
             return SupervisionRecord(
                 notice=notice,
                 state=_notice_state(row[1]),
@@ -2212,11 +1258,11 @@ def respond_supervision(
         包含原始依据、活动版本约束和当前回应的监管记录。
 
     Raises:
-        KnowledgeInputError: 监管回应需 accept/partial/reject 与明确理由。
-        KnowledgeConflict: 批次、来源或认识版本已变化，不能采用本次提交。
+        EvidenceInputError: 监管回应需 accept/partial/reject 与明确理由。
+        EvidenceConflict: 批次资格或原文来源状态已变化，不能采用本次提交。
     """
     if decision not in ("accept", "partial", "reject") or not reason.strip():
-        raise KnowledgeInputError("监管回应需 accept/partial/reject 与明确理由。")
+        raise EvidenceInputError("监管回应需 accept/partial/reject 与明确理由。")
     with connection:
         connection.execute("BEGIN IMMEDIATE")
         row = _one(
@@ -2225,14 +1271,14 @@ def respond_supervision(
             (identity,),
         )
         if row is None:
-            raise KnowledgeConflict("监管意见不存在。")
+            raise EvidenceConflict("监管意见不存在。")
         notice = _decode(row[0], SupervisionNotice)
         if row[1] != "open":
             if (row[1], row[2]) != (decision, reason):
-                raise KnowledgeConflict("监管意见已经回应。")
+                raise EvidenceConflict("监管意见已经回应。")
         else:
             if not _notice_active(connection, notice):
-                raise KnowledgeConflict("监管意见已失效。")
+                raise EvidenceConflict("监管意见已失效。")
             connection.execute(
                 "UPDATE knowledge_supervision SET state=?,response=? WHERE id=?",
                 (decision, reason, identity),
@@ -2247,7 +1293,7 @@ def _require_plan_evidence(connection: sqlite3.Connection, identity: str) -> Non
     snapshot = _evidence(connection, identity, None)
     if snapshot is not None:
         if not snapshot.valid:
-            raise KnowledgeConflict("计划来源已失效。")
+            raise EvidenceConflict("计划来源已失效。")
         return
     _require_slices(connection, (identity,))
 
@@ -2263,11 +1309,11 @@ def plan_wakeup(connection: sqlite3.Connection, plan: WakeupPlan) -> WakeupPlan:
         已保存的计划及其当前结论，不直接代表外部行动完成。
 
     Raises:
-        KnowledgeInputError: 计划需要未来期限与未完成状态。
-        KnowledgeConflict: 计划身份已有不同内容。
+        EvidenceInputError: 计划需要未来期限与未完成状态。
+        EvidenceConflict: 计划身份已有不同内容。
     """
     if plan.due <= time.time() or plan.state != "pending":
-        raise KnowledgeInputError("计划需要未来期限与未完成状态。")
+        raise EvidenceInputError("计划需要未来期限与未完成状态。")
     with connection:
         connection.execute("BEGIN IMMEDIATE")
         _require_plan_evidence(connection, plan.evidence)
@@ -2275,7 +1321,7 @@ def plan_wakeup(connection: sqlite3.Connection, plan: WakeupPlan) -> WakeupPlan:
         if row is not None:
             existing = _decode(row[0], WakeupPlan)
             if existing != plan:
-                raise KnowledgeConflict("计划身份已有不同内容。")
+                raise EvidenceConflict("计划身份已有不同内容。")
             return existing
         connection.execute(
             "INSERT INTO knowledge_plans VALUES(?,?)", (plan.id, plan.model_dump_json())
@@ -2298,21 +1344,21 @@ def resolve_plan(
         已保存的计划及其当前结论，不直接代表外部行动完成。
 
     Raises:
-        KnowledgeInputError: 计划完成需要实际结果说明。
-        KnowledgeConflict: 计划不存在；计划已有不同完成事实。
+        EvidenceInputError: 计划完成需要实际结果说明。
+        EvidenceConflict: 计划不存在；计划已有不同完成事实。
     """
     if not outcome.strip():
-        raise KnowledgeInputError("计划完成需要实际结果说明。")
+        raise EvidenceInputError("计划完成需要实际结果说明。")
     with connection:
         connection.execute("BEGIN IMMEDIATE")
         _require_plan_evidence(connection, evidence)
         row = _one(connection, "SELECT payload_json FROM knowledge_plans WHERE id=?", (identity,))
         if row is None:
-            raise KnowledgeConflict("计划不存在。")
+            raise EvidenceConflict("计划不存在。")
         plan = _decode(row[0], WakeupPlan)
         if plan.state == "completed":
             if (plan.outcome, plan.result_evidence) != (outcome, evidence):
-                raise KnowledgeConflict("计划已有不同完成事实。")
+                raise EvidenceConflict("计划已有不同完成事实。")
             return plan
         completed = plan.model_copy(
             update={"state": "completed", "outcome": outcome, "result_evidence": evidence}
@@ -2354,7 +1400,7 @@ def pending_plans(
 
 
 def initialize(connection: sqlite3.Connection) -> None:
-    """借用调用方启动事务核验表并撤旧批次资格，不独立提交认识恢复。
+    """借用启动事务核验共享证据表并撤旧批次资格，不自行提交事务。
 
     Args:
         connection: 仅在 Store 专属线程当前短事务中借用的连接，不在回调中等待设备或模型。
@@ -2363,19 +1409,11 @@ def initialize(connection: sqlite3.Connection) -> None:
         "knowledge_evidence",
         "evidence_media",
         "knowledge_slices",
-        "memories",
         "reflection_batches",
         "reflection_presented",
-        "reflection_writes",
-        "pending_knowledge",
-        "pending_knowledge_index",
-        "knowledge_index",
         "knowledge_cursors",
         "knowledge_supervision",
         "knowledge_plans",
-        "memory_sources",
-        "memory_conflicts",
-        "knowledge_search",
         "knowledge_review_ranges",
     ):
         connection.execute(f"SELECT * FROM {table} LIMIT 0")
@@ -2393,4 +1431,62 @@ def initialize(connection: sqlite3.Connection) -> None:
         "UPDATE reflection_batches SET state='interrupted',payload_json="
         "json_set(payload_json,'$.interrupted_reason','进程恢复撤销旧代次。') "
         "WHERE state='running'"
+    )
+
+
+def record_document(connection: sqlite3.Connection, snapshot: EvidenceSnapshot) -> EvidenceSnapshot:
+    """保存同路径文档新版本，重复读取返回原快照；历史版本不因编辑而撤销。
+
+    Args:
+        connection: Store 唯一线程中的连接。
+        snapshot: 调用者稳定读取的完整文档，版本由此事务分配。
+
+    Returns:
+        与实际内容对应的不可变快照。
+    """
+    with connection:
+        connection.execute("BEGIN IMMEDIATE")
+        latest = _evidence(connection, snapshot.evidence_id, None)
+        if latest is not None and all(
+            getattr(latest, key) == getattr(snapshot, key)
+            for key in ("kind", "text", "source_json", "summary", "overview")
+        ):
+            return latest
+        version = 1 if latest is None else latest.version + 1
+        return put_evidence_in_transaction(
+            connection, snapshot.model_copy(update={"version": version}), needs_reflection=False
+        )
+
+
+def read_slice(connection: sqlite3.Connection, reference: str) -> EvidencePage:
+    """按已保存范围读取原文，不扩大范围或将外界字符串当作阅读证明。"""
+    fragment = get_slice(connection, reference)
+    if fragment is None:
+        raise EvidenceInputError("引用的原文片段不存在。")
+    snapshot = get_evidence(connection, fragment.evidence_id, version=fragment.version)
+    if snapshot is None:
+        raise EvidenceConflict("引用来源缺失或已撤销。")
+    text = snapshot.text[fragment.start : fragment.end]
+    if fragment.unit == "items":
+        text = json.dumps(
+            json.loads(snapshot.items_json or "[]")[fragment.start : fragment.end],
+            ensure_ascii=False,
+            allow_nan=False,
+        )
+    return EvidencePage(snapshot=snapshot, slice=fragment, text=text, level="evidence")
+
+
+def pending_review(
+    connection: sqlite3.Connection, *, limit: int = 32
+) -> tuple[PendingEvidence, ...]:
+    """读取尚未结案的行为复核来源；不建立任何独立记忆队列。"""
+    _page_limit(limit)
+    return tuple(
+        PendingEvidence(evidence_id=row[0], version=row[1], queued_at=row[2])
+        for row in connection.execute(
+            "SELECT evidence_id,version,queued_at FROM analysis_work "
+            "WHERE purpose='behavior' AND state<>'comple"
+            "ted' ORDER BY queued_at,evidence_id LIMIT ?",
+            (limit,),
+        )
     )

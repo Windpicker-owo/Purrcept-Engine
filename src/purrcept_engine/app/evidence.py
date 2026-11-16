@@ -1,14 +1,14 @@
-"""向插件借出原文与共享分页，隔开主体认识权限和权威队列内部实现。"""
+"""向插件借出原文与共享分页，隔开行为评审权限和权威队列内部实现。"""
 
+from purrcept_engine.domain.evidence.models import EvidencePage, EvidenceSnapshot
 from purrcept_engine.domain.inputs.models import MediaAsset
-from purrcept_engine.domain.knowledge.models import EvidencePage, EvidenceSnapshot
-from purrcept_engine.infrastructure.sqlite.knowledge_port import KnowledgeLedger
+from purrcept_engine.infrastructure.sqlite.evidence_port import EvidenceLedger
 
 
 class EvidenceAccess:
     """app 创建的有限原文门面，与宿主 Store 同寿命，不独占新的资源。"""
 
-    def __init__(self, ledger: KnowledgeLedger, page_chars: int) -> None:
+    def __init__(self, ledger: EvidenceLedger, page_chars: int) -> None:
         """固定已校验统一页长。
 
         Args:
@@ -25,6 +25,21 @@ class EvidenceAccess:
     def page_chars(self) -> int:
         """读取本实例统一分页配置，不改变已有快照和游标归属。"""
         return self._page_chars
+
+    async def record_document(self, snapshot: EvidenceSnapshot) -> EvidenceSnapshot:
+        """幂等保存完整文档，版本由宿主分配，重复阅读不产生新版本。
+
+        Args:
+            snapshot: 实际稳定取得的全文及固定来源元数据。
+
+        Returns:
+            与文件内容对应的确切不可变版本。
+        """
+        return await self._ledger.record_document(snapshot)
+
+    async def read_slice(self, reference: str) -> EvidencePage:
+        """读取明确引用的确切原文范围，来源缺失或撤销时原样失败。"""
+        return await self._ledger.read_slice(reference)
 
     async def capture(
         self, snapshot: EvidenceSnapshot, assets: tuple[MediaAsset, ...]
@@ -64,6 +79,7 @@ class EvidenceAccess:
         level: str = "evidence",
         cursor: str | None = None,
         max_chars: int = 8000,
+        version: int | None = None,
     ) -> EvidencePage:
         """读取该版本的一页，原文件后续编辑不会改写已经保存正文。
 
@@ -78,7 +94,7 @@ class EvidenceAccess:
             当前版本的一页正文、确切范围和下一游标；取得页面不等于已呈现给模型。
         """
         return await self._ledger.read_evidence(
-            evidence_id, level=level, cursor=cursor, max_chars=max_chars
+            evidence_id, level=level, cursor=cursor, max_chars=max_chars, version=version
         )
 
     async def read_evidence_cursor(self, cursor: str, *, max_chars: int = 8000) -> EvidencePage:

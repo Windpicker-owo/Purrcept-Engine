@@ -27,7 +27,7 @@ from purrcept_core.models.tools import ToolResult
 from purrcept_engine.domain.context.audio_receipts import audio_text_view
 from purrcept_engine.domain.context.capacity import CapacityAssessment, CapacityError
 from purrcept_engine.domain.context.presentation import render_host_state
-from purrcept_engine.domain.knowledge.models import EvidencePage
+from purrcept_engine.domain.evidence.models import EvidencePage
 from purrcept_engine.domain.model_requests.ports import MaterialCompiler
 from purrcept_engine.serialization import encode
 from purrcept_engine.values import JsonObject, JsonValue, decode_object
@@ -113,7 +113,7 @@ def presented_evidence_calls(page: EvidencePage) -> frozenset[str]:
         材料已呈现；容量引用也没有此登记。这里不从模型文字或ID前缀猜来源。
     """
     snapshot = page.snapshot
-    if snapshot is None or page.level != "evidence" or page.text != snapshot.text:
+    if page.level != "evidence" or page.text != snapshot.text:
         return frozenset()
     source = decode_object(snapshot.source_json.encode("utf-8"))
     if snapshot.kind == "action_result":
@@ -159,20 +159,14 @@ def evidence_fallback(page: EvidencePage, *, cursor: str | None) -> dict[str, ob
         业务对象，按实际结果提供 delivery、stored_ref、derived、level、retry 字段。
 
     Raises:
-        RuntimeError: 原文页面缺少权威快照或认识版本。
+        RuntimeError: 原文页面缺少权威快照或确切版本。
 
     Note:
         重试定位原页起点，不跳过未交付内容。
     """
-    snapshot, memory = page.snapshot, page.memory
-    if snapshot is not None:
-        reference = {"id": snapshot.evidence_id, "version": snapshot.version}
-        derived = False
-    elif memory is not None:
-        reference = {"id": memory.patch.id, "version": memory.version}
-        derived = True
-    else:
-        raise RuntimeError("原文页面缺少权威快照或认识版本。")
+    snapshot = page.snapshot
+    reference = {"id": snapshot.evidence_id, "version": snapshot.version}
+    derived = False
     return {
         "delivery": "not_delivered",
         "stored_ref": reference,

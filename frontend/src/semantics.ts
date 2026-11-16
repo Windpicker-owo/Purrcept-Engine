@@ -52,6 +52,7 @@ export function stringField(value: Json | undefined): string | undefined { retur
  */
 export function deviceMark(device: Device): Mark {
   const state = device.state;
+  if (device.kind === "phone" && typeof state.online === "boolean") return state.online ? { state: "completed", label: "手机在线" } : { state: "paused", label: "手机离线" };
   if (typeof state.state === "string") return mark(state.state);
   if (typeof state.connected === "boolean") return state.connected ? { state: "completed", label: "已连接" } : { state: "paused", label: "未连接" };
   if (typeof state.ready === "boolean") return state.ready ? { state: "completed", label: "已就绪" } : { state: "warning", label: "尚未就绪" };

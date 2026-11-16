@@ -26,6 +26,11 @@ from purrcept_engine.domain.audio.errors import AudioError
 from purrcept_engine.domain.audio.facts import make_fact
 from purrcept_engine.domain.audio.models import AudioFact
 from purrcept_engine.domain.audio.ports import AudioPort
+from purrcept_engine.domain.evidence.models import (
+    EvidenceInputError,
+    EvidencePage,
+    EvidenceSnapshot,
+)
 from purrcept_engine.domain.execution.catalog import (
     Binding,
     CapabilityDeclaration,
@@ -53,10 +58,12 @@ from purrcept_engine.domain.inputs.models import (
     MediaAsset,
     MediaReference,
 )
-from purrcept_engine.domain.knowledge.models import (
-    EvidencePage,
-    EvidenceSnapshot,
-    KnowledgeInputError,
+from purrcept_engine.domain.notebook.contracts import (
+    BackgroundModel,
+    BackgroundRetrySettings,
+    ModelRequirement,
+    NotebookRequirement,
+    NotebookStore,
 )
 from purrcept_engine.domain.subject.expression import ExpressionAssessment, ExpressionSink
 from purrcept_engine.domain.subject.models import InputProcessing
@@ -107,6 +114,8 @@ __all__ = [
     "AudioFact",
     "AudioOutputPort",
     "AudioPort",
+    "BackgroundModel",
+    "BackgroundRetrySettings",
     "Binding",
     "BodyIntent",
     "BodyPort",
@@ -121,6 +130,7 @@ __all__ = [
     "CommandKind",
     "DevicePanel",
     "DriverAcceptance",
+    "EvidenceInputError",
     "EvidencePage",
     "EvidencePort",
     "EvidenceSnapshot",
@@ -141,12 +151,14 @@ __all__ = [
     "InputSubmission",
     "JsonObject",
     "JsonValue",
-    "KnowledgeInputError",
     "LateResultPort",
     "MediaAsset",
     "MediaReference",
     "Minutes",
+    "ModelRequirement",
     "NativeInputPort",
+    "NotebookRequirement",
+    "NotebookStore",
     "ObjectDeclaration",
     "PanelControl",
     "PluginBlueprint",

@@ -1,10 +1,8 @@
-"""拥有可靠反馈桥接、局部行为评审与增量记忆整理的独立任务。
+"""拥有可靠反馈桥接与局部行为评审的独立任务。
 
-反馈桥接不依赖分析开关。两个分析用途各自领取、结案和续页，每批从空模型
-历史开始；它们共享持久的一小时传输额度，但不互相确认来源已读。行为评审
-默认六十秒或八个成功轮次触发，记忆整理默认三十分钟或三十二个成功轮次触发。
-Core 拥有工具循环，分析任务没有世界执行权限。单个分析故障仅停止自身，
-存储或可靠反馈故障仍阻止依赖同一权威提交的派发。
+反馈桥接不依赖评审开关。行为评审默认六十秒或八个成功轮次触发，
+每批从空模型历史开始，只提交有据监管和范围结案。Notebook 自己持有记忆整理，
+不借用本模块的队列、会话或任务。程序故障保留原型，资源关闭由宿主等待归还。
 """
 
 from __future__ import annotations
@@ -17,13 +15,13 @@ from purrcept_core.models import (
     SystemInstruction,
 )
 
-from purrcept_engine.domain.health import ComponentHealth
-from purrcept_engine.domain.inputs.models import MediaReference
-from purrcept_engine.domain.knowledge.models import (
+from purrcept_engine.domain.evidence.models import (
     SupervisionRecord,
 )
-from purrcept_engine.domain.knowledge.ports import KnowledgeStore
-from purrcept_engine.domain.knowledge.service import KnowledgeService
+from purrcept_engine.domain.evidence.ports import EvidenceStore
+from purrcept_engine.domain.evidence.service import EvidenceService
+from purrcept_engine.domain.health import ComponentHealth
+from purrcept_engine.domain.inputs.models import MediaReference
 from purrcept_engine.domain.subject.attention import NativeMedia
 from purrcept_engine.domain.subject.background_ports import BackgroundSettings, BackgroundStore
 from purrcept_engine.domain.subject.feedback_ports import FeedbackPort
@@ -47,8 +45,8 @@ class BackgroundService:
         self,
         store: BackgroundStore,
         feedback: FeedbackPort,
-        knowledge: KnowledgeService,
-        knowledge_store: KnowledgeStore,
+        evidence: EvidenceService,
+        evidence_store: EvidenceStore,
         *,
         reflection: SubjectModel,
         instructions: tuple[SystemInstruction, ...],
@@ -59,15 +57,14 @@ class BackgroundService:
         foreground_generation: Callable[[], int],
         interrupt_foreground: Callable[[int], bool],
         can_start: Callable[[], None],
-        behavior: SubjectModel | None = None,
     ) -> None:
         """保存明确端口。
 
         Args:
             store: 应用借出的领域存储端口，实际连接和关闭归资源所有者。
             feedback: 可靠反馈桥接与反思游标的有限同库端口。
-            knowledge: 原文展开与认识召回服务，修订仍经过反思批次契约。
-            knowledge_store: 同库认识端口，模型或插件不取得通用 SQL 权限。
+            evidence: 共享原文的版本化阅读服务；Notebook 独立提供长期记忆能力。
+            evidence_store: 同库证据和行为评审端口，模型或插件不取得通用 SQL 权限。
             reflection: 独立反思使用的模型、容量与预算声明。
             instructions: 稳定 system 指令序列，实时状态不得混入缓存前缀。
             settings: 当前组件已校验的配置或纯声明。
@@ -82,19 +79,12 @@ class BackgroundService:
             构造不建立任务、不读取材料、不调用模型。
         """
         self.store, self.feedback = store, feedback
-        self.knowledge, self.knowledge_store = knowledge, knowledge_store
+        self.evidence, self.evidence_store = evidence, evidence_store
         self.reflection, self.instructions, self.settings = reflection, instructions, settings
-        self.behavior = reflection if behavior is None else behavior
+        self.behavior = reflection
         self.media, self.refresh, self.prepare_history = media, refresh, prepare_history
         self.observe_foreground_generation = foreground_generation
         self.interrupt_foreground, self.can_start = interrupt_foreground, can_start
-        self.session = ContinuousSession(
-            store,
-            "memory_consolidation",
-            can_start=self.check,
-            compiler=reflection.compiler,
-            history_policy="batch",
-        )
         self.behavior_session = ContinuousSession(
             store,
             "behavior_review",
@@ -112,7 +102,6 @@ class BackgroundService:
         self.close_task: asyncio.Task[None] | None = None
 
         self.feedback_service = FeedbackService(self)
-        self.reflection_service = ReflectionService(self, purpose="memory")
         self.behavior_service = ReflectionService(self, purpose="behavior")
 
     @property
@@ -123,12 +112,7 @@ class BackgroundService:
     @property
     def pending_resources(self) -> int:
         """报告固定工作器、接管提交和仍借用模型的 Core 会话。"""
-        return (
-            len(self.tasks)
-            + len(self.commits)
-            + int(self.session.busy)
-            + int(self.behavior_session.busy)
-        )
+        return len(self.tasks) + len(self.commits) + int(self.behavior_session.busy)
 
     def check(self) -> None:
         """在新工作和真实模型边界撤销故障或关闭后的派发资格。
@@ -156,8 +140,6 @@ class BackgroundService:
         self.check()
         self.started = True
         workers: list[FeedbackService | ReflectionService] = [self.feedback_service]
-        if self.settings.memory_enabled:
-            workers.append(self.reflection_service)
         if self.settings.behavior_enabled:
             workers.append(self.behavior_service)
         for worker in workers:
@@ -173,7 +155,7 @@ class BackgroundService:
         """
         self.tasks.discard(task)
         if not task.cancelled() and (error := task.exception()) is not None:
-            for analysis in (self.reflection_service, self.behavior_service):
+            for analysis in (self.behavior_service,):
                 if task is analysis.task:
                     # 分析任务内部失败只撤销自身；可靠反馈与前台仍受真实存储资格保护。
                     analysis.health.fail(error)
@@ -181,7 +163,6 @@ class BackgroundService:
                     return
             self.failure_error = self.failure_error or error
             self.health.fail(error)
-            self.session.interrupt(self.session.generation)
             self.behavior_session.interrupt(self.behavior_session.generation)
             for other in self.tasks:
                 other.cancel()
@@ -274,9 +255,7 @@ class BackgroundService:
         for task in workers:
             task.cancel()
         try:
-            sessions = await asyncio.gather(
-                self.session.close(), self.behavior_session.close(), return_exceptions=True
-            )
+            sessions = await asyncio.gather(self.behavior_session.close(), return_exceptions=True)
             failures = [item for item in sessions if isinstance(item, BaseException)]
             if failures:
                 raise BaseExceptionGroup("后台会话归还失败。", failures)

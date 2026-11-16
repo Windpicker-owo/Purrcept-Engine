@@ -291,7 +291,7 @@ async def test_native_query_authority_failure_remains_fatal(
         PluginPorts(
             inputs,
             lambda: {},
-            EvidenceAccess(store.knowledge, 700),
+            EvidenceAccess(store.evidence, 700),
             late_results=LateCallResults(store, frozenset()),
             native_inputs=inputs,
         ),

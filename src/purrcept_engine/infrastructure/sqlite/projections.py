@@ -37,7 +37,7 @@ def runtime(connection: sqlite3.Connection) -> JsonObject:
         for row in counts
     ]
     sessions: list[JsonValue] = []
-    for scope in ("foreground", "memory_consolidation", "behavior_review"):
+    for scope in ("foreground", "behavior_review"):
         row = connection.execute(
             "SELECT version,active_turn FROM subject_sessions WHERE scope=?", (scope,)
         ).fetchone()

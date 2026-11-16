@@ -278,3 +278,12 @@ select:disabled { color: var(--pc-color-ink-muted); background: var(--pc-color-s
   .timeline-tools > .pc-form-field { width: 100%; }
   .topbar-age { white-space: normal; }
 }
+
+/* 配对二维码保留白底黑格与完整静区；不跟随主题换色，以便手机实际解码。 */
+.phone-connection, .phone-settings { display: grid; gap: var(--pc-space-md); min-width: 0; }
+.phone-qr-layout { display: flex; flex-wrap: wrap; align-items: center; gap: var(--pc-space-lg); }
+.phone-qr { width: min(100%, 280px); height: auto; flex-shrink: 0; }
+.phone-pair-instructions { flex: 1 1 220px; min-width: 0; }
+.phone-address, .phone-fingerprint { font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.phone-settings { max-width: 42em; }
+.phone-review { display: grid; gap: var(--pc-space-sm); }

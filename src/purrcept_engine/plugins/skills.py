@@ -25,7 +25,7 @@ class ParsedNote:
         body_start: 技能文件中正文的起始字符位置。
         version: 目标记录的确切版本，区别于可变的当前版本。
         byte_count: 当前内容实际占用的字节数。
-        occurred_at: 原始事实实际发生的 Unix 时间戳（秒）。
+        occurred_at: 同一文件句柄观察到的修改时间（Unix 秒），不是正文事件时间。
 
     Note:
         实例字段在构造后不可重新赋值；嵌套值的冻结范围由字段所属契约决定。
@@ -39,6 +39,7 @@ class ParsedNote:
     version: str
     byte_count: int
     occurred_at: float
+    summary: str | None = None
 
     @property
     def skill(self) -> bool:
@@ -73,7 +74,7 @@ def parse_note(
         content: 本次明确写入的完整正文。
         version: 目标记录的确切版本，区别于可变的当前版本。
         byte_count: 当前内容实际占用的字节数。
-        occurred_at: 原始事实实际发生的 Unix 时间戳（秒）。
+        occurred_at: 同一文件句柄观察到的修改时间（Unix 秒），不是正文事件时间。
 
     Returns:
         笔记路径、版本和完整正文的解析结果。
@@ -93,7 +94,7 @@ def parse_note(
                 body_start = offset
                 for item in lines[1:index]:
                     key, separator, value = item.strip().partition(":")
-                    if separator and key.lower() in ("name", "description"):
+                    if separator and key.lower() in ("name", "description", "summary"):
                         value = value.strip()
                         if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
                             value = value[1:-1]
@@ -115,4 +116,24 @@ def parse_note(
         version,
         byte_count,
         occurred_at,
+        metadata.get("summary"),
     )
+
+
+def note_preview(note: ParsedNote, *, max_chars: int = 140) -> str:
+    """优先采用显式摘要，否则用正文首个非空行提供有界目录线索。"""
+    if note.summary:
+        return " ".join(note.summary.split())[:max_chars]
+    for line in note.content[note.body_start :].splitlines():
+        preview = " ".join(line.lstrip("# ").split())
+        if preview:
+            return preview[:max_chars]
+    return ""
+
+
+def note_overview(note: ParsedNote) -> str:
+    """从整理页的固定概览区读取 L1；手写页没有概览时只返回目录摘要。"""
+    marker = "## 概览\n"
+    if marker in note.content:
+        return note.content.split(marker, 1)[1].split("\n## ", 1)[0].strip()
+    return note_preview(note)

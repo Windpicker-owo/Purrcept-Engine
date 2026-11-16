@@ -43,15 +43,15 @@ me.bed.rest(...)  # 睡觉：普通刺激只记历史
   写入 `engine.sqlite3`，请求与回执都可追溯。
 - **会睡觉，也会主动想起你。** `me.bed.rest` 后只有高优先刺激能唤醒主脑；开启主动
   思考后，空闲满间隔会以 `subject.idle` 保底唤起一次。
-- **长期记忆靠反思，不靠聊天记录。** 独立记忆整理通过 `revise_memory` 有据写入，冲突
-  记忆保留双向反证与版本。
+- **长期记忆属于 Notebook。** 主体主动按日记手账，插件独立整理有据专题页；
+  Markdown 是唯一记忆权威，按需检索和逐层阅读。
 - **可以主动评价她的行为。** WebUI“行为审查”展示当轮刺激和完整行动，可选择
-  好/坏并留言；评价持久交给主脑、局部行为评审与记忆整理，分别保留交接责任。
+  好/坏并留言；评价持久交给主脑与局部行为评审；主体主动记下的经验可由 Notebook 整理。
 
 ## 工作方式
 
 <p align="center">
-  <img src="./assets/readme/lifecycle.svg" width="100%" alt="一条刺激的生命周期：01 接管（InputAdmissionService）、02 注意（StimulusCoordinator，observe/wake/urgent）、03 主脑（ContinuousSession）、04 行动（隔离 Worker 与 me.* 能力）、05 记忆（revise_memory），随后回到注意持续循环。">
+  <img src="./assets/readme/lifecycle.svg" width="100%" alt="一条刺激的生命周期：01 接管（InputAdmissionService）、02 注意（StimulusCoordinator，observe/wake/urgent）、03 主脑（ContinuousSession）、04 行动（隔离 Worker 与 me.* 能力）、05 记忆（Notebook），随后回到注意持续循环。">
 </p>
 
 收件箱遵循最高级统一原则：出现唤醒级刺激时，整个收件箱随它交给主脑。主脑空闲时
@@ -68,6 +68,7 @@ me.bed.rest(...)  # 睡觉：普通刺激只记历史
 | `clock` | 读取时间、设置闹钟（`me.clock.*`） | 非 UTC 时区需 `time` |
 | `bed` | 睡眠与起床（`me.bed.*`） | — |
 | `qq` | 经 OneBot WebSocket 收发消息、文件与 QQ 空间（`me.phone.qq.*`） | `qq` |
+| `phone` | 安卓手机文字聊天、显式连接、截图及基础操作（`me.phone.*`）；[接入说明](docs/phone.md) | `phone` |
 | `computer` | 连接电脑、截图、连续观察与宿主 PowerShell 命令（`me.computer.*`） | — |
 | `browser` | 搜索、打开、阅读网页（`me.computer.browser.*`） | `browser` |
 | `meme` | 中文梗检索、详情、本地收藏与每日刺激提醒（`me.computer.meme.*`） | 非 UTC 时区需 `time`；[说明](src/purrcept_engine/plugins/meme/README.md) |
@@ -145,7 +146,7 @@ uv run purrcept-engine run
 ```text
 src/purrcept_engine/
 ├── app/              配置、显式装配、Host 生命周期，以及 CLI/Web/调音室入口
-├── domain/           主体、执行契约、活动、认识、上下文和业务值
+├── domain/           主体、执行契约、活动、证据、Notebook 契约、上下文和业务值
 ├── infrastructure/   SQLite、模型 SDK、隔离执行器与进程等资源实现
 ├── plugin_system/    插件及替换执行器的统一公开契约
 └── plugins/          显式启用的具体设备与应用业务

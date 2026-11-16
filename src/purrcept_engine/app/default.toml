@@ -53,9 +53,6 @@ proactive_idle_seconds = 300.0 # 无新刺激或主脑未激活达到此间隔�
 reflection_batch_seconds = 60.0
 reflection_batch_turns = 8
 behavior_review_enabled = true
-memory_consolidation_enabled = true
-memory_batch_seconds = 1800.0
-memory_batch_turns = 32
 
 # 六项固定身份缺省为 None；配置需要的字符串，不从认识或人员权限恢复。
 [subject.character]
@@ -114,3 +111,20 @@ checkpoint_seconds = 5.0
 # seed_examples = true
 # file_max_bytes = 20971520  # 原始附件上限；Markdown 正文仍使用 max_bytes。
 # file_timeout_seconds = 30.0
+
+# Notebook 自动整理独立于 subject.reflection；启用时显式填写生成模型名称。
+# [plugins.config.consolidation]
+# enabled = true
+# model = "foreground"
+# batch_seconds = 1800.0
+# batch_changes = 32
+# max_sources = 32
+# max_requests = 8
+# turn_seconds = 600.0
+
+# 可选向量混合检索，独立于 consolidation.enabled；省略时只用关键词。
+# [plugins.config.embedding]
+# model = "openai/your-embedding-model"
+# model_id = "notebook-embedding-v1"  # 模型或版本变化时更换空间标识。
+# api_base = "http://127.0.0.1:8000/v1"
+# timeout_seconds = 30.0

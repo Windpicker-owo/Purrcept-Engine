@@ -12,10 +12,10 @@ import json
 import sqlite3
 import time
 
-from purrcept_engine.domain.knowledge.models import (
+from purrcept_engine.domain.evidence.models import (
     BehaviorConclusion,
+    EvidenceInputError,
     EvidenceSnapshot,
-    KnowledgeInputError,
     ObservationAssessment,
     ReflectionBatch,
     SupervisionNotice,
@@ -46,10 +46,10 @@ SCHEMA = (
 def normalize_notice(batch: ReflectionBatch, notice: SupervisionNotice) -> SupervisionNotice:
     """局部评审建议必须有可匹配范围、可观察目标与有限有效期。"""
     if notice.scope is None or notice.expected_change is None:
-        raise KnowledgeInputError("纠偏建议必须声明 scope 和 expected_change。")
+        raise EvidenceInputError("纠偏建议必须声明 scope 和 expected_change。")
     expires = (batch.created_at or time.time()) + 7 * 86400
     if notice.expires_at is not None and notice.expires_at > expires:
-        raise KnowledgeInputError("纠偏观察有效期不能超过七天。")
+        raise EvidenceInputError("纠偏观察有效期不能超过七天。")
     return notice.model_copy(update={"expires_at": notice.expires_at or expires})
 
 
@@ -70,7 +70,7 @@ def notice_key(notice: SupervisionNotice) -> str:
 
 def record_opportunities(connection: sqlite3.Connection, turn_id: str) -> None:
     """成功前台轮次完成时，同事务登记匹配建议的有限后续观察机会。"""
-    from purrcept_engine.infrastructure.sqlite import knowledge
+    from purrcept_engine.infrastructure.sqlite import evidence
 
     rows = connection.execute(
         "SELECT n.payload_json,o.opportunities FROM knowledge_supervision n JOIN "
@@ -139,7 +139,7 @@ def record_opportunities(connection: sqlite3.Connection, turn_id: str) -> None:
             for (action_id,) in action_rows
             if (action := execution.get_action_in_transaction(connection, action_id)) is not None
         ]
-        knowledge.put_evidence_in_transaction(
+        evidence.put_evidence_in_transaction(
             connection,
             EvidenceSnapshot(
                 evidence_id=identity,
@@ -173,7 +173,7 @@ def finish(
         ).fetchone()
         is None
     ):
-        raise KnowledgeInputError("suggestion 必须对应本批实际保存的监管建议。")
+        raise EvidenceInputError("suggestion 必须对应本批实际保存的监管建议。")
     for observation in result.observations:
         apply_observation(connection, batch, observation)
     connection.execute(
@@ -192,7 +192,7 @@ def apply_observation(
         (observation.notice_id, observation.turn_id),
     ).fetchone()
     if row is None:
-        raise KnowledgeInputError("观察不对应真实的相关前台轮次。")
+        raise EvidenceInputError("观察不对应真实的相关前台轮次。")
     qualified = connection.execute(
         "SELECT 1 FROM reflection_presented p JOIN knowledge_slices s USING(slice_ref) "
         "WHERE p.batch_id=? AND p.version=? AND s.evidence_id=? AND s.slice_ref IN "
@@ -200,9 +200,9 @@ def apply_observation(
         (batch.batch_id, batch.version, row[0], json.dumps(observation.evidence)),
     ).fetchone()
     if qualified is None:
-        raise KnowledgeInputError("观察证据尚未在本批真实呈现。")
+        raise EvidenceInputError("观察证据尚未在本批真实呈现。")
     if row[1] is not None and row[2] != observation.model_dump_json():
-        raise KnowledgeInputError("同一观察机会已有不同结论。")
+        raise EvidenceInputError("同一观察机会已有不同结论。")
     connection.execute(
         "UPDATE supervision_observations SET outcome=?,payload_json=? WHERE "
         "notice_id=? AND turn_id=?",

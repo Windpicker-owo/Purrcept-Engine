@@ -85,9 +85,9 @@ async def test_sleep_flood_is_recorded_with_media_and_evidence_without_pending_q
                 record is not None and record.text == original.text and record.state == "processed"
             )
             assert await store.get_media(record.media[0].media_id) == original.media[0].content
-            evidence = await store.knowledge.get_evidence(identity)
+            evidence = await store.evidence.get_evidence(identity)
             assert evidence is not None and evidence.text == original.text
-        assert len(await store.knowledge.pending_reflection(limit=32)) == 20
+        assert len(await store.evidence.pending_review(limit=32)) == 20
         direct = await store.admit(_input("wake", priority=True))
         assert [record.input_id for record in await store.pending()] == [direct.input_id]
         oversized = replace(

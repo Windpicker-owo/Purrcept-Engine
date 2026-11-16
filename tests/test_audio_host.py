@@ -204,7 +204,6 @@ async def test_default_record_file_passes_through_real_worker_to_qq_without_inli
                 "foreground": "main",
                 "reflection": "main",
                 "behavior_review_enabled": False,
-                "memory_consolidation_enabled": False,
             },
             "plugins": [
                 {

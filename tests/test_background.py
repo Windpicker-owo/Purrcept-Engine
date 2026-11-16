@@ -42,6 +42,13 @@ from purrcept_engine.domain.context.capacity import (
     GenerationCapacity,
     check_capacity,
 )
+from purrcept_engine.domain.evidence.models import (
+    EvidenceSnapshot,
+    ObservationScope,
+    SupervisionNotice,
+    WakeupPlan,
+)
+from purrcept_engine.domain.evidence.service import EvidenceService
 from purrcept_engine.domain.inputs.models import (
     InputContext,
     InputSource,
@@ -49,16 +56,6 @@ from purrcept_engine.domain.inputs.models import (
     MediaAsset,
     MediaReference,
 )
-from purrcept_engine.domain.knowledge.models import (
-    Deferred,
-    EvidenceSnapshot,
-    FindingAssessment,
-    FinishSubmission,
-    Review,
-    SupervisionNotice,
-    WakeupPlan,
-)
-from purrcept_engine.domain.knowledge.service import KnowledgeService
 from purrcept_engine.domain.model_requests.service import RequestBudget
 from purrcept_engine.domain.subject.background import BackgroundService
 from purrcept_engine.domain.subject.background_ports import BackgroundSettings
@@ -94,7 +91,7 @@ async def store(tmp_path: Path) -> AsyncIterator[Store]:
 
 
 async def _source(store: Store, identity: str, text: str = "真实来源") -> None:
-    await store.knowledge.put_evidence(
+    await store.evidence.put_evidence(
         EvidenceSnapshot(
             evidence_id=identity,
             version=1,
@@ -206,7 +203,7 @@ class Backend:
         references = initial.metadata["source_slice_refs"]
         assert isinstance(references, tuple) and all(isinstance(item, str) for item in references)
         source_refs = tuple(item for item in references if isinstance(item, str))
-        batch = await self.store.knowledge.get_reflection(identity, 1)
+        await self.store.evidence.get_reflection(identity, 1)
         self.entered.set()
         if self.mode == "block":
             try:
@@ -221,40 +218,17 @@ class Backend:
             if self.mode in ("write_fail", "finish_fail"):
                 raise ModelRequestError("合成明确响应错误", provider="test")
             return ModelResponse(Message.assistant("内部收尾"))
-        if self.mode == "write_fail":
-            call = ToolCallBlock(
-                "write",
-                "revise_memory",
-                arguments={
-                    "id": "memory",
-                    "content": "保留否定和对象。",
-                    "sources": list(references),
-                    "base_version": 0,
-                },
-            )
-        else:
-            submission = FinishSubmission(
-                reviews=()
-                if self.mode == "defer"
-                else (
-                    Review(
-                        issue="当前来源",
-                        evidence=source_refs,
-                        conclusion="保留真实范围。",
-                        memory_decision="no_change",
-                        reason="当前无需形成新认识。",
-                    ),
-                ),
-                deferred=(Deferred(evidence=source_refs, reason="需要后续独立来源。"),)
-                if self.mode == "defer"
-                else (),
-                findings=tuple(
-                    FindingAssessment(id=item.id, status="uncertain", reason="事实仍需核对。")
-                    for item in batch.findings
-                ),
-            )
-            arguments = decode_object(submission.model_dump_json(exclude_none=True).encode("utf-8"))
-            call = ToolCallBlock("finish", "finish_reflection", arguments=arguments)
+        arguments: JsonObject = {
+            "decision": "no_intervention",
+            "conclusion": "保留真实范围。",
+            "evidence": list(source_refs),
+        }
+        if self.mode == "defer":
+            arguments["deferred"] = [
+                {"evidence": list(source_refs), "reason": "需要后续独立来源。"}
+            ]
+            arguments["evidence"] = []
+        call = ToolCallBlock("finish", "submit_behavior_review", arguments=arguments)
         return ModelResponse(Message(MessageRole.ASSISTANT, (call,)))
 
 
@@ -284,8 +258,8 @@ async def _background(
     value = BackgroundService(
         store,
         store.feedback,
-        KnowledgeService(store.knowledge),
-        store.knowledge,
+        EvidenceService(store.evidence),
+        store.evidence,
         reflection=SubjectModel(
             backend,
             "openai/test",
@@ -299,8 +273,7 @@ async def _background(
             4096,
             page_chars=page_chars,
             batch_seconds=seconds,
-            memory_batch_seconds=seconds,
-            behavior_enabled=False,
+            behavior_enabled=True,
         ),
         media=media,
         refresh=_refresh,
@@ -323,7 +296,7 @@ async def _finished(store: Store, backend: Backend, *, state: str = "completed")
     )
     identity = metadata["reflection_batch"]
     assert isinstance(identity, str)
-    return (await store.knowledge.get_reflection(identity, 1)).state == state
+    return (await store.evidence.get_reflection(identity, 1)).state == state
 
 
 async def test_first_receipt_reflects_only_and_late_version_wakes_once(store: Store) -> None:
@@ -332,7 +305,7 @@ async def test_first_receipt_reflects_only_and_late_version_wakes_once(store: St
     first = await store.feedback.bridge(now=time.time())
     assert first.foreground_ids == () and first.changed
     assert await store.pending_call_receipts() == ()
-    raw = await store.knowledge.get_evidence("call:call:1")
+    raw = await store.evidence.get_evidence("call:call:1")
     assert raw is not None and '"state":"unknown"' in raw.text
     assert (await store.feedback.reflection_state()).priority
     await _result(store, "call", "confirmed")
@@ -341,8 +314,8 @@ async def test_first_receipt_reflects_only_and_late_version_wakes_once(store: St
     wake = await store.get_input(second.foreground_ids[0])
     assert wake is not None and wake.context.minimum_wake and '"state":"confirmed"' in wake.text
     assert (await store.feedback.bridge(now=time.time())).foreground_ids == ()
-    assert (await store.knowledge.get_evidence("call:call:1")) == raw
-    pending = await store.knowledge.pending_reflection()
+    assert (await store.evidence.get_evidence("call:call:1")) == raw
+    pending = await store.evidence.pending_review()
     assert {item.evidence_id for item in pending} == {"call:call:1", "call:call:2"}
 
 
@@ -392,13 +365,13 @@ async def test_receipt_media_is_real_same_blob_for_evidence_and_foreground(store
     await _result(store, "call", "confirmed", media=original.media)
     result = await store.feedback.bridge(now=time.time())
     wake = await store.get_input(result.foreground_ids[0])
-    snapshot = await store.knowledge.get_evidence("call:call:2")
+    snapshot = await store.evidence.get_evidence("call:call:2")
     assert wake is not None and snapshot is not None
     assert wake.media == original.media == snapshot.media
     assert await store.get_media(wake.media[0].media_id) == b"actual-pixels"
 
 
-async def test_memory_drains_reviewed_pages_without_new_epoch(store: Store) -> None:
+async def test_behavior_drains_reviewed_pages_without_new_epoch(store: Store) -> None:
     """成功页的续读是尚未尝试范围，不需要新事实再次触发。"""
     await _source(store, "long", "a" * 25)
     backend = Backend(store)
@@ -407,48 +380,20 @@ async def test_memory_drains_reviewed_pages_without_new_epoch(store: Store) -> N
         await background.start()
 
         async def drained() -> bool:
-            return not await store.knowledge.pending_reflection()
+            return not await store.evidence.pending_review()
 
         await _wait_for(drained)
         await _wait_for(lambda: _session_idle(background))
         assert len(backend.requests) == 6
         assert tuple(tool.name for tool in backend.requests[0].tools) == (
-            "recall",
             "read_evidence",
-            "revise_memory",
-            "finish_reflection",
+            "supervise",
+            "submit_behavior_review",
         )
 
 
 async def _session_idle(background: BackgroundService) -> bool:
-    return not background.session.busy
-
-
-@pytest.mark.parametrize("mode", ["final", "defer", "write_fail", "finish_fail"])
-async def test_completion_and_partial_writes_remain_independent_after_batch_failure(
-    store: Store,
-    mode: Literal["final", "defer", "write_fail", "finish_fail"],
-) -> None:
-    await _source(store, "source")
-    backend = Backend(store, mode)
-    async with AsyncExitStack() as stack:
-        background = await _background(store, stack, backend)
-        await background.start()
-        expected = "interrupted" if mode in ("final", "write_fail") else "completed"
-        await _wait_for(lambda: _finished(store, backend, state=expected))
-        await _wait_for(lambda: _session_idle(background))
-        count = len(backend.requests)
-        await asyncio.sleep(0.03)
-        assert len(backend.requests) == count and background.failure is None
-        if mode == "write_fail":
-            memory = await store.knowledge.get_memory("memory")
-            assert memory is not None and memory.patch.content == "保留否定和对象。"
-        if mode == "finish_fail":
-            assert await store.knowledge.pending_reflection() == ()
-            assert (await store.get_session("memory_consolidation")).version == 0
-        if mode == "final":
-            pending = await store.knowledge.pending_reflection()
-            assert len(pending) == 1 and pending[0].reviewed_slice_refs == ()
+    return not background.behavior_session.busy
 
 
 async def test_new_independent_source_starts_without_prior_review_history(
@@ -464,7 +409,7 @@ async def test_new_independent_source_starts_without_prior_review_history(
         await _source(store, "second", "新的独立材料")
 
         async def twice() -> bool:
-            return (await store.get_session("memory_consolidation")).version == 2
+            return (await store.get_session("behavior_review")).version == 2
 
         await _wait_for(twice)
         assert len(backend.requests) == 4
@@ -496,13 +441,13 @@ async def test_actual_unknown_is_priority_even_with_long_ordinary_timer(store: S
 async def test_due_plan_once_foreground_does_not_resolve_plan(store: Store) -> None:
     await _source(store, "source")
     plan = WakeupPlan(id="plan", due=time.time() + 0.01, reason="独立后续约定", evidence="source")
-    await store.knowledge.plan_wakeup(plan)
+    await store.evidence.plan_wakeup(plan)
     assert await store.feedback.next_plan_at() == plan.due
     assert not (await store.feedback.bridge(now=plan.due - 1)).foreground_ids
     actual = await store.feedback.bridge(now=plan.due)
     assert len(actual.foreground_ids) == 1
     assert await store.feedback.next_plan_at() is None
-    assert await store.knowledge.pending_plans() == (plan,)
+    assert await store.evidence.pending_plans() == (plan,)
     assert not (await store.feedback.bridge(now=plan.due + 100)).foreground_ids
 
 
@@ -535,14 +480,16 @@ async def test_feedback_worker_does_not_query_analysis_statistics(
 
 async def test_supervision_scan_does_not_steal_original_urgent_generation(store: Store) -> None:
     await _source(store, "source")
-    page = await store.knowledge.read_evidence("source")
+    page = await store.evidence.read_evidence("source")
     assert page.slice is not None
-    batch = await store.knowledge.begin_reflection("batch", (page.slice.slice_ref,))
-    await store.knowledge.mark_presented(batch.batch_id, batch.version, (page.slice.slice_ref,))
-    record = await store.knowledge.supervise(
+    batch = await store.evidence.begin_reflection("batch", (page.slice.slice_ref,))
+    await store.evidence.mark_presented(batch.batch_id, batch.version, (page.slice.slice_ref,))
+    record = await store.evidence.supervise(
         batch.batch_id,
         batch.version,
         SupervisionNotice(
+            scope=ObservationScope(adapter_id="test"),
+            expected_change="依据实际事实调整",
             id="notice",
             issue="具体问题",
             evidence=(page.slice.slice_ref,),
@@ -590,7 +537,7 @@ async def test_one_epoch_drains_all_unattempted_sources_without_new_facts(
         await background.start()
 
         async def drained() -> bool:
-            return not await store.knowledge.pending_reflection()
+            return not await store.evidence.pending_review()
 
         await _wait_for(drained)
         await _wait_for(lambda: _session_idle(background))
@@ -620,7 +567,7 @@ async def test_unrelated_fact_cannot_reset_failed_or_deferred_range(
 
         async def fresh_done() -> bool:
             return all(
-                item.evidence_id != "fresh" for item in await store.knowledge.pending_reflection()
+                item.evidence_id != "fresh" for item in await store.evidence.pending_review()
             )
 
         await _wait_for(fresh_done)
@@ -628,128 +575,9 @@ async def test_unrelated_fact_cannot_reset_failed_or_deferred_range(
         latest = backend.requests[count].messages[0]
         refs = latest.metadata["source_slice_refs"]
         assert isinstance(refs, tuple)
-        fragments = [await store.knowledge.get_slice(ref) for ref in refs if isinstance(ref, str)]
+        fragments = [await store.evidence.get_slice(ref) for ref in refs if isinstance(ref, str)]
         assert all(item is not None and item.evidence_id == "fresh" for item in fragments)
         assert len(backend.requests) == count + 2
-
-
-class HistoryBackend(Backend):
-    """第一批真实展开额外原文，重开后新批只引用已有检查点中的该工具结果。"""
-
-    def __init__(self, store: Store, *, previous_reference: str | None = None) -> None:
-        super().__init__(store)
-        self.previous_reference = previous_reference
-
-    async def generate(
-        self, request: ModelRequest, *, model: str, emit: ModelEventSink | None = None
-    ) -> ModelResponse:
-        step = len(self.requests)
-        self.requests.append(request)
-        self.entered.set()
-        if step == 0:
-            if self.previous_reference is None:
-                call = ToolCallBlock(
-                    "historical-read", "read_evidence", arguments={"id": "expanded"}
-                )
-            else:
-                call = ToolCallBlock(
-                    "historical-write",
-                    "revise_memory",
-                    arguments={
-                        "id": "recovered",
-                        "content": "引用原工具结果。",
-                        "sources": [self.previous_reference],
-                    },
-                )
-        elif step == 1:
-            initial = next(
-                message
-                for message in reversed(request.messages)
-                if "reflection_batch" in message.metadata
-            )
-            references = initial.metadata["source_slice_refs"]
-            assert isinstance(references, tuple)
-            submission = FinishSubmission(
-                reviews=(
-                    Review(
-                        issue="当前来源",
-                        evidence=tuple(item for item in references if isinstance(item, str)),
-                        conclusion="保持真实覆盖。",
-                        memory_decision="no_change",
-                        reason="当前无需新认识。",
-                    ),
-                ),
-                deferred=(),
-                findings=(),
-            )
-            call = ToolCallBlock(
-                "finish",
-                "finish_reflection",
-                arguments=decode_object(submission.model_dump_json().encode("utf-8")),
-            )
-        else:
-            return ModelResponse(Message.assistant("内部收尾"))
-        return ModelResponse(Message(MessageRole.ASSISTANT, (call,)))
-
-
-@pytest.mark.parametrize("revoked", [False, True])
-async def test_reopened_batch_rejects_prior_delivery_as_current_read_qualification(
-    tmp_path: Path,
-    revoked: bool,
-) -> None:
-    """真实 Core 历史跨进程保留完整工具结果，后台新批据此取得确切切片覆盖。"""
-    path = tmp_path / "history.sqlite3"
-    first = await Store.open(path)
-    try:
-        await _source(first, "first")
-        await first.knowledge.put_evidence(
-            EvidenceSnapshot(
-                evidence_id="expanded",
-                version=1,
-                kind="test",
-                text="工具展开的原始事实",
-                source_json='{"plugin":"test"}',
-                occurred_at=10.0,
-            ),
-            needs_reflection=False,
-        )
-        expanded = await first.knowledge.read_evidence("expanded")
-        assert expanded.slice is not None
-        reference = expanded.slice.slice_ref
-        backend = HistoryBackend(first)
-        async with AsyncExitStack() as stack:
-            background = await _background(first, stack, backend)
-            await background.start()
-
-            async def committed() -> bool:
-                return (await first.get_session("memory_consolidation")).version == 1
-
-            await _wait_for(committed)
-            assert len(backend.requests) == 3
-    finally:
-        await first.close()
-    reopened = await Store.open(path)
-    try:
-        await _source(reopened, "fresh")
-        if revoked:
-            await reopened.knowledge.revoke_evidence("expanded", 1)
-        backend = HistoryBackend(reopened, previous_reference=reference)
-        async with AsyncExitStack() as stack:
-            background = await _background(reopened, stack, backend)
-            await background.start()
-
-            async def restored() -> bool:
-                return (await reopened.get_session("memory_consolidation")).version == 2
-
-            await _wait_for(restored)
-            memory = await reopened.knowledge.get_memory("recovered")
-            assert memory is None
-            assert not any(
-                message.name == "read_evidence" for message in backend.requests[0].messages
-            )
-            assert len(backend.requests) == 3
-    finally:
-        await reopened.close()
 
 
 async def test_reopen_receipt_and_epoch_claims_do_not_replay(tmp_path: Path) -> None:
@@ -760,7 +588,7 @@ async def test_reopen_receipt_and_epoch_claims_do_not_replay(tmp_path: Path) -> 
         await _result(store, "call", "unknown")
         await store.feedback.bridge(now=time.time())
         state = await store.feedback.reflection_state()
-        page = await store.knowledge.read_evidence("call:call:1")
+        page = await store.evidence.read_evidence("call:call:1")
         assert await store.feedback.reserve_reflection(
             batch_id="batch", epoch=state.epoch, pages=(page,), successful_turns=0
         )
@@ -771,7 +599,7 @@ async def test_reopen_receipt_and_epoch_claims_do_not_replay(tmp_path: Path) -> 
         assert not (await reopened.feedback.bridge(now=time.time())).changed
         state = await reopened.feedback.reflection_state()
         assert await reopened.feedback.reflection_sources(epoch=state.epoch) == ()
-        snapshot = await reopened.knowledge.get_evidence("call:call:1")
+        snapshot = await reopened.evidence.get_evidence("call:call:1")
         assert snapshot is not None and '"state":"unknown"' in snapshot.text
     finally:
         await reopened.close()
@@ -789,7 +617,7 @@ async def test_atomic_outbox_survives_input_capacity_and_failed_admission(tmp_pa
         blocked = await store.feedback.bridge(now=time.time())
         assert blocked.blocked and blocked.foreground_ids == ()
         assert await store.pending_call_receipts() == ()
-        assert await store.knowledge.get_evidence("call:call:2") is not None
+        assert await store.evidence.get_evidence("call:call:2") is not None
         await store.complete_input(occupied)
         recovered = await store.feedback.bridge(now=time.time())
         assert len(recovered.foreground_ids) == 1 and not recovered.blocked
@@ -845,7 +673,7 @@ async def test_activity_two_responsibilities_transfer_to_durable_foreground_and_
         assert await store.pending_activity_feedback("reflection") == (feedback,)
         result = await store.feedback.bridge(now=now)
         assert result.blocked and not result.foreground_ids
-        snapshot = await store.knowledge.get_evidence("activity:feedback")
+        snapshot = await store.evidence.get_evidence("activity:feedback")
         assert snapshot is not None and "实际需要选择" in snapshot.text
         assert await store.pending_activity_feedback("foreground") == ()
         assert await store.pending_activity_feedback("reflection") == ()
@@ -880,7 +708,7 @@ async def test_feedback_sql_failure_retains_original_receipt_and_stops_new_write
             await store.feedback.bridge(now=time.time())
         pending = await store.pending_call_receipts()
         assert len(pending) == 1 and pending[0].state == "confirmed"
-        assert await store.knowledge.get_evidence("call:call:1") is None
+        assert await store.evidence.get_evidence("call:call:1") is None
         with pytest.raises(StorageError):
             await store.begin_action("blocked", catalog_version="catalog", source="return None")
     finally:
@@ -945,17 +773,19 @@ async def test_more_than_thirty_two_unanswered_notices_do_not_starve_new_deliver
     store: Store,
 ) -> None:
     await _source(store, "source")
-    page = await store.knowledge.read_evidence("source")
+    page = await store.evidence.read_evidence("source")
     assert page.slice is not None
-    batch = await store.knowledge.begin_reflection("batch", (page.slice.slice_ref,))
-    await store.knowledge.mark_presented(batch.batch_id, batch.version, (page.slice.slice_ref,))
+    batch = await store.evidence.begin_reflection("batch", (page.slice.slice_ref,))
+    await store.evidence.mark_presented(batch.batch_id, batch.version, (page.slice.slice_ref,))
     for ordinal in range(35):
-        await store.knowledge.supervise(
+        await store.evidence.supervise(
             batch.batch_id,
             batch.version,
             SupervisionNotice(
+                scope=ObservationScope(adapter_id="test"),
+                expected_change="依据实际事实调整",
                 id=f"notice:{ordinal}",
-                issue="具体问题",
+                issue=f"具体问题 {ordinal}",
                 evidence=(page.slice.slice_ref,),
                 suggestion=f"意见 {ordinal}",
                 level="reminder",
@@ -965,7 +795,7 @@ async def test_more_than_thirty_two_unanswered_notices_do_not_starve_new_deliver
     for _ in range(3):
         ids.extend((await store.feedback.bridge(now=time.time())).foreground_ids)
     assert len(ids) == 35 and len(set(ids)) == 35
-    assert len(await store.knowledge.pending_supervision()) == 32
+    assert len(await store.evidence.pending_supervision()) == 32
     assert not (await store.feedback.bridge(now=time.time())).foreground_ids
 
 
@@ -1023,14 +853,16 @@ async def test_blocked_urgent_signal_keeps_original_generation_until_real_admiss
     try:
         occupied = await _admit(store, "occupied")
         await _source(store, "source")
-        page = await store.knowledge.read_evidence("source")
+        page = await store.evidence.read_evidence("source")
         assert page.slice is not None
-        batch = await store.knowledge.begin_reflection("batch", (page.slice.slice_ref,))
-        await store.knowledge.mark_presented(batch.batch_id, batch.version, (page.slice.slice_ref,))
-        notice = await store.knowledge.supervise(
+        batch = await store.evidence.begin_reflection("batch", (page.slice.slice_ref,))
+        await store.evidence.mark_presented(batch.batch_id, batch.version, (page.slice.slice_ref,))
+        notice = await store.evidence.supervise(
             batch.batch_id,
             batch.version,
             SupervisionNotice(
+                scope=ObservationScope(adapter_id="test"),
+                expected_change="依据实际事实调整",
                 id="notice",
                 issue="具体问题",
                 evidence=(page.slice.slice_ref,),
@@ -1057,14 +889,16 @@ async def test_supervision_source_revoked_before_quota_recovers_is_not_delivered
     try:
         occupied = await _admit(store, "occupied")
         await _source(store, "source")
-        page = await store.knowledge.read_evidence("source")
+        page = await store.evidence.read_evidence("source")
         assert page.slice is not None
-        batch = await store.knowledge.begin_reflection("batch", (page.slice.slice_ref,))
-        await store.knowledge.mark_presented(batch.batch_id, batch.version, (page.slice.slice_ref,))
-        record = await store.knowledge.supervise(
+        batch = await store.evidence.begin_reflection("batch", (page.slice.slice_ref,))
+        await store.evidence.mark_presented(batch.batch_id, batch.version, (page.slice.slice_ref,))
+        record = await store.evidence.supervise(
             batch.batch_id,
             batch.version,
             SupervisionNotice(
+                scope=ObservationScope(adapter_id="test"),
+                expected_change="依据实际事实调整",
                 id="notice",
                 issue="具体问题",
                 evidence=(page.slice.slice_ref,),
@@ -1073,7 +907,7 @@ async def test_supervision_source_revoked_before_quota_recovers_is_not_delivered
             ),
         )
         assert (await store.feedback.dispatch_supervision(record, observed_generation=7)).blocked
-        await store.knowledge.revoke_evidence("source", 1)
+        await store.evidence.revoke_evidence("source", 1)
         await store.complete_input(occupied)
         result = await store.feedback.bridge(now=time.time())
         assert result.foreground_ids == () and result.urgent_generations == ()
@@ -1091,10 +925,10 @@ async def test_internal_analysis_failure_keeps_feedback_running(store: Store) ->
         await background.start()
 
         async def faulted() -> bool:
-            return background.reflection_service.health.error is not None
+            return background.behavior_service.health.error is not None
 
         await _wait_for(faulted)
-        assert isinstance(background.reflection_service.health.error, LookupError)
+        assert isinstance(background.behavior_service.health.error, LookupError)
         assert background.failure is None
         background.check()
         await _source(store, "independent")
@@ -1139,7 +973,7 @@ async def test_close_holds_cancelled_feedback_commit_until_real_database_return(
         await closing
         assert background.pending_resources == 0
         assert await store.pending_call_receipts() == ()
-        assert await store.knowledge.get_evidence("call:call:1") is not None
+        assert await store.evidence.get_evidence("call:call:1") is not None
 
 
 @pytest.mark.parametrize("limit", [0, -1, 33])
@@ -1188,7 +1022,7 @@ async def test_actual_eight_request_limit_abandons_once_and_new_fact_gets_next_b
         await _source(store, "fresh")
 
         async def committed() -> bool:
-            return (await store.get_session("memory_consolidation")).version == 1
+            return (await store.get_session("behavior_review")).version == 1
 
         await _wait_for(committed)
         assert len(backend.requests) == 10 and background.failure is None

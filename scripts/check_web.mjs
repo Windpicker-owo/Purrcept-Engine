@@ -64,6 +64,10 @@ const assets = new Map(await Promise.all([...files].map(async ([route, [name, ty
   body: await readFile(new URL(`../src/purrcept_engine/app/static/${name}`, import.meta.url)), type,
 }])));
 const server = createServer(async (req, res) => {
+  if (req.method === 'GET' && req.url === '/api/phone/setup') {
+    res.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify({ available: false, message: '此离线宿主未提供配置文件。' }));
+    return;
+  }
   if (req.method === 'GET' && (req.url.startsWith('/api/reviews?') || req.url === '/api/reviews')) {
     res.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify({ items: example.recent_actions.map((action) => ({ ...action, target_kind: "action", target_id: action.action_id, label: `${action.calls.length} 项操作` })), next_cursor: null }));
     return;

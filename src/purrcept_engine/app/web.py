@@ -14,6 +14,7 @@ import socket
 from collections.abc import Generator
 from contextlib import contextmanager
 from importlib.resources import files
+from pathlib import Path
 from typing import Protocol
 
 import uvicorn
@@ -28,7 +29,7 @@ from purrcept_engine.app.local_http import LocalHttpBoundary
 from purrcept_engine.app.panel import ControlRequest
 from purrcept_engine.domain.controls.models import ControlError, ControlRecord
 from purrcept_engine.errors import HostStateError, StorageError
-from purrcept_engine.plugin_system.panels import PreviewFrame
+from purrcept_engine.plugin_system.panels import PairingOperation, PreviewFrame
 from purrcept_engine.values import ActionProtocolError, JsonObject, decode_object
 
 
@@ -37,6 +38,16 @@ class PanelHost(Protocol):
 
     def query_health(self) -> JsonObject:
         """读取无需权威库的启动和组件健康。"""
+        ...
+
+    async def phone_pairing(
+        self,
+        target: str,
+        *,
+        operation: PairingOperation = "read",
+        expected_device_id: str | None = None,
+    ) -> JsonObject:
+        """本机配对专用端口，查询不续期，明确写请求才开启短时邀请。"""
         ...
 
     async def query_panel(self) -> JsonObject:
@@ -124,13 +135,22 @@ class PanelHost(Protocol):
         ...
 
 
-def create_app(host: PanelHost, *, port: int, token: str) -> ASGIApp:
+def create_app(
+    host: PanelHost,
+    *,
+    port: int,
+    token: str,
+    config_path: Path | None = None,
+    owner_data_dir: Path | None = None,
+) -> ASGIApp:
     """构造有限路由与固定来源边界，不监听或启动宿主。
 
     Args:
         host: 当前应用实例的宿主入口。
         port: 已绑定的本机 HTTP 端口。
         token: 当前本机控制实例的随机 ASCII 凭据。
+        config_path: CLI 实际读取的配置；嵌入者缺省时不开放配置编辑。
+        owner_data_dir: 当前宿主持有运行锁的数据目录，不能取自浏览器。
 
     Returns:
         使用同一已装配宿主和本机请求边界的 ASGI 应用。
@@ -265,8 +285,11 @@ def create_app(host: PanelHost, *, port: int, token: str) -> ASGIApp:
             return _json({"error": "authority_unavailable", "message": "权威存储不可用。"}, 503)
         raise error
 
+    from purrcept_engine.app.phone_web import phone_routes
+
     app = Starlette(
         routes=[
+            *phone_routes(host, config_path, owner_data_dir),
             Route("/api/health", health),
             Route("/api/session", session),
             Route("/api/snapshot", snapshot),
@@ -333,14 +356,24 @@ class WebServer:
     停止监听并等待原HTTP请求，业务已接管任务仍由宿主自己的所有者持有。
     """
 
-    def __init__(self, host: PanelHost, *, port: int) -> None:
+    def __init__(
+        self,
+        host: PanelHost,
+        *,
+        port: int,
+        config_path: Path | None = None,
+        owner_data_dir: Path | None = None,
+    ) -> None:
         """保存有限宿主端口，不绑定网络或修改信号处理器。
 
         Args:
             host: 当前应用实例的宿主入口。
             port: 已绑定的本机 HTTP 端口。
+            config_path: 当前 CLI 配置路径，页面不能选择其他本机文件。
+            owner_data_dir: 当前宿主已持有运行锁的目录；保存仅在运行阶段开放。
         """
         self.host, self.port = host, port
+        self.config_path, self.owner_data_dir = config_path, owner_data_dir
         self._socket: socket.socket | None = None
         self._server: _LocalServer | None = None
         self._task: asyncio.Task[None] | None = None
@@ -374,7 +407,13 @@ class WebServer:
             listener.listen(64)
             listener.setblocking(False)
             self.port = listener.getsockname()[1]
-            app = create_app(self.host, port=self.port, token=secrets.token_urlsafe(32))
+            app = create_app(
+                self.host,
+                port=self.port,
+                token=secrets.token_urlsafe(32),
+                config_path=self.config_path,
+                owner_data_dir=self.owner_data_dir,
+            )
             self._socket = listener
             self._server = _LocalServer(
                 uvicorn.Config(

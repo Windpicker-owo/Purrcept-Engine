@@ -37,8 +37,8 @@ from purrcept_engine.domain.context.checkpoints import decode_checkpoint, encode
 from purrcept_engine.domain.context.history import HistoryMaintenance
 from purrcept_engine.domain.context.history_preparation import HistoryPreparation, preview_request
 from purrcept_engine.domain.context.usage import UsageMeter
+from purrcept_engine.domain.evidence.models import EvidenceSnapshot, WakeupPlan
 from purrcept_engine.domain.inputs.models import InputContext, InputSource, InputSubmission
-from purrcept_engine.domain.knowledge.models import EvidenceSnapshot, WakeupPlan
 from purrcept_engine.domain.model_requests.service import RequestBudget
 from purrcept_engine.domain.subject.models import SessionRecord
 from purrcept_engine.domain.subject.session import ContinuousSession, DynamicState
@@ -140,7 +140,7 @@ async def test_observed_overflow_compacts_recent_completed_history_after_failed_
             "seed" + str(index), "foreground", index, index + 1, (identity,)
         )
         await store.finish_turn(turn, "succeeded", checkpoint_json=encode_checkpoint(checkpoint))
-    await store.knowledge.plan_wakeup(
+    await store.evidence.plan_wakeup(
         WakeupPlan(id="pending", due=time.time() + 3600, reason="未到期", evidence=first)
     )
     original = await store.get_session("foreground")
@@ -226,7 +226,7 @@ async def test_observed_overflow_compacts_recent_completed_history_after_failed_
             final_checkpoint.history.messages[:2]
             == decode_checkpoint(original.checkpoint_json).history.messages[:2]
         )
-        assert (await store.knowledge.pending_plans())[0].id == "pending"
+        assert (await store.evidence.pending_plans())[0].id == "pending"
     finally:
         await session.close()
         await preparation.close()
@@ -254,7 +254,7 @@ async def test_history_preview_uses_actual_tool_tail_projection(store: Store) ->
     await store.finish_action("action", state="completed", result_json=None, output="", error=None)
     action = await store.get_action("action")
     assert action is not None and action.finished_at is not None
-    await store.knowledge.put_evidence(
+    await store.evidence.put_evidence(
         EvidenceSnapshot(
             evidence_id="immediate",
             version=1,
@@ -265,7 +265,7 @@ async def test_history_preview_uses_actual_tool_tail_projection(store: Store) ->
         ),
         needs_reflection=False,
     )
-    await store.knowledge.plan_wakeup(
+    await store.evidence.plan_wakeup(
         WakeupPlan(id="plan", due=time.time() + 3600, reason="后续处理未完", evidence="immediate")
     )
     checkpoint = ConversationCheckpoint(
@@ -370,7 +370,7 @@ async def test_idle_summary_is_installed_before_begin_turn_and_real_core_adopts_
         await store.finish_turn(turn, "succeeded", checkpoint_json=encode_checkpoint(checkpoint))
         if index == 0 and pending:
             protected_identity = identity
-            await store.knowledge.plan_wakeup(
+            await store.evidence.plan_wakeup(
                 WakeupPlan(
                     id="pending", due=time.time() + 3600, reason="尚未到期", evidence=identity
                 )
@@ -454,7 +454,7 @@ async def test_idle_summary_is_installed_before_begin_turn_and_real_core_adopts_
         if pending:
             assert generation.requests[0].messages[:2] == original.history.messages[:2]
             assert summary.requests[0].messages[:-1] == original.history.messages[2:6]
-            assert (await store.knowledge.pending_plans())[0].id == "pending"
+            assert (await store.evidence.pending_plans())[0].id == "pending"
             assert protected_identity is not None
             assert await store.protected_input_ids((protected_identity,)) == frozenset(
                 (protected_identity,)

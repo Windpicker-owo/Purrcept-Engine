@@ -30,13 +30,18 @@ from purrcept_engine.app.subject import SubjectAssembly, build_subject
 from purrcept_engine.domain.activities.models import ActivityRecord
 from purrcept_engine.domain.context.capacity import CapacityError
 from purrcept_engine.domain.context.checkpoints import encode_checkpoint
+from purrcept_engine.domain.evidence.models import (
+    EvidenceSnapshot,
+    ObservationScope,
+    SupervisionNotice,
+    WakeupPlan,
+)
+from purrcept_engine.domain.evidence.service import EvidenceService
 from purrcept_engine.domain.execution.models import ActionRecord
 from purrcept_engine.domain.inputs.models import InputContext, InputSource, InputSubmission
-from purrcept_engine.domain.knowledge.models import EvidenceSnapshot, SupervisionNotice, WakeupPlan
-from purrcept_engine.domain.knowledge.service import KnowledgeService
 from purrcept_engine.errors import StorageError
 from purrcept_engine.infrastructure.models.compiler import compile_materials
-from purrcept_engine.infrastructure.sqlite import knowledge as knowledge_sql
+from purrcept_engine.infrastructure.sqlite import evidence as knowledge_sql
 from purrcept_engine.infrastructure.sqlite.store import Store
 from purrcept_engine.plugin_system.contracts import PluginRuntime
 from purrcept_engine.serialization import encode
@@ -70,19 +75,21 @@ async def admit(store: Store, event: str) -> str:
 
 async def notices(store: Store, source: str, count: int = 1) -> tuple[str, ...]:
     """按真实呈现资格提交有据监管，调用本身不等于前台已经回应。"""
-    page = await store.knowledge.read_evidence(source)
+    page = await store.evidence.read_evidence(source)
     assert page.slice is not None
-    batch = await store.knowledge.begin_reflection("batch:" + source, (page.slice.slice_ref,))
-    await store.knowledge.mark_presented(batch.batch_id, batch.version, (page.slice.slice_ref,))
+    batch = await store.evidence.begin_reflection("batch:" + source, (page.slice.slice_ref,))
+    await store.evidence.mark_presented(batch.batch_id, batch.version, (page.slice.slice_ref,))
     ids: list[str] = []
     for ordinal in range(count):
         identity = f"notice:{source}:{ordinal}"
-        await store.knowledge.supervise(
+        await store.evidence.supervise(
             batch.batch_id,
             batch.version,
             SupervisionNotice(
+                scope=ObservationScope(adapter_id="test"),
+                expected_change="依据实际事实调整",
                 id=identity,
-                issue="尚需核对的事项",
+                issue=f"尚需核对的事项 {ordinal}",
                 suggestion=f"明确意见 {ordinal}",
                 evidence=(page.slice.slice_ref,),
             ),
@@ -166,7 +173,7 @@ async def assembly(
         plugins={} if plugins is None else plugins,
         can_start=lambda: None,
         wakeup_committed=lambda: None,
-        knowledge=KnowledgeService(store.knowledge),
+        evidence=EvidenceService(store.evidence),
     )
 
 
@@ -210,7 +217,7 @@ async def test_actual_request_contains_all_open_notices_and_plans_then_refreshes
     source = await admit(store, "source")
     ids = await notices(store, source, 35)
     for ordinal in range(35):
-        await store.knowledge.plan_wakeup(
+        await store.evidence.plan_wakeup(
             WakeupPlan(
                 id=f"plan:{ordinal}",
                 due=time.time() + 3600,
@@ -231,8 +238,8 @@ async def test_actual_request_contains_all_open_notices_and_plans_then_refreshes
         assert "foreground_session_version" not in initial
         assert '"observed_at": > ' in initial
         assert (await store.get_session("foreground")).version == 1
-        await store.knowledge.respond_supervision(ids[-1], "reject", "已核对真实来源")
-        await store.knowledge.resolve_plan("plan:34", "事项已处理", source)
+        await store.evidence.respond_supervision(ids[-1], "reject", "已核对真实来源")
+        await store.evidence.resolve_plan("plan:34", "事项已处理", source)
         second = await admit(store, "second")
         await run(assembled, store, second, "turn:second")
         refreshed = state_text(backend.requests[1])
@@ -307,7 +314,7 @@ async def test_unanswered_supervision_protects_source_and_delivered_input_until_
     assert len(delivery.foreground_ids) == 1
     derived = delivery.foreground_ids[0]
     assert await store.protected_input_ids((source, derived, "unrelated")) == {source, derived}
-    await store.knowledge.respond_supervision(identity, "accept", "按实际来源处理")
+    await store.evidence.respond_supervision(identity, "accept", "按实际来源处理")
     assert not await store.protected_input_ids((source, derived))
     assert array((await store.subject_work())["supervision"]) == []
 
@@ -318,12 +325,12 @@ async def test_revoked_source_retires_current_supervision_without_deleting_evide
     source = await admit(store, "source")
     await notices(store, source)
     assert len(array((await store.subject_work())["supervision"])) == 1
-    await store.knowledge.revoke_evidence(source, 1)
+    await store.evidence.revoke_evidence(source, 1)
     assert array((await store.subject_work())["supervision"]) == []
     assert not await store.protected_input_ids((source,))
-    notice = await store.knowledge.pending_supervision()
+    notice = await store.evidence.pending_supervision()
     assert notice == ()
-    snapshot = await store.knowledge.get_evidence(source, version=1, include_inactive=True)
+    snapshot = await store.evidence.get_evidence(source, version=1, include_inactive=True)
     assert snapshot is not None and not snapshot.valid
 
 
@@ -332,10 +339,10 @@ async def test_current_supervision_rechecks_time_and_exact_activity_version(
     store: Store, monkeypatch: pytest.MonkeyPatch, invalidated_by: str
 ) -> None:
     source = await admit(store, "source")
-    page = await store.knowledge.read_evidence(source)
+    page = await store.evidence.read_evidence(source)
     assert page.slice is not None
-    batch = await store.knowledge.begin_reflection("batch", (page.slice.slice_ref,))
-    await store.knowledge.mark_presented(batch.batch_id, batch.version, (page.slice.slice_ref,))
+    batch = await store.evidence.begin_reflection("batch", (page.slice.slice_ref,))
+    await store.evidence.mark_presented(batch.batch_id, batch.version, (page.slice.slice_ref,))
     now = time.time()
     activity = ActivityRecord(
         activity_id="activity",
@@ -357,10 +364,12 @@ async def test_current_supervision_rechecks_time_and_exact_activity_version(
         updated_at=now,
     )
     await store.commit_activity(activity, expected_version=None)
-    await store.knowledge.supervise(
+    await store.evidence.supervise(
         batch.batch_id,
         batch.version,
         SupervisionNotice(
+            scope=ObservationScope(adapter_id="test"),
+            expected_change="依据实际事实调整",
             id="notice",
             issue="版本适用的意见",
             suggestion="核对当前事实",
@@ -468,7 +477,7 @@ async def test_confirmed_effect_stays_current_while_real_linked_plan_is_pending(
         action = await store.get_action("action:call")
         assert action is not None and action.finished_at is not None
         evidence = "actual-immediate-result"
-        await store.knowledge.put_evidence(
+        await store.evidence.put_evidence(
             EvidenceSnapshot(
                 evidence_id=evidence,
                 version=1,
@@ -481,7 +490,7 @@ async def test_confirmed_effect_stays_current_while_real_linked_plan_is_pending(
             ),
             needs_reflection=False,
         )
-    await store.knowledge.plan_wakeup(
+    await store.evidence.plan_wakeup(
         WakeupPlan(id="plan", due=time.time() + 3600, reason="效果尚需后续处理", evidence=evidence)
     )
     assert await store.protected_input_ids((source,)) == {source}
@@ -492,7 +501,7 @@ async def test_confirmed_effect_stays_current_while_real_linked_plan_is_pending(
     assert current["original_ref"] == (
         None if source_kind == "input" else {"id": evidence, "version": 1}
     )
-    await store.knowledge.resolve_plan("plan", "明确结束后续处理", evidence)
+    await store.evidence.resolve_plan("plan", "明确结束后续处理", evidence)
     assert not await store.protected_input_ids((source,))
     assert array((await store.subject_work())["calls"]) == []
     assert (await store.get_action("action:call")) is not None
@@ -506,7 +515,7 @@ async def test_unknown_effect_is_not_retired_by_action_end_and_late_receipt_is_v
     assert object_(array((await store.subject_work())["calls"])[0])["original_ref"] is None
     action = await store.get_action("action:call")
     assert action is not None and action.finished_at is not None
-    await store.knowledge.put_evidence(
+    await store.evidence.put_evidence(
         EvidenceSnapshot(
             evidence_id="immediate",
             version=1,
@@ -517,7 +526,7 @@ async def test_unknown_effect_is_not_retired_by_action_end_and_late_receipt_is_v
         ),
         needs_reflection=False,
     )
-    await store.knowledge.plan_wakeup(
+    await store.evidence.plan_wakeup(
         WakeupPlan(id="plan", due=time.time() + 3600, reason="核对未知", evidence="immediate")
     )
     first = object_(array((await store.subject_work())["calls"])[0])
@@ -534,7 +543,7 @@ async def test_unknown_effect_is_not_retired_by_action_end_and_late_receipt_is_v
     assert bridged["original_ref"] == {"id": "call:call:2", "version": 1}
     assert bridged["result_json"] == '{"message_id":999}'
     assert await store.protected_input_ids((source,)) == {source}
-    await store.knowledge.resolve_plan("plan", "已核对最新回执", "immediate")
+    await store.evidence.resolve_plan("plan", "已核对最新回执", "immediate")
     assert array((await store.subject_work())["calls"]) == []
 
 
@@ -545,7 +554,7 @@ async def test_original_ref_rejects_action_snapshot_with_different_actual_values
     await call(store, source, "call", "unknown")
     action = await store.get_action("action:call")
     assert action is not None and action.finished_at is not None
-    await store.knowledge.put_evidence(
+    await store.evidence.put_evidence(
         EvidenceSnapshot(
             evidence_id="false-reference",
             version=1,
@@ -566,7 +575,7 @@ async def test_declared_call_receipt_without_reliable_host_registration_is_not_o
 ) -> None:
     source = await admit(store, "source")
     await call(store, source, "call", "unknown")
-    await store.knowledge.put_evidence(
+    await store.evidence.put_evidence(
         EvidenceSnapshot(
             evidence_id="unregistered-receipt",
             version=1,
@@ -588,7 +597,7 @@ async def test_full_current_state_exceeds_actual_request_capacity_without_silent
 ) -> None:
     source = await admit(store, "source")
     for ordinal in range(35):
-        await store.knowledge.plan_wakeup(
+        await store.evidence.plan_wakeup(
             WakeupPlan(
                 id=f"plan:{ordinal}",
                 due=time.time() + 3600,

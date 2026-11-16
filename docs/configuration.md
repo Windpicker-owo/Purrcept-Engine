@@ -162,8 +162,6 @@ Engine 不会在判断失败后切换到聊天端点。
 | `[subject.character]` | `name`、`one_line`、`persona`、`relationship`、`speech_style`、`notes` 六项固定身份文字，缺省为 `None`；不从长期认识恢复。 |
 | `subject.attention_batch_seconds` / `attention_batch_size` | `0.1` 秒 / `8` 条，普通注意合批门槛。 |
 | `subject.proactive_thinking` / `proactive_idle_seconds` | `false` / `300.0` 秒。启用后按静默或主脑未激活期限，在主脑空闲时触发一次思考；会产生模型费用。 |
-| `subject.behavior_review_enabled` / `memory_consolidation_enabled` | 默认均为 `true`，独立关闭相应分析任务；可靠反馈继续运行。 |
-| `subject.memory_batch_seconds` / `memory_batch_turns` | `1800.0` 秒 / `32` 轮，记忆整理有待办时的合批触发条件。 |
 | `subject.reflection_batch_seconds` / `reflection_batch_turns` | `60.0` 秒 / `8` 轮，局部行为评审的合批触发条件。 |
 | `[subject.foreground_retry]` 等 | `attempts = 2` 含首次；`attempt_seconds = 120.0`、`total_seconds = 180.0`。注意默认每次 `5.0`、总计 `8.0` 秒。可分别设置 `reflection_retry`、`summary_retry`、`attention_retry`。 |
 | `[subject.foreground_turn]` / `[subject.reflection_turn]` | `max_requests = 8`、`total_seconds = 600.0`，限制整轮逻辑请求数与总时间；传输重试共用原逻辑请求预算。 |
@@ -264,9 +262,51 @@ group_list = []
 7 天，单次流诊断 `max_bytes = 1048576`，所有请求、响应、已安装摘要副本和流诊断正文
 合计 `retained_bytes = 1073741824`。最旧可清理正文先淘汰，永久元数据仍保留。
 原始输入、真实行动回执、独立证据及其媒体不随诊断期限删除；保护项可使正文暂时超额。
-这不限制整个数据库大小。维护与成本策略见 [运行治理](governance.md)。`[knowledge.embedding]` 缺省时仅本地检索；启用语义检索需
-明确填写 OpenAI 兼容的 `model`、向量空间版本 `model_id`、`api_base` 及可选凭据，
-配置契约见 [EmbeddingSettings](../src/purrcept_engine/domain/knowledge/settings.py)。
+这不限制整个数据库大小。维护与成本策略见 [运行治理](governance.md)。Notebook 的向量配置位于 `plugins.config.embedding`，未配置时只用关键词检索。
+旧 `knowledge`、`subject.memory_*` 字段不再接受；按插件实例注入向量和重排后端。
+
+### Notebook 独立整理配置
+
+```toml
+[[plugins]]
+instance_id = "notes"
+entry = "notebook"
+[plugins.config]
+notebook_dir = "notes"
+notes_index_limit = 32
+notes_summary_chars = 140
+[plugins.config.consolidation]
+enabled = true
+model = "main" # 必须引用 models 中明确声明的生成模型。
+batch_seconds = 1800.0
+batch_changes = 32
+max_sources = 32
+max_requests = 8
+turn_seconds = 600.0
+scan_seconds = 60.0
+```
+
+未启用自动整理时仍可记笔记与检索；`enabled=false` 不调用整理生成模型。
+默认关闭自动整理，必须明确启用并选择模型，不能隐式借用行为反思配置。
+
+### Notebook 可选混合检索
+
+在上述 Notebook 插件配置中添加独立的向量端点声明即可启用关键词与向量混合检索。
+此配置与自动整理开关独立；启用后后台为缺失的当前笔记建立向量，搜索时计算查询向量。
+
+```toml
+[plugins.config.embedding]
+model = "openai/your-embedding-model" # 替换为服务端实际提供的模型名称。
+model_id = "notebook-embedding-v1" # 标识确定的向量空间；模型或版本变化时一并更换。
+api_base = "http://127.0.0.1:8000/v1" # 替换为实际 OpenAI 兼容 embedding 端点。
+# api_key = "your-key" # 无需凭据时省略，不从环境或其他模型配置借用。
+timeout_seconds = 30.0
+```
+
+未配置时只用 FTS5；已配置端点的失败会明确报告，不静默隐藏为关键词模式。
+`semantic_enabled` 表示路线已启用，`semantic_pending` 表示仍未建立向量的当前文件数；
+刚启用时旧笔记会逐批建立索引。搜索结果的 `snippet` 是最多240字的原文，
+`snippet_range` 给出文件字符位置；`snippet_matched=false` 的语义候选显示正文开头。
 
 ## 常见问题
 

@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import base64
 import io
-import json
 import sqlite3
 import time
 from dataclasses import replace
@@ -27,17 +26,17 @@ from purrcept_core.models import (
 
 from purrcept_engine.domain.context.checkpoints import encode_checkpoint
 from purrcept_engine.domain.context.usage import UsageAnchor
-from purrcept_engine.domain.inputs.models import InputContext, InputSource, InputSubmission
-from purrcept_engine.domain.knowledge.models import (
+from purrcept_engine.domain.evidence.models import (
     BehaviorConclusion,
+    EvidenceInputError,
     EvidenceSnapshot,
     FinishSubmission,
-    KnowledgeInputError,
     ObservationAssessment,
     ObservationScope,
     Review,
     SupervisionNotice,
 )
+from purrcept_engine.domain.inputs.models import InputContext, InputSource, InputSubmission
 from purrcept_engine.domain.model_requests.models import (
     AttemptEvidence,
     AttemptStart,
@@ -61,7 +60,7 @@ async def test_retry_schedule_and_only_related_evidence_can_reopen_exhausted_sco
     monkeypatch.setattr(analysis_work.time, "time", lambda: clock[0])
     store = await Store.open(tmp_path / "retry.sqlite3")
     try:
-        await store.knowledge.put_evidence(
+        await store.evidence.put_evidence(
             EvidenceSnapshot(
                 evidence_id="original",
                 version=1,
@@ -71,7 +70,7 @@ async def test_retry_schedule_and_only_related_evidence_can_reopen_exhausted_sco
                 occurred_at=clock[0],
             )
         )
-        page = await store.knowledge.read_evidence("original")
+        page = await store.evidence.read_evidence("original")
         assert page.slice is not None
         for attempt, wait in enumerate((60, 300, None), start=1):
             state = await store.feedback.reflection_state()
@@ -82,8 +81,8 @@ async def test_retry_schedule_and_only_related_evidence_can_reopen_exhausted_sco
                 pages=(page,),
                 successful_turns=0,
             )
-            batch = await store.knowledge.begin_reflection(batch_id, (page.slice.slice_ref,))
-            await store.knowledge.abandon_reflection(batch_id, batch.version, "ModelTimeoutError")
+            batch = await store.evidence.begin_reflection(batch_id, (page.slice.slice_ref,))
+            await store.evidence.abandon_reflection(batch_id, batch.version, "ModelTimeoutError")
             state = await store.feedback.reflection_state()
             assert state.oldest_queued_at is None
             if wait is not None:
@@ -91,7 +90,7 @@ async def test_retry_schedule_and_only_related_evidence_can_reopen_exhausted_sco
                 clock[0] += wait
             else:
                 assert state.waiting_evidence_count == 1 and state.next_attempt_at is None
-        await store.knowledge.put_evidence(
+        await store.evidence.put_evidence(
             EvidenceSnapshot(
                 evidence_id="unrelated",
                 version=1,
@@ -104,7 +103,7 @@ async def test_retry_schedule_and_only_related_evidence_can_reopen_exhausted_sco
         state = await store.feedback.reflection_state()
         sources = await store.feedback.reflection_sources(epoch=state.epoch)
         assert {source.evidence_id for source in sources} == {"unrelated"}
-        await store.knowledge.put_evidence(
+        await store.evidence.put_evidence(
             EvidenceSnapshot(
                 evidence_id="follow-up",
                 version=1,
@@ -240,7 +239,7 @@ async def test_hourly_attempt_budget_survives_restart_and_does_not_fault_store(
     path = tmp_path / "engine.sqlite3"
     store = await Store.open(path)
     for number in range(32):
-        await _request(store, str(number), "memory_consolidation")
+        await _request(store, str(number), "behavior_review")
     await store.close()
     reopened = await Store.open(path)
     try:
@@ -266,10 +265,10 @@ async def test_hourly_attempt_budget_survives_restart_and_does_not_fault_store(
         await reopened.close()
 
 
-async def test_behavior_completion_does_not_consume_memory_responsibility(tmp_path: Path) -> None:
+async def test_behavior_completion_has_no_parallel_memory_responsibility(tmp_path: Path) -> None:
     store = await Store.open(tmp_path / "engine.sqlite3")
     try:
-        await store.knowledge.put_evidence(
+        await store.evidence.put_evidence(
             EvidenceSnapshot(
                 evidence_id="fact",
                 version=1,
@@ -279,7 +278,7 @@ async def test_behavior_completion_does_not_consume_memory_responsibility(tmp_pa
                 occurred_at=time.time(),
             )
         )
-        page = await store.knowledge.read_evidence("fact")
+        page = await store.evidence.read_evidence("fact")
         assert page.slice is not None
         reference = page.slice.slice_ref
         state = await store.feedback.reflection_state(purpose="behavior")
@@ -290,10 +289,10 @@ async def test_behavior_completion_does_not_consume_memory_responsibility(tmp_pa
             successful_turns=0,
             purpose="behavior",
         )
-        batch = await store.knowledge.begin_reflection("review", (reference,), purpose="behavior")
-        await store.knowledge.mark_presented(batch.batch_id, batch.version, (reference,))
-        with pytest.raises(KnowledgeInputError, match="独立来源"):
-            await store.knowledge.supervise(
+        batch = await store.evidence.begin_reflection("review", (reference,), purpose="behavior")
+        await store.evidence.mark_presented(batch.batch_id, batch.version, (reference,))
+        with pytest.raises(EvidenceInputError, match="独立来源"):
+            await store.evidence.supervise(
                 batch.batch_id,
                 batch.version,
                 SupervisionNotice(
@@ -309,7 +308,7 @@ async def test_behavior_completion_does_not_consume_memory_responsibility(tmp_pa
         conclusion = BehaviorConclusion(
             decision="no_intervention", conclusion="无需干预。", evidence=(reference,)
         )
-        await store.knowledge.finish_reflection(
+        await store.evidence.finish_reflection(
             batch.batch_id,
             batch.version,
             FinishSubmission(
@@ -318,7 +317,6 @@ async def test_behavior_completion_does_not_consume_memory_responsibility(tmp_pa
                         issue="检查",
                         evidence=(reference,),
                         conclusion="无需干预。",
-                        memory_decision="no_change",
                         reason="没有问题。",
                     ),
                 ),
@@ -328,56 +326,9 @@ async def test_behavior_completion_does_not_consume_memory_responsibility(tmp_pa
             ),
         )
         assert (await store.feedback.reflection_state(purpose="behavior")).oldest_queued_at is None
-        assert (
-            await store.feedback.reflection_state(purpose="memory")
-        ).oldest_queued_at is not None
-        assert len(await store.knowledge.pending_reflection()) == 1
+        assert await store.evidence.pending_review() == ()
     finally:
         await store.close()
-
-
-async def test_format15_migration_splits_bodies_and_preserves_exact_request(tmp_path: Path) -> None:
-    path = tmp_path / "engine.sqlite3"
-    statements = json.loads(
-        (Path(__file__).parent / "fixtures/schema_v15.json").read_text(encoding="utf-8")
-    )
-    from purrcept_engine.infrastructure.sqlite import model_requests
-
-    with sqlite3.connect(path) as connection:
-        for statement in statements:
-            connection.execute(statement)
-        connection.execute("PRAGMA application_id=1347768901")
-        connection.execute("PRAGMA user_version=15")
-        request = RequestEvidence(
-            "old",
-            RequestScope("foreground", "old-turn"),
-            "generation",
-            "test",
-            '{"payload":{}}',
-            "old-compiler",
-            1,
-            10,
-            10,
-        )
-        connection.execute(
-            "INSERT INTO model_requests VALUES(?,?,'succeeded',?,?)", ("old", encode(request), 1, 2)
-        )
-    store = await Store.open(path)
-    try:
-        actual = await store.get_request("old")
-        assert actual is not None and actual.request == request
-        await store.begin_request(request)
-    finally:
-        await store.close()
-    with sqlite3.connect(path) as connection:
-        assert connection.execute("PRAGMA user_version").fetchone() == (16,)
-        assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
-        assert (
-            model_requests.decode_request(
-                connection.execute("SELECT evidence_json FROM model_requests").fetchone()[0]
-            ).materials_json
-            is None
-        )
 
 
 async def test_panel_projection_does_not_restore_checkpoint_or_read_media(tmp_path: Path) -> None:
@@ -453,7 +404,7 @@ async def test_suggestion_dedup_and_observation_end_do_not_claim_adoption_is_imp
     monkeypatch.setattr(analysis_work.time, "time", lambda: clock[0])
     store = await Store.open(tmp_path / "observation.sqlite3")
     try:
-        await store.knowledge.put_evidence(
+        await store.evidence.put_evidence(
             EvidenceSnapshot(
                 evidence_id="fact",
                 version=1,
@@ -463,11 +414,11 @@ async def test_suggestion_dedup_and_observation_end_do_not_claim_adoption_is_imp
                 occurred_at=clock[0],
             )
         )
-        page = await store.knowledge.read_evidence("fact")
+        page = await store.evidence.read_evidence("fact")
         assert page.slice is not None
         reference = page.slice.slice_ref
-        batch = await store.knowledge.begin_reflection("review", (reference,), purpose="behavior")
-        await store.knowledge.mark_presented(batch.batch_id, batch.version, (reference,))
+        batch = await store.evidence.begin_reflection("review", (reference,), purpose="behavior")
+        await store.evidence.mark_presented(batch.batch_id, batch.version, (reference,))
         notice = SupervisionNotice(
             id="notice",
             issue="局部问题",
@@ -476,14 +427,14 @@ async def test_suggestion_dedup_and_observation_end_do_not_claim_adoption_is_imp
             scope=ObservationScope(adapter_id="synthetic"),
             expected_change="先核对实际结果。",
         )
-        first = await store.knowledge.supervise(batch.batch_id, batch.version, notice)
-        duplicate = await store.knowledge.supervise(
+        first = await store.evidence.supervise(batch.batch_id, batch.version, notice)
+        duplicate = await store.evidence.supervise(
             batch.batch_id,
             batch.version,
             notice.model_copy(update={"id": "duplicate"}),
         )
         assert duplicate.duplicate and duplicate.notice.id == first.notice.id
-        await store.knowledge.respond_supervision("notice", "accept", "接受局部建议。")
+        await store.evidence.respond_supervision("notice", "accept", "接受局部建议。")
         initial = (await store.runtime_projection())["supervision_observations"]
         assert isinstance(initial, list) and isinstance(initial[0], dict)
         assert (
@@ -523,18 +474,18 @@ async def test_suggestion_dedup_and_observation_end_do_not_claim_adoption_is_imp
             )
             await store.finish_turn(turn, "succeeded", checkpoint_json=checkpoint)
             if index < 4:
-                observed = await store.knowledge.read_evidence(
+                observed = await store.evidence.read_evidence(
                     f"behavior-observation:notice:{turn.turn_id}"
                 )
                 assert observed.slice is not None
                 observed_ref = observed.slice.slice_ref
-                review = await store.knowledge.begin_reflection(
+                review = await store.evidence.begin_reflection(
                     f"review:{index}", (observed_ref,), purpose="behavior"
                 )
-                await store.knowledge.mark_presented(
+                await store.evidence.mark_presented(
                     review.batch_id, review.version, (observed_ref,)
                 )
-                await store.knowledge.finish_reflection(
+                await store.evidence.finish_reflection(
                     review.batch_id,
                     review.version,
                     FinishSubmission(
@@ -543,7 +494,6 @@ async def test_suggestion_dedup_and_observation_end_do_not_claim_adoption_is_imp
                                 issue="后续观察",
                                 evidence=(observed_ref,),
                                 conclusion="核对实际机会。",
-                                memory_decision="no_change",
                                 reason="只记录行为结论。",
                             ),
                         ),
@@ -578,7 +528,7 @@ async def test_suggestion_dedup_and_observation_end_do_not_claim_adoption_is_imp
         pending = await store.feedback.reflection_state(purpose="behavior")
         assert pending.oldest_queued_at is not None
         # 新的有效期限与旧建议独立；不把先前已结束的观察窗口重新延长。
-        newer = await store.knowledge.supervise(
+        newer = await store.evidence.supervise(
             batch.batch_id,
             batch.version,
             notice.model_copy(update={"id": "new-window"}),
@@ -598,7 +548,7 @@ async def test_continuous_human_feedback_keeps_an_ordinary_source_seat(tmp_path:
     store = await Store.open(tmp_path / "priority.sqlite3")
     try:
         for index in range(5):
-            await store.knowledge.put_evidence(
+            await store.evidence.put_evidence(
                 EvidenceSnapshot(
                     evidence_id=f"ordinary:{index}",
                     version=1,
@@ -625,7 +575,7 @@ async def test_continuous_human_feedback_keeps_an_ordinary_source_seat(tmp_path:
             assert len(sources) == 32 and sources[0].evidence_id.startswith("human-feedback:")
             assert sum(source.evidence_id.startswith("ordinary:") for source in sources) == 1
             pages = tuple(
-                [await store.knowledge.read_evidence(source.evidence_id) for source in sources]
+                [await store.evidence.read_evidence(source.evidence_id) for source in sources]
             )
             references = tuple(page.slice.slice_ref for page in pages if page.slice is not None)
             batch_id = f"priority:{cycle}"
@@ -635,18 +585,35 @@ async def test_continuous_human_feedback_keeps_an_ordinary_source_seat(tmp_path:
                 pages=pages,
                 successful_turns=0,
             )
-            batch = await store.knowledge.begin_reflection(batch_id, references)
-            await store.knowledge.mark_presented(batch_id, batch.version, references)
-            await store.knowledge.finish_reflection(
+            batch = await store.evidence.begin_reflection(batch_id, references)
+            await store.evidence.mark_presented(batch_id, batch.version, references)
+            await store.evidence.finish_reflection(
                 batch_id,
                 batch.version,
                 FinishSubmission(
+                    behavior=BehaviorConclusion(
+                        decision="no_intervention",
+                        conclusion="对照已交付原文完成复核。",
+                        evidence=tuple(
+                            ref
+                            for review in (
+                                (
+                                    Review(
+                                        issue="实际复核",
+                                        evidence=references,
+                                        conclusion="保留原始意见和事实。",
+                                        reason="没有长期泛化依据。",
+                                    ),
+                                )
+                            )
+                            for ref in review.evidence
+                        ),
+                    ),
                     reviews=(
                         Review(
                             issue="实际复核",
                             evidence=references,
                             conclusion="保留原始意见和事实。",
-                            memory_decision="no_change",
                             reason="没有长期泛化依据。",
                         ),
                     ),
@@ -654,7 +621,7 @@ async def test_continuous_human_feedback_keeps_an_ordinary_source_seat(tmp_path:
                     findings=(),
                 ),
             )
-        pending = await store.knowledge.pending_reflection()
+        pending = await store.evidence.pending_review()
         assert sum(source.evidence_id.startswith("ordinary:") for source in pending) == 2
     finally:
         await store.close()

@@ -20,10 +20,10 @@ from purrcept_core.models import ModelEventSink, ModelRequest, ModelResponse
 
 from purrcept_engine.domain.context.capacity import GenerationCapacity, check_capacity
 from purrcept_engine.domain.context.materials import media_blocks
+from purrcept_engine.domain.evidence.service import EvidenceService
 from purrcept_engine.domain.execution.catalog import Catalog, ObjectDeclaration
 from purrcept_engine.domain.execution.models import ActionRecord
 from purrcept_engine.domain.inputs.models import InputSource, InputSubmission
-from purrcept_engine.domain.knowledge.service import KnowledgeService
 from purrcept_engine.domain.model_requests.service import RequestBudget
 from purrcept_engine.domain.subject.service import SubjectService
 from purrcept_engine.domain.subject.session import DynamicState
@@ -71,8 +71,8 @@ def _coordinator(store: Store, *, coalesce_seconds: float = 0) -> SubjectService
 
     return SubjectService(
         store,
-        KnowledgeService(store.knowledge),
-        store.knowledge,
+        EvidenceService(store.evidence),
+        store.evidence,
         Catalog((ObjectDeclaration("subject", "me", "主体"),), ()),
         subject=SubjectModel(
             _UnusedModel(),

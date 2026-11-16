@@ -50,6 +50,7 @@ from purrcept_engine.domain.context.capacity import (
     check_capacity,
 )
 from purrcept_engine.domain.context.materials import media_blocks
+from purrcept_engine.domain.evidence.service import EvidenceService
 from purrcept_engine.domain.execution.catalog import (
     CapabilityDeclaration,
     Catalog,
@@ -63,7 +64,6 @@ from purrcept_engine.domain.inputs.models import (
     InputSubmission,
     MediaAsset,
 )
-from purrcept_engine.domain.knowledge.service import KnowledgeService
 from purrcept_engine.domain.model_requests.models import RequestEvidence
 from purrcept_engine.domain.model_requests.service import RequestBudget
 from purrcept_engine.domain.subject.attention import ATTENTION_QUESTION, AttentionModel
@@ -253,8 +253,8 @@ async def _rig(
 
         coordinator = SubjectService(
             store,
-            KnowledgeService(store.knowledge),
-            store.knowledge,
+            EvidenceService(store.evidence),
+            store.evidence,
             catalog,
             subject=SubjectModel(
                 generation,
@@ -492,7 +492,7 @@ async def test_invalid_generated_expression_cannot_reach_body(rig: _Rig, express
     assert '"state":"invalid"' in result.reason and result.request_id is not None
 
 
-async def test_real_core_uses_fixed_directory_six_tools_and_internal_final(rig: _Rig) -> None:
+async def test_real_core_uses_fixed_directory_five_tools_and_internal_final(rig: _Rig) -> None:
     identity = await _admit(rig, "current", "正文的后段不会被注意预览删除。")
     await rig.coordinator.start()
     await _stage(rig, identity, "processed")
@@ -516,7 +516,6 @@ async def test_real_core_uses_fixed_directory_six_tools_and_internal_final(rig: 
     assert foreground.instructions == rig.coordinator.instructions
     assert [tool.name for tool in foreground.tools] == [
         "play_action",
-        "recall",
         "read_evidence",
         "plan_wakeup",
         "resolve_plan",
@@ -1465,7 +1464,7 @@ async def test_failed_native_audio_does_not_poison_the_next_text_interaction(rig
     processing = await rig.store.input_processing(old)
     assert processing is not None and processing.stage == "failed"
     assert await rig.store.get_media(original.media[0].media_id) == audio
-    page = await rig.store.knowledge.read_evidence(old)
+    page = await rig.store.evidence.read_evidence(old)
     assert page.text == "原声发言仍保留。"
     assert page.snapshot is not None and page.snapshot.media == original.media
     assert await rig.store.failed_turns("foreground") == ()
@@ -1556,7 +1555,7 @@ async def test_large_failed_inputs_do_not_replay_into_later_requests(rig: _Rig) 
     assert len(material.text) < 10_000
     assert await rig.store.failed_turns("foreground") == ()
     for index, identity in enumerate(failed):
-        page = await rig.store.knowledge.read_evidence(identity, max_chars=100)
+        page = await rig.store.evidence.read_evidence(identity, max_chars=100)
         assert page.text.startswith(f"旧正文{index}:") and page.next_cursor is not None
         processing = await rig.store.input_processing(identity)
         assert processing is not None and processing.stage == "failed"

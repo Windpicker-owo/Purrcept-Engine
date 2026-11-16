@@ -77,7 +77,7 @@ SUMMARY_PROMPT = PromptTemplate(
     "context.summary.prompt",
     "【系统内部上下文压缩指令】\n"
     "这是一次由宿主发起的内部上下文容量维护请求，不是新的外部用户发言、环境刺激或行动触发。"
-    "严禁调用任何工具（禁止调用 play_action、recall、read_evidence、plan_wakeup、resolve_plan、"
+    "严禁调用任何工具（禁止调用 play_action、read_evidence、plan_wakeup、resolve_plan、"
     "respond_supervision 等），也不要输出寒暄、内心独白或角色扮演台词。\n"
     "请直接基于当前上下文中的上述对话与交互历史，进行专业、高密度、无损关键事实的提炼，用于替换"
     '这段已完成的旧历史。只输出标准 JSON 对象 {{"summary":"摘要正文"}}，严禁包含任何 Markdown '
@@ -99,7 +99,8 @@ SUMMARY_PROMPT = PromptTemplate(
     "已被认可的得体做法，确保后续行动继续遵守这些约束。\n"
     "5. 言行事实分离与证据缺口保留：严格区分外部输入原话、主体内部思考、工具调用的实际回执"
     "（confirmed / failed / unknown）与未执行状态；未调用对外能力绝不能记为已回复或已发生，"
-    "unknown 状态不得臆断为已成功；保留关键人物身份、会话通道、文件路径及尚未展开的证据引用"
+    "unknown 状态不得臆断为已成功；保留关键人物身份、会话通道、No"
+    "tebook 日记和专题页的精确文件路径、未完成事项及尚未展开的证据引用"
     "（evidence_ref / stored_ref），对未展开原文或已过期历史媒体保持客观未决，"
     "严禁脑补未见的事实细节。",
 )

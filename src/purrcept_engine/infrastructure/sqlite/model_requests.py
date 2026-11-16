@@ -151,7 +151,7 @@ def begin_attempt(connection: sqlite3.Connection, start: AttemptStart) -> None:
             "model_requests WHERE request_id=?",
             (start.request_id,),
         ).fetchone()[0]
-        if scope in ("reflection", "behavior_review", "memory_consolidation"):
+        if scope in ("behavior_review",):
             remaining, reset = analysis_work.model_budget(connection, time.time())
             if not remaining:
                 raise BackgroundBudgetExceeded(

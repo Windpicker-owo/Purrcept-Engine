@@ -36,9 +36,9 @@ from purrcept_engine.domain.context.history_preparation import HistoryPreparatio
 from purrcept_engine.domain.context.maintenance import SummaryError
 from purrcept_engine.domain.context.materials import media_blocks
 from purrcept_engine.domain.context.usage import UsageMeter
+from purrcept_engine.domain.evidence.service import EvidenceService
 from purrcept_engine.domain.execution.catalog import Catalog
 from purrcept_engine.domain.inputs.models import MediaReference
-from purrcept_engine.domain.knowledge.service import KnowledgeService
 from purrcept_engine.domain.model_requests.service import RequestBudget, prepare_off_loop
 from purrcept_engine.domain.subject.attention import AttentionModel
 from purrcept_engine.domain.subject.background import BackgroundService
@@ -73,7 +73,7 @@ class SubjectAssembly:
     Attributes:
         service: 已装配的业务服务，能力入口借用其已有状态。
         foreground_history: 前台已提交历史的独立维护所有者。
-        knowledge: 原文展开与认识召回服务，修订仍经过反思批次契约。
+        evidence: 共享原文的版本化阅读服务；Notebook 独立提供长期记忆能力。
         background: 同一主体的独立反馈和反思所有者。
         sleep_history: 睡眠期间的一次前台压缩所有者，不与正常首发预检共享在途状态。
 
@@ -83,7 +83,7 @@ class SubjectAssembly:
 
     service: SubjectService
     foreground_history: HistoryPreparation
-    knowledge: KnowledgeService
+    evidence: EvidenceService
     background: BackgroundService
     sleep_history: HistoryPreparation
 
@@ -99,7 +99,7 @@ async def build_subject(
     plugins: Mapping[str, PluginRuntime],
     can_start: Callable[[], None],
     wakeup_committed: Callable[[], None],
-    knowledge: KnowledgeService,
+    evidence: EvidenceService,
 ) -> SubjectAssembly:
     """按配置选择命名资源，恢复各用途用量锚点并连接领域所有者。
 
@@ -113,10 +113,10 @@ async def build_subject(
         plugins: 本实例已装配的插件运行资源，不执行隐式发现。
         can_start: 实际派发前重新检查的资格回调，等待后仍须复核。
         wakeup_committed: 计划提交后唤醒调度器的回调，不直接执行计划。
-        knowledge: 原文展开与认识召回服务，修订仍经过反思批次契约。
+        evidence: 共享原文的版本化阅读服务；Notebook 独立提供长期记忆能力。
 
     Returns:
-        已连接前台、后台、认识及各自历史维护所有者的主体装配结果。
+        已连接前台、行为评审、共享证据及各自历史维护所有者的主体装配结果。
 
     Raises:
         TypeError: 已校验主体用途没有生成模型声明。
@@ -153,7 +153,6 @@ async def build_subject(
         return UsageMeter(store, binding, identity, await store.get_usage_anchor(binding))
 
     foreground_usage = await usage_for(foreground_name, "foreground")
-    reflection_usage = await usage_for(reflection_name, "memory_consolidation")
     behavior_usage = await usage_for(reflection_name, "behavior_review")
 
     def capacity_for(
@@ -202,7 +201,7 @@ async def build_subject(
     ).hexdigest()
     await store.feedback.configure_capacity(capacity_key)
 
-    ledger = store.knowledge
+    ledger = store.evidence
     diagnostic_bytes = config.diagnostics.max_bytes
 
     async def history_for(
@@ -312,7 +311,7 @@ async def build_subject(
         )
 
     sleep_tools = ForegroundTools(
-        knowledge,
+        evidence,
         ledger,
         ForegroundBinding(
             execute,
@@ -396,7 +395,7 @@ async def build_subject(
             )
     subject = SubjectService(
         store,
-        knowledge,
+        evidence,
         ledger,
         catalog,
         subject=SubjectModel(
@@ -433,19 +432,9 @@ async def build_subject(
     background = BackgroundService(
         store,
         store.feedback,
-        knowledge,
+        evidence,
         ledger,
         reflection=SubjectModel(
-            generation[reflection_name],
-            reflection_settings.model,
-            reflection_settings.max_output_tokens,
-            capacity_for(reflection_settings, enforce=True, usage=reflection_usage),
-            config.subject.reflection_retry,
-            compiler=compile_materials,
-            supports_contents=reflection_settings.supports_contents,
-            observe_usage=reflection_usage.observe,
-        ),
-        behavior=SubjectModel(
             generation[reflection_name],
             reflection_settings.model,
             reflection_settings.max_output_tokens,
@@ -464,9 +453,6 @@ async def build_subject(
             max_requests=config.subject.reflection_turn.max_requests,
             turn_seconds=config.subject.reflection_turn.total_seconds,
             behavior_enabled=config.subject.behavior_review_enabled,
-            memory_enabled=config.subject.memory_consolidation_enabled,
-            memory_batch_seconds=config.subject.memory_batch_seconds,
-            memory_batch_turns=config.subject.memory_batch_turns,
         ),
         media=native,
         refresh=refresh,
@@ -476,4 +462,4 @@ async def build_subject(
         can_start=can_start,
     )
     subject.bind_background(background)
-    return SubjectAssembly(subject, history, knowledge, background, sleep_history)
+    return SubjectAssembly(subject, history, evidence, background, sleep_history)

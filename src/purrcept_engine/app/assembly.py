@@ -28,6 +28,7 @@ from purrcept_engine.plugins.audio_files import audio_files_blueprint
 from purrcept_engine.plugins.images import images_blueprint
 
 _BUILTIN_ENTRIES = {
+    "phone": "purrcept_engine.plugins.phone.plugin:factory",
     "notebook": "purrcept_engine.plugins.notebook:factory",
     "clock": "purrcept_engine.plugins.time:factory",
     "bed": "purrcept_engine.plugins.rest:factory",
@@ -129,7 +130,9 @@ def prepare_plugins(
         objects.extend(blueprint.objects)
         blueprints.append((item.instance_id, blueprint))
     # phone 是启用应用的实际包含关系；目录不生成没有业务的遥控能力。
-    if any(obj.parent_id == "phone" for obj in objects):
+    if any(obj.parent_id == "phone" for obj in objects) and not any(
+        obj.object_id == "phone" for obj in objects
+    ):
         objects.append(ObjectDeclaration("phone", "phone", "手机应用", "subject"))
     capabilities = (
         ACTIVITY_DECLARATION,

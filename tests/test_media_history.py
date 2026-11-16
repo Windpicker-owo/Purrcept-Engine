@@ -250,7 +250,7 @@ def _capacity(payload: JsonObject):
     )
 
 
-@pytest.mark.parametrize("scope", ["foreground", "reflection"])
+@pytest.mark.parametrize("scope", ["foreground", "behavior_review"])
 async def test_real_core_media_window_survives_tool_rounds_retry_failure_and_reopen(
     tmp_path: Path,
     scope: SessionScope,
