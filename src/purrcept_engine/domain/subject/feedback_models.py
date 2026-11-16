@@ -25,9 +25,6 @@ class FeedbackWork:
         plans: 已到期或有新结论的可靠计划记录。
         supervision: 需要前台核验并回应的监管事实。
         deliveries: 已登记的完整原文交付记录，保存不等同于已呈现。
-
-    Note:
-        实例字段在构造后不可重新赋值；嵌套值的冻结范围由字段所属契约决定。
     """
 
     calls: tuple[execution_models.CallRecord, ...]
@@ -59,9 +56,6 @@ class FeedbackBridge:
         changed: 此操作是否实际改变已提交的业务事实。
         blocked: 是否因正式接管容量不足而尚未完成可靠交接。
         urgent_generations: 已取得真实紧急依据且仍需核验的前台生成代次。
-
-    Note:
-        实例字段在构造后不可重新赋值；嵌套值的冻结范围由字段所属契约决定。
     """
 
     foreground_ids: tuple[str, ...] = ()
@@ -81,9 +75,6 @@ class ReflectionState:
         oldest_queued_at: 最早待复核来源入队时刻；None 表示当前没有待办。
         priority: 此来源是否属于需要优先复核的可靠事实。
         next_plan_at: 下一未完成计划的到期时刻；None 表示没有待到期计划。
-
-    Note:
-        实例字段在构造后不可重新赋值；嵌套值的冻结范围由字段所属契约决定。
     """
 
     epoch: int
@@ -112,9 +103,6 @@ class ReflectionSource:
         queued_at: 当前来源加入可靠待办的 Unix 时间戳（秒）。
         cursor: 宿主签发并保存的不透明续读游标，续读同一快照版本。
         priority: 此来源是否属于需要优先复核的可靠事实。
-
-    Note:
-        实例字段在构造后不可重新赋值；嵌套值的冻结范围由字段所属契约决定。
     """
 
     sequence: int

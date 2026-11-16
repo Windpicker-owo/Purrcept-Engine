@@ -18,7 +18,7 @@ class ParsedNote:
     """一次已稳定取得的文件内容；版本为实际 UTF-8 字节的内容摘要。
 
     Attributes:
-        path: 此操作定位的明确路径。
+        path: 目标文件或目录路径。
         name: 从技能元数据取得的展示名称，区别于文件路径。
         description: 向调用者或模型说明可观察行为的文字。
         content: 本次明确写入的完整正文。
@@ -26,9 +26,6 @@ class ParsedNote:
         version: 目标记录的确切版本，区别于可变的当前版本。
         byte_count: 当前内容实际占用的字节数。
         occurred_at: 同一文件句柄观察到的修改时间（Unix 秒），不是正文事件时间。
-
-    Note:
-        实例字段在构造后不可重新赋值；嵌套值的冻结范围由字段所属契约决定。
     """
 
     path: str
@@ -70,7 +67,7 @@ def parse_note(
     """保留既有单行 name/description 解析，未知元数据不提升为宿主指令。
 
     Args:
-        path: 此操作定位的明确路径。
+        path: 目标文件或目录路径。
         content: 本次明确写入的完整正文。
         version: 目标记录的确切版本，区别于可变的当前版本。
         byte_count: 当前内容实际占用的字节数。

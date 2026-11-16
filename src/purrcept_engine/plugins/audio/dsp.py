@@ -88,7 +88,7 @@ def read_profile(path: Path | None) -> VoiceProfile:
     """缺失文件是明确旁通。
 
     Args:
-        path: 此操作定位的明确路径。
+        path: 目标文件或目录路径。
 
     Returns:
         已校验的声线预设。

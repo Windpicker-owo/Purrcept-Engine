@@ -1,6 +1,6 @@
 # Engine 代码架构与调用链
 
-本文面向第一次接手仓库的维护者。先读应用主流程，再按需要打开领域规则和资源实现。
+本文面向维护者说明调用链与运行不变式。若想先用三分钟建立全局直觉并查看模块瘦身审查结论，可先读 [架构导读与代码审查](code-review.md)。
 运行契约见 [主体运行行为](behavior.md)，配置入口见 [配置说明](configuration.md)。
 本文描述当前结构；已完成的迁移计划和阶段验收记录保留在 Git 历史中。
 
@@ -14,6 +14,7 @@ src/purrcept_engine/
 │   ├── lifecycle.py        HostLifecycle：阶段、启动与实际资源归还
 │   ├── ingress.py          InputAdmissionService：正式接管后的可信交接
 │   ├── queries.py          HostQueries：只读查询和面板投影
+│   ├── admin_api.py        真后台 HTTP 路由（聊天调试、配置与笔记编辑、内嵌调音室）
 │   └── host_state.py       EngineState：当前实例的部分启动与资源事实
 ├── domain/
 │   ├── inputs/             输入原文、来源、媒体与接管记录
@@ -26,7 +27,7 @@ src/purrcept_engine/
 │   ├── notebook/           插件整理、索引及有限模型和存储契约
 │   └── audio/、time/、controls/  共享业务值、规则与有限端口
 ├── infrastructure/
-│   ├── sqlite/             一个提交器和各领域账本，不决定模型展示
+│   ├── sqlite/             单线程队列 + Store 门面（拆分为 store_inputs/sessions/execution 与 rows）
 │   ├── models/             SDK 编译、客户端与向量 HTTP 实现
 │   ├── execution/          默认隔离执行器、Worker 会话、IPC 与调用调度
 │   ├── processes/          Windows 进程资源工具

@@ -72,7 +72,7 @@ def load_policy(path: Path) -> ObservationPolicy:
     """只有不存在的业务文件采用初值。
 
     Args:
-        path: 此操作定位的明确路径。
+        path: 目标文件或目录路径。
 
     Returns:
         经过完整边界校验的观察策略。
@@ -91,7 +91,7 @@ def save_policy(path: Path, policy: ObservationPolicy) -> None:
     """先写同目录临时文件，再原子替换，失败不采用未保存的新偏好。
 
     Args:
-        path: 此操作定位的明确路径。
+        path: 目标文件或目录路径。
         policy: 明确的观察间隔、变化门槛与帧节流规则。
     """
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -551,8 +551,7 @@ class ComputerRuntime:
         """只读当前连接真实缓存。
 
         Returns:
-            当前连接真实取得的完整画面、采集时刻与比较特征。 未取得对应记录或素材时返回 None；
-            读取故障仍抛出。
+            当前连接真实取得的完整画面、采集时刻与比较特征。
 
         Note:
             UI读取此值不触发采样或保存候选。

@@ -50,9 +50,6 @@ class BackgroundSettings:
         max_sources: 单批反思取得的可靠来源数量上限。
         max_requests: 本轮逻辑模型请求总上限，传输重试不重复占名额。
         turn_seconds: 本轮连续处理的总秒数预算，包含工具等待和重试退避。
-
-    Note:
-        实例字段在构造后不可重新赋值；嵌套值的冻结范围由字段所属契约决定。
     """
 
     diagnostic_bytes: int

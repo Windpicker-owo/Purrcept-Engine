@@ -22,7 +22,7 @@ def load_profile(path: Path) -> tuple[VoiceProfile, str]:
     """缺失文件表示明确旁通。
 
     Args:
-        path: 此操作定位的明确路径。
+        path: 目标文件或目录路径。
 
     Returns:
         本次读取的完整内容及其版本标记，供后续修改时核验。
@@ -47,7 +47,7 @@ def save_profile(path: Path, profile: VoiceProfile, previous: str) -> str:
     """核对实际版本再原子替换。
 
     Args:
-        path: 此操作定位的明确路径。
+        path: 目标文件或目录路径。
         profile: 当前操作采用的已校验模型或声线预设。
         previous: 调用方持有的先前预设版本，用于拒绝覆盖并发修改。
 

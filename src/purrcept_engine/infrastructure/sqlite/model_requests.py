@@ -32,6 +32,7 @@ from purrcept_engine.domain.model_requests.models import (
 )
 from purrcept_engine.errors import StorageError
 from purrcept_engine.infrastructure.sqlite import analysis_work, archive, retention
+from purrcept_engine.infrastructure.sqlite.rows import as_int, as_opt_text, as_text
 from purrcept_engine.serialization import encode
 
 _logger = logging.getLogger(__name__)
@@ -325,8 +326,7 @@ def get_request(connection: sqlite3.Connection, request_id: str) -> RequestRecor
         request_id: 逻辑请求的稳定身份，用于查询或关联同一次受理。
 
     Returns:
-        一个逻辑模型请求的冻结材料及按实际顺序保存的尝试。 未取得对应记录或素材时返回 None；
-        读取故障仍抛出。
+        一个逻辑模型请求的冻结材料及按实际顺序保存的尝试。
 
     Raises:
         StorageError: 模型请求状态损坏。
@@ -733,10 +733,7 @@ class _Fields(dict[str, object]):
         raise StorageError(f"模型材料缺少字段：{key}", code="invalid_record")
 
 
-def _text(value: object) -> str:
-    if not isinstance(value, str):
-        raise StorageError("模型材料字符串损坏。", code="invalid_record")
-    return value
+_text = as_text
 
 
 def _number(value: object) -> float:
@@ -746,17 +743,14 @@ def _number(value: object) -> float:
 
 
 def _integer(value: object) -> int:
-    if isinstance(value, bool) or not isinstance(value, int):
-        raise StorageError("模型材料整数损坏。", code="invalid_record")
-    return value
+    return as_int(value, "模型材料整数损坏。", minimum=None)
 
 
 def _optional_number(value: object) -> float | None:
     return None if value is None else _number(value)
 
 
-def _optional_text(value: object) -> str | None:
-    return None if value is None else _text(value)
+_optional_text = as_opt_text
 
 
 def _strings(value: object) -> tuple[str, ...]:

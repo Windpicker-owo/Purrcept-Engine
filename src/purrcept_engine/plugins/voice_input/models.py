@@ -80,9 +80,6 @@ class InputDevice:
     Attributes:
         device_id: 捕获库枚举的原生输入设备序号。
         name: 当前声明、字段或协议操作的明确名称。
-
-    Note:
-        实例字段在构造后不可重新赋值；嵌套值的冻结范围由字段所属契约决定。
     """
 
     device_id: int
@@ -166,9 +163,6 @@ class TranscriptUpdate:
         sentence_id: 同一捕获会话内本次发言的稳定身份。
         text: 本次明确传输、输入或呈现的完整文本。
         final: 此次转写是否为端点确认的最终结果。
-
-    Note:
-        实例字段在构造后不可重新赋值；嵌套值的冻结范围由字段所属契约决定。
     """
 
     sentence_id: str

@@ -56,9 +56,6 @@ class ClockSettings(BaseModel):
 
         Args:
             value: 此校验边界接收的原始值，校验失败时保留明确错误。
-
-        Raises:
-            ValueError: 参数、材料或当前状态不满足此入口的约束。
         """
         try:
             resolve_timezone(value)

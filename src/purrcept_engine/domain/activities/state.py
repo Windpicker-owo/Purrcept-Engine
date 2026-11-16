@@ -51,9 +51,6 @@ class ActivityRequest:
         recovery_version: 取得只读核对材料时冻结的活动版本。
         action_id: 执行器分配的行动身份，用于关联逐次调用和真实回执。
         presented_call_ids: 主体交付门槛确认已完整呈现的调用身份；空集合不授予恢复资格。
-
-    Note:
-        实例字段在构造后不可重新赋值；嵌套值的冻结范围由字段所属契约决定。
     """
 
     command_id: str
@@ -80,9 +77,6 @@ class RecoveryProof:
         action_id: 执行器分配的行动身份，用于关联逐次调用和真实回执。
         call_id: 实际能力调用的唯一身份，用于保存启动门槛及结果版本。
         observation: 显式核对取得的实际观察，不能通过重放旧写操作生成。
-
-    Note:
-        实例字段在构造后不可重新赋值；嵌套值的冻结范围由字段所属契约决定。
     """
 
     version: int

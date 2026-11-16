@@ -297,7 +297,7 @@ class CallDispatcher:
 
         Returns:
             实际确认、失败或未知结论，以及可 JSON 化的业务值和原生媒体引用。
-            未取得对应记录或素材时返回 None；读取故障仍抛出。
+           
 
         Raises:
             ValueError: 启动资格必须返回正有限剩余秒数或 None。

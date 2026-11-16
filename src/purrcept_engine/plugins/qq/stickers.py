@@ -139,8 +139,7 @@ class StickerLibrary:
             data: OneBot 实际返回的原生图片字段，用 md5 或文件名摘要匹配现有贴纸。
 
         Returns:
-            贴纸的稳定身份、媒体引用与原始元数据。 未取得对应记录或素材时返回 None；
-            读取故障仍抛出。
+            贴纸的稳定身份、媒体引用与原始元数据。
         """
         digests: set[str] = set()
         for key in ("md5", "file_md5", "file_unique", "file", "file_id", "filename", "name"):

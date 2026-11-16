@@ -174,8 +174,7 @@ def freeze_summary_source(
         protected_message_indices: 不能被本次摘要覆盖的消息下标。 默认不附加此类条目。
 
     Returns:
-        可维护历史的完整冻结范围、保护边界与来源版本。 未取得对应记录或素材时返回 None；
-        读取故障仍抛出。
+        可维护历史的完整冻结范围、保护边界与来源版本。
 
     Raises:
         ValueError: 摘要来源需要明确所有者及非负版本；保护轮数不能为负。

@@ -128,8 +128,7 @@ class TimeLedger:
             now: 带明确时区的本次墙钟时刻。
 
         Returns:
-            本次可靠触发及同事务正式接管的输入身份。 未取得对应记录或素材时返回 None；
-            读取故障仍抛出。
+            本次可靠触发及同事务正式接管的输入身份。
         """
         return await self._submit(
             lambda connection: sql.fire_alarm(
@@ -146,8 +145,7 @@ class TimeLedger:
         """读取唯一主体状态，不复制第二份可写实体组件。
 
         Returns:
-            当前明确休息事实，预计期限不自动解除状态。 未取得对应记录或素材时返回 None；
-            读取故障仍抛出。
+            当前明确休息事实，预计期限不自动解除状态。
         """
         return await self._submit(sql.get_rest)
 

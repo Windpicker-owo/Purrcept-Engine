@@ -32,9 +32,6 @@ class HostSnapshot:
         version: 当前宿主生命周期状态实际变更的修订号，读取不会递增。
         phase: 宿主实际生命周期阶段，与查询版本同时更新。
         pending_resources: 尚未确认归还的实际资源名称，关闭超时后仍由原所有者持有。
-
-    Note:
-        实例字段在构造后不可重新赋值；嵌套值的冻结范围由字段所属契约决定。
     """
 
     instance_id: str

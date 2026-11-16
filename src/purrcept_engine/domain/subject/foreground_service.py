@@ -57,9 +57,6 @@ class ForegroundBinding:
         input_id: 正式接管返回的输入身份，用于关联原文与后续处理。
         eligible: 在实际行动前复核当前生成代次的同步入口或其冻结结论。
         delivery: 本轮工具原文交付门槛；None 不执行候选交付替换。
-
-    Note:
-        实例字段在构造后不可重新赋值；嵌套值的冻结范围由字段所属契约决定。
     """
 
     execute: ActionCallback

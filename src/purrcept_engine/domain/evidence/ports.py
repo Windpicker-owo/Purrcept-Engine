@@ -65,8 +65,7 @@ class EvidenceStore(Protocol):
             include_inactive: 是否同时返回已失效的历史记录，并保留失效原因。 默认 False。
 
         Returns:
-            完整保存的原文快照，包含确切来源、版本与媒体关系。 未取得对应记录或素材时返回 None；
-            读取故障仍抛出。
+            完整保存的原文快照，包含确切来源、版本与媒体关系。
 
         Raises:
             StorageError: 权威提交或读取失败，不能以空结果替代。
@@ -83,8 +82,7 @@ class EvidenceStore(Protocol):
             slice_ref: 已保存原文片段的不可变身份。
 
         Returns:
-            同一原文版本中已保存的精确范围及不可变片段身份。 未取得对应记录或素材时返回 None；
-            读取故障仍抛出。
+            同一原文版本中已保存的精确范围及不可变片段身份。
         """
         ...
 

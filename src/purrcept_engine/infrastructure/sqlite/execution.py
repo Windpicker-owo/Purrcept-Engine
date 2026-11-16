@@ -25,6 +25,7 @@ from purrcept_engine.domain.execution.record_validation import (
 )
 from purrcept_engine.domain.inputs.models import MediaReference
 from purrcept_engine.errors import StorageError
+from purrcept_engine.infrastructure.sqlite.rows import as_int, as_opt_text, as_text
 
 SCHEMA = (
     "CREATE TABLE actions (action_id TEXT PRIMARY KEY, catalog_version TEXT NOT NULL, "
@@ -65,14 +66,10 @@ _ACTION_COLUMNS = (
 )
 
 
-def _text(value: object) -> str:
-    if not isinstance(value, str):
-        raise StorageError("执行记录字符串字段无效。", code="invalid_record")
-    return value
+_text = as_text
 
 
-def _optional_text(value: object) -> str | None:
-    return None if value is None else _text(value)
+_optional_text = as_opt_text
 
 
 def _number(value: object) -> float:
@@ -81,10 +78,7 @@ def _number(value: object) -> float:
     return float(value)
 
 
-def _integer(value: object) -> int:
-    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
-        raise StorageError("执行记录计数字段无效。", code="invalid_record")
-    return value
+_integer = as_int
 
 
 def _json(value: object, *, arguments: bool = False) -> str | None:
@@ -414,7 +408,7 @@ def get_action(connection: sqlite3.Connection, action_id: str) -> ActionRecord |
 
     Returns:
         已保存的行动记录，包含逐次真实调用及结果历史；unknown 不证明效果未发生。
-        未取得对应记录或素材时返回 None；读取故障仍抛出。
+       
 
     Raises:
         StorageError: 行动状态无效。

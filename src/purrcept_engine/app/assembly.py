@@ -49,9 +49,6 @@ class PreparedPlugins:
     Attributes:
         catalog: 全部已启用插件共同生成的冻结目录。
         blueprints: 按已核验依赖排列的插件实例身份与纯声明。
-
-    Note:
-        实例字段在构造后不可重新赋值；嵌套值的冻结范围由字段所属契约决定。
     """
 
     catalog: Catalog

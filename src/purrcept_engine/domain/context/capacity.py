@@ -48,9 +48,6 @@ class DecisionCapacity:
 
     Attributes:
         input_limit: 专用判断协议明确允许的输入容量。
-
-    Note:
-        实例字段在构造后不可重新赋值；嵌套值的冻结范围由字段所属契约决定。
     """
 
     input_limit: int
@@ -111,9 +108,6 @@ class CapacityAssessment:
         maintenance_due: 当前占用是否达到历史维护触发比例。
         target_met: 当前占用是否已满足摘要维护目标比例。
         payload_sha256: 完整实际 payload 的内容摘要，用于关联计量材料。
-
-    Note:
-        实例字段在构造后不可重新赋值；嵌套值的冻结范围由字段所属契约决定。
     """
 
     estimate: CapacityEstimate

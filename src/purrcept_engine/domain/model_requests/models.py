@@ -103,9 +103,6 @@ class AttemptStart:
         attempt_id: 本次真实传输尝试的稳定身份，区别于逻辑请求身份。
         sequence: 行动内从 1 开始的调用顺序号。
         deadline: 本次尝试的绝对单调截止，仅可在原宿主的单调时钟中解释。
-
-    Note:
-        实例字段在构造后不可重新赋值；嵌套值的冻结范围由字段所属契约决定。
     """
 
     request_id: str
@@ -194,9 +191,6 @@ class AttemptRecord:
         created_at: 记录首次建立的 Unix 时间戳（秒）。
         finished_at: 此记录实际结束的 Unix 时间戳；None 表示尚未保存结束事实。
         result: 实际结束尝试的结果；None 表示尚未取得或保存结束事实。
-
-    Note:
-        实例字段在构造后不可重新赋值；嵌套值的冻结范围由字段所属契约决定。
     """
 
     start: AttemptStart
@@ -215,9 +209,6 @@ class RequestRecord:
         created_at: 记录首次建立的 Unix 时间戳（秒）。
         finished_at: 此记录实际结束的 Unix 时间戳；None 表示尚未保存结束事实。
         attempts: 按真实开始顺序保存的传输尝试，不创建新逻辑请求。
-
-    Note:
-        实例字段在构造后不可重新赋值；嵌套值的冻结范围由字段所属契约决定。
     """
 
     request: RequestEvidence

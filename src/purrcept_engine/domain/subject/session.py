@@ -219,9 +219,6 @@ class TurnIntakeBatch:
     Attributes:
         input_ids: 已由权威事务并入本轮 turn_inputs 的输入身份，按接管顺序排列。
         message: 呈现这些输入的 Core user 消息，metadata 携带相同来源身份。
-
-    Note:
-        实例字段在构造后不可重新赋值；嵌套值的冻结范围由字段所属契约决定。
     """
 
     input_ids: tuple[str, ...]
@@ -450,9 +447,6 @@ class SessionResult:
         session: 当前已提交会话版本及完整检查点。
         checkpoint: 本轮已实际提交的完整 Core 检查点。
         final_text: Core 返回的内部最终文字，不会自动对外发送。
-
-    Note:
-        实例字段在构造后不可重新赋值；嵌套值的冻结范围由字段所属契约决定。
     """
 
     turn: TurnRecord

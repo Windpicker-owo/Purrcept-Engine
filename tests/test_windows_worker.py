@@ -129,7 +129,9 @@ async def test_real_process_has_effective_limits_and_closes_handles(
         staticmethod(confirm),
         raising=False,
     )
-    process = WindowsProcess.launch(_command("import time; time.sleep(0.1)"))
+    process = WindowsProcess.launch(
+        _command("import time; t = time.perf_counter() + 0.05\nwhile time.perf_counter() < t: pass")
+    )
     try:
         assert process.pid > 0
         assert process.process_handle > 0

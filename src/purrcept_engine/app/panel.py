@@ -59,7 +59,7 @@ class _Invoke(Protocol):
         """共用真实能力/schema/Provider 和原回执，不先请求语言模型。
 
         Args:
-            path: 此操作定位的明确路径。
+            path: 目标文件或目录路径。
             arguments: 按已装配参数模型校验的能力关键字参数。
             input_id: 正式接管返回的输入身份，用于关联原文与后续处理。 None
                 表示无单一输入因果关联。
@@ -166,8 +166,7 @@ class PanelController:
             target: 本次操作明确指定的业务目标身份。
 
         Returns:
-            当前已经取得的完整预览画面，不触发额外采集。 未取得对应记录或素材时返回 None；
-            读取故障仍抛出。
+            当前已经取得的完整预览画面，不触发额外采集。
 
         Raises:
             ControlError: 该设备没有缓存预览。

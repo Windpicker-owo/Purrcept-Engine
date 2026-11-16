@@ -141,7 +141,7 @@ class SqliteExecutor:
         """准备未启动的提交器。
 
         Args:
-            path: 此操作定位的明确路径。
+            path: 目标文件或目录路径。
             max_inputs: 有界提交队列允许接管的条目上限。
             max_input_bytes: 有界提交队列允许接管的逻辑字节上限。
 

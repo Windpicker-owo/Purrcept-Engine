@@ -141,7 +141,7 @@ class ExecutionJournal(Protocol):
 
         Returns:
             已保存的行动记录，包含逐次真实调用及结果历史；unknown 不证明效果未发生。
-            未取得对应记录或素材时返回 None；读取故障仍抛出。
+           
 
         Raises:
             StorageError: 权威记录缺失、版本冲突、存储故障或提交容量不足。
@@ -265,7 +265,7 @@ class ActionExecutor(Protocol):
 
         Returns:
             已保存的行动记录，包含逐次真实调用及结果历史；unknown 不证明效果未发生。
-            未取得对应记录或素材时返回 None；读取故障仍抛出。
+           
         """
         ...
 

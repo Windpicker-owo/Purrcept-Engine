@@ -100,9 +100,6 @@ class Binding:
         path: 冻结目录中的完整能力调用路径，例如 me.console.output。
         declaration: 待绑定或计量的不可变声明。
         schema_json: 与参数模型一致的规范 JSON schema 文本。
-
-    Note:
-        实例字段在构造后不可重新赋值；嵌套值的冻结范围由字段所属契约决定。
     """
 
     path: str

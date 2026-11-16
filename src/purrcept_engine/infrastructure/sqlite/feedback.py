@@ -35,6 +35,7 @@ from purrcept_engine.domain.subject.feedback_models import (
 from purrcept_engine.domain.subject.models import TurnRecord
 from purrcept_engine.errors import StorageError
 from purrcept_engine.infrastructure.sqlite import activities, analysis_work, evidence, execution
+from purrcept_engine.infrastructure.sqlite.rows import as_int, as_text
 from purrcept_engine.infrastructure.sqlite.time import AdmitInput
 from purrcept_engine.serialization import encode
 from purrcept_engine.values import decode_object
@@ -60,16 +61,11 @@ SCHEMA = (
 )
 
 
-def _text(value: object) -> str:
-    if not isinstance(value, str):
-        raise StorageError("反馈账本文本字段损坏。", code="invalid_record")
-    return value
+_text = as_text
 
 
 def _integer(value: object) -> int:
-    if isinstance(value, bool) or not isinstance(value, int):
-        raise StorageError("反馈账本整数字段损坏。", code="invalid_record")
-    return value
+    return as_int(value, "反馈账本整数字段损坏。", minimum=None)
 
 
 def _number(value: object) -> float:

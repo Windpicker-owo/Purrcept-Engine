@@ -33,9 +33,6 @@ class SubjectModel:
         compiler: 按实际 SDK 布局冻结完整请求材料的纯编译器。
         observe_usage: 成功证据提交后的实际输入用量保存入口；None 不保存锚点。
         supports_contents: 刺激允许交付的内容类型；默认仅 text，其他媒体原位转为文字引用。
-
-    Note:
-        实例字段在构造后不可重新赋值；嵌套值的冻结范围由字段所属契约决定。
     """
 
     backend: ModelBackend

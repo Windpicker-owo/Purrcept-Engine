@@ -1,11 +1,12 @@
-/** 视图模型的纯函数边界：状态推导、待处理、路由与时间线只依赖有限快照替身。 */
+/** 视图模型的纯函数边界：状态推导、待处理、路由、时间线与真后台数据契约校验。 */
 import { describe, expect, it } from "vitest";
 import type { Entry } from "../src/client";
 import type { Action, Device, Snapshot } from "../src/contracts";
+import { parseChatFeed, parseConfigView, parseNotebooksOverview } from "../src/model/admin";
 import { agentView } from "../src/model/agent";
-import { summarizePath } from "../src/model/home-path";
 import { attentionItems } from "../src/model/attention";
 import { deviceSummary } from "../src/model/devices";
+import { summarizePath } from "../src/model/home-path";
 import { capabilityName } from "../src/model/names";
 import { parseRoute, routeHref } from "../src/model/routes";
 import { timelineItems } from "../src/model/timeline";
@@ -13,10 +14,22 @@ import { host, paused, request } from "./fixtures";
 
 function action(state: string, calls: [string, string][], id = "action-1", created = 10): Action {
   return {
-    action_id: id, state, created_at: created, finished_at: null, error: null,
+    action_id: id,
+    state,
+    created_at: created,
+    finished_at: null,
+    error: null,
     calls: calls.map(([path, callState], index) => ({
-      call_id: `${id}-call-${index}`, path, state: callState, receipt_revision: 1, started_at: created, finished_at: null,
-      error_type: null, error: null, result: null, media_count: 0,
+      call_id: `${id}-call-${index}`,
+      path,
+      state: callState,
+      receipt_revision: 1,
+      started_at: created,
+      finished_at: null,
+      error_type: null,
+      error: null,
+      result: null,
+      media_count: 0,
     })),
   };
 }
@@ -24,18 +37,36 @@ function device(kind: string, state: Device["state"]): Device {
   return { instance_id: kind, kind, revision: "1", state, controls: [], has_preview: false };
 }
 function entry(patch: Partial<Entry> = {}): Entry {
-  return { request: request(), title: "连接电脑", result: null, sending: false, unresolved: false, rejected: false, unavailable: false, error: null, ...patch };
+  return {
+    request: request(),
+    title: "连接电脑",
+    result: null,
+    sending: false,
+    unresolved: false,
+    rejected: false,
+    unavailable: false,
+    error: null,
+    ...patch,
+  };
 }
 
 describe("首页行动摘要", () => {
   it("后段未知优先保留，同名调用不合并且原始顺序不变", () => {
     const value = action("failed", [
-      ["me.qq.send", "confirmed"], ["me.qq.send", "confirmed"],
-      ["me.qq.send", "confirmed"], ["me.qq.send", "confirmed"],
-      ["me.qq.send", "unknown"], ["me.qq.send", "started"],
+      ["me.qq.send", "confirmed"],
+      ["me.qq.send", "confirmed"],
+      ["me.qq.send", "confirmed"],
+      ["me.qq.send", "confirmed"],
+      ["me.qq.send", "unknown"],
+      ["me.qq.send", "started"],
     ]);
     const summary = summarizePath(value);
-    expect(summary.visible.map((call) => call.call_id)).toEqual(["action-1-call-0", "action-1-call-1", "action-1-call-4", "action-1-call-5"]);
+    expect(summary.visible.map((call) => call.call_id)).toEqual([
+      "action-1-call-0",
+      "action-1-call-1",
+      "action-1-call-4",
+      "action-1-call-5",
+    ]);
     expect(summary).toMatchObject({ omitted: 2, hiddenAttention: 0 });
   });
   it("超过预算的异常明确计数，空行动没有虚构路径", () => {
@@ -50,7 +81,23 @@ describe("agentView", () => {
     const base = host();
     const failed = { ...base, health: { ...base.health, can_process: false } };
     expect(agentView(failed, true, [])).toMatchObject({ state: "failed", headline: "主体已停止处理" });
-    const partial = { ...base, health: { ...base.health, components: [{ component: "memory", state: "failed", failed_at: 1, error_id: "fault", error_code: "component_failed", error_type: "LookupError", can_process: false }] } };
+    const partial = {
+      ...base,
+      health: {
+        ...base.health,
+        components: [
+          {
+            component: "memory",
+            state: "failed",
+            failed_at: 1,
+            error_id: "fault",
+            error_code: "component_failed",
+            error_type: "LookupError",
+            can_process: false,
+          },
+        ],
+      },
+    };
     expect(agentView(partial, true, []).headline).toBe("部分后台工作已暂停");
   });
   it("断线时不把旧快照当作当前状态", () => {
@@ -58,11 +105,23 @@ describe("agentView", () => {
     expect(agentView(null, false, []).headline).toContain("还没有连上");
   });
   it("存储不可用优先于一切运行状态", () => {
-    const s: Snapshot = { ...host(), authority_available: false, recent_actions: [action("running", [["me.qq.send", "started"]])] };
+    const s: Snapshot = {
+      ...host(),
+      authority_available: false,
+      recent_actions: [action("running", [["me.qq.send", "started"]])],
+    };
     expect(agentView(s, true, []).state).toBe("failed");
   });
   it("在途行动显示涉及的对象并把视线交给行动路径", () => {
-    const s: Snapshot = { ...host(), recent_actions: [action("running", [["me.qq.send_message", "confirmed"], ["me.notebook.write", "started"]])] };
+    const s: Snapshot = {
+      ...host(),
+      recent_actions: [
+        action("running", [
+          ["me.qq.send_message", "confirmed"],
+          ["me.notebook.write", "started"],
+        ]),
+      ],
+    };
     const view = agentView(s, true, []);
     expect(view).toMatchObject({ state: "acting", headline: "正在使用QQ、笔记", focus: "path" });
     expect(view.detail).toContain("1 项已完成");
@@ -70,7 +129,9 @@ describe("agentView", () => {
   it("前台忙碌是思考，积压输入是感知，空闲时不伪造活动", () => {
     const base = host();
     expect(agentView({ ...base, foreground: { ...base.foreground!, busy: true } }, true, []).state).toBe("reasoning");
-    expect(agentView({ ...base, pending_inputs: [{ stage: "attention", count: 2, logical_bytes: 10 }] }, true, []).state).toBe("perceiving");
+    expect(agentView({ ...base, pending_inputs: [{ stage: "attention", count: 2, logical_bytes: 10 }] }, true, []).state).toBe(
+      "perceiving",
+    );
     expect(agentView({ ...base, pending_inputs: [{ stage: "submitted", count: 2, logical_bytes: 10 }] }, true, []).state).toBe("idle");
     expect(agentView(base, true, []).state).toBe("idle");
   });
@@ -88,14 +149,34 @@ describe("agentView", () => {
 describe("attentionItems", () => {
   it("组件故障进入可导航的待处理事项，不只留在空闲状态文案中", () => {
     const s = host();
-    s.health.components = [{ component:"memory",state:"failed",failed_at:1,error_id:"fault",error_code:"component_failed",error_type:"LookupError",can_process:false }];
-    expect(attentionItems(s, []).find((item) => item.id === "component-health")).toMatchObject({ title:"部分后台工作已暂停",route:{page:"system",id:null},needsUser:true });
+    s.health.components = [
+      {
+        component: "memory",
+        state: "failed",
+        failed_at: 1,
+        error_id: "fault",
+        error_code: "component_failed",
+        error_type: "LookupError",
+        can_process: false,
+      },
+    ];
+    expect(attentionItems(s, []).find((item) => item.id === "component-health")).toMatchObject({
+      title: "部分后台工作已暂停",
+      route: { page: "system", id: null },
+      needsUser: true,
+    });
   });
   it("汇总存储、设备、未知结果、活动与容量", () => {
     const s: Snapshot = {
-      ...host(), authority_available: false,
+      ...host(),
+      authority_available: false,
       devices: [device("qq", { state: "exhausted" }), device("audio", { state: "stopped" })],
-      recent_actions: [action("completed", [["me.qq.send", "unknown"], ["me.qq.send", "confirmed"]])],
+      recent_actions: [
+        action("completed", [
+          ["me.qq.send", "unknown"],
+          ["me.qq.send", "confirmed"],
+        ]),
+      ],
       activities: [{ ...paused, state: "budget_exhausted" }],
       pending_inputs: [{ stage: "attention", count: 8, logical_bytes: 10 }],
     };
@@ -116,10 +197,15 @@ describe("attentionItems", () => {
 
 describe("voice device facts", () => {
   it("收音处理失败不能显示成回应，原声不可用时给出文字模式入口", () => {
-    const lines = deviceSummary(device("voice_input", {
-      mode: "audio", device: 5, devices: [{ index: 5, name: "测试麦克风" }], audio_ready: false,
-      latest_input: { processing_stage: "failed" },
-    }));
+    const lines = deviceSummary(
+      device("voice_input", {
+        mode: "audio",
+        device: 5,
+        devices: [{ index: 5, name: "测试麦克风" }],
+        audio_ready: false,
+        latest_input: { processing_stage: "failed" },
+      }),
+    );
     expect(lines).toContain("收音设备：测试麦克风");
     expect(lines).toContain("最近一句处理失败，不能视为已经回应");
     expect(lines).toContain("直接听原声尚未就绪，请选择“识别成文字”");
@@ -127,17 +213,48 @@ describe("voice device facts", () => {
   it("语音准备不等于已播放，输入处理完成不等于已发声", () => {
     expect(deviceSummary(device("audio", { active: { stage: "synthesizing", started: false } }))).toContain("正在准备语音，尚未开始播放");
     expect(deviceSummary(device("audio", { active: { started: true } }))).toContain("播放器已开始输出");
-    expect(deviceSummary(device("voice_input", { latest_input: { processing_stage: "processed" } }))).toContain("最近一句已处理；是否发声以语音输出状态为准");
+    expect(deviceSummary(device("voice_input", { latest_input: { processing_stage: "processed" } }))).toContain(
+      "最近一句已处理；是否发声以语音输出状态为准",
+    );
   });
 });
 
-describe("routes", () => {
-  it("解析与生成可往返的深链", () => {
+describe("routes and admin contracts", () => {
+  it("解析与生成可往返的深链（含对话、记忆与调音室子路由）", () => {
     const route = { page: "devices" as const, id: "qq:main/1" };
     expect(parseRoute(routeHref(route))).toEqual(route);
+    expect(parseRoute("#/chat")).toEqual({ page: "chat", id: null });
+    expect(parseRoute("#/memory/journal%2F2026-11-15.md")).toEqual({ page: "memory", id: "journal/2026-11-15.md" });
+    expect(parseRoute("#/devices/studio")).toEqual({ page: "devices", id: "studio" });
     expect(parseRoute("")).toEqual({ page: "home", id: null });
     expect(parseRoute("#/unknown/x")).toEqual({ page: "home", id: null });
     expect(parseRoute("#/timeline/%E0%A4%A")).toEqual({ page: "timeline", id: null });
+  });
+  it("校验对话流水、配置视图与笔记本概览契约", () => {
+    const feed = parseChatFeed({
+      console_enabled: true,
+      character_name: "杰瑞喵",
+      foreground_busy: false,
+      can_process: true,
+      inputs: [
+        {
+          input_id: "i1",
+          adapter_id: "console",
+          conversation_id: "web-admin",
+          display_name: "拾风",
+          text: "你好",
+          occurred_at: "2026-11-15T00:00:00Z",
+          received_at: "2026-11-15T00:00:00Z",
+          stage: "processed",
+          reason: null,
+          turn_id: "t1",
+        },
+      ],
+      actions: [],
+    });
+    expect(feed.character_name).toBe("杰瑞喵");
+    expect(parseConfigView({ available: false, message: "嵌入模式" }).available).toBe(false);
+    expect(parseNotebooksOverview({ available: true, instances: [] }).available).toBe(true);
   });
 });
 
@@ -149,7 +266,10 @@ describe("names and timeline", () => {
     expect(capabilityName("me.custom_tool.run", s)).toBe("custom_tool");
   });
   it("合并行动与控制并按时间倒序，未受理的控制排在最前", () => {
-    const s: Snapshot = { ...host(), recent_actions: [action("completed", [], "a2", 20), action("completed", [["me.qq.send", "unknown"]], "a1", 10)] };
+    const s: Snapshot = {
+      ...host(),
+      recent_actions: [action("completed", [], "a2", 20), action("completed", [["me.qq.send", "unknown"]], "a1", 10)],
+    };
     const items = timelineItems(s, [entry()], "all");
     expect(items.map((item) => item.id)).toEqual(["control:request-1", "a2", "a1"]);
     expect(timelineItems(s, [entry()], "check").map((item) => item.id)).toEqual(["a1"]);

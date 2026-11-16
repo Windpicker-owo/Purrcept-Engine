@@ -1,8 +1,4 @@
-"""宿主权威事实与有限缓存的只读查询，不启动模型、设备或行动。
-
-生命周期快照来自 HostLifecycle；其他查询借用尚未释放的账本与面板。
-收尾期间仍可查真实结果，查询不会延长设备会话或重放未知外部效果。
-"""
+"""宿主权威事实与设备缓存的只读查询服务，不启动模型、设备或外部行动。"""
 
 from __future__ import annotations
 
@@ -13,10 +9,7 @@ from purrcept_engine.app.lifecycle import HostLifecycle
 from purrcept_engine.app.panel import PanelController
 from purrcept_engine.domain.activities.models import ActivityRecord
 from purrcept_engine.domain.execution.models import ActionRecord
-from purrcept_engine.domain.inputs.models import (
-    InputRecord,
-    InputSource,
-)
+from purrcept_engine.domain.inputs.models import InputRecord, InputSource
 from purrcept_engine.domain.model_requests.models import RequestRecord
 from purrcept_engine.domain.subject.models import InputProcessing
 from purrcept_engine.errors import HostStateError
@@ -29,147 +22,44 @@ _logger = logging.getLogger("purrcept_engine.app.host")
 
 
 class HostQueries:
-    """为宿主提供原文、回执、控制和面板的只读查询。
-
-    Note:
-        与宿主共用资源台账和生命周期；关闭期间仅借用尚未释放的库。查询
-        不获取行动资格、不启动模型或设备，权威读取失败不会伪装成缺失结果。
-    """
+    """为宿主提供原文、回执、控制和面板的只读查询。"""
 
     def __init__(self, state: EngineState, lifecycle: HostLifecycle) -> None:
-        """固定应用实例借用。
-
-        Args:
-            state: 此宿主唯一的内部资源台账，不跨实例或插件共享。
-            lifecycle: 同一宿主的阶段和资源归还所有者。
-
-        Note:
-            资源创建、观察和归还不跨宿主共享。
-        """
         self.state = state
         self.lifecycle = lifecycle
 
-    async def query_input(self, input_id: str) -> InputRecord | None:
-        """查询已接管输入。
-
-        Args:
-            input_id: 正式接管返回的输入身份，用于关联原文与后续处理。
-
-        Returns:
-            首次接管的完整输入原文、来源与媒体引用。 未取得对应记录或素材时返回 None；
-            读取故障仍抛出。
-
-        Raises:
-            HostStateError: 权威库尚未取得或宿主已完全关闭。
-            StorageError: 权威读取失败或已保存记录损坏。
-
-        Note:
-            关闭收尾期间仍可使用尚未释放的存储。
-        """
+    def _require_store(self, *, reject_closed: bool = False) -> Store:
         store = self.state.store
-        if store is None or self.state.phase == "closed":
+        if store is None or (reject_closed and self.state.phase == "closed"):
             raise HostStateError("宿主没有可查询的权威存储。")
-        return await store.get_input(input_id)
+        return store
+
+    async def query_input(self, input_id: str) -> InputRecord | None:
+        """查询已接管输入记录。"""
+        return await self._require_store(reject_closed=True).get_input(input_id)
 
     async def query_native_input(self, source: InputSource) -> InputRecord | None:
-        """按原生来源读取首次接管事实，供重放恢复。
-
-        Args:
-            source: 含适配器、账号、会话和原生事件身份的可信来源。
-
-        Returns:
-            首次接管的完整输入原文、来源与媒体引用。 未取得对应记录或素材时返回 None；
-            读取故障仍抛出。
-
-        Raises:
-            HostStateError: 权威库尚未取得或宿主已完全关闭。
-            StorageError: 权威读取失败或已保存记录损坏。
-
-        Note:
-            不开始新的输入处理。
-        """
-        store = self.state.store
-        if store is None or self.state.phase == "closed":
-            raise HostStateError("宿主没有可查询的权威存储。")
-        return await store.get_native_input(source)
+        """按原生来源读取首次接管事实。"""
+        return await self._require_store(reject_closed=True).get_native_input(source)
 
     async def query_processing(self, input_id: str) -> InputProcessing | None:
-        """读取宿主实际输入阶段，取得、接管及处理结束分别表达。
-
-        Args:
-            input_id: 正式接管返回的输入身份，用于关联原文与后续处理。
-
-        Returns:
-            输入实际处理阶段、版本和关联轮次。 未取得对应记录或素材时返回 None；读取故障仍抛出。
-
-        Raises:
-            HostStateError: 权威库尚未取得或宿主已完全关闭。
-            StorageError: 权威读取失败或已保存记录损坏。
-        """
-        store = self.state.store
-        if store is None:
-            raise HostStateError("宿主没有可查询的权威存储。")
-        return await store.input_processing(input_id)
+        """读取指定输入的当前处理阶段与版本。"""
+        return await self._require_store().input_processing(input_id)
 
     async def query_action(self, action_id: str) -> ActionRecord | None:
-        """读取包括迟到调用结论的权威事实，关闭收尾期间仍可查询。
-
-        Args:
-            action_id: 执行器分配的行动身份，用于关联逐次调用和真实回执。
-
-        Returns:
-            已保存的行动记录，包含逐次真实调用及结果历史；unknown 不证明效果未发生。
-            未取得对应记录或素材时返回 None；读取故障仍抛出。
-
-        Raises:
-            HostStateError: 权威库尚未取得或宿主已完全关闭。
-            StorageError: 权威读取失败或已保存记录损坏。
-        """
-        store = self.state.store
-        if store is None:
-            raise HostStateError("宿主没有可查询的权威存储。")
-        return await store.get_action(action_id)
+        """读取包含迟到调用结论的完整行动记录。"""
+        return await self._require_store().get_action(action_id)
 
     async def query_activity(self, activity_id: str) -> ActivityRecord | None:
-        """读取真实控制、预算和核对状态，不自动启动或恢复驱动。
-
-        Args:
-            activity_id: 已创建活动的稳定身份。
-
-        Returns:
-            活动的控制、预算、运行代次与工作快照。 未取得对应记录或素材时返回 None；
-            读取故障仍抛出。
-
-        Raises:
-            HostStateError: 权威库尚未取得或宿主已完全关闭。
-            StorageError: 权威读取失败或已保存记录损坏。
-        """
-        store = self.state.store
-        if store is None:
-            raise HostStateError("宿主没有可查询的权威存储。")
-        return await store.get_activity(activity_id)
+        """读取活动控制、预算和核对状态。"""
+        return await self._require_store().get_activity(activity_id)
 
     async def query_request(self, request_id: str) -> RequestRecord | None:
-        """读取可还原的模型材料及真实尝试，不发起新的模型调用。
-
-        Args:
-            request_id: 逻辑请求的稳定身份，用于查询或关联同一次受理。
-
-        Returns:
-            一个逻辑模型请求的冻结材料及按实际顺序保存的尝试。 未取得对应记录或素材时返回 None；
-            读取故障仍抛出。
-
-        Raises:
-            HostStateError: 权威库尚未取得或宿主已完全关闭。
-            StorageError: 权威读取失败或已保存记录损坏。
-        """
-        store = self.state.store
-        if store is None:
-            raise HostStateError("宿主没有可查询的权威存储。")
-        return await store.get_request(request_id)
+        """读取可还原的模型请求材料及传输尝试记录。"""
+        return await self._require_store().get_request(request_id)
 
     def query_health(self) -> JsonObject:
-        """读取当前处理资格和组件故障，启动未完成时也无需权威库。"""
+        """读取当前处理资格和各组件故障快照。"""
         state = self.state
         owners = [state.startup_health, state.input_health, state.maintenance_health]
         subject = state.subject
@@ -208,20 +98,24 @@ class HostQueries:
             "startup_timings": dict(state.startup_timings),
         }
 
+    async def query_chat(self, *, limit: int = 40) -> JsonObject:
+        """读取 Web 后台对话调试台的近期消息与能力输出流水。"""
+        store = self.state.store
+        if store is None or self.state.startup_stage is not None:
+            raise HostStateError("宿主尚未就绪，暂时无法读取对话流水。")
+        feed = await store.chat_projection(limit=limit)
+        subject = self.state.subject
+        fg = None if subject is None else subject.service.session.snapshot()
+        return {
+            **feed,
+            "console_enabled": self.state.config.console,
+            "character_name": self.state.config.subject.character.name or "主体",
+            "foreground_busy": bool(fg and fg.get("busy")),
+            "can_process": bool(self.query_health().get("can_process")),
+        }
+
     async def query_panel(self) -> JsonObject:
-        """读取有限真实概况与设备缓存状态。
-
-        Returns:
-            业务对象，按实际结果提供 instance_id、host_version、phase、pending_resources、
-            authority_available、input_handoff_failure、devices、foreground、behavior、
-            notebooks 等字段。
-
-        Raises:
-            HostStateError: 宿主面板尚未就绪或已收回。
-
-        Note:
-            多页面查询不启动模型或设备。
-        """
+        """读取 Web 面板所需的运行概况与设备状态快照。"""
         store, panel = self.state.store, self.state.panel
         if store is None or panel is None or self.state.startup_stage is not None:
             raise HostStateError("宿主面板尚未就绪或已收回。")
@@ -265,16 +159,7 @@ class HostQueries:
         }
 
     async def panel_devices(self, panel: PanelController, store: Store) -> list[JsonValue]:
-        """为最近一次收音补权威处理状态，不调用插件能力或重新投递声音。
-
-        Args:
-            panel: 本机有限控制与预览的投影服务。
-            store: 应用借出的领域存储端口，实际连接和关闭归资源所有者。
-
-        Note:
-            每个收音插件只查最近一项，保持轮询成本有界。插件历史中的 admitted
-            仅是当时的接管事实，不能据此声称当前仍在等待或已经回应。
-        """
+        """为最近一次收音记录补充数据库内的实际处理阶段。"""
         devices = panel.devices()
         for device in devices:
             if not isinstance(device, dict) or device.get("kind") != "voice_input":
@@ -303,18 +188,8 @@ class HostQueries:
         return devices
 
     async def query_control(self, request_id: str) -> JsonObject | None:
-        """查询接管记录及当前真实业务回执，未知/迟到确认仍关联原身份。
-
-        Args:
-            request_id: 逻辑请求的稳定身份，用于查询或关联同一次受理。
-
-        Raises:
-            HostStateError: 权威库尚未取得或宿主已完全关闭。
-            StorageError: 权威读取失败或已保存记录损坏。
-        """
-        store = self.state.store
-        if store is None:
-            raise HostStateError("宿主没有可查询的权威存储。")
+        """查询面板控制请求记录及关联行动或活动命令回执。"""
+        store = self._require_store()
         record = await store.controls.get(request_id)
         if record is None:
             return None
@@ -339,68 +214,19 @@ class HostQueries:
         return result
 
     async def query_reviews(self, before: str | None = None, *, kind: str = "action") -> JsonObject:
-        """分页读取可人工审查的真实行动，不运行模型或能力。
-
-        Args:
-            before: 前页返回的行动游标；None 从最新记录开始。
-
-        Raises:
-            HostStateError: 权威库尚未取得。
-            ControlError: 历史游标不存在。
-        """
-        if self.state.store is None:
-            raise HostStateError("宿主没有可查询的权威存储。")
-        return await self.state.store.human_feedback.page(before, kind=kind)
+        """分页读取可人工审查的行动列表。"""
+        return await self._require_store().human_feedback.page(before, kind=kind)
 
     async def query_review(self, action_id: str) -> JsonObject | None:
-        """读取行动当轮全部刺激、原始参数和回执以及人工评价历史。
-
-        Args:
-            action_id: 所选真实行动的稳定身份。
-
-        Returns:
-            带版本摘要的完整审查材料；未找到行动时返回 None。
-
-        Raises:
-            HostStateError: 权威库尚未取得。
-        """
-        if self.state.store is None:
-            raise HostStateError("宿主没有可查询的权威存储。")
-        return await self.state.store.human_feedback.detail(action_id)
+        """读取单次行动的触发刺激、调用回执与人工评价历史。"""
+        return await self._require_store().human_feedback.detail(action_id)
 
     async def query_review_media(self, action_id: str, media_id: str) -> tuple[bytes, str] | None:
-        """读取所选审查实际关联的原媒体；不重新采集或转写内容。
-
-        Args:
-            action_id: 当前审查的行动身份。
-            media_id: 当前刺激中展示的原始媒体身份。
-
-        Returns:
-            原字节和媒体类型；未关联该材料时返回 None。
-
-        Raises:
-            HostStateError: 权威存储尚未取得。
-        """
-        if self.state.store is None:
-            raise HostStateError("宿主没有可查询的权威存储。")
-        return await self.state.store.human_feedback.media(action_id, media_id)
+        """读取指定审查关联的原始媒体字节与类型。"""
+        return await self._require_store().human_feedback.media(action_id, media_id)
 
     def query_preview(self, target: str) -> PreviewFrame | None:
-        """只读已取得画面。
-
-        Args:
-            target: 本次操作明确指定的业务目标身份。
-
-        Returns:
-            当前已经取得的完整预览画面，不触发额外采集。 未取得对应记录或素材时返回 None；
-            读取故障仍抛出。
-
-        Raises:
-            HostStateError: 面板尚未就绪。
-
-        Note:
-            查询不额外截图或延长设备会话。
-        """
+        """读取设备最新预览画面帧。"""
         if self.state.panel is None:
             raise HostStateError("面板尚未就绪。")
         return self.state.panel.preview(target)

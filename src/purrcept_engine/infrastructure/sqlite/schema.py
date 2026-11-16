@@ -16,6 +16,7 @@ from purrcept_engine.infrastructure.sqlite import model_requests as model_storag
 from purrcept_engine.infrastructure.sqlite import phone as phone_storage
 from purrcept_engine.infrastructure.sqlite import subject as subject_storage
 from purrcept_engine.infrastructure.sqlite import time as time_storage
+from purrcept_engine.infrastructure.sqlite.rows import as_int
 
 _FORMAT_VERSION = 17
 
@@ -149,10 +150,7 @@ _INPUT_COLUMNS = (
 )
 
 
-def _integer(value: object) -> int:
-    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
-        raise StorageError("权威记录中的非负整数字段无效。", code="invalid_record")
-    return value
+_integer = as_int
 
 
 def _migrate_notebook(connection: sqlite3.Connection) -> None:

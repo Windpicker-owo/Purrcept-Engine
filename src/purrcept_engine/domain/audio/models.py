@@ -39,9 +39,6 @@ class AudioFact:
         fact: 此音频阶段事实的稳定名称。
         occurred_at: 原始事实实际发生的 Unix 时间戳（秒）。
         payload_json: 已编码的业务事实，不包含任意 Python 对象。
-
-    Note:
-        实例字段在构造后不可重新赋值；嵌套值的冻结范围由字段所属契约决定。
     """
 
     plugin_id: str

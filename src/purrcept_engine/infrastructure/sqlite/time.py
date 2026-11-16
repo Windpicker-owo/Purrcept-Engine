@@ -33,6 +33,7 @@ from purrcept_engine.domain.time.scheduling import (
     next_daily_occurrence,
 )
 from purrcept_engine.errors import StorageError
+from purrcept_engine.infrastructure.sqlite.rows import as_text
 from purrcept_engine.values import JsonObject, encode_json
 
 MAX_ALARMS = 32
@@ -76,10 +77,7 @@ SCHEMA = (
 )
 
 
-def _text(value: object) -> str:
-    if not isinstance(value, str):
-        raise StorageError("时间账本文本字段损坏。", code="invalid_record")
-    return value
+_text = as_text
 
 
 def _decode[Record: BaseModel](value: object, model: type[Record]) -> Record:
@@ -249,8 +247,7 @@ def fire_alarm(
         admit: 在调用方当前事务中正式接管输入的同步入口，不另开事务。
 
     Returns:
-        本次可靠触发及同事务正式接管的输入身份。 未取得对应记录或素材时返回 None；
-        读取故障仍抛出。
+        本次可靠触发及同事务正式接管的输入身份。
 
     Raises:
         TimeError: 闹铃发生身份冲突。
@@ -329,8 +326,7 @@ def get_rest(connection: sqlite3.Connection) -> RestState | None:
         connection: 仅在 Store 专属线程当前短事务中借用的连接，不在回调中等待设备或模型。
 
     Returns:
-        当前明确休息事实，预计期限不自动解除状态。 未取得对应记录或素材时返回 None；
-        读取故障仍抛出。
+        当前明确休息事实，预计期限不自动解除状态。
 
     Raises:
         StorageError: 休息版本索引与正文不一致。

@@ -472,7 +472,7 @@ class ExecutionService:
 
         Returns:
             已保存的行动记录，包含逐次真实调用及结果历史；unknown 不证明效果未发生。
-            未取得对应记录或素材时返回 None；读取故障仍抛出。
+           
         """
         return await self.store.get_action(action_id)
 

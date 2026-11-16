@@ -589,10 +589,7 @@ class EngineConfig(_Settings):
 
 def _detect_toml_conflict_hint(raw_bytes: bytes) -> str:
     """检测常见的 TOML 新手陷阱（如同时保留了 plugins = [] 与 [[plugins]]）。"""
-    try:
-        text = raw_bytes.decode("utf-8", errors="ignore")
-    except Exception:
-        return ""
+    text = raw_bytes.decode("utf-8", errors="ignore")
     has_empty_array = bool(re.search(r"(?m)^\s*plugins\s*=\s*\[", text))
     has_array_table = bool(re.search(r"(?m)^\s*\[\[plugins\]\]", text))
     if has_empty_array and has_array_table:

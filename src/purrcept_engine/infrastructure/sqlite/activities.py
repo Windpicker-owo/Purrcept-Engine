@@ -26,6 +26,12 @@ from purrcept_engine.domain.activities.models import (
 )
 from purrcept_engine.domain.execution.record_validation import validate_json
 from purrcept_engine.errors import StorageError
+from purrcept_engine.infrastructure.sqlite.rows import (
+    as_bool,
+    as_int,
+    as_opt_text,
+    as_text,
+)
 
 _STATES: tuple[ActivityState, ...] = (
     "starting",
@@ -97,14 +103,10 @@ _FEEDBACK_COLUMNS = (
 )
 
 
-def _text(value: object) -> str:
-    if not isinstance(value, str):
-        raise StorageError("活动记录文本字段无效。", code="invalid_record")
-    return value
+_text = as_text
 
 
-def _optional_text(value: object) -> str | None:
-    return None if value is None else _text(value)
+_optional_text = as_opt_text
 
 
 def _number(value: object) -> float:
@@ -117,16 +119,10 @@ def _optional_number(value: object) -> float | None:
     return None if value is None else _number(value)
 
 
-def _integer(value: object) -> int:
-    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
-        raise StorageError("活动记录计数字段无效。", code="invalid_record")
-    return value
+_integer = as_int
 
 
-def _boolean(value: object) -> bool:
-    if value not in (0, 1) or isinstance(value, float):
-        raise StorageError("活动记录布尔字段无效。", code="invalid_record")
-    return bool(value)
+_boolean = as_bool
 
 
 def _state(value: object) -> ActivityState:
@@ -232,7 +228,7 @@ def get_activity(connection: sqlite3.Connection, activity_id: str) -> ActivityRe
         activity_id: 已创建活动的稳定身份。
 
     Returns:
-        活动的控制、预算、运行代次与工作快照。 未取得对应记录或素材时返回 None；读取故障仍抛出。
+        活动的控制、预算、运行代次与工作快照。
     """
     row: tuple[object, ...] | None = connection.execute(
         f"SELECT {_ACTIVITY_COLUMNS} FROM activities WHERE activity_id = ?",
@@ -271,8 +267,7 @@ def get_activity_command(
         command_id: 控制命令的稳定身份；重复提交须沿用原身份和内容。
 
     Returns:
-        命令接管与实际确认记录；受理成功不等于驱动已完成。 未取得对应记录或素材时返回 None；
-        读取故障仍抛出。
+        命令接管与实际确认记录；受理成功不等于驱动已完成。
     """
     row: tuple[object, ...] | None = connection.execute(
         f"SELECT {_COMMAND_COLUMNS} FROM activity_commands WHERE command_id = ?",
@@ -291,7 +286,7 @@ def get_activity_feedback(
         feedback_id: 驱动反馈的稳定身份，用于去重和查询实际确认。
 
     Returns:
-        已经按身份去重并保存的真实驱动反馈。 未取得对应记录或素材时返回 None；读取故障仍抛出。
+        已经按身份去重并保存的真实驱动反馈。
     """
     row: tuple[object, ...] | None = connection.execute(
         f"SELECT {_FEEDBACK_COLUMNS} FROM activity_feedback WHERE feedback_id = ?",

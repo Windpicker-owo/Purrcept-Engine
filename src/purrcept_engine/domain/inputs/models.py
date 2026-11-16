@@ -301,9 +301,6 @@ class Admission:
     Attributes:
         input_id: 正式接管返回的输入身份，用于关联原文与后续处理。
         duplicate: 是否复用了相同原生来源身份的首次接管记录。
-
-    Note:
-        实例字段在构造后不可重新赋值；嵌套值的冻结范围由字段所属契约决定。
     """
 
     input_id: str

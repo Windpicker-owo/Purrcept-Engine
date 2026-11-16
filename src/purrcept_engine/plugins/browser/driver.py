@@ -48,9 +48,6 @@ class PageView:
         title: 当前业务内容面向调用者的展示标题。
         status: 实际取得的 HTTP 状态码；未取得时保留 None。
         blocked: 此次导航实际被拦截的原因，未拦截时为 None。
-
-    Note:
-        实例字段在构造后不可重新赋值；嵌套值的冻结范围由字段所属契约决定。
     """
 
     url: str
@@ -82,9 +79,6 @@ class SnapshotResult:
     Attributes:
         text: 本次明确传输、输入或呈现的完整文本。
         refs: 当前节点快照签发的展示引用与原生句柄映射。
-
-    Note:
-        实例字段在构造后不可重新赋值；嵌套值的冻结范围由字段所属契约决定。
     """
 
     text: str
@@ -104,9 +98,6 @@ class ImageCapture:
         media_type: 完整媒体字节实际使用的 MIME 类型。
         acquired_via: 原图或元素截图等实际图像取得方式。
         original_error: 原图读取失败的真实原因，成功时为 None。
-
-    Note:
-        实例字段在构造后不可重新赋值；嵌套值的冻结范围由字段所属契约决定。
     """
 
     data: bytes

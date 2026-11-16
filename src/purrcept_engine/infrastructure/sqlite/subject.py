@@ -34,6 +34,7 @@ from purrcept_engine.infrastructure.sqlite.model_requests import (
     intern_core_media,
     restore_core_media,
 )
+from purrcept_engine.infrastructure.sqlite.rows import as_int, as_opt_text, as_text
 from purrcept_engine.serialization import encode
 from purrcept_engine.values import decode_object, encode_json
 
@@ -92,7 +93,7 @@ def processing(connection: sqlite3.Connection, input_id: str) -> InputProcessing
         input_id: 正式接管返回的输入身份，用于关联原文与后续处理。
 
     Returns:
-        输入实际处理阶段、版本和关联轮次。 未取得对应记录或素材时返回 None；读取故障仍抛出。
+        输入实际处理阶段、版本和关联轮次。
 
     Raises:
         StorageError: 输入处置状态无效。
@@ -736,8 +737,7 @@ def get_turn(connection: sqlite3.Connection, turn_id: str) -> TurnRecord | None:
         turn_id: 连续会话中本轮处理的身份。
 
     Returns:
-        本轮接管身份、来源输入、生成代次与当前结论。 未取得对应记录或素材时返回 None；
-        读取故障仍抛出。
+        本轮接管身份、来源输入、生成代次与当前结论。
 
     Raises:
         StorageError: 主体处理身份损坏。
@@ -828,20 +828,14 @@ def initialize(connection: sqlite3.Connection) -> None:
     connection.execute("UPDATE subject_sessions SET active_turn=NULL")
 
 
-def _string(value: object) -> str:
-    if not isinstance(value, str):
-        raise StorageError("主体记录的文字字段损坏。", code="invalid_record")
-    return value
+_string = as_text
 
 
-def _optional_text(value: object) -> str | None:
-    return None if value is None else _string(value)
+_optional_text = as_opt_text
 
 
 def _integer(value: object) -> int:
-    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
-        raise StorageError("主体记录的版本字段损坏。", code="invalid_record")
-    return value
+    return as_int(value, "主体记录的版本字段损坏。")
 
 
 def _number(value: object) -> float:

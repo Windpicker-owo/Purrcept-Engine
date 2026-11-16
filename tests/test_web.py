@@ -1,14 +1,16 @@
-"""本机HTTP来源、有限路由与真实监听生命周期，不打开设备或外部端点。"""
+"""本机HTTP来源、有限路由、真后台管理接口与真实监听生命周期测试。"""
 
 from __future__ import annotations
 
 import asyncio
 import signal
 import time
+from pathlib import Path
 
 import httpx
 import pytest
 
+from purrcept_engine.app import cli
 from purrcept_engine.app.panel import ControlRequest
 from purrcept_engine.app.web import WebServer, create_app
 from purrcept_engine.domain.controls.models import ControlRecord
@@ -21,9 +23,9 @@ class Host:
 
     def __init__(self) -> None:
         self.requests: list[ControlRequest] = []
+        self.chats: list[tuple[str, str]] = []
 
     def query_health(self) -> JsonObject:
-        """提供无需 Store 的启动状态替身。"""
         return {
             "instance_id": "current",
             "phase": "starting",
@@ -39,10 +41,39 @@ class Host:
         operation: PairingOperation = "read",
         expected_device_id: str | None = None,
     ) -> JsonObject:
+        del target, operation, expected_device_id
         return {"status": "closed"}
 
     async def query_panel(self) -> JsonObject:
         return {"instance_id": "current", "phase": "running"}
+
+    async def query_chat(self, *, limit: int = 40) -> JsonObject:
+        return {
+            "inputs": [
+                {
+                    "input_id": f"in-{idx}",
+                    "adapter_id": "console",
+                    "conversation_id": "web-admin",
+                    "display_name": sender,
+                    "text": text,
+                    "occurred_at": "2026-11-15T12:00:00Z",
+                    "received_at": "2026-11-15T12:00:00Z",
+                    "stage": "processed",
+                    "reason": None,
+                    "turn_id": None,
+                }
+                for idx, (sender, text) in enumerate(self.chats[:limit])
+            ],
+            "actions": [],
+            "console_enabled": True,
+            "character_name": "杰瑞喵",
+            "foreground_busy": False,
+            "can_process": True,
+        }
+
+    async def submit_chat(self, text: str, *, sender_name: str = "Web 管理员") -> JsonObject:
+        self.chats.append((sender_name, text))
+        return {"input_id": f"in-{len(self.chats)}", "duplicate": False}
 
     async def submit_control(self, request: ControlRequest) -> ControlRecord:
         self.requests.append(request)
@@ -63,6 +94,7 @@ class Host:
         return {"request_id": request_id, "state": "admitted"} if request_id == "one" else None
 
     async def query_reviews(self, before: str | None = None, *, kind: str = "action") -> JsonObject:
+        del kind
         return {"items": [], "next_cursor": before}
 
     async def query_review(self, action_id: str) -> JsonObject | None:
@@ -166,7 +198,7 @@ async def test_read_and_write_reject_wrong_host_origin_or_real_client(
         assert host.requests == []
 
 
-async def test_write_needs_token_and_closed_shape_and_does_not_offer_python_or_chat() -> None:
+async def test_write_needs_token_and_closed_shape_and_blocks_raw_python_exec() -> None:
     host = Host()
     transport = httpx.ASGITransport(
         create_app(host, port=8765, token="token"), client=("127.0.0.1", 123)
@@ -174,6 +206,7 @@ async def test_write_needs_token_and_closed_shape_and_does_not_offer_python_or_c
     headers = {"X-Purrcept-Token": "token", "Origin": "http://127.0.0.1:8765"}
     async with httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1:8765") as client:
         assert (await client.post("/api/controls", json=command())).status_code == 403
+        assert (await client.post("/api/chat", json={"text": "hi"})).status_code == 403
         assert (
             await client.post(
                 "/api/controls", json=command() | {"source": "return 1"}, headers=headers
@@ -190,17 +223,156 @@ async def test_write_needs_token_and_closed_shape_and_does_not_offer_python_or_c
         assert (
             await client.post("/api/execute", json={"source": "return 1"}, headers=headers)
         ).status_code == 404
+
         assert (
-            await client.post("/api/chat", json={"text": "hi"}, headers=headers)
-        ).status_code == 404
+            await client.post("/api/chat", json={"text": "   "}, headers=headers)
+        ).status_code == 400
+        chat_post = await client.post(
+            "/api/chat", json={"text": "你好，杰瑞喵！", "sender_name": "拾风"}, headers=headers
+        )
+        assert chat_post.status_code == 202 and chat_post.json()["input_id"] == "in-1"
+        chat_get = await client.get("/api/chat")
+        assert chat_get.status_code == 200
+        assert chat_get.json()["inputs"][0]["text"] == "你好，杰瑞喵！"
+
         response = await client.post("/api/controls", json=command(), headers=headers)
         assert response.status_code == 202 and response.json()["state"] == "admitted"
         assert len(host.requests) == 1
         assert (await client.get("/api/controls/one")).json()["state"] == "admitted"
 
 
+async def test_true_admin_config_notebooks_and_studio_endpoints(tmp_path: Path) -> None:
+    template = Path(cli.__file__).with_name("default.toml")
+    config_path = tmp_path / "purrcept.toml"
+    raw_text = template.read_text(encoding="utf-8").replace(
+        'api_key = ""', 'api_key = "sk-super-secret-value-999"', 1
+    )
+    config_path.write_text(raw_text, encoding="utf-8")
+    data_dir = (tmp_path / ".purrcept-engine").resolve()
+    data_dir.mkdir(parents=True, exist_ok=True)
+
+    host = Host()
+    transport = httpx.ASGITransport(
+        create_app(
+            host,
+            port=8765,
+            token="token",
+            config_path=config_path,
+            owner_data_dir=data_dir,
+        ),
+        client=("127.0.0.1", 123),
+    )
+    headers = {"X-Purrcept-Token": "token", "Origin": "http://127.0.0.1:8765"}
+    async with httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1:8765") as client:
+        cfg_resp = await client.get("/api/config")
+        assert cfg_resp.status_code == 200
+        cfg = cfg_resp.json()
+        assert cfg["available"] is True
+        assert "sk-super-secret-value-999" not in cfg["raw_toml"]
+        assert "********" in cfg["raw_toml"]
+
+        visual_save = await client.post(
+            "/api/config",
+            headers=headers,
+            json={
+                "mode": "visual",
+                "revision": cfg["revision"],
+                "general": {
+                    "data_dir": ".purrcept-engine",
+                    "console": True,
+                    "web_enabled": True,
+                    "web_port": 8765,
+                    "log_level": "DEBUG",
+                },
+                "subject": {
+                    **cfg["subject"],
+                    "character": {
+                        **cfg["subject"]["character"],
+                        "name": "杰瑞喵",
+                    },
+                },
+                "models": [
+                    {
+                        "name": m["name"],
+                        "kind": m["kind"],
+                        "model": m["model"],
+                        "api_base": m["api_base"],
+                        "api_key": "",
+                        "keep_existing_key": True,
+                        "context_window": m["context_window"],
+                        "max_output_tokens": m["max_output_tokens"],
+                        "input_limit": m["input_limit"],
+                    }
+                    for m in cfg["models"]
+                ],
+                "plugins": [
+                    {
+                        "instance_id": "notebook",
+                        "entry": "notebook",
+                        "enabled": True,
+                        "config": {"notebook_dir": "notes"},
+                    }
+                ],
+            },
+        )
+        assert visual_save.status_code == 200 and visual_save.json()["saved"] is True
+        disk_after = config_path.read_text(encoding="utf-8")
+        assert "sk-super-secret-value-999" in disk_after
+        assert 'name = "杰瑞喵"' in disk_after
+        assert 'level = "DEBUG"' in disk_after
+
+        note_save = await client.post(
+            "/api/notebooks/file",
+            headers=headers,
+            json={
+                "instance": "notebook",
+                "path": "journal/2026-11-15.md",
+                "content": "# 今日随笔\n今天完成了真后台重构！\n",
+                "revision": "missing",
+            },
+        )
+        assert note_save.status_code == 200
+        note_rev = note_save.json()["revision"]
+
+        nb_list = await client.get("/api/notebooks")
+        assert nb_list.status_code == 200
+        assert nb_list.json()["instances"][0]["files"][0]["path"] == "journal/2026-11-15.md"
+
+        note_read = await client.get(
+            "/api/notebooks/file?instance=notebook&path=journal/2026-11-15.md"
+        )
+        assert note_read.status_code == 200 and note_read.json()["revision"] == note_rev
+
+        traversal = await client.get("/api/notebooks/file?instance=notebook&path=../purrcept.toml")
+        assert traversal.status_code == 400
+
+        studio_prof = await client.get("/api/studio/profile")
+        assert studio_prof.status_code == 200 and studio_prof.json()["revision"] == "missing"
+        studio_save = await client.post(
+            "/api/studio/profile",
+            headers=headers,
+            json={
+                "revision": "missing",
+                "profile": {
+                    "version": 1,
+                    "enabled": True,
+                    "pitch_semitones": 1.5,
+                    "highpass_hz": 80.0,
+                    "low_db": 0.0,
+                    "mid_db": 1.0,
+                    "mid_hz": 1800.0,
+                    "mid_q": 0.8,
+                    "high_db": 0.5,
+                    "gain_db": 0.0,
+                    "limiter": True,
+                },
+            },
+        )
+        assert studio_save.status_code == 200
+        assert (tmp_path / ".purrcept-engine" / "voice-profile.json").is_file()
+
+
 async def test_real_loopback_listener_keeps_signal_owner_and_closes_port() -> None:
-    """真实TCP只连本次回环端口，服务不装配设备/模型，也不接管CLI信号。"""
     before = signal.getsignal(signal.SIGINT)
     server = WebServer(Host(), port=0)
     await server.start()

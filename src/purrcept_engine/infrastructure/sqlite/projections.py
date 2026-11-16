@@ -1,8 +1,7 @@
-"""从权威记录读取面板概况，不暴露完整提示、行动代码或媒体正文。
+"""从权威记录读取面板概况与本机对话流水，不暴露模型原始上下文或未授权媒体。
 
 查询只由 Store 的数据库线程执行，固定条数与明确预览覆盖保证快照有限。
 原始事实仍长期保留在所属记录中，页面查询既不确认可靠待办，也不更新设备。
-实际业务状态来自同一连接；实时运行预算由拥有单调时钟的会话/活动服务补充。
 """
 
 from __future__ import annotations
@@ -13,21 +12,12 @@ import time
 import purrcept_engine.domain.execution.models as execution_models
 from purrcept_engine.errors import StorageError
 from purrcept_engine.infrastructure.sqlite import activities, execution
-from purrcept_engine.values import JsonObject, JsonValue, decode_object
+from purrcept_engine.infrastructure.sqlite.rows import as_int, as_text
+from purrcept_engine.values import ActionProtocolError, JsonObject, JsonValue, decode_object
 
 
 def runtime(connection: sqlite3.Connection) -> JsonObject:
-    """读取积压、当前会话、有限最近行动和活动，不运行模型或回放工作。
-
-    Args:
-        connection: 仅在 Store 专属线程当前短事务中借用的连接，不在回调中等待设备或模型。
-
-    Returns:
-        业务对象，按实际结果提供 pending_inputs、sessions、recent_actions、activities 字段。
-
-    Raises:
-        StorageError: 行动概况关联损坏。
-    """
+    """读取积压、当前会话、有限最近行动和活动，不运行模型或回放工作。"""
     counts: list[tuple[object, ...]] = connection.execute(
         "SELECT s.stage,count(*),sum(i.logical_bytes) FROM pending_inputs p "
         "JOIN inputs i USING(input_id) JOIN input_processing s USING(input_id) GROUP BY s.stage"
@@ -45,7 +35,7 @@ def runtime(connection: sqlite3.Connection) -> JsonObject:
             {
                 "scope": scope,
                 "version": 0 if row is None else _integer(row[0]),
-                "active_turn": None if row is None else row[1],
+                "active_turn": None if row is None else _optional_str(row[1]),
             }
         )
     action_rows: list[tuple[object, ...]] = connection.execute(
@@ -89,7 +79,6 @@ def runtime(connection: sqlite3.Connection) -> JsonObject:
     statistics = connection.execute(
         "SELECT payload_json FROM storage_statistics WHERE id=1"
     ).fetchone()
-    # 面板只看有限观察事实；接受建议和后续行为结果保持两个独立维度。
     observations = connection.execute(
         "SELECT n.id,n.state,o.opportunities,o.state,"
         "json_extract(n.payload_json,'$.expires_at') FROM supervision_outcomes o "
@@ -122,15 +111,130 @@ def runtime(connection: sqlite3.Connection) -> JsonObject:
     }
 
 
+def chat_feed(connection: sqlite3.Connection, *, limit: int = 40) -> JsonObject:
+    """读取最近的用户刺激与主体回复/能力行动流水，供 Web 对话调试台展示。"""
+    bounded = max(1, min(limit, 80))
+    input_rows: list[tuple[object, ...]] = connection.execute(
+        "SELECT i.input_id,i.adapter_id,i.conversation_id,i.display_name,i.text,"
+        "i.occurred_at,i.received_at,p.stage,p.reason "
+        "FROM inputs i LEFT JOIN input_processing p USING(input_id) "
+        "WHERE i.adapter_id != 'subject.idle' "
+        "ORDER BY i.rowid DESC LIMIT ?",
+        (bounded,),
+    ).fetchall()
+    input_rows.reverse()
+
+    turn_by_input: dict[str, str] = {}
+    for row in input_rows:
+        iid = _text(row[0])
+        turn_row = connection.execute(
+            "SELECT t.turn_id FROM turn_inputs ti JOIN subject_turns t USING(turn_id) "
+            "WHERE ti.input_id=? AND t.scope='foreground' "
+            "ORDER BY t.started_at DESC LIMIT 1",
+            (iid,),
+        ).fetchone()
+        if turn_row is not None and isinstance(turn_row[0], str):
+            turn_by_input[iid] = turn_row[0]
+
+    inputs_out: list[JsonValue] = [
+        {
+            "input_id": _text(row[0]),
+            "adapter_id": _text(row[1]),
+            "conversation_id": _text(row[2]),
+            "display_name": _optional_str(row[3]),
+            "text": _text(row[4]),
+            "occurred_at": _text(row[5]),
+            "received_at": _text(row[6]),
+            "stage": _optional_str(row[7]) or "unknown",
+            "reason": _optional_str(row[8]),
+            "turn_id": turn_by_input.get(_text(row[0])),
+        }
+        for row in input_rows
+    ]
+
+    action_rows: list[tuple[object, ...]] = connection.execute(
+        "SELECT action_id FROM actions ORDER BY created_at DESC,action_id DESC LIMIT ?",
+        (bounded,),
+    ).fetchall()
+    action_rows.reverse()
+    actions_out: list[JsonValue] = []
+    for (raw_aid,) in action_rows:
+        action = execution.get_action(connection, _text(raw_aid))
+        if action is None:
+            continue
+        replies: list[JsonValue] = []
+        calls_summary: list[JsonValue] = []
+        for call in action.calls:
+            reply_info = _extract_reply(call)
+            if reply_info is not None:
+                replies.append(reply_info)
+            calls_summary.append(
+                {
+                    "call_id": call.call_id,
+                    "path": call.path,
+                    "state": call.state,
+                    "error": _preview(call.error),
+                }
+            )
+        actions_out.append(
+            {
+                "action_id": action.action_id,
+                "input_id": action.input_id,
+                "turn_id": None if action.input_id is None else turn_by_input.get(action.input_id),
+                "state": action.state,
+                "created_at": action.created_at,
+                "finished_at": action.finished_at,
+                "error": _preview(action.error),
+                "replies": replies,
+                "calls": calls_summary,
+            }
+        )
+    return {"inputs": inputs_out, "actions": actions_out}
+
+
+def _extract_reply(call: execution_models.CallRecord) -> JsonObject | None:
+    """从控制台、语音或外部消息调用参数与回执中提取可读的主体发言。"""
+    path = call.path
+    channel: str | None = None
+    if path == "me.console.output" or path.endswith(".console.output"):
+        channel = "console"
+    elif path.endswith(":microphone.speak") or path.endswith(".microphone.speak"):
+        channel = "voice"
+    elif path.endswith(":microphone.record") or path.endswith(".microphone.record"):
+        channel = "voice_file"
+    elif ".qq." in path or ":qq." in path:
+        channel = "qq"
+    elif ".phone." in path:
+        channel = "phone"
+    if channel is None:
+        return None
+
+    text: str | None = None
+    for raw in (call.result_json, call.arguments_json):
+        if not raw:
+            continue
+        try:
+            parsed = decode_object(raw.encode("utf-8"))
+        except (ActionProtocolError, ValueError):
+            continue
+        candidate = parsed.get("text") or parsed.get("message") or parsed.get("content")
+        if isinstance(candidate, str) and candidate.strip():
+            text = candidate
+            break
+    if text is None:
+        return None
+    return {
+        "call_id": call.call_id,
+        "channel": channel,
+        "path": path,
+        "state": call.state,
+        "text": text[:4000],
+        "truncated": len(text) > 4000,
+    }
+
+
 def action_projection(action: execution_models.ActionRecord) -> JsonObject:
-    """用逐次真实状态表达部分结果，长正文只给明确截断的有限预览。
-
-    Args:
-        action: 本次执行服务接管的冻结脚本或结构化调用。
-
-    Returns:
-        业务对象，按实际结果提供 action_id、state、created_at、finished_at、error、calls 字段。
-    """
+    """用逐次真实状态表达部分结果，长正文只给明确截断的有限预览。"""
     return {
         "action_id": action.action_id,
         "state": action.state,
@@ -161,13 +265,11 @@ def _preview(value: str | None) -> JsonObject | None:
     return {"text": value[:512], "truncated": len(value) > 512, "original_chars": len(value)}
 
 
-def _text(value: object) -> str:
-    if not isinstance(value, str):
-        raise StorageError("面板权威字段损坏。", code="invalid_record")
-    return value
+_text = as_text
 
 
-def _integer(value: object) -> int:
-    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
-        raise StorageError("面板权威计数字段损坏。", code="invalid_record")
-    return value
+def _optional_str(value: object) -> str | None:
+    return value if isinstance(value, str) else None
+
+
+_integer = as_int

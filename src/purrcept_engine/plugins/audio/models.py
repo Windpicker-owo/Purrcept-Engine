@@ -123,9 +123,6 @@ class SpeechAudio:
         data: 实际合成或解码处理完成的完整编码音频字节。
         format: data 实际采用的 mp3 或 wav 编码。
         duration_seconds: 实际可确定的音频时长（秒）；未取得时保留 None。
-
-    Note:
-        实例字段在构造后不可重新赋值；嵌套值的冻结范围由字段所属契约决定。
     """
 
     data: bytes
@@ -142,9 +139,6 @@ class PlaybackResult:
         started: 播放器是否确实开始，区别于合成或接管成功。
         elapsed_seconds: 实际播放器报告的已播放秒数。
         error: 当前流程已经取得的真实故障或失败说明。
-
-    Note:
-        实例字段在构造后不可重新赋值；嵌套值的冻结范围由字段所属契约决定。
     """
 
     status: Literal["completed", "failed", "interrupted", "timed_out", "not_started"]

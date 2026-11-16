@@ -95,7 +95,7 @@ class Studio:
         """只保存独立 CLI 指定的路径与程序，不读取主体密钥或配置。
 
         Args:
-            path: 此操作定位的明确路径。
+            path: 目标文件或目录路径。
             sample_rate: PCM 的明确采样率（Hz）。
             executable: 显式配置的外部程序路径，不自动寻找或安装替代程序。
             token: 当前本机控制实例的随机 ASCII 凭据。
@@ -303,7 +303,7 @@ def create_studio(
     """构造独立有限路由，不启动主体、设备或监听器。
 
     Args:
-        path: 此操作定位的明确路径。
+        path: 目标文件或目录路径。
         port: 已绑定的本机 HTTP 端口。
         sample_rate: PCM 的明确采样率（Hz）。 默认 32000。
         executable: 显式配置的外部程序路径，不自动寻找或安装替代程序。 默认 'ffmpeg'。

@@ -171,9 +171,6 @@ class ActivityFeedback:
         payload_json: 已编码的业务事实，不包含任意 Python 对象。
         occurred_at: 原始事实实际发生的 Unix 时间戳（秒）。
         applied: 此控制或反馈是否被当前版本实际采用，区别于历史已保存。
-
-    Note:
-        实例字段在构造后不可重新赋值；嵌套值的冻结范围由字段所属契约决定。
     """
 
     feedback_id: str

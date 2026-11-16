@@ -24,7 +24,7 @@ def install_model(path: Path, client: httpx.Client) -> None:
     """用调用方显式传输下载固定模型，坏响应不留下可加载的半截文件。
 
     Args:
-        path: 此操作定位的明确路径。
+        path: 目标文件或目录路径。
         client: 此组件显式借用的客户端，资源寿命由创建者负责。
 
     Raises:

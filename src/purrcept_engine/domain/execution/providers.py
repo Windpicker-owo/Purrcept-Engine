@@ -113,9 +113,6 @@ class FunctionCapability[Parameters: BaseModel]:
     Attributes:
         declaration: 待绑定或计量的不可变声明。
         function: 待包装的工具入口，保留原有参数和调用身份注入。
-
-    Note:
-        实例字段在构造后不可重新赋值；嵌套值的冻结范围由字段所属契约决定。
     """
 
     declaration: CapabilityDeclaration[Parameters]

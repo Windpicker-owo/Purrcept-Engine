@@ -93,9 +93,6 @@ class SessionRecord:
         version: 目标记录的确切版本，区别于可变的当前版本。
         checkpoint_json: 完整 Core 检查点的编码；失败轮次可不安装新历史。
         active_turn: 当前被接管且尚未结束的轮次身份；None 表示会话空闲。
-
-    Note:
-        实例字段在构造后不可重新赋值；嵌套值的冻结范围由字段所属契约决定。
     """
 
     scope: SessionScope
@@ -118,9 +115,6 @@ class TurnRecord:
         started_at: 本次真实工作开始的时刻，未开始时保留 None。
         finished_at: 此记录实际结束的 Unix 时间戳；None 表示尚未保存结束事实。
         error_json: 编码后的失败证据，供后续交互追溯原轮次。
-
-    Note:
-        实例字段在构造后不可重新赋值；嵌套值的冻结范围由字段所属契约决定。
     """
 
     turn_id: str

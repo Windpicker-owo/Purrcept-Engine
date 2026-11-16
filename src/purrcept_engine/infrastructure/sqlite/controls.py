@@ -15,6 +15,7 @@ from typing import Protocol
 
 from purrcept_engine.domain.controls.models import ControlError, ControlRecord
 from purrcept_engine.errors import StorageError
+from purrcept_engine.infrastructure.sqlite.rows import as_opt_text, as_text
 from purrcept_engine.values import JsonObject, encode_json
 
 SCHEMA = (
@@ -48,8 +49,7 @@ def get(connection: sqlite3.Connection, request_id: str) -> ControlRecord | None
         request_id: 逻辑请求的稳定身份，用于查询或关联同一次受理。
 
     Returns:
-        稳定请求身份的受理记录与当前实际业务关联。 未取得对应记录或素材时返回 None；
-        读取故障仍抛出。
+        稳定请求身份的受理记录与当前实际业务关联。
 
     Raises:
         StorageError: 面板控制状态损坏。
@@ -188,14 +188,10 @@ def _required(connection: sqlite3.Connection, request_id: str) -> ControlRecord:
     return result
 
 
-def _text(value: object) -> str:
-    if not isinstance(value, str):
-        raise StorageError("面板控制文字损坏。", code="invalid_record")
-    return value
+_text = as_text
 
 
-def _optional_text(value: object) -> str | None:
-    return None if value is None else _text(value)
+_optional_text = as_opt_text
 
 
 def _number(value: object) -> float:
@@ -247,8 +243,7 @@ class ControlLedger:
             request_id: 逻辑请求的稳定身份，用于查询或关联同一次受理。
 
         Returns:
-            稳定请求身份的受理记录与当前实际业务关联。 未取得对应记录或素材时返回 None；
-            读取故障仍抛出。
+            稳定请求身份的受理记录与当前实际业务关联。
         """
         return await self._submit(lambda connection: get(connection, request_id))
 

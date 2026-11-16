@@ -27,9 +27,6 @@ class VisemeFrame:
     Attributes:
         sample: 当前输入的原始采样值。
         weights: 当前实际分析得到的各音素通道权重。
-
-    Note:
-        实例字段在构造后不可重新赋值；嵌套值的冻结范围由字段所属契约决定。
     """
 
     sample: int

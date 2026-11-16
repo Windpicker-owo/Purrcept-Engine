@@ -80,9 +80,6 @@ class WorkerTerminal:
         result_json: 已编码的实际结果；无可用结果时为 None。
         output: 此次 Worker 实际产生的有界标准输出。
         error: 当前流程已经取得的真实故障或失败说明。
-
-    Note:
-        实例字段在构造后不可重新赋值；嵌套值的冻结范围由字段所属契约决定。
     """
 
     state: Literal["completed", "failed"]

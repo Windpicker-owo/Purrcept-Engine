@@ -117,8 +117,7 @@ class CoordinatorStore(SessionStore, RequestEvidenceSink, MediaStore, Protocol):
             input_id: 正式接管返回的输入身份，用于关联原文与后续处理。
 
         Returns:
-            首次接管的完整输入原文、来源与媒体引用。 未取得对应记录或素材时返回 None；
-            读取故障仍抛出。
+            首次接管的完整输入原文、来源与媒体引用。
         """
         ...
 
@@ -129,7 +128,7 @@ class CoordinatorStore(SessionStore, RequestEvidenceSink, MediaStore, Protocol):
             input_id: 正式接管返回的输入身份，用于关联原文与后续处理。
 
         Returns:
-            输入实际处理阶段、版本和关联轮次。 未取得对应记录或素材时返回 None；读取故障仍抛出。
+            输入实际处理阶段、版本和关联轮次。
         """
         ...
 

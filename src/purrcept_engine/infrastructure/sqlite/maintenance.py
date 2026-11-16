@@ -33,6 +33,7 @@ from purrcept_engine.infrastructure.sqlite.model_requests import (
     restore_attempt,
     restore_core_media,
 )
+from purrcept_engine.infrastructure.sqlite.rows import as_int, as_text
 from purrcept_engine.serialization import encode
 from purrcept_engine.values import JsonObject, JsonValue, decode_object
 
@@ -62,16 +63,11 @@ def _scope(owner_id: str) -> SessionScope:
     return owner_id
 
 
-def _text(value: object) -> str:
-    if not isinstance(value, str):
-        raise StorageError("摘要记录文本字段损坏。", code="invalid_record")
-    return value
+_text = as_text
 
 
 def _integer(value: object) -> int:
-    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
-        raise StorageError("摘要记录版本字段损坏。", code="invalid_record")
-    return value
+    return as_int(value, "摘要记录版本字段损坏。")
 
 
 def _source_identity(source: SummarySource) -> str:

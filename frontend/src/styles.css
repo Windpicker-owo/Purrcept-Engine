@@ -20,6 +20,7 @@ section > h2, section > h3 { margin-bottom: var(--pc-space-sm); }
 .lead { font: var(--pc-font-title); font-variant-numeric: tabular-nums; }
 .identity { font: var(--pc-font-mono); font-variant-numeric: tabular-nums; font-feature-settings: var(--pc-font-mono-feature-settings); color: var(--pc-color-ink-muted); overflow-wrap: anywhere; }
 pre, .excerpt { font: var(--pc-font-mono); font-variant-numeric: tabular-nums; background: var(--pc-color-surface-sunken); padding: var(--pc-space-sm); border-radius: var(--pc-radius-sm); white-space: pre-wrap; overflow-wrap: anywhere; max-width: 100%; margin: var(--pc-space-xs) 0; }
+code { font: var(--pc-font-mono); font-variant-numeric: tabular-nums; background: var(--pc-color-surface-sunken); padding: 0 var(--pc-space-xxs); border-radius: var(--pc-radius-xs); }
 .visually-hidden { position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 
 /* 外壳：三块岛屿之间与视口边缘都留出 island-gap，让背景美术透出来。 */
@@ -28,7 +29,7 @@ pre, .excerpt { font: var(--pc-font-mono); font-variant-numeric: tabular-nums; b
 .skip-link { position: fixed; z-index: 2; left: var(--pc-space-md); top: var(--pc-space-md); padding: var(--pc-space-sm); background: var(--pc-color-surface); border: 0; border-radius: var(--pc-radius-full); box-shadow: var(--pc-shadow-overlay); transform: translateY(-200%); }
 .skip-link:focus-visible { transform: none; }
 
-/* 导航岛：全产品唯一的玻璃材质；系统入口落在轨道底部，小高度窗口允许独立滚动。 */
+/* 导航岛：全产品唯一的玻璃材质；设置入口落在轨道底部，小高度窗口允许独立滚动。 */
 .navigation { position: sticky; z-index: 1; top: var(--pc-space-island-gap); height: calc(100dvh - var(--pc-space-island-gap) * 2); box-sizing: border-box; overflow-y: auto; overscroll-behavior: contain; display: flex; flex-direction: column; align-items: center; gap: var(--pc-space-xxs); padding: var(--pc-space-md) var(--pc-space-xxs); border: 1px solid var(--pc-color-outline-subtle); border-radius: var(--pc-radius-xl); background: var(--pc-material-glass-background); -webkit-backdrop-filter: var(--pc-material-glass-filter); backdrop-filter: var(--pc-material-glass-filter); box-shadow: var(--pc-shadow-panel); }
 @media (prefers-reduced-transparency: reduce) {
   .navigation { background: var(--pc-color-surface); -webkit-backdrop-filter: none; backdrop-filter: none; }
@@ -36,14 +37,11 @@ pre, .excerpt { font: var(--pc-font-mono); font-variant-numeric: tabular-nums; b
 .wordmark { flex: none; display: flex; align-items: center; justify-content: center; width: var(--pc-space-touch-target); height: var(--pc-space-touch-target); color: var(--pc-color-brand); border-radius: var(--pc-radius-md); margin-bottom: var(--pc-space-md); }
 .wordmark svg { width: var(--pc-space-xl); height: var(--pc-space-xl); }
 .brand-eyes { stroke: var(--pc-color-on-brand); }
-/* 选中项的字色与底色同帧切换，不做颜色过渡，避免中间帧出现低对比。 */
 .nav-item { border: 0; cursor: pointer; flex: none; position: relative; box-sizing: border-box; text-decoration: none; color: var(--pc-nav-item-color); background: var(--pc-nav-item-background); border-radius: var(--pc-nav-item-radius); min-height: var(--pc-nav-item-size); width: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: var(--pc-space-xxs); padding: var(--pc-space-xs) 0; font: var(--pc-font-caption); font-variant-numeric: tabular-nums; }
 .nav-item:last-child { margin-top: auto; }
-/* 当前项：文字色同帧切换；底色由滑动的指示块提供，图标与文字叠在指示块之上。 */
 .nav-item[aria-current="page"], .nav-item[data-current="true"] { color: var(--pc-nav-item-current-color); }
 .nav-indicator { position: absolute; inset: 0; border-radius: var(--pc-nav-item-radius); background: var(--pc-nav-item-current-background); }
 .nav-item > svg, .nav-item > span:not(.nav-count):not(.nav-indicator) { position: relative; }
-/* 待处理数量用墨色数字徽标，不使用状态色。 */
 .nav-count { position: absolute; top: var(--pc-space-xxs); right: var(--pc-space-xxs); min-width: var(--pc-space-md); padding: 0 var(--pc-space-xxs); border: 2px solid var(--pc-color-surface); border-radius: var(--pc-radius-full); background: var(--pc-color-ink); color: var(--pc-color-on-ink); font: var(--pc-font-caption); text-align: center; font-variant-numeric: tabular-nums; }
 
 /* 主舞台没有自己的底色：canvas 与背景美术透出，内容放在其上的面板里。 */
@@ -55,7 +53,6 @@ pre, .excerpt { font: var(--pc-font-mono); font-variant-numeric: tabular-nums; b
 .topbar-age { font: var(--pc-font-caption); font-variant-numeric: tabular-nums; }
 .topbar-status, .object-header, .actions, .inspector-heading { display: flex; flex-wrap: wrap; align-items: center; gap: var(--pc-space-sm); }
 .object-header, .inspector-heading { justify-content: space-between; }
-/* 系统级横幅横跨主舞台宽度，是一条圆角色带。 */
 .main-column > .pc-feedback { max-width: var(--pc-space-content-max); margin: 0 auto var(--pc-space-md); box-sizing: border-box; }
 .main-stage { max-width: var(--pc-space-content-max); padding: 0 0 var(--pc-space-xl); margin: 0 auto; }
 .main-stage:focus { outline: none; }
@@ -68,14 +65,12 @@ pre, .excerpt { font: var(--pc-font-mono); font-variant-numeric: tabular-nums; b
 .page > .page-note { padding: 0 var(--pc-space-lg); }
 .section-note { margin-top: var(--pc-space-md); }
 
-/* 面板：有独立职责的区域。面板之间靠间隙分开，不画线、不嵌套；直接放在页面上的列表、
-   表格与空状态同样是一块面板。 */
+/* 面板 */
 .section, .page > .item-list, .page > .data-table, .page > .empty-state, .page > section:not([class]) { min-width: 0; padding: var(--pc-panel-padding); border-radius: var(--pc-panel-radius); background: var(--pc-panel-background); box-shadow: var(--pc-shadow-panel); box-sizing: border-box; }
 .section-count { padding: var(--pc-space-xxs) var(--pc-space-xs); background: var(--pc-color-surface-sunken); border-radius: var(--pc-radius-full); font: var(--pc-font-caption); color: var(--pc-color-ink-muted); font-variant-numeric: tabular-nums; }
 .item-list { display: flex; flex-direction: column; }
 .page > .item-list { padding: var(--pc-space-xs); }
 .item-row { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: var(--pc-space-sm); min-width: 0; width: 100%; padding: var(--pc-space-sm); border: 0; border-radius: var(--pc-radius-md); background: transparent; color: var(--pc-color-ink); text-align: left; }
-/* 没有前导图标的行（例如行为审查）：正文占满，状态固定在右侧，不随标题长短漂移。 */
 .item-row:not(:has(> .item-icon)) { grid-template-columns: minmax(0, 1fr) auto; }
 .item-row[aria-current="true"] { background: var(--pc-color-surface-selected); }
 .item-row[data-interactive="true"] { cursor: pointer; transition: background-color var(--pc-motion-color-duration) var(--pc-motion-color-easing); }
@@ -89,8 +84,7 @@ pre, .excerpt { font: var(--pc-font-mono); font-variant-numeric: tabular-nums; b
 .page > .empty-state { max-width: none; padding: var(--pc-space-xl); }
 .empty-state > h2 { margin: var(--pc-space-xs) 0 0; }
 
-/* 首页舞台本身就是一块面板：背景美术渐变打底，状态色斜切色块托住吉祥物。
-   上部是主体，下部是行动路径；两者之间是面板内部的真实边界。 */
+/* 首页舞台 */
 .home-stage { overflow: hidden; border-radius: var(--pc-stage-field-radius); background-color: var(--pc-stage-field-background); background-image: var(--pc-gradient-stage); box-shadow: var(--pc-shadow-panel); }
 .home-overview { position: relative; display: grid; grid-template-columns: minmax(0, 7fr) minmax(0, 5fr); align-items: end; min-height: calc(var(--pc-space-4xl) * 2 + var(--pc-space-xl)); overflow: hidden; }
 .home-stage-block { position: absolute; inset: 0 0 0 auto; width: 42%; clip-path: polygon(var(--pc-space-3xl) 0, 100% 0, 100% 100%, 0 100%); transition: background-color var(--pc-motion-color-duration) var(--pc-motion-color-easing); }
@@ -103,7 +97,6 @@ pre, .excerpt { font: var(--pc-font-mono); font-variant-numeric: tabular-nums; b
 .home-path { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 3fr); align-items: center; gap: var(--pc-space-lg); padding: var(--pc-space-md) var(--pc-space-xl); border-top: 1px solid var(--pc-color-outline-subtle); background: var(--pc-color-surface); }
 .home-path-heading { display: flex; flex-direction: column; align-items: flex-start; gap: var(--pc-space-xs); }
 
-/* 舞台下方：左列浏览行动与目标，右列汇总待处理与连接；每个区域是一块面板。 */
 .home-sections { display: grid; grid-template-areas: "recent attention" "activities devices"; grid-template-columns: minmax(0, 7fr) minmax(0, 5fr); align-items: start; gap: var(--pc-space-md); }
 .home-sections > * { min-width: 0; }
 .home-attention { grid-area: attention; }
@@ -111,28 +104,24 @@ pre, .excerpt { font: var(--pc-font-mono); font-variant-numeric: tabular-nums; b
 .home-activities { grid-area: activities; }
 .home-devices { grid-area: devices; }
 .attention-summary { display: flex; flex-direction: column; gap: var(--pc-space-xs); }
-/* 每件待处理事项是面板里的一个对象瓦片。 */
 .attention-summary-item { display: flex; flex-direction: column; align-items: flex-start; gap: var(--pc-space-xs); padding: var(--pc-object-surface-padding); border-radius: var(--pc-object-surface-radius); background: var(--pc-object-surface-background); }
 .attention-summary-item > .pc-button { white-space: normal; height: auto; min-height: var(--pc-space-touch-target); text-align: left; }
 .device-summary { display: flex; flex-direction: column; }
 .device-summary-row { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; gap: var(--pc-space-xs); min-height: var(--pc-space-2xl); padding: var(--pc-space-xs) var(--pc-space-sm); width: 100%; border: 0; border-radius: var(--pc-radius-md); background: transparent; color: var(--pc-color-ink); text-align: left; cursor: pointer; transition: background-color var(--pc-motion-color-duration) var(--pc-motion-color-easing); }
 .device-summary-row > .pc-icon { color: var(--pc-color-ink-muted); }
 
-/* 过滤使用原生单选框保留方向键行为；所选过滤是用户的选择，使用品牌色容器。
-   表头与数据的边界是时间线唯一的扫描线。 */
+/* 工具条与表格 */
 .timeline-tools { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: end; gap: var(--pc-space-md); padding: 0 var(--pc-space-xs); }
 .toolbar { display: flex; flex-wrap: wrap; gap: var(--pc-space-xxs); padding: var(--pc-space-xxs); margin: 0; border: 1px solid var(--pc-color-outline-subtle); background: var(--pc-color-surface); border-radius: var(--pc-radius-full); box-shadow: var(--pc-shadow-control-surface); width: fit-content; min-width: 0; }
 .filter { position: relative; display: inline-flex; align-items: center; justify-content: center; border-radius: var(--pc-radius-full); color: var(--pc-color-ink-secondary); font: var(--pc-font-label); font-variant-numeric: tabular-nums; min-height: var(--pc-space-touch-target); padding: 0 var(--pc-space-md); cursor: pointer; }
 .filter input { position: absolute; inset: 0; opacity: 0; cursor: pointer; width: 100%; height: 100%; margin: 0; }
 .filter:has(:focus-visible) { outline: 2px solid var(--pc-color-focus-ring); outline-offset: 2px; }
 .filter[data-selected="true"] { background: var(--pc-color-brand-container); color: var(--pc-color-on-brand-container); }
-/* 带可见说明的单选组：说明在上，选项是一排独立胶囊；不把说明塞进胶囊边框里。 */
 .toolbar:has(> legend:not(.visually-hidden)) { padding: 0; border: 0; background: transparent; box-shadow: none; align-items: center; }
 .toolbar > legend:not(.visually-hidden) { float: left; width: 100%; padding: 0; margin-bottom: var(--pc-space-xs); font: var(--pc-font-caption); font-variant-numeric: tabular-nums; color: var(--pc-color-ink-muted); }
 .toolbar:has(> legend:not(.visually-hidden)) > .filter { border: 1px solid var(--pc-color-outline-subtle); background: var(--pc-color-surface); box-shadow: var(--pc-shadow-control-surface); }
 .toolbar:has(> legend:not(.visually-hidden)) > .filter[data-selected="true"] { border-color: transparent; background: var(--pc-color-brand-container); box-shadow: none; }
 .toolbar:disabled > .filter { color: var(--pc-color-ink-disabled); cursor: not-allowed; }
-/* 页面工具行：单选组与按钮对齐到同一条底线。 */
 .page > .actions { align-items: flex-end; margin-top: 0; padding: 0 var(--pc-space-xs); }
 .review-form { display: flex; flex-direction: column; gap: var(--pc-space-sm); }
 .review-comment { white-space: pre-wrap; overflow-wrap: anywhere; }
@@ -150,7 +139,7 @@ pre, .excerpt { font: var(--pc-font-mono); font-variant-numeric: tabular-nums; b
 .data-status { display: flex; flex-direction: column; align-items: flex-start; gap: var(--pc-space-xxs); }
 .attention-list { position: relative; display: flex; flex-direction: column; gap: var(--pc-space-md); }
 
-/* 设备与活动是放在 canvas 上的对象卡；只有实际按钮和行提供交互反馈。 */
+/* 设备与活动卡片 */
 .object-grid { display: grid; align-items: start; grid-template-columns: repeat(auto-fill, minmax(min(100%, var(--pc-space-inspector)), 1fr)); gap: var(--pc-space-md); }
 .device-object, .activity-object { display: flex; flex-direction: column; gap: var(--pc-space-xs); min-width: 0; overflow-wrap: anywhere; background: var(--pc-panel-background); border-radius: var(--pc-panel-radius); padding: var(--pc-panel-padding); box-shadow: var(--pc-shadow-panel); }
 .device-object[aria-current="true"], .activity-object[aria-current="true"] { background: var(--pc-color-surface-selected); }
@@ -162,7 +151,31 @@ select:disabled { color: var(--pc-color-ink-muted); background: var(--pc-color-s
 .preview { margin-top: var(--pc-space-sm); }
 .preview img { display: block; max-width: 100%; height: auto; margin: var(--pc-space-xs) 0; background: var(--pc-color-surface-sunken); border-radius: var(--pc-radius-md); }
 
-/* 系统页与 Inspector 在面板内依靠标题和留白组织事实，技术明细默认折叠。 */
+/* 真后台新增：对话调试台、配置与人设中心、记忆编辑器与声线调音室 */
+.chat-workspace, .studio-stack { display: flex; flex-direction: column; gap: var(--pc-space-md); min-width: 0; }
+.chat-stream { display: flex; flex-direction: column; gap: var(--pc-space-sm); max-height: 58dvh; overflow-y: auto; padding-right: var(--pc-space-xxs); }
+.chat-bubble { display: flex; flex-direction: column; gap: var(--pc-space-xs); padding: var(--pc-object-surface-padding); border-radius: var(--pc-object-surface-radius); background: var(--pc-object-surface-background); max-width: min(100%, 52em); min-width: 0; overflow-wrap: anywhere; }
+.chat-bubble[data-role="user"] { align-self: flex-end; background: var(--pc-color-brand-container); color: var(--pc-color-on-brand-container); }
+.chat-bubble[data-role="agent"] { align-self: flex-start; }
+.chat-meta { display: flex; flex-wrap: wrap; align-items: center; gap: var(--pc-space-xs); font: var(--pc-font-caption); font-variant-numeric: tabular-nums; }
+.chat-text { font: var(--pc-font-body); font-variant-numeric: tabular-nums; white-space: pre-wrap; overflow-wrap: anywhere; }
+.chat-reply-block { display: flex; flex-direction: column; gap: var(--pc-space-xxs); }
+.chat-calls-strip { display: flex; flex-wrap: wrap; gap: var(--pc-space-xxs); margin-top: var(--pc-space-xxs); }
+.chat-composer { display: flex; flex-direction: column; gap: var(--pc-space-sm); }
+.chat-composer-fields { display: grid; grid-template-columns: minmax(0, 14em) minmax(0, 1fr); gap: var(--pc-space-md); align-items: start; }
+
+.config-grid, .studio-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 1fr)); gap: var(--pc-space-md); align-items: start; margin-top: var(--pc-space-sm); }
+.config-card { display: flex; flex-direction: column; gap: var(--pc-space-sm); padding: var(--pc-object-surface-padding); border-radius: var(--pc-object-surface-radius); background: var(--pc-object-surface-background); min-width: 0; }
+.plugin-adder { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: var(--pc-space-md); align-items: end; margin-bottom: var(--pc-space-md); }
+.inline-pair { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: var(--pc-space-xs); width: 100%; }
+.inline-pair > input { min-width: 0; min-height: var(--pc-space-touch-target); padding: var(--pc-input-padding); border: 1px solid var(--pc-input-outline); border-radius: var(--pc-input-radius); background: var(--pc-input-background); color: var(--pc-input-color); font: var(--pc-input-font); font-variant-numeric: tabular-nums; box-shadow: var(--pc-shadow-well); }
+.code-editor { font: var(--pc-font-mono); font-variant-numeric: tabular-nums; font-feature-settings: var(--pc-font-mono-feature-settings); line-height: 1.55; }
+.note-editor { display: flex; flex-direction: column; gap: var(--pc-space-md); }
+.range-row { display: flex; flex-direction: column; gap: var(--pc-space-xxs); padding: var(--pc-space-sm); border-radius: var(--pc-radius-md); background: var(--pc-color-surface-sunken); }
+.range-header { display: flex; justify-content: space-between; align-items: center; gap: var(--pc-space-xs); font: var(--pc-font-label); font-variant-numeric: tabular-nums; }
+.range-row > input[type="range"] { width: 100%; accent-color: var(--pc-color-brand); cursor: pointer; }
+
+/* 系统页与 Inspector */
 .setting-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: var(--pc-space-lg); align-items: start; padding: var(--pc-space-sm) 0; }
 .setting-row h3 { font: var(--pc-font-label); font-variant-numeric: tabular-nums; margin-bottom: var(--pc-space-xxs); }
 .flat-list { display: flex; flex-direction: column; gap: var(--pc-space-xs); }
@@ -179,23 +192,17 @@ select:disabled { color: var(--pc-color-ink-muted); background: var(--pc-color-s
 .tech-details > summary::before { content: '+'; font: var(--pc-font-mono); font-variant-numeric: tabular-nums; }
 .tech-details[open] > summary::before { content: '−'; }
 .tech-details .facts { font: var(--pc-font-caption); font-variant-numeric: tabular-nums; }
-/* Inspector 岛：一块固定的面板，选择变化时位置不动、内容立即替换。 */
 .inspector { position: sticky; top: var(--pc-space-island-gap); height: calc(100dvh - var(--pc-space-island-gap) * 2); box-sizing: border-box; overflow-y: auto; overscroll-behavior: contain; background: var(--pc-panel-background); border-radius: var(--pc-panel-radius); box-shadow: var(--pc-shadow-panel); padding: var(--pc-panel-padding); min-width: 0; overflow-wrap: anywhere; }
 .inspector-heading { margin-bottom: var(--pc-space-lg); }
 .detail { display: flex; flex-direction: column; align-items: flex-start; gap: var(--pc-space-sm); }
 .detail > .tech-details, .detail > .actions { align-self: stretch; }
-/* 详情里的分组、表单与状态说明占满 Inspector 宽度；表单里的按钮保持自身宽度。 */
 .detail > section, .detail > form, .detail > [role="status"] { align-self: stretch; }
 .review-form > .pc-button { align-self: flex-start; }
 .review-form > h3 { margin-top: var(--pc-space-md); }
 .call-item { display: flex; flex-direction: column; align-items: flex-start; gap: var(--pc-space-xxs); margin-bottom: var(--pc-space-md); }
 .call-item > .tech-details { align-self: stretch; margin-top: 0; }
 
-/*
- * 指针反馈。悬停只给真正能悬停的指针，触屏点按后不会把悬停色“粘”在行上；按压色阶对所有
- * 指针生效。行和导航项只改变底色色阶，不缩放（Cel · Elevation · 悬停与按压）。当前项不被
- * 悬停或按压覆盖：它的底色是选择，不是反馈。
- */
+/* 指针反馈 */
 .nav-item, .item-row[data-interactive="true"], .device-summary-row, .data-row, .row-button, .filter { touch-action: manipulation; }
 @media (hover: hover) and (pointer: fine) {
   .nav-item:hover { background: var(--pc-color-surface-sunken); color: var(--pc-color-ink); }
@@ -209,14 +216,12 @@ select:disabled { color: var(--pc-color-ink-muted); background: var(--pc-color-s
 @media (--pc-workspace) {
   .home-sections { grid-template-columns: minmax(0, 1fr); grid-template-areas: "attention" "recent" "activities" "devices"; }
 }
-/* 窄屏：导航岛移到底部成为五项带文字的玻璃标签栏；岛屿间隙收紧。 */
 @media (--pc-navigation) {
   .panel-shell { grid-template-columns: minmax(0, 1fr); gap: var(--pc-space-xs); padding: var(--pc-space-xs) var(--pc-space-xs) calc(var(--pc-space-3xl) + var(--pc-space-lg) + env(safe-area-inset-bottom)); }
   .navigation { position: fixed; top: auto; left: var(--pc-space-xs); right: var(--pc-space-xs); bottom: calc(var(--pc-space-xs) + env(safe-area-inset-bottom)); height: auto; flex-direction: row; align-items: stretch; justify-content: space-around; gap: 0; overflow: visible; padding: var(--pc-space-xxs); }
   .wordmark { display: none; }
-  .nav-item { flex: 1 1 0; min-width: 0; width: auto; justify-content: flex-start; padding: var(--pc-space-xxs) 0; }
+  .nav-item { flex: 1 1 0; min-width: var(--pc-space-touch-target); min-height: calc(var(--pc-space-touch-target) + var(--pc-space-sm)); width: auto; justify-content: flex-start; padding: var(--pc-space-xxs) 0; }
   .nav-item:last-child { margin-top: 0; }
-  .nav-item { min-width: var(--pc-space-touch-target); min-height: calc(var(--pc-space-touch-target) + var(--pc-space-sm)); }
   .nav-count { top: 0; right: 0; }
   .topbar { padding: var(--pc-space-xs) var(--pc-space-sm); gap: var(--pc-space-xs); }
   .topbar-status { gap: var(--pc-space-xs); }
@@ -240,12 +245,12 @@ select:disabled { color: var(--pc-color-ink-muted); background: var(--pc-color-s
   .data-time { padding-left: calc(var(--pc-space-touch-target) + var(--pc-space-sm)); }
   .row-button { grid-template-columns: minmax(0, 1fr) auto; row-gap: var(--pc-space-xxs); }
   .row-button > .muted { grid-column: 1 / -1; }
-  .setting-row, .facts > div { grid-template-columns: minmax(0, 1fr); gap: var(--pc-space-xs); }
+  .setting-row, .facts > div, .chat-composer-fields, .plugin-adder { grid-template-columns: minmax(0, 1fr); gap: var(--pc-space-xs); }
   .input-selection { flex-direction: column; }
   .object-grid { grid-template-columns: minmax(0, 1fr); }
 }
 
-/* 工作区按任务分配空间：列表保留选择，长材料在主舞台阅读，详情栏只承载短对象。 */
+/* 工作区双栏布局（行为审查与记忆手账共用） */
 .more-pages { display: grid; gap: var(--pc-space-sm); }
 .more-page { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: var(--pc-space-sm); min-height: var(--pc-space-touch-target); padding: var(--pc-space-sm); border-radius: var(--pc-radius-md); color: var(--pc-color-ink); text-decoration: none; }
 .more-page > span { display: flex; flex-direction: column; gap: var(--pc-space-xxs); }
@@ -279,7 +284,6 @@ select:disabled { color: var(--pc-color-ink-muted); background: var(--pc-color-s
   .topbar-age { white-space: normal; }
 }
 
-/* 配对二维码保留白底黑格与完整静区；不跟随主题换色，以便手机实际解码。 */
 .phone-connection, .phone-settings { display: grid; gap: var(--pc-space-md); min-width: 0; }
 .phone-qr-layout { display: flex; flex-wrap: wrap; align-items: center; gap: var(--pc-space-lg); }
 .phone-qr { width: min(100%, 280px); height: auto; flex-shrink: 0; }

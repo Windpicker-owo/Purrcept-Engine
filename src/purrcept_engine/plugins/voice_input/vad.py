@@ -111,7 +111,7 @@ class _OnnxRuntime(Protocol):
         """按固定模型文件和明确 Provider 创建本次推理会话。
 
         Args:
-            path: 此操作定位的明确路径。
+            path: 目标文件或目录路径。
             options: 本实例 ONNX 会话的线程与执行选项。
             providers: 显式允许的 ONNX 执行 Provider 列表。
 
@@ -128,7 +128,7 @@ class SileroVad:
         """显式模型文件缺失直接失败。
 
         Args:
-            path: 此操作定位的明确路径。
+            path: 目标文件或目录路径。
 
         Raises:
             VoiceInputError: Silero VAD 模型不存在，请配置本机 ONNX 文件。

@@ -3,6 +3,7 @@
 </p>
 
 <p align="center">
+  <a href="docs/code-review.md">架构导读与代码审查</a> ·
   <a href="docs/architecture.md">架构与调用链</a> ·
   <a href="docs/configuration.md">配置说明</a> ·
   <a href="docs/behavior.md">主体运行行为</a> ·
@@ -136,9 +137,8 @@ uv run purrcept-engine --debug run      # 开启 DEBUG 级别详细排障日志�
 只有显式输出能力会表达。可先运行 `uv run python examples/action.py` 离线验证
 控制台能力和真实 Worker。Ctrl+C 请求关闭，关闭期间再按一次强制退出。
 
-安装 `web` extra 并在 `[web]` 中设置 `enabled = true` 后，启动会打印本机面板地址，
-默认端口 `8765`。面板静态资源随包提供，使用者无需 Node 或 Design 源码；
-页面展示实际状态和逐项行动结果，关闭浏览器不会停止宿主。
+安装 `web` extra 并在 `[web]` 中设置 `enabled = true` 后，启动会打印本机管理后台地址（默认端口 `8765`）。
+面板静态资源已预编译随包提供，开箱支持**网页实时对话调试、可视化修改角色人设与模型插件并无损写回 `purrcept.toml`、Notebook 记忆手账浏览与编辑、内嵌声线调音室（FFmpeg DSP 对比试听）与 Live2D 表演参数热更新**，无需额外打开第二个终端命令。关闭浏览器不会停止宿主。
 
 已有 Engine 数据升级前，请停止宿主并备份完整数据目录，具体规则见
 [数据格式与升级](docs/behavior.md#数据格式与升级)。
@@ -180,6 +180,7 @@ uv run python -m build
 
 | 文档 | 内容 |
 | --- | --- |
+| [架构导读与代码审查](docs/code-review.md) | 三分钟全局导读、模块职责速查与代码质量审查指南 |
 | [代码架构与调用链](docs/architecture.md) | 目录地图、依赖方向与主要调用路径 |
 | [配置说明](docs/configuration.md) | 最小配置、模型与容量估算、角色卡、预算及插件接入 |
 | [主体运行行为](docs/behavior.md) | 注意、睡眠、主动思考、记忆、插件与关闭细则 |

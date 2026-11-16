@@ -22,9 +22,6 @@ class BrowserLaunch:
         executable_path: 显式浏览器程序路径；None 按当前解析规则确定。
         channel: 当前 Worker 唯一借用的有界 IPC 帧通道。
         kind: 此业务值所属的稳定种类。
-
-    Note:
-        实例字段在构造后不可重新赋值；嵌套值的冻结范围由字段所属契约决定。
     """
 
     executable_path: str | None

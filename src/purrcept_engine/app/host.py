@@ -7,6 +7,7 @@ EngineAssembly。具体模型循环、执行器和账本分别由下层所有者
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable, Mapping
+from datetime import UTC, datetime
 from pathlib import Path
 from uuid import uuid4
 
@@ -26,6 +27,7 @@ from purrcept_engine.domain.execution.catalog import Catalog
 from purrcept_engine.domain.execution.models import ActionRecord
 from purrcept_engine.domain.inputs.models import (
     Admission,
+    InputContext,
     InputRecord,
     InputSource,
     InputSubmission,
@@ -159,8 +161,7 @@ class EngineHost:
             input_id: 正式接管返回的输入身份，用于关联原文与后续处理。
 
         Returns:
-            首次接管的完整输入原文、来源与媒体引用。 未取得对应记录或素材时返回 None；
-            读取故障仍抛出。
+            首次接管的完整输入原文、来源与媒体引用。
 
         Raises:
             HostStateError: 权威库尚未取得或宿主已完全关闭。
@@ -178,8 +179,7 @@ class EngineHost:
             source: 含适配器、账号、会话和原生事件身份的可信来源。
 
         Returns:
-            首次接管的完整输入原文、来源与媒体引用。 未取得对应记录或素材时返回 None；
-            读取故障仍抛出。
+            首次接管的完整输入原文、来源与媒体引用。
 
         Raises:
             HostStateError: 权威库尚未取得或宿主已完全关闭。
@@ -197,7 +197,7 @@ class EngineHost:
             input_id: 正式接管返回的输入身份，用于关联原文与后续处理。
 
         Returns:
-            输入实际处理阶段、版本和关联轮次。 未取得对应记录或素材时返回 None；读取故障仍抛出。
+            输入实际处理阶段、版本和关联轮次。
 
         Raises:
             HostStateError: 权威库尚未取得或宿主已完全关闭。
@@ -267,7 +267,7 @@ class EngineHost:
 
         Returns:
             已保存的行动记录，包含逐次真实调用及结果历史；unknown 不证明效果未发生。
-            未取得对应记录或素材时返回 None；读取故障仍抛出。
+           
 
         Raises:
             HostStateError: 权威库尚未取得或宿主已完全关闭。
@@ -392,8 +392,7 @@ class EngineHost:
             activity_id: 已创建活动的稳定身份。
 
         Returns:
-            活动的控制、预算、运行代次与工作快照。 未取得对应记录或素材时返回 None；
-            读取故障仍抛出。
+            活动的控制、预算、运行代次与工作快照。
 
         Raises:
             HostStateError: 权威库尚未取得或宿主已完全关闭。
@@ -408,8 +407,7 @@ class EngineHost:
             request_id: 逻辑请求的稳定身份，用于查询或关联同一次受理。
 
         Returns:
-            一个逻辑模型请求的冻结材料及按实际顺序保存的尝试。 未取得对应记录或素材时返回 None；
-            读取故障仍抛出。
+            一个逻辑模型请求的冻结材料及按实际顺序保存的尝试。
 
         Raises:
             HostStateError: 权威库尚未取得或宿主已完全关闭。
@@ -450,6 +448,27 @@ class EngineHost:
                 raise HostStateError("重新配对需要当前手机身份，请先读取配对状态。")
             return await pairing.replace(expected_device_id)
         return await (pairing.open() if operation == "open" else pairing.read())
+
+    async def query_chat(self, *, limit: int = 40) -> JsonObject:
+        """读取本机对话调试台的近期刺激与主体回复流水。"""
+        return await self._queries.query_chat(limit=limit)
+
+    async def submit_chat(self, text: str, *, sender_name: str = "Web 管理员") -> JsonObject:
+        """从本机 Web 后台向主体发送一条直接唤醒消息。"""
+        now = datetime.now(UTC)
+        source = InputSource(
+            "console",
+            "local",
+            "web-admin",
+            "text",
+            uuid4().hex,
+            sender_id="web-admin",
+            display_name=sender_name,
+        )
+        admitted = await self.submit(
+            InputSubmission(source, text, now, now, context=InputContext(minimum_wake=True))
+        )
+        return {"input_id": admitted.input_id, "duplicate": admitted.duplicate}
 
     async def query_panel(self) -> JsonObject:
         """读取有限真实概况与设备缓存状态。
@@ -499,8 +518,7 @@ class EngineHost:
             target: 本次操作明确指定的业务目标身份。
 
         Returns:
-            当前已经取得的完整预览画面，不触发额外采集。 未取得对应记录或素材时返回 None；
-            读取故障仍抛出。
+            当前已经取得的完整预览画面，不触发额外采集。
 
         Note:
             查询不额外截图或延长设备会话。

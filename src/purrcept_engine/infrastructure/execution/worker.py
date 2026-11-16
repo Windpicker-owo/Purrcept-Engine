@@ -347,7 +347,7 @@ class _WorkerClient:
         """先核验参数数据再分配调用身份。
 
         Args:
-            path: 此操作定位的明确路径。
+            path: 目标文件或目录路径。
             arguments: 按已装配参数模型校验的能力关键字参数。
 
         Raises:
@@ -505,7 +505,7 @@ class _NamespaceProxy:
 
         Args:
             client: 此组件显式借用的客户端，资源寿命由创建者负责。
-            path: 此操作定位的明确路径。
+            path: 目标文件或目录路径。
         """
         self._client = client
         self._path = path
@@ -530,7 +530,7 @@ class _BoundCapability:
 
         Args:
             client: 此组件显式借用的客户端，资源寿命由创建者负责。
-            path: 此操作定位的明确路径。
+            path: 目标文件或目录路径。
         """
         self._client = client
         self._path = path

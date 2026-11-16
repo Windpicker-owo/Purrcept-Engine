@@ -76,9 +76,6 @@ class SubjectAssembly:
         evidence: 共享原文的版本化阅读服务；Notebook 独立提供长期记忆能力。
         background: 同一主体的独立反馈和反思所有者。
         sleep_history: 睡眠期间的一次前台压缩所有者，不与正常首发预检共享在途状态。
-
-    Note:
-        实例字段在构造后不可重新赋值；嵌套值的冻结范围由字段所属契约决定。
     """
 
     service: SubjectService

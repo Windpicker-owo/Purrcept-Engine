@@ -42,6 +42,7 @@ from purrcept_engine.infrastructure.sqlite.model_requests import (
     intern_core_media,
     restore_core_media,
 )
+from purrcept_engine.infrastructure.sqlite.rows import as_int, as_opt_text, as_text
 from purrcept_engine.serialization import encode
 
 EvidencePage.model_rebuild()
@@ -97,16 +98,11 @@ SCHEMA = (
 )
 
 
-def _text(value: object) -> str:
-    if not isinstance(value, str):
-        raise StorageError("证据存储字符串字段损坏。", code="invalid_record")
-    return value
+_text = as_text
 
 
 def _integer(value: object) -> int:
-    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
-        raise StorageError("证据存储版本字段损坏。", code="invalid_record")
-    return value
+    return as_int(value, "证据存储版本字段损坏。", minimum=1)
 
 
 def _number(value: object) -> float:
@@ -115,8 +111,7 @@ def _number(value: object) -> float:
     return float(value)
 
 
-def _optional_text(value: object) -> str | None:
-    return None if value is None else _text(value)
+_optional_text = as_opt_text
 
 
 def _page_limit(value: int) -> None:
@@ -262,8 +257,7 @@ def get_evidence(
         include_inactive: 是否同时返回已失效的历史记录，并保留失效原因。 默认 False。
 
     Returns:
-        完整保存的原文快照，包含确切来源、版本与媒体关系。 未取得对应记录或素材时返回 None；
-        读取故障仍抛出。
+        完整保存的原文快照，包含确切来源、版本与媒体关系。
 
     Note:
         显式历史查询保留撤销事实，不赋予引用资格。
@@ -280,8 +274,7 @@ def get_slice(connection: sqlite3.Connection, slice_ref: str) -> EvidenceSlice |
         slice_ref: 已保存原文片段的不可变身份。
 
     Returns:
-        同一原文版本中已保存的精确范围及不可变片段身份。 未取得对应记录或素材时返回 None；
-        读取故障仍抛出。
+        同一原文版本中已保存的精确范围及不可变片段身份。
     """
     row = _one(
         connection, "SELECT payload_json FROM knowledge_slices WHERE slice_ref=?", (slice_ref,)
@@ -1181,8 +1174,7 @@ def get_supervision(connection: sqlite3.Connection, identity: str) -> Supervisio
         identity: 待查询或回应的监管意见身份。
 
     Returns:
-        包含原始依据、活动版本约束和当前回应的监管记录。 未取得对应记录或素材时返回 None；
-        读取故障仍抛出。
+        包含原始依据、活动版本约束和当前回应的监管记录。
 
     Note:
         查询不改回应或删除历史；active 表达当前未回应、来源仍有效、期限及活动

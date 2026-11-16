@@ -59,8 +59,7 @@ class ActivityStore(Protocol):
             activity_id: 已创建活动的稳定身份。
 
         Returns:
-            活动的控制、预算、运行代次与工作快照。 未取得对应记录或素材时返回 None；
-            读取故障仍抛出。
+            活动的控制、预算、运行代次与工作快照。
         """
         ...
 
@@ -71,8 +70,7 @@ class ActivityStore(Protocol):
             command_id: 控制命令的稳定身份；重复提交须沿用原身份和内容。
 
         Returns:
-            命令接管与实际确认记录；受理成功不等于驱动已完成。 未取得对应记录或素材时返回 None；
-            读取故障仍抛出。
+            命令接管与实际确认记录；受理成功不等于驱动已完成。
         """
         ...
 
@@ -83,8 +81,7 @@ class ActivityStore(Protocol):
             feedback_id: 驱动反馈的稳定身份，用于去重和查询实际确认。
 
         Returns:
-            已经按身份去重并保存的真实驱动反馈。 未取得对应记录或素材时返回 None；
-            读取故障仍抛出。
+            已经按身份去重并保存的真实驱动反馈。
         """
         ...
 
@@ -164,9 +161,6 @@ class DriverAcceptance:
     Attributes:
         accepted: 接受新连接时移交实际连接所有权的异步函数。
         reason: 供后续核对的明确处置原因。
-
-    Note:
-        实例字段在构造后不可重新赋值；嵌套值的冻结范围由字段所属契约决定。
     """
 
     accepted: bool
@@ -272,9 +266,6 @@ class ActivityDefinition:
         definition: 新活动使用的已装配定义名。
         factory: 应用按定义创建专业驱动的工厂，不在声明阶段启动工作。
         single_instance: 是否限制同一定义同时只有一个未结束活动。
-
-    Note:
-        实例字段在构造后不可重新赋值；嵌套值的冻结范围由字段所属契约决定。
     """
 
     definition: str
