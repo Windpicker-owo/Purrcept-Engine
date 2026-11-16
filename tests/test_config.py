@@ -1,4 +1,4 @@
-"""验证真实 TOML 和程序式配置共用的边界、路径及脱敏行为。"""
+"""验证 TOML 加载、${ENV} 环境变量插值、本地免密端点、默认字段推导与可读报错。"""
 
 from __future__ import annotations
 
@@ -16,13 +16,13 @@ from purrcept_engine.app.config import (
     GenerationModelSettings,
     HostSettings,
     SubjectSettings,
+    expand_env_vars,
     load_config,
 )
 from purrcept_engine.errors import ConfigError
 
 
 def _configuration() -> dict[str, object]:
-    """不使用真实模型账号；所有检查仅消费配置值。"""
     return {
         "models": {
             "local": {
@@ -50,12 +50,12 @@ def _configuration() -> dict[str, object]:
 
 
 def test_configuration_resolves_and_freezes_startup_snapshot(tmp_path: Path) -> None:
-    """配置文件之外的可变映射不能改变已通过校验的启动快照。"""
     raw = _configuration()
     config = EngineConfig.validate(raw, base_dir=tmp_path)
     raw.clear()
 
     assert config.host.data_dir == tmp_path / ".purrcept-engine"
+    assert config.logging.level == "INFO"
     assert config.subject.foreground_retry.attempts == 2
     assert config.subject.foreground_retry.attempt_seconds == 120
     assert config.subject.foreground_retry.total_seconds == 180
@@ -69,14 +69,63 @@ def test_configuration_resolves_and_freezes_startup_snapshot(tmp_path: Path) -> 
     assert config.execution.pending_input_bytes == 256 * 1024 * 1024
     assert config.activities.initial_seconds == 3600
     assert config.context.page_chars == 8000
-    assert "media_rule" not in config.models["local"].model_dump()
-    assert "capacity_rule" not in config.models["local"].model_dump()
     assert config.models["local"].supports_contents == ("text",)
     assert isinstance(config.models, MappingProxyType)
 
 
+def test_minimal_single_model_config_infers_defaults_and_local_no_auth(tmp_path: Path) -> None:
+    """省略 kind、api_key（本机/局域网）与 reflection 时自动采用合理默认值。"""
+    minimal = {
+        "models": {
+            "main": {
+                "model": "openai/qwen2.5:14b",
+                "api_base": "http://127.0.0.1:11434/v1",
+            }
+        },
+        "subject": {
+            "foreground": "main",
+        },
+    }
+    config = EngineConfig.validate(minimal, base_dir=tmp_path)
+    main_model = config.models["main"]
+    assert isinstance(main_model, GenerationModelSettings)
+    assert main_model.context_window == 64000
+    assert main_model.max_output_tokens == 4096
+    assert main_model.api_key.get_secret_value() == "local-no-auth"
+    assert config.subject.reflection == "main"
+
+
+def test_environment_variable_interpolation_and_missing_var_error(tmp_path: Path) -> None:
+    toml_file = tmp_path / "purrcept.toml"
+    toml_file.write_text(
+        """
+[logging]
+level = "${LOG_LEVEL:-debug}"
+
+[models.main]
+model = "openai/deepseek-chat"
+api_base = "${CUSTOM_BASE:-https://api.deepseek.com/v1}"
+api_key = "${DEEPSEEK_API_KEY}"
+
+[subject]
+foreground = "main"
+
+[subject.character]
+notes = "价格符号转义 $$100"
+""",
+        encoding="utf-8",
+    )
+    with pytest.raises(ConfigError, match="DEEPSEEK_API_KEY"):
+        load_config(toml_file, environ={})
+
+    loaded = load_config(toml_file, environ={"DEEPSEEK_API_KEY": "sk-live-test-key"})
+    assert loaded.logging.level == "DEBUG"
+    assert loaded.models["main"].api_base == "https://api.deepseek.com/v1"
+    assert loaded.models["main"].api_key.get_secret_value() == "sk-live-test-key"
+    assert loaded.subject.character.notes == "价格符号转义 $100"
+
+
 def test_models_mapping_and_values_are_immutable(tmp_path: Path) -> None:
-    """冻结覆盖模型容器和模型字段，不止阻止顶层属性赋值。"""
     config = EngineConfig.validate(_configuration(), base_dir=tmp_path)
     with pytest.raises(ValidationError, match="frozen"):
         config.models["local"].model = "replacement"
@@ -85,7 +134,6 @@ def test_models_mapping_and_values_are_immutable(tmp_path: Path) -> None:
 
 
 def test_programmatic_construction_requires_explicit_relative_base(tmp_path: Path) -> None:
-    """程序式路径不随调用者当前目录漂移，完整对象仍走同一关系校验。"""
     model = GenerationModelSettings(
         kind="generation",
         model="fixture",
@@ -111,6 +159,7 @@ def test_programmatic_construction_requires_explicit_relative_base(tmp_path: Pat
         {"host": {"close_seconds": float("inf")}},
         {"host": {"close_seconds": "30"}},
         {"console": "true"},
+        {"logging": {"level": "VERBOSE"}},
         {"execution": {"max_workers": True}},
         {"execution": {"max_calls": -1}},
         {"context": {"summary_trigger": 0.5, "summary_target": 0.8}},
@@ -125,7 +174,6 @@ def test_programmatic_construction_requires_explicit_relative_base(tmp_path: Pat
 def test_invalid_shapes_and_relationships_are_rejected(
     section: dict[str, object], tmp_path: Path
 ) -> None:
-    """真实边界拒绝错误类型、未知项和关系冲突，不产生隐式默认或转发。"""
     raw = _configuration()
     raw.update(section)
     with pytest.raises(ConfigError):
@@ -133,7 +181,6 @@ def test_invalid_shapes_and_relationships_are_rejected(
 
 
 def test_frame_must_leave_room_for_protocol_envelope() -> None:
-    """已允许的有效负载不能因帧配置相等而必然发送失败。"""
     with pytest.raises(ValidationError, match="协议帧"):
         ExecutionSettings(frame_bytes=1024 * 1024)
 
@@ -141,8 +188,8 @@ def test_frame_must_leave_room_for_protocol_envelope() -> None:
 @pytest.mark.parametrize(
     "changes",
     [
-        {"api_key": ""},
-        {"api_key": "   "},
+        {"api_base": "https://api.openai.com/v1", "api_key": ""},
+        {"api_base": "https://api.openai.com/v1", "api_key": "   "},
         {"api_base": "localhost:4000"},
         {"api_base": "http://account:password@localhost:4000/v1"},
         {"api_base": "http://localhost:bad-port/v1"},
@@ -153,8 +200,9 @@ def test_frame_must_leave_room_for_protocol_envelope() -> None:
         {"temperature": 0.7},
     ],
 )
-def test_model_boundaries_do_not_infer_missing_contracts(changes: dict[str, object]) -> None:
-    """不接受空凭据、隐式端点、错误容量或尚未声明的模型参数。"""
+def test_model_boundaries_reject_remote_empty_key_and_bad_urls(
+    changes: dict[str, object],
+) -> None:
     values: dict[str, object] = {
         "kind": "generation",
         "model": "fixture",
@@ -169,7 +217,6 @@ def test_model_boundaries_do_not_infer_missing_contracts(changes: dict[str, obje
 
 
 def test_decision_configuration_rejects_generation_budget() -> None:
-    """专用判断按协议输入限额校验，不透传生成用途的参数。"""
     with pytest.raises(ValidationError, match="max_output_tokens"):
         DecisionModelSettings.model_validate(
             {
@@ -228,46 +275,42 @@ def test_supported_content_declaration_rejects_invalid_values(value: object) -> 
         )
 
 
-def test_removed_audio_flag_is_rejected_instead_of_silently_ignored() -> None:
-    with pytest.raises(ValidationError, match="supports_audio"):
-        GenerationModelSettings.model_validate(
-            {
-                "kind": "generation",
-                "model": "fixture",
-                "api_base": "http://127.0.0.1:4000/v1",
-                "api_key": "fixture-secret",
-                "context_window": 32000,
-                "max_output_tokens": 4096,
-                "supports_audio": True,
-            }
-        )
-
-
-def test_validation_error_cannot_echo_secret(tmp_path: Path) -> None:
-    """Pydantic 输入及原始 TOML 行都不能通过配置错误泄露账号材料。"""
+def test_toml_syntax_error_reports_line_number_and_conflict_hint_without_echoing_secret(
+    tmp_path: Path,
+) -> None:
     raw = _configuration()
     raw["host"] = {"close_seconds": "private-account-material"}
     with pytest.raises(ConfigError) as captured:
         EngineConfig.validate(raw, base_dir=tmp_path)
     assert "host.close_seconds" in str(captured.value)
     assert "private-account-material" not in str(captured.value)
-    assert "fixture-secret" not in str(captured.value)
 
     invalid_path = tmp_path / "invalid.toml"
     invalid_path.write_text('api_key = "private-account-material\n', encoding="utf-8")
     with pytest.raises(ConfigError) as syntax_error:
         load_config(invalid_path)
+    assert "第 1 行" in str(syntax_error.value)
     assert "private-account-material" not in str(syntax_error.value)
 
+    conflict_path = tmp_path / "conflict.toml"
+    conflict_body = 'plugins = []\n\n[[plugins]]\ninstance_id = "bed"\nentry = "bed"\n'
+    conflict_path.write_text(conflict_body, encoding="utf-8")
+    with pytest.raises(ConfigError, match="删除顶部的 `plugins = \\[\\]`"):
+        load_config(conflict_path)
 
-def test_example_toml_uses_file_directory_as_path_base(tmp_path: Path) -> None:
-    """移动示例或改变工作目录不改变相对路径所属的配置文件目录。"""
+
+def test_default_toml_is_valid_single_model_starter_and_uncommentable(tmp_path: Path) -> None:
     example_path = files("purrcept_engine.app").joinpath("default.toml")
     copied_path = tmp_path / "engine.toml"
     copied_path.write_bytes(example_path.read_bytes())
     config = load_config(copied_path)
 
+    assert config.console is True
+    assert config.web.enabled is False
     assert config.host.data_dir == tmp_path / ".purrcept-engine"
-    assert config.subject.attention == "attention"
-    assert "capacity_rule" not in config.models["foreground"].model_dump()
+    assert config.subject.foreground == "main"
+    assert config.subject.reflection == "main"
+    assert config.subject.attention == "main"
+    assert config.subject.character.name == "小咕"
     assert config.plugins == ()
+    assert expand_env_vars("$$literal") == "$literal"

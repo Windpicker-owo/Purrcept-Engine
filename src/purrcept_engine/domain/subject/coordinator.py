@@ -13,6 +13,7 @@ urgent 仍抢占模型尚未看到它的旧生成。
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
 from typing import TYPE_CHECKING
 
@@ -359,12 +360,31 @@ class StimulusCoordinator:
                     request_id=result.request_id,
                 )
             )
+        level_labels = {
+            "observe": "observe（留存收件箱）",
+            "wake": "wake（唤醒主脑）",
+            "urgent": "urgent（紧急抢占）",
+        }
+        if applied:
+            reason_preview = " ".join(result.reason.split())
+            if len(reason_preview) > 72:
+                reason_preview = reason_preview[:72] + "…"
+            logging.getLogger(__name__).info(
+                "[注意评估] 批次 %d 条 -> %s | %s",
+                len(self.expected),
+                level_labels.get(result.level, result.level),
+                reason_preview,
+                extra={"input_count": len(self.expected), "outcome": result.level},
+            )
         if result.level == "urgent" and (
             applied
             or self.runtime.session.absorbed_unseen(
                 self.observed, tuple(item.input_id for item in self.expected)
             )
         ):
+            logging.getLogger(__name__).info(
+                "[注意抢占] 收到紧急刺激，正在中断第 %d 代旧思考。", self.observed
+            )
             self.runtime.session.interrupt(self.observed)
         # Ordering: 持久化版本检查成功才交给身体。迟到结果不能影响新一轮姿态，
         # 外围视觉离线也不能阻塞上面的注意提交或抢占。

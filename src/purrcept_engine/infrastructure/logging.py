@@ -1,11 +1,9 @@
-"""由 CLI 显式拥有包级终端摘要与有限文本日志。
+"""提供面向人类阅读的本地时区终端日志与结构化文件滚动日志。
 
-导入本模块不会安装 handler 或修改 root logger。独立进程在取得数据目录锁后
-调用 CliLogging.open，关闭宿主后调用 close；嵌入应用沿用调用者的日志配置。
-本模块不记录模型证据、不打开 SQLite，也不创建后台线程或维护任务。
-
-日志只写 data_dir/logs 下本模块命名的普通文件。按 UTC 日期与单文件字节额度
-轮转，时间和总文件数分别限制保留；其他文件、子目录与符号链接不参与清理。
+导入本模块不会修改全局 root logger。CLI 进程通过 ``console_logging`` 与
+``CliLogging.open`` 显式安装日志处理器，嵌入式调用方沿用自身的日志配置。
+终端默认输出本地时间、精简模块名、关键上下文标签以及完整的异常原因与堆栈，
+仅对明确的密钥凭据（如 Bearer Token、sk-*、api_key=...）做精准脱敏。
 """
 
 from __future__ import annotations
@@ -13,11 +11,11 @@ from __future__ import annotations
 import json
 import logging
 import math
+import os
 import re
 import sys
 from collections.abc import Generator
 from contextlib import contextmanager
-from copy import copy
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
@@ -25,43 +23,57 @@ from typing import TextIO, cast
 
 _FILE_NAME = re.compile(r"engine-(\d{8})-(\d{6})\.log")
 _MIN_FILE_BYTES = 64
+
+_CREDENTIAL_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
+    (re.compile(r"(?i)\b(Bearer\s+)[A-Za-z0-9._~+/=-]{6,}"), r"\1[REDACTED]"),
+    (re.compile(r"\bsk-[A-Za-z0-9_-]{8,}\b"), "sk-[REDACTED]"),
+    (
+        re.compile(
+            r"(?i)\b(api_key|access_token|secret|password|authorization|private_key)"
+            r'(\s*[:=]\s*["\']?)([^"\'\s,;}{]+)'
+        ),
+        r"\1\2[REDACTED]",
+    ),
+)
+
 _SUMMARY_FIELDS = (
-    "host_instance",
-    "input_id",
-    "turn_id",
-    "scope",
-    "request_id",
-    "attempt_id",
-    "action_id",
-    "call_id",
-    "path",
-    "activity_id",
-    "command_id",
-    "playback_id",
-    "plugin_id",
+    "source",
+    "stage",
     "outcome",
-    "receipt_revision",
-    "error_type",
+    "path",
+    "model",
+    "scope",
+    "status_code",
+    "category",
+    "duration_ms",
     "calls",
     "failed_calls",
     "unknown_calls",
     "input_count",
     "plugin_count",
+    "attempts",
+    "retry_wait",
+    "remaining_seconds",
     "component",
-    "error_id",
     "error_code",
-    "stage",
-    "duration_ms",
+    "error_type",
+    "error_id",
+    "host_instance",
+    "input_id",
+    "turn_id",
+    "request_id",
+    "attempt_id",
+    "action_id",
+    "call_id",
+    "activity_id",
+    "command_id",
+    "playback_id",
+    "plugin_id",
+    "receipt_revision",
     "operation",
     "queue",
     "queue_wait_ms",
     "execution_ms",
-    "model",
-    "category",
-    "status_code",
-    "attempts",
-    "retry_wait",
-    "remaining_seconds",
     "transport_step",
     "headers_ms",
     "first_byte_ms",
@@ -71,21 +83,73 @@ _SUMMARY_FIELDS = (
     "connection_attempts",
 )
 
+_LEVEL_ANSI = {
+    "DEBUG": "\033[90m",
+    "INFO": "\033[36m",
+    "WARNING": "\033[33m",
+    "ERROR": "\033[31m",
+    "CRITICAL": "\033[1;31m",
+}
+_DIM = "\033[90m"
+_RESET = "\033[0m"
+
+
+def redact_secrets(text: str) -> str:
+    """对文本中明确形态的密钥、令牌做局部掩码，保留正常报错内容与路径。"""
+    result = text
+    for pattern, replacement in _CREDENTIAL_PATTERNS:
+        result = pattern.sub(replacement, result)
+    return result
+
+
+def _resolve_level(level: int | str) -> int:
+    """将字符串或整数日志级别统一解析为标准 logging 级别数值。"""
+    if isinstance(level, bool):
+        raise ValueError("日志级别不能是布尔值。")
+    if isinstance(level, int):
+        return level
+    normalized = level.strip().upper()
+    mapping = {
+        "DEBUG": logging.DEBUG,
+        "INFO": logging.INFO,
+        "WARNING": logging.WARNING,
+        "WARN": logging.WARNING,
+        "ERROR": logging.ERROR,
+        "CRITICAL": logging.CRITICAL,
+    }
+    if normalized not in mapping:
+        raise ValueError(f"不支持的日志级别：{level}（可选 DEBUG/INFO/WARNING/ERROR）。")
+    return mapping[normalized]
+
+
+def _short_logger_name(name: str) -> str:
+    """缩短冗长的包名前缀，让控制台日志紧凑易读。"""
+    if name == "purrcept_engine":
+        return "engine"
+    trimmed = name.removeprefix("purrcept_engine.")
+    for layer in ("domain.", "infrastructure.", "app."):
+        if trimmed.startswith(layer):
+            trimmed = trimmed[len(layer) :]
+            break
+    return trimmed
+
+
+def _supports_color(stream: object) -> bool:
+    """仅在真实交互式终端且未设置 NO_COLOR 时启用 ANSI 颜色。"""
+    if "NO_COLOR" in os.environ:
+        return False
+    isatty = getattr(stream, "isatty", None)
+    return bool(callable(isatty) and isatty())
+
 
 @dataclass(frozen=True, slots=True)
 class LogCleanup:
-    """一次日志清理的实际数量；has_more 表示仍有待删文件。
+    """单次日志文件清理统计结果。
 
     Attributes:
-        expired_files: 此次实际删除的过期日志文件数量。
-        capacity_files: 此次因容量规则实际删除的日志文件数量。
-        has_more: 是否仍有满足清理条件的内容，需要后续有界清理。
-
-    Note:
-        实例字段在构造后不可重新赋值；嵌套值的冻结范围由字段所属契约决定。
-
-        expired_files 表示超过时间边界，capacity_files 表示仍在保留期但超过文件
-        数量额度。当前写入文件始终保留，单次只删除至多 limit 个文件。
+        expired_files: 超出保留天数而被删除的文件数。
+        capacity_files: 超出最大文件数上限而被淘汰的文件数。
+        has_more: 是否仍有待继续分批清理的旧文件。
     """
 
     expired_files: int
@@ -95,18 +159,12 @@ class LogCleanup:
 
 @dataclass(frozen=True, slots=True)
 class _LogFile:
-    """记录当前日志文件的实际路径和已占用字节，归日志处理器独占。"""
-
     path: Path
     modified_at: float
 
 
 def _owned_files(directory: Path) -> list[_LogFile]:
-    """只枚举本入口的普通日志文件，按实际更新时间稳定排列。
-
-    自有文件数量由轮转时清理约束。扫描不递归，也不跟随符号链接；即使日志
-    目录内放有媒体、第三方日志或外部链接，也不会扩展清理所有权。
-    """
+    """枚举日志目录下由引擎自身创建的普通日志文件（按修改时间升序）。"""
     files: list[_LogFile] = []
     for path in directory.iterdir():
         if _FILE_NAME.fullmatch(path.name) is None or path.is_symlink() or not path.is_file():
@@ -116,50 +174,61 @@ def _owned_files(directory: Path) -> list[_LogFile]:
     return files
 
 
-class _UtcFormatter(logging.Formatter):
-    """终端和文件共用 UTC 时间，避免跨时区时无法辨认保留边界。"""
+class ConsoleFormatter(logging.Formatter):
+    """面向开发与日常使用的本地时区终端日志格式器，完整保留异常原因与堆栈。"""
 
-    def formatTime(self, record: logging.LogRecord, datefmt: str | None = None) -> str:
-        """保留事件产生时间。
-
-        Args:
-            record: 标准日志系统交付的单条记录。
-            datefmt: 显式日志时间格式；None 使用当前格式器默认值。
-
-        Note:
-            格式参数不改变统一的时区表示。
-        """
-        del datefmt
-        return datetime.fromtimestamp(record.created, UTC).isoformat(timespec="milliseconds")
+    def __init__(self, *, color: bool = False) -> None:
+        super().__init__()
+        self._color = color
 
     def format(self, record: logging.LogRecord) -> str:
-        """仅展示关联身份及分类，默认摘要不回显第三方异常正文或所有extra。
+        """输出可读的本地时间、级别、短模块名、消息正文、上下文标签及脱敏堆栈。"""
+        local_time = datetime.fromtimestamp(record.created).astimezone().strftime("%H:%M:%S")
+        level = record.levelname
+        module = _short_logger_name(record.name)
+        message = redact_secrets(record.getMessage())
 
-        Args:
-            record: 标准日志系统交付的单条记录。
-
-        Note:
-            复制LogRecord避免修改调用者其它handler；原异常继续由API传播，完整
-            请求/回执仍从权威查询取得，普通日志不承担其完整性。
-        """
-        public = copy(record)
-        public.exc_info = None
-        public.exc_text = None
-        public.stack_info = None
         fields: dict[str, object] = record.__dict__
-        summaries = [
-            f"{name}={value}"
-            for name in _SUMMARY_FIELDS
-            if isinstance(value := fields.get(name), str | int | float)
-        ]
-        if record.exc_info is not None and record.exc_info[0] is not None:
-            summaries.append(f"exception_type={record.exc_info[0].__name__}")
-        rendered = super().format(public)
-        return rendered + (" | " + " ".join(summaries) if summaries else "")
+        tags: list[str] = []
+        for name in _SUMMARY_FIELDS:
+            value = fields.get(name)
+            if isinstance(value, bool) or not isinstance(value, str | int | float):
+                continue
+            if name == "duration_ms" and isinstance(value, int | float):
+                tags.append(f"duration_ms={value:.1f}")
+            elif isinstance(value, str):
+                tags.append(f"{name}={redact_secrets(value)}")
+            else:
+                tags.append(f"{name}={value}")
+        if isinstance(record.exc_info, tuple) and record.exc_info[0] is not None:
+            exc_name = record.exc_info[0].__name__
+            if f"error_type={exc_name}" not in tags:
+                tags.append(f"exception_type={exc_name}")
+
+        suffix = f" | {' '.join(tags)}" if tags else ""
+        if self._color:
+            lvl_color = _LEVEL_ANSI.get(level, "")
+            header = (
+                f"{_DIM}{local_time}{_RESET} "
+                f"{lvl_color}{level:<7}{_RESET} "
+                f"{_DIM}[{module}]{_RESET}"
+            )
+            tail = f"{_DIM}{suffix}{_RESET}" if suffix else ""
+            line = f"{header} {message}{tail}"
+        else:
+            line = f"{local_time} {level:<7} [{module}] {message}{suffix}"
+
+        if isinstance(record.exc_info, tuple):
+            exc_text = redact_secrets(self.formatException(record.exc_info)).strip()
+            if exc_text:
+                line = f"{line}\n{exc_text}"
+        elif record.stack_info:
+            line = f"{line}\n{redact_secrets(self.formatStack(record.stack_info))}"
+        return line
 
 
 def _exception_frames(error: BaseException, seen: set[int], depth: int = 0) -> dict[str, object]:
-    """保留代码位置和原因链，不调用可能泄露远端正文的异常字符串方法。"""
+    """序列化异常类型、脱敏后的错误消息、栈帧位置以及嵌套原因链。"""
     if id(error) in seen or depth >= 16:
         return {"type": type(error).__name__, "truncated": True}
     seen.add(id(error))
@@ -176,7 +245,11 @@ def _exception_frames(error: BaseException, seen: set[int], depth: int = 0) -> d
             }
         )
         trace = trace.tb_next
-    result: dict[str, object] = {"type": type(error).__name__, "frames": frames[-64:]}
+    result: dict[str, object] = {
+        "type": type(error).__name__,
+        "message": redact_secrets(str(error)),
+        "frames": frames[-64:],
+    }
     cause = error.__cause__
     if cause is None and not error.__suppress_context__:
         cause = error.__context__
@@ -192,15 +265,17 @@ def _exception_frames(error: BaseException, seen: set[int], depth: int = 0) -> d
 
 
 class _DiagnosticFormatter(logging.Formatter):
-    """文件使用 JSON 行；仅允许受控字段和不含正文的异常位置进入诊断。"""
+    """文件日志采用 JSON Lines 格式，保存本地带时区时间戳、上下文标签与完整异常信息。"""
 
     def format(self, record: logging.LogRecord) -> str:
-        """编码完整事件，不修改共享 LogRecord 或展开任意 extra 对象。"""
+        """将单条日志编码为单行 JSON 文本。"""
         public: dict[str, object] = {
-            "time": datetime.fromtimestamp(record.created, UTC).isoformat(timespec="milliseconds"),
+            "time": datetime.fromtimestamp(record.created)
+            .astimezone()
+            .isoformat(timespec="milliseconds"),
             "level": record.levelname,
             "logger": record.name,
-            "message": record.getMessage(),
+            "message": redact_secrets(record.getMessage()),
             "location": {
                 "module": record.module,
                 "function": record.funcName,
@@ -209,27 +284,24 @@ class _DiagnosticFormatter(logging.Formatter):
         }
         for name in _SUMMARY_FIELDS:
             value = record.__dict__.get(name)
-            if isinstance(value, str | int | float):
-                public[name] = value
-        if record.exc_info is not None and record.exc_info[1] is not None:
+            if not isinstance(value, bool) and isinstance(value, str | int | float):
+                public[name] = redact_secrets(value) if isinstance(value, str) else value
+        if isinstance(record.exc_info, tuple) and record.exc_info[1] is not None:
             public["exception"] = _exception_frames(record.exc_info[1], set())
         return json.dumps(public, ensure_ascii=False, allow_nan=False)
 
 
 @contextmanager
-def console_logging() -> Generator[None]:
-    """CLI 在读取配置前借用终端摘要，退出后恢复原包级配置。
-
-    文件日志须等目录锁取得后另行安装。嵌入宿主不调用此入口；调用者负责让
-    文件所有者先关闭，避免嵌套借用恢复已过期的日志配置。
-    """
+def console_logging(*, level: int | str = logging.INFO) -> Generator[None]:
+    """在数据目录锁取得前先开启终端日志，退出时还原包级 logger 配置。"""
+    resolved = _resolve_level(level)
     logger = logging.getLogger("purrcept_engine")
     previous = logger.level, logger.propagate
     handler = logging.StreamHandler(sys.stderr)
-    handler.setLevel(logging.INFO)
-    handler.setFormatter(_UtcFormatter("%(asctime)s %(levelname)s: %(message)s"))
+    handler.setLevel(resolved)
+    handler.setFormatter(ConsoleFormatter(color=_supports_color(sys.stderr)))
     logger.addHandler(handler)
-    logger.setLevel(logging.INFO)
+    logger.setLevel(resolved)
     logger.propagate = False
     try:
         yield
@@ -241,25 +313,18 @@ def console_logging() -> Generator[None]:
 
 
 class _TextLogHandler(logging.Handler):
-    """同步写有限日志，锁覆盖轮转与清理，窄 I/O 故障留给所有者查询。
-
-    每条消息最多占一个文件额度，超长摘要带截断标记；这只影响普通日志。
-    logging 的 handler 锁串行化 emit，外部维护借用同一锁，避免删除仍在写的
-    文件。故障不改变业务结果，但 failure 明确保留最后一次真实写入失败。
-    """
+    """带单文件大小上限、按日轮转与过期淘汰的同步文件日志处理器。"""
 
     def __init__(
-        self, directory: Path, retention_days: int, max_bytes: int, max_files: int
+        self,
+        directory: Path,
+        retention_days: int,
+        max_bytes: int,
+        max_files: int,
+        *,
+        level: int = logging.INFO,
     ) -> None:
-        """初始化本次 CLI 的有界文件日志策略，不在构造时写入日志。
-
-        Args:
-            directory: 本次操作使用的明确目录。
-            retention_days: 普通日志或诊断正文的保留天数。
-            max_bytes: 此边界允许保留或接管的最大字节数。
-            max_files: 当前日志所有者允许保留的文件数量上限。
-        """
-        super().__init__(level=logging.INFO)
+        super().__init__(level=level)
         self.directory = directory
         self.retention_days = retention_days
         self.max_bytes = max_bytes
@@ -275,12 +340,11 @@ class _TextLogHandler(logging.Handler):
         self._cleanup_pending = False
 
     def open(self) -> None:
-        """先取得文件再安装到 logger，失败不会留下部分日志配置。"""
+        """创建日志目录并打开本次运行的新日志文件。"""
         self.directory.mkdir(parents=True, exist_ok=True)
-        self._new_file(datetime.now(UTC).date())
+        self._new_file(datetime.now().astimezone().date())
 
     def _new_file(self, day: date) -> None:
-        """每次取得新文件身份，不追加到上个进程遗留的写入文件。"""
         self._close_stream()
         prefix = f"engine-{day:%Y%m%d}-"
         ordinal = 0
@@ -288,42 +352,36 @@ class _TextLogHandler(logging.Handler):
             if item.path.name.startswith(prefix):
                 ordinal = max(ordinal, int(item.path.stem.rsplit("-", 1)[1]))
         if ordinal >= 999999:
-            raise OSError("当天日志文件身份额度已耗尽。")
+            raise OSError("当天日志文件序号已达上限。")
         path = self.directory / f"{prefix}{ordinal + 1:06d}.log"
         self._stream = path.open("x", encoding="utf-8", newline="\n")
         self.file_path = path
         self._day = day
         self._size = 0
-
-        # 文件数量在取得每个新文件后约束，不依赖宿主周期维护才阻止增长。
         self.cleanup(now=datetime.now(UTC), limit=max(self.max_files, 128))
 
     def emit(self, record: logging.LogRecord) -> None:
-        """只抑制可识别的诊断 I/O/编码故障，格式或程序错误仍原样传播。
-
-        Args:
-            record: 标准日志系统交付的单条记录。
-
-        Raises:
-            RuntimeError: 日志文件已取得但没有写入流。
-        """
-        # logging 可能已取出 handler 引用才遇到 close；关闭后旧引用不可重开文件。
+        """写入一条结构化日志，超长单条自动裁剪并保留有效 JSON 结构。"""
         if not self._accepting:
             return
         try:
             text = self.format(record) + "\n"
             encoded = text.encode("utf-8")
             if len(encoded) > self.max_bytes:
-                # 保持 JSON 行有效；不能为了文件额度把结构化诊断截成坏 JSON。
-                minimal = {"level": record.levelname, "truncated": True, "message": ""}
+                minimal: dict[str, object] = {
+                    "level": record.levelname,
+                    "truncated": True,
+                    "message": "",
+                }
                 overhead = (
                     len(json.dumps(minimal, ensure_ascii=False, separators=(",", ":")).encode()) + 1
                 )
-                message = record.getMessage().encode("utf-8")[: max(0, self.max_bytes - overhead)]
-                minimal["message"] = message.decode("utf-8", errors="ignore")
+                raw_msg = redact_secrets(record.getMessage()).encode("utf-8")[
+                    : max(0, self.max_bytes - overhead)
+                ]
+                minimal["message"] = raw_msg.decode("utf-8", errors="ignore")
                 text = json.dumps(minimal, ensure_ascii=False, separators=(",", ":")) + "\n"
                 encoded = text.encode("utf-8")
-                # 引号、反斜线和控制字符可能扩张；继续缩短至实际编码满足额度。
                 while len(encoded) > self.max_bytes:
                     minimal["message"] = str(minimal["message"])[
                         : max(0, len(str(minimal["message"])) // 2)
@@ -331,8 +389,7 @@ class _TextLogHandler(logging.Handler):
                     text = json.dumps(minimal, ensure_ascii=False, separators=(",", ":")) + "\n"
                     encoded = text.encode("utf-8")
 
-            # 文件日期归写入资源的当前寿命，事件自己的时间仍由 formatter 保留。
-            day = datetime.now(UTC).date()
+            day = datetime.now().astimezone().date()
             if (
                 self._day != day
                 or self._stream is None
@@ -341,7 +398,7 @@ class _TextLogHandler(logging.Handler):
                 self._new_file(day)
             stream = self._stream
             if stream is None:
-                raise RuntimeError("日志文件已取得但没有写入流。")
+                raise RuntimeError("日志文件句柄未就绪。")
             stream.write(text)
             stream.flush()
             self._size += len(encoded)
@@ -349,29 +406,17 @@ class _TextLogHandler(logging.Handler):
             self.failure = error
 
     def cleanup(self, *, now: datetime, limit: int) -> LogCleanup:
-        """在 handler 锁内清时间/容量超额文件，当前写入文件不参与删除。
-
-        Args:
-            now: 带明确时区的本次墙钟时刻。
-            limit: 本次读取或更新的最大条目数。
-
-        Returns:
-            此次实际日志清理统计及仍需保留的失败。
-
-        Raises:
-            ValueError: 日志清理时间必须携带时区；日志清理批量必须是正整数。
-        """
+        """清理过期或超出文件数上限的历史日志文件（跳过当前正在写入的文件）。"""
         if now.utcoffset() is None:
             raise ValueError("日志清理时间必须携带时区。")
         if isinstance(limit, bool) or not isinstance(limit, int) or limit <= 0:
             raise ValueError("日志清理批量必须是正整数。")
         self.acquire()
         try:
-            current = now.astimezone(UTC)
-            if self._day is not None and self._day < current.date():
-                # 空闲宿主也须释放旧日期的句柄，否则 Windows 上不能淘汰旧日志。
+            local_today = now.astimezone().date()
+            if self._day is not None and self._day < local_today:
                 self._close_stream()
-            cutoff = (current - timedelta(days=self.retention_days)).timestamp()
+            cutoff = (now.astimezone(UTC) - timedelta(days=self.retention_days)).timestamp()
             files = _owned_files(self.directory)
             candidates: list[tuple[_LogFile, bool]] = []
             remaining = len(files)
@@ -400,7 +445,6 @@ class _TextLogHandler(logging.Handler):
             self.release()
 
     def _close_stream(self) -> None:
-        """确认流已关闭才归还引用；关闭失败仍持有未释放的资源。"""
         stream = self._stream
         if stream is not None:
             try:
@@ -410,11 +454,7 @@ class _TextLogHandler(logging.Handler):
                     self._stream = None
 
     def close(self) -> None:
-        """重复关闭不重复释放文件。
-
-        Note:
-            已知 I/O 失败仍保留在 failure 中。
-        """
+        """幂等关闭当前写入流。"""
         self.acquire()
         try:
             self._accepting = False
@@ -428,7 +468,7 @@ class _TextLogHandler(logging.Handler):
 
     @property
     def cleanup_totals(self) -> LogCleanup:
-        """合并自动轮转和显式维护的实际淘汰计数，部分失败也不丢失已删范围。"""
+        """返回本次运行累计删除的过期与超额日志文件数量。"""
         self.acquire()
         try:
             return LogCleanup(self._expired_files, self._capacity_files, self._cleanup_pending)
@@ -437,42 +477,31 @@ class _TextLogHandler(logging.Handler):
 
 
 class CliLogging:
-    """独立 CLI 对 purrcept_engine logger 的一次显式借用。
+    """管理 CLI 进程运行期的终端与滚动文件日志生命周期。"""
 
-    open 安装终端与文件 handler，close 移除本实例 handler 并还原原 level 和
-    propagate。调用方在借用期间独占该 logger 的配置；嵌入式宿主不创建本对象。
-    root logger 和第三方 logger 始终沿用原配置。同进程不允许重复打开所有者。
-    """
-
-    def __init__(self, file_handler: _TextLogHandler, console_handler: logging.Handler) -> None:
-        """保留已经取得的文件与本次 logger 配置，生命周期由 open/close 拥有。
-
-        Args:
-            file_handler: CLI 本次取得的滚动文件日志处理器。
-            console_handler: CLI 本次取得的控制台日志处理器。
-        """
+    def __init__(
+        self,
+        file_handler: _TextLogHandler,
+        console_handler: logging.Handler,
+        *,
+        level: int = logging.INFO,
+    ) -> None:
         self._logger = logging.getLogger("purrcept_engine")
         self._old_level = self._logger.level
         self._old_propagate = self._logger.propagate
         self._file = file_handler
         self._console = console_handler
         self._closed = False
-        self._logger.setLevel(logging.INFO)
+        target_level = (
+            min(self._old_level, level) if self._old_level != logging.NOTSET else level
+        )
+        self._logger.setLevel(target_level)
         self._logger.propagate = False
         self._logger.addHandler(file_handler)
         self._logger.addHandler(console_handler)
 
     def record_startup_phase(self, stage: str, duration_ms: float) -> None:
-        """补写锁取得前已报告到终端的耗时，仅写文件，避免重复终端摘要。
-
-        Args:
-            stage: configuration、plugin_declarations 或 web 的固定阶段身份。
-            duration_ms: 原阶段的单调计时结果，不以补写时刻重新计算。
-
-        Raises:
-            RuntimeError: 文件日志所有者已关闭。
-            ValueError: 阶段身份或计时结果无效。
-        """
+        """将目录锁取得前的早期启动阶段耗时补写入日志文件。"""
         if self._closed:
             raise RuntimeError("CLI 日志已经关闭。")
         if (
@@ -480,7 +509,7 @@ class CliLogging:
             or not math.isfinite(duration_ms)
             or duration_ms < 0
         ):
-            raise ValueError("启动补写只接受明确的阶段与有限非负耗时。")
+            raise ValueError("启动阶段名称或耗时数值无效。")
         record = self._logger.makeRecord(
             "purrcept_engine.app.cli",
             logging.INFO,
@@ -501,32 +530,23 @@ class CliLogging:
         retention_days: int = 7,
         max_bytes: int = 10485760,
         max_files: int = 7,
+        level: int | str = logging.INFO,
         console: TextIO | None = None,
         include_console: bool = True,
     ) -> CliLogging:
-        """取得日志资源后安装 handler。
+        """打开数据目录下的滚动日志文件并绑定到包级 logger。
 
         Args:
-            data_dir: 此宿主独占的数据目录，先取得目录锁再访问权威库。
-            retention_days: 普通日志或诊断正文的保留天数。 默认 7。
-            max_bytes: 此边界允许保留或接管的最大字节数。 默认 10485760。
-            max_files: 当前日志所有者允许保留的文件数量上限。 默认 7。
-            console: 可选的 CLI 文本输出流。 None 不额外安装控制台日志输出。
-            include_console: False 表示终端已由更早的 CLI 所有者安装，避免重复摘要。
+            data_dir: 当前实例独占的数据目录。
+            retention_days: 日志文件保留天数，默认 7 天。
+            max_bytes: 单个日志文件最大字节数，最小 64 字节。
+            max_files: 最多保留的日志文件份数，默认 7 份。
+            level: 日志级别（如 ``"DEBUG"`` 或 ``"INFO"``）。
+            console: 可选的终端输出流，默认使用 ``sys.stderr``。
+            include_console: 若外层 ``console_logging`` 已挂载终端输出，可设为 False 避免重复。
 
         Returns:
-            本次 CLI 取得的日志处理器所有者。
-
-        Raises:
-            ValueError: 参数、材料或当前状态不满足此入口的约束；单文件日志额度必须至少 64 字节。
-            RuntimeError: CLI 日志已经有活动所有者。
-
-        Note:
-            配置无效或文件取得失败原样报告。
-
-            data_dir 必须已由本 CLI 持有实例锁。单文件至少 64 字节，以保证时间/
-            级别摘要与截断标记可辨认；max_files 包含当前写入文件。console 默认
-            stderr；传入流由调用者拥有，本对象关闭时不关闭它。
+            已挂载处理器的 ``CliLogging`` 实例。
         """
         for name, value in (("retention_days", retention_days), ("max_files", max_files)):
             if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
@@ -537,65 +557,51 @@ class CliLogging:
             or max_bytes < _MIN_FILE_BYTES
         ):
             raise ValueError("单文件日志额度必须至少 64 字节。")
+        resolved = _resolve_level(level)
         logger = logging.getLogger("purrcept_engine")
         if any(isinstance(handler, _TextLogHandler) for handler in logger.handlers):
             raise RuntimeError("CLI 日志已经有活动所有者。")
 
-        file_handler = _TextLogHandler(data_dir / "logs", retention_days, max_bytes, max_files)
+        file_handler = _TextLogHandler(
+            data_dir / "logs", retention_days, max_bytes, max_files, level=resolved
+        )
         try:
             file_handler.open()
         except (OSError, UnicodeError):
             file_handler.close()
             raise
 
-        formatter = _UtcFormatter("%(asctime)s %(levelname)s %(name)s: %(message)s")
         file_handler.setFormatter(_DiagnosticFormatter())
-        console_handler = logging.StreamHandler(sys.stderr if console is None else console)
-        console_handler.setLevel(logging.INFO)
-        if not include_console:
-            console_handler.setLevel(logging.CRITICAL + 1)
-        console_handler.setFormatter(formatter)
-        return cls(file_handler, console_handler)
+        target_stream = sys.stderr if console is None else console
+        console_handler = logging.StreamHandler(target_stream)
+        console_handler.setLevel(resolved if include_console else logging.CRITICAL + 1)
+        console_handler.setFormatter(ConsoleFormatter(color=_supports_color(target_stream)))
+        return cls(file_handler, console_handler, level=resolved)
 
     @property
     def file_path(self) -> Path | None:
-        """返回当前或最后一份写入文件，供 CLI 报告实际日志位置。"""
+        """当前正在写入的日志文件路径。"""
         return self._file.file_path
 
     @property
     def failure(self) -> OSError | UnicodeError | None:
-        """返回最后一次已知日志 I/O/编码失败，不把缺失日志声称为完整。"""
+        """最近一次文件写入 I/O 异常（无异常时为 None）。"""
         return self._file.failure
 
     @property
     def cleanup_totals(self) -> LogCleanup:
-        """返回本所有者寿命内的淘汰计数，自动容量轮转也保留缺口事实。"""
+        """累计清理文件统计。"""
         return self._file.cleanup_totals
 
     def cleanup(self, *, now: datetime | None = None, limit: int = 128) -> LogCleanup:
-        """同步清一批自有日志。
-
-        Args:
-            now: 本次规则计算采用的时刻，便于同一操作保持一致。 None 使用当前带时区的墙钟时刻。
-            limit: 本次读取或更新的最大条目数。 默认 128。
-
-        Returns:
-            此次实际日志清理统计及仍需保留的失败。
-
-        Raises:
-            RuntimeError: CLI 日志已经关闭。
-
-        Note:
-            维护频率由 CLI 拥有，失败原样传播。
-        """
+        """执行一次过期与容量超额日志清理。"""
         if self._closed:
             raise RuntimeError("CLI 日志已经关闭。")
         return self._file.cleanup(now=datetime.now(UTC) if now is None else now, limit=limit)
 
     def close(self) -> None:
-        """移除本实例 handler 并还原包级配置，不关闭调用者终端流。"""
+        """卸载处理器、关闭日志文件并恢复包级 logger 原始设置。"""
         if self._closed:
-            # 已移除的 handler 不再接受日志；显式重等可继续关闭失败的文件流。
             self._file.close()
             return
         self._closed = True

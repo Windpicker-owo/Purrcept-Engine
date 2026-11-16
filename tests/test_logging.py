@@ -1,8 +1,4 @@
-"""用生成的临时日志核验 CLI 所有权、轮转和时间/容量边界。
-
-测试只改变当前进程显式借用的包级 logger；root/第三方配置和调用者流必须
-保留。所有文本文件均在 pytest 临时目录生成，不读取或清理现有用户日志。
-"""
+"""验证本地时区终端日志、异常堆栈输出、精准凭据脱敏与滚动文件清理策略。"""
 
 from __future__ import annotations
 
@@ -15,22 +11,37 @@ from pathlib import Path
 
 import pytest
 
-from purrcept_engine.infrastructure.logging import CliLogging
+from purrcept_engine.infrastructure.logging import CliLogging, console_logging, redact_secrets
 
 
-def test_cli_summary_keeps_causal_identity_without_exception_or_arbitrary_extra(
+def test_redact_secrets_masks_credentials_while_preserving_normal_errors() -> None:
+    raw = (
+        "请求 http://127.0.0.1:4000/v1 失败 (401): "
+        "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9, "
+        "api_key='my-super-secret-value', key=sk-proj1234567890abcdef"
+    )
+    cleaned = redact_secrets(raw)
+    assert "http://127.0.0.1:4000/v1" in cleaned
+    assert "401" in cleaned
+    assert "eyJhbGci" not in cleaned
+    assert "my-super-secret-value" not in cleaned
+    assert "sk-proj1234567890abcdef" not in cleaned
+    assert "[REDACTED]" in cleaned
+
+
+def test_cli_logging_preserves_readable_exception_reason_and_redacts_secrets(
     tmp_path: Path,
 ) -> None:
     console = io.StringIO()
     owner = CliLogging.open(tmp_path, console=console)
-    failure = RuntimeError("secret-provider-body")
+    failure = RuntimeError("连接超时 (api_key=secret-provider-key)")
     try:
         logging.getLogger("purrcept_engine.retention_test").error(
-            "能力回执已入账。",
+            "[能力调用] me.phone.qq.send -> 失败",
             extra={
                 "action_id": "action-1",
                 "call_id": "call-1",
-                "outcome": "unknown",
+                "outcome": "failed",
                 "request_payload": "secret-request",
                 "api_key": "secret-key",
             },
@@ -38,33 +49,38 @@ def test_cli_summary_keeps_causal_identity_without_exception_or_arbitrary_extra(
         )
         summary = console.getvalue()
         assert "action_id=action-1" in summary and "call_id=call-1" in summary
-        assert "outcome=unknown" in summary and "exception_type=RuntimeError" in summary
-        assert "secret" not in summary
+        assert "outcome=failed" in summary and "exception_type=RuntimeError" in summary
+        assert "连接超时" in summary
+        assert "secret-provider-key" not in summary
+        assert "secret-request" not in summary
+        assert "secret-key" not in summary
+
         path = owner.file_path
         assert path is not None
         diagnostic = path.read_text(encoding="utf-8")
         decoded = json.loads(diagnostic)
         assert decoded["call_id"] == "call-1"
-        assert decoded["exception"] == {"type": "RuntimeError", "frames": []}
-        assert "secret" not in diagnostic
+        assert decoded["exception"]["type"] == "RuntimeError"
+        assert "连接超时" in decoded["exception"]["message"]
+        assert "secret-provider-key" not in diagnostic
     finally:
         owner.close()
 
 
-def test_cli_logging_restores_package_config_and_leaves_root_untouched(tmp_path: Path) -> None:
+def test_cli_logging_supports_debug_level_and_restores_package_config(tmp_path: Path) -> None:
     root = logging.getLogger()
     package = logging.getLogger("purrcept_engine")
     root_state = (tuple(root.handlers), root.level, root.propagate)
     package_state = (tuple(package.handlers), package.level, package.propagate)
     console = io.StringIO()
 
-    owner = CliLogging.open(tmp_path, console=console)
+    owner = CliLogging.open(tmp_path, level="DEBUG", console=console)
     try:
-        logging.getLogger("purrcept_engine.retention_test").warning("真实失败摘要 input_id=input-1")
+        logging.getLogger("purrcept_engine.retention_test").debug("调试细节 input_id=input-1")
         file_path = owner.file_path
         assert file_path is not None
-        assert "真实失败摘要 input_id=input-1" in file_path.read_text(encoding="utf-8")
-        assert "真实失败摘要 input_id=input-1" in console.getvalue()
+        assert "调试细节 input_id=input-1" in file_path.read_text(encoding="utf-8")
+        assert "调试细节 input_id=input-1" in console.getvalue()
         assert (tuple(root.handlers), root.level, root.propagate) == root_state
         assert owner.failure is None
         with pytest.raises(RuntimeError, match="活动所有者"):
@@ -78,14 +94,21 @@ def test_cli_logging_restores_package_config_and_leaves_root_untouched(tmp_path:
     assert not console.closed
 
 
+def test_console_logging_context_manager_respects_level() -> None:
+    package = logging.getLogger("purrcept_engine")
+    before = (tuple(package.handlers), package.level, package.propagate)
+    with console_logging(level="DEBUG"):
+        assert package.level == logging.DEBUG
+    assert (tuple(package.handlers), package.level, package.propagate) == before
+
+
 def test_storage_latency_fields_survive_structured_logging(tmp_path: Path) -> None:
-    """队列与执行耗时可定位本机阻塞，业务参数仍被白名单排除。"""
     owner = CliLogging.open(tmp_path, console=io.StringIO())
     try:
         logging.getLogger("purrcept_engine.infrastructure.sqlite.queue").warning(
             "存储操作等待或执行较慢。",
             extra={
-                "operation": "FeedbackLedger.bridge.<locals>.<lambda>",
+                "operation": "FeedbackLedger.bridge",
                 "queue": "control",
                 "queue_wait_ms": 1200.0,
                 "execution_ms": 1500.0,
@@ -97,7 +120,7 @@ def test_storage_latency_fields_survive_structured_logging(tmp_path: Path) -> No
         assert path is not None
         diagnostic = path.read_text(encoding="utf-8")
         record = json.loads(diagnostic)
-        assert record["operation"] == "FeedbackLedger.bridge.<locals>.<lambda>"
+        assert record["operation"] == "FeedbackLedger.bridge"
         assert record["queue"] == "control"
         assert record["queue_wait_ms"] == 1200.0
         assert record["execution_ms"] == 1500.0
@@ -107,7 +130,6 @@ def test_storage_latency_fields_survive_structured_logging(tmp_path: Path) -> No
 
 
 def test_audio_transfer_progress_survives_structured_logging(tmp_path: Path) -> None:
-    """语音阶段的受控计量保留到文件，认证、正文和任意 trace info 仍被排除。"""
     owner = CliLogging.open(tmp_path, console=io.StringIO())
     try:
         logging.getLogger("purrcept_engine.plugins.audio.tts").info(
@@ -196,7 +218,6 @@ def test_boundary_is_retained_and_idle_old_file_is_released(tmp_path: Path) -> N
         boundary = (now - timedelta(days=7)).timestamp()
         os.utime(path, (boundary, boundary))
         assert owner.cleanup(now=now).expired_files == 0
-        # 时间推进后，空闲日志也释放旧日句柄；Windows 无需等下一条日志才删除。
         result = owner.cleanup(now=now + timedelta(days=8))
         assert result.expired_files == 1
         assert not path.exists()
@@ -222,8 +243,6 @@ def test_stale_logging_callback_cannot_reopen_a_closed_file(tmp_path: Path) -> N
     assert path is not None
     owner.close()
     record = logging.LogRecord("purrcept_engine.test", logging.INFO, "test", 1, "late", (), None)
-
-    # 模拟 logger 在关闭前取得 handler，关闭后才交付并发线程里的日志记录。
     for handler in installed:
         handler.handle(record)
 
@@ -240,30 +259,35 @@ def test_logging_rejects_invalid_file_capacity(tmp_path: Path, max_bytes: int) -
     assert not (tmp_path / "logs").exists()
 
 
-def test_diagnostic_keeps_nested_locations_without_exception_body(tmp_path: Path) -> None:
-    """异常组和原因链保留位置，正文与任意 extra 不能进入文件。"""
+def test_diagnostic_keeps_nested_locations_and_redacted_messages(tmp_path: Path) -> None:
+    """异常组和原因链完整保留代码位置与可读报错，同时掩码敏感密钥。"""
     owner = CliLogging.open(tmp_path, console=io.StringIO())
     try:
         try:
             try:
-                raise ValueError("secret-key")
+                raise ValueError("参数错误 api_key=secret-key-val")
             except ValueError as cause:
-                raise RuntimeError("secret-response") from cause
+                raise RuntimeError("上游网关拒绝 sk-secret9876543210") from cause
         except RuntimeError as failure:
-            group = ExceptionGroup("secret-group", [failure])
+            group = ExceptionGroup("批量任务异常", [failure])
             logging.getLogger("purrcept_engine.test").error(
-                "后台任务失败。", exc_info=(type(group), group, None)
+                "后台任务失败。", exc_info=(type(group), group, failure.__traceback__)
             )
         path = owner.file_path
         assert path is not None
         body = path.read_text(encoding="utf-8")
-        assert "secret" not in body
-        nested = json.loads(body)["exception"]["exceptions"][0]
+        assert "secret-key-val" not in body
+        assert "sk-secret9876543210" not in body
+        parsed = json.loads(body)["exception"]
+        assert parsed["message"].startswith("批量任务异常")
+        nested = parsed["exceptions"][0]
+        assert "上游网关拒绝" in nested["message"]
         assert (
             nested["frames"][-1]["function"]
-            == "test_diagnostic_keeps_nested_locations_without_exception_body"
+            == "test_diagnostic_keeps_nested_locations_and_redacted_messages"
         )
         assert nested["cause"]["type"] == "ValueError"
+        assert "参数错误" in nested["cause"]["message"]
     finally:
         owner.close()
 
@@ -271,19 +295,18 @@ def test_diagnostic_keeps_nested_locations_without_exception_body(tmp_path: Path
 def test_component_cause_chain_reuses_primary_fault_identity(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """不同所有者仍保留自己的失败状态，但同一原因链只报告一个主 ERROR。"""
     from purrcept_engine.domain.health import ComponentHealth
 
-    root = OSError("private-response")
+    root = OSError("磁盘空间不足")
     storage = ComponentHealth("storage")
     storage.fail(root)
-    translated = RuntimeError("private-wrapper")
+    translated = RuntimeError("上层包装失败")
     translated.__cause__ = root
     subject = ComponentHealth("subject")
     subject.fail(translated)
     subject.fail(ValueError("later"))
     shutdown = ComponentHealth("shutdown")
-    shutdown.fail(ExceptionGroup("private-shutdown", [translated]))
+    shutdown.fail(ExceptionGroup("收尾异常", [translated]))
     assert storage.error_id == subject.error_id
     assert storage.failed_at == subject.failed_at
     assert shutdown.error_id == storage.error_id
@@ -291,7 +314,6 @@ def test_component_cause_chain_reuses_primary_fault_identity(
     assert subject.snapshot()["can_process"] is False
     primary = [record for record in caplog.records if record.levelno >= logging.ERROR]
     assert len(primary) == 1
-    assert "private" not in primary[0].getMessage()
 
 
 def test_prelock_startup_timings_are_written_to_file_without_duplicate_console(

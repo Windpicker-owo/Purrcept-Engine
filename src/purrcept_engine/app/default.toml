@@ -1,130 +1,208 @@
-# Purrcept Engine 零可选插件配置模板。默认看图由宿主装配，校验不读取图像或连接端点。
-# 以下模型名、窗口和凭据为占位值，使用前应替换为已核对的实际配置。
-# 文本、图片和音频共用内置 token 估算器，分别依据字符、尺寸与时长，不计 base64。
-# 原声输入只需按前台实际传输能力在 supports_contents 中声明 audio。
-console = false
-plugins = []
+# ============================================================================
+# Purrcept Engine 配置文件模板 (purrcept.toml)
+#
+# 三步快速跑通：
+#   1. 修改下方 [models.main] 的 api_base、model 与 api_key
+#      - 支持读取环境变量，例如：api_key = "${OPENAI_API_KEY}"
+#      - 本机或局域网免密服务（如 Ollama / vLLM / LM Studio）可将 api_key 留空 ""
+#   2. 校验配置：uv run purrcept-engine check
+#   3. 启动运行：uv run purrcept-engine run
+#
+# 查看全部内置插件字段说明：uv run purrcept-engine plugins
+# ============================================================================
+
+# 开启终端对话输入：启动后直接在终端打字回车即可作为刺激发给主体。
+# 注意：主体的内部思考文字不会自动打印为回复，她通过调用 me.console.output 主动说话。
+console = true
+
+[host]
+# 运行数据、SQLite 数据库与日志目录（相对本配置文件所在目录解析）
+data_dir = ".purrcept-engine"
 
 [web]
+# 安装 Web 面板依赖（uv sync --extra web）后改为 true，启动会输出 http://127.0.0.1:8765 访问地址
 enabled = false
 port = 8765
 
-[host]
-data_dir = ".purrcept-engine"
-close_seconds = 30.0
-
 [logging]
-retention_days = 7
-max_bytes = 10485760
-max_files = 7
+# 终端与文件日志级别：DEBUG / INFO / WARNING / ERROR（也可在启动时加 --debug 临时开启）
+level = "INFO"
 
-[diagnostics]
-retention_days = 7
-max_bytes = 1048576
-retained_bytes = 1073741824 # 请求、响应、摘要副本及流诊断正文的合计上限。
+# ----------------------------------------------------------------------------
+# 1. 模型连接配置
+#    只需配置一个 OpenAI 兼容生成模型即可同时驱动主脑、反思与注意判断。
+# ----------------------------------------------------------------------------
+[models.main]
+# 模型名称须保留 "openai/" 协议前缀，后接服务端真实的模型 ID
+# 例如："openai/deepseek-chat"、"openai/qwen-plus"、"openai/gpt-4o"、"openai/qwen2.5:14b"
+model = "openai/replace-with-your-model"
 
-[models.foreground]
-kind = "generation"
-model = "openai/replace-with-local-generation-model"
-api_base = "http://127.0.0.1:4000/v1"
-api_key = "replace-with-explicit-local-key"
-context_window = 32000
+# OpenAI 兼容接口地址（通常以 /v1 结尾；Ollama 本地默认填 "http://127.0.0.1:11434/v1"）
+api_base = "http://127.0.0.1:11434/v1"
+
+# 接口凭据：云端服务可填 "${OPENAI_API_KEY}" 或明文密钥；本机/局域网免密服务可直接留空 ""
+api_key = ""
+
+# 模型实际上下文窗口与单次最大输出 Token 数（须满足 max_output_tokens < context_window）
+context_window = 64000
 max_output_tokens = 4096
-supports_contents = ["text"] # 可按实际支持情况添加 image、audio、video。
 
-[models.attention]
-# OpenRouter Jev 可使用 openrouter/typesafe/jev-1.13，api_base 为
-# https://openrouter.ai/api；SDK 追加 /alpha/decisions，不使用聊天接口 /v1。
-kind = "decision"
-model = "typesafe/replace-with-decision-model"
-api_base = "http://127.0.0.1:4001/v1"
-api_key = "replace-with-explicit-decision-key"
-input_limit = 8192
-supports_contents = ["text"] # decision 协议当前最多交付 text、image。
+# 模型原生支持的多模态输入类型：默认 ["text"]，按服务端能力可加 "image"、"audio"
+supports_contents = ["text"]
 
+# ----------------------------------------------------------------------------
+# 2. 主体与角色设定
+# ----------------------------------------------------------------------------
 [subject]
-foreground = "foreground"
-reflection = "foreground"
-attention = "attention"
-attention_batch_seconds = 0.1
-attention_batch_size = 8
-proactive_thinking = false # 启动默认值；WebUI 可在本次运行中切换。
-proactive_idle_seconds = 300.0 # 无新刺激或主脑未激活达到此间隔，主脑空闲时唤醒一次。
-reflection_batch_seconds = 60.0
-reflection_batch_turns = 8
-behavior_review_enabled = true
+foreground = "main"          # 主脑连续对话与行动使用的模型名
+reflection = "main"          # 后台行为复盘使用的模型名（省略时默认同 foreground）
+attention = "main"           # 收件箱注意评估使用的模型名（设为单模型即可开箱即用）
+proactive_thinking = false   # 空闲满 proactive_idle_seconds 秒后是否主动唤醒思考一次（会消耗 Token）
+proactive_idle_seconds = 300.0
 
-# 六项固定身份缺省为 None；配置需要的字符串，不从认识或人员权限恢复。
 [subject.character]
+name = "小咕"
+one_line = "住在你电脑里的连续在线 AI 伙伴。"
+persona = "好奇心强、做事利落，遇到不确定的事会先观察或查笔记，不装腔作势。"
+relationship = "日常陪伴与协作伙伴。"
+speech_style = "用自然、简短的中文交流，像熟人聊天一样直接。"
+notes = ""
 
-[subject.foreground_retry]
-attempts = 2
-attempt_seconds = 120.0
-total_seconds = 180.0
 
-[subject.attention_retry]
-attempts = 2
-attempt_seconds = 5.0
-total_seconds = 8.0
+# ============================================================================
+# 3. 常用内置插件示例（按需取消注释即可启用，无需改动文件顶部）
+#    随时可运行 `uv run purrcept-engine plugins <插件名>` 查看完整字段与默认值
+# ============================================================================
 
-[subject.foreground_turn]
-max_requests = 8
-total_seconds = 600.0
-
-[context]
-summary_trigger = 0.8
-summary_target = 0.5
-input_reserve_fraction = 0.1
-protected_turns = 2
-page_chars = 8000
-
-[execution]
-action_seconds = 180.0
-worker_cpu_seconds = 15.0
-worker_memory_bytes = 536870912
-max_calls = 64
-source_bytes = 65536
-output_bytes = 65536
-result_bytes = 1048576
-call_arguments_bytes = 1048576
-call_result_bytes = 1048576
-frame_bytes = 2097152
-max_workers = 4
-max_provider_calls = 16
-max_pending_inputs = 1024
-pending_input_bytes = 268435456
-
-[activities]
-max_active = 8
-initial_seconds = 3600.0
-max_remaining_seconds = 3600.0
-checkpoint_seconds = 5.0
-
-# 启用 Notebook 时改写顶层 plugins=[] 为下列数组项（不可同时保留两种定义）。
+# --- [插件 1] Notebook：随身日记、长期记忆与技能目录（强烈推荐开启） ---
 # [[plugins]]
 # instance_id = "notebook"
 # entry = "notebook"
 # enabled = true
 # [plugins.config]
-# notebook_dir = "notes"
-# skills_dir = "skills"
-# seed_examples = true
-# file_max_bytes = 20971520  # 原始附件上限；Markdown 正文仍使用 max_bytes。
-# file_timeout_seconds = 30.0
+# notebook_dir = "notes"       # 笔记存放目录（相对本配置文件目录）
+# skills_dir = "skills"        # 技能目录（相对 notebook_dir，即 notes/skills）
+# seed_examples = true         # 首次启动写入示例笔记与睡眠技能说明
+# # 可选：后台自动将零散笔记整理为专题记忆页
+# # [plugins.config.consolidation]
+# # enabled = true
+# # model = "main"
+# # 可选：接入 Embedding 模型开启语义 + 关键词混合检索（不配则使用内置 FTS5 关键词检索）
+# # [plugins.config.embedding]
+# # model = "openai/text-embedding-3-small"
+# # model_id = "embedding-v1"
+# # api_base = "https://api.openai.com/v1"
+# # api_key = "${OPENAI_API_KEY}"
 
-# Notebook 自动整理独立于 subject.reflection；启用时显式填写生成模型名称。
-# [plugins.config.consolidation]
-# enabled = true
-# model = "foreground"
-# batch_seconds = 1800.0
-# batch_changes = 32
-# max_sources = 32
-# max_requests = 8
-# turn_seconds = 600.0
+# --- [插件 2] Clock：读取当前时间与设置单次/每日闹钟（Windows 需 uv sync --extra time） ---
+# [[plugins]]
+# instance_id = "clock"
+# entry = "clock"
+# [plugins.config]
+# timezone = "Asia/Shanghai"
 
-# 可选向量混合检索，独立于 consolidation.enabled；省略时只用关键词。
-# [plugins.config.embedding]
-# model = "openai/your-embedding-model"
-# model_id = "notebook-embedding-v1"  # 模型或版本变化时更换空间标识。
-# api_base = "http://127.0.0.1:8000/v1"
-# timeout_seconds = 30.0
+# --- [插件 3] Bed：自主睡眠与起床状态管理（入睡后普通消息只记历史不吵醒） ---
+# [[plugins]]
+# instance_id = "bed"
+# entry = "bed"
+
+# --- [插件 4] QQ：通过 OneBot v11 WebSocket 收发消息与图片（需 uv sync --extra qq） ---
+# [[plugins]]
+# instance_id = "qq"
+# entry = "qq"
+# [plugins.config]
+# mode = "reverse"             # reverse=反向 WS 监听；direct=正向连接 OneBot 端
+# host = "127.0.0.1"
+# port = 8095
+# access_token = "${ONEBOT_ACCESS_TOKEN:-}"
+# private_list_type = "whitelist"
+# private_list = ["123456789"] # 替换为允许接收私聊的 QQ 号
+# group_list_type = "whitelist"
+# group_list = []              # 替换为允许接收消息的 QQ 群号
+
+# --- [插件 5] Computer：观察宿主电脑窗口、截图与运行 PowerShell 命令 ---
+# [[plugins]]
+# instance_id = "computer"
+# entry = "computer"
+
+# --- [插件 6] Browser：浏览器网页检索与阅读（需 uv sync --extra browser，依赖 computer 插件） ---
+# [[plugins]]
+# instance_id = "browser"
+# entry = "browser"
+# [plugins.config]
+# computer_id = "computer"
+# headless = true
+# channel = "chrome"
+# search_engine = "bing"       # 可选 "bing" 或 "duckduckgo"
+
+# --- [插件 7] Meme：中文热梗检索与每日新梗推送（Windows 非 UTC 需 uv sync --extra time） ---
+# [[plugins]]
+# instance_id = "meme"
+# entry = "meme"
+# [plugins.config]
+# computer_id = "computer"
+# daily_enabled = true
+# daily_at = "09:00"
+# timezone = "Asia/Shanghai"
+
+# --- [插件 8] Microphone：TTS 语音合成与外放（需系统 PATH 已安装 ffmpeg 与 ffplay） ---
+# [[plugins]]
+# instance_id = "microphone"
+# entry = "microphone"
+# [plugins.config]
+# api_base = "https://fishaudio.org/api/open/v3"
+# api_key = "${FISHAUDIO_API_KEY:-}"
+# model = "fishaudio-s21pro-flash"
+# voice_id = "replace-with-voice-id"
+
+# --- [插件 9] Voice Input：本地麦克风 VAD 收音与语音识别（需 uv sync --extra voice-input） ---
+# [[plugins]]
+# instance_id = "voice_input"
+# entry = "voice_input"
+# [plugins.config]
+# asr_url = "wss://dashscope.aliyuncs.com/api-ws/v1/inference"
+# asr_api_key = "${DASHSCOPE_API_KEY:-}"
+# asr_model = "fun-asr-realtime"
+# vad_interrupt_enabled = true
+
+# --- [插件 10] Live2D：连接本机 VTube Studio 驱动表情与姿态（需 uv sync --extra live2d） ---
+# [[plugins]]
+# instance_id = "live2d"
+# entry = "live2d"
+# [plugins.config]
+# vts_url = "ws://127.0.0.1:8001"
+# profile_path = ".purrcept/live2d/profile.json"
+
+# --- [插件 11] Phone：接入 Purrcept Go 安卓客户端（需 uv sync --extra phone，推荐用 purrcept-phone 向导配置） ---
+# [[plugins]]
+# instance_id = "phone"
+# entry = "phone"
+# [plugins.config]
+# listen_host = "0.0.0.0"
+# port = 8766
+# public_url = "https://192.168.1.100:8766"
+# certificate = ".purrcept/phone/phone-cert.pem"
+# private_key = ".purrcept/phone/phone-key.pem"
+
+
+# ============================================================================
+# 4. 高级调优与资源配额（均已内置合理默认值，日常使用无需取消注释）
+# ============================================================================
+
+# # 若你有独立的专用判断模型（如 OpenRouter Jev / TypeSafe），可单独声明并在 [subject] 中将 attention 指向 "attention"：
+# # [models.attention]
+# # kind = "decision"
+# # model = "openrouter/typesafe/jev-1.13"
+# # api_base = "https://openrouter.ai/api"
+# # api_key = "${OPENROUTER_API_KEY}"
+# # input_limit = 8192
+
+# # [context]
+# # summary_trigger = 0.8        # 上下文占用达 80% 时触发旧轮次摘要压缩
+# # summary_target = 0.5         # 压缩目标比例
+# # protected_turns = 2          # 始终保留完整原文的最近轮数
+
+# # [execution]
+# # action_seconds = 180.0       # 单次行动脚本最大执行秒数
+# # max_workers = 4              # 隔离 Worker 最大并发数
+# # worker_memory_bytes = 536870912

@@ -102,31 +102,33 @@ uv sync --locked
 可选面板、QQ 与时钟依赖按需安装，例如 `uv sync --locked --extra web --extra qq --extra time`。
 浏览器、声音和收音还需准备浏览器程序、FFmpeg 或 VAD 模型，见对应插件说明。
 
-### 2. 填写模型和主体
+### 2. 初始化向导与插件速查
 
-运行 `uv run purrcept-engine init` 生成完整模板，已有配置不会覆盖。初次使用建议
-将其替换为 [最小可交互配置](docs/configuration.md#最小可交互配置)，让一个生成模型
-承担前台、注意、反思和摘要，再逐步拆分模型、开启插件。
+运行交互式向导，按提示填写模型地址、API Key（支持 `${OPENAI_API_KEY}` 等环境变量，本地 Ollama/vLLM 免密可直接留空）与角色名称，1 分钟即可生成可运行的单模型配置：
 
-| 必须理解的配置 | 如何填写 |
+```powershell
+uv run purrcept-engine init             # 交互式问答引导生成 purrcept.toml
+uv run purrcept-engine init --template  # 或跳过问答，直接生成带完整注释的模板
+uv run purrcept-engine plugins          # 查看全部 11 个内置插件目录
+uv run purrcept-engine plugins qq       # 查看指定插件的字段说明与可直接复制的 TOML 片段
+```
+
+| 常用配置项 | 说明 |
 | --- | --- |
-| `[models.名称]` | `model` 填 `openai/实际模型名`，`api_base` 填服务端的完整兼容地址，`api_key` 填明确凭据；不会自动选择环境中的替代端点。 |
-| `context_window` / `max_output_tokens` | 填端点真实窗口和输出上限；输出必须小于总窗口，模板值只是示例。 |
-| `supports_contents` | 按实际传输能力声明文字、图片和音频；统一估算文本 token、图片尺寸和音频时长，无需配置计量规则。 |
-| `[subject]` | `foreground`、`reflection` 引用已声明的生成模型名称；`attention` 可引用同一个生成模型，或独立专用判断模型。 |
-| `console = true` | 开启终端输入和 `me.console.output` 能力。每行文字作为刺激接管，主体自行决定是否表达。 |
-| `[host] data_dir` | 保存 `engine.sqlite3`、媒体和日志，相对配置文件目录解析；同目录不能同时启动两个实例。 |
-| `[[plugins]]` | 显式启用能力。添加数组表前删除模板顶层 `plugins = []`；安装 extra 不等于启用插件。 |
+| `[models.main]` | `model` 填 `openai/实际模型名`，`api_base` 填兼容端点，`api_key` 支持 `${ENV_VAR}`（本机/局域网免密服务可留空 `""`）。 |
+| `[subject]` | `foreground = "main"` 即可同时驱动主脑与后台反思，`attention = "main"` 复用同一生成模型完成收件箱评估。 |
+| `[subject.character]` | 配置角色名字 `name`、一句话简介 `one_line`、性格 `persona` 与说话风格 `speech_style`。 |
+| `[[plugins]]` | 在文件末尾取消注释或追加 `[[plugins]]` 即可启用插件，无需改动文件顶部。 |
 
-角色卡、预算、QQ 接收范围、插件示例和常见错误见 [配置说明](docs/configuration.md)。
-本地 `purrcept.toml` 已被 Git 忽略，请只在自己的配置中填写真实密钥。
+详细说明见 [配置说明](docs/configuration.md)。本地 `purrcept.toml` 已被 Git 忽略。
 
 ### 3. 校验并启动
 
 ```powershell
 uv run purrcept-engine check
 uv run purrcept-engine catalog
-uv run purrcept-engine run
+uv run purrcept-engine run              # 默认输出本地时区的人话生命周期日志
+uv run purrcept-engine --debug run      # 开启 DEBUG 级别详细排障日志与堆栈
 ```
 
 `check` 只校验结构、引用与插件声明，不探测端点；`catalog` 显示当前实际装配的能力。

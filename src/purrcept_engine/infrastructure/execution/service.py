@@ -145,9 +145,10 @@ class ExecutionService:
         level = logging.ERROR if state in ("failed", "timed_out") and not failures else logging.INFO
         if unknown and level == logging.INFO:
             level = logging.WARNING
+        error_note = f"（错误：{error}）" if error else ""
         logging.getLogger(__name__).log(
             level,
-            "行动已结束。",
+            f"[行动完成] 状态={state} 调用={len(action.calls)}项{error_note}",
             extra={
                 "action_id": action_id,
                 "outcome": state,

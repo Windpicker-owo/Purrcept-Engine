@@ -128,13 +128,21 @@ class ForegroundService:
             模型暂时失败由 Session 留下失败经历，新的唤醒由外部协调者安排。
         """
         started = time.perf_counter()
+        outcome = "succeeded"
+        logging.getLogger(__name__).info(
+            "[主脑思考] 开始处理 %d 条输入刺激（模型=%s）。",
+            len(records),
+            self.runtime.subject.model,
+            extra={"input_count": len(records), "model": self.runtime.subject.model},
+        )
         try:
             await self.run_foreground(records)
         except asyncio.CancelledError:
+            outcome = "preempted"
             task = asyncio.current_task()
             if self.runtime.closing or task is None or task.cancelling():
                 raise
-            # urgent 取消的是 Session 的本轮任务，不能误取消协调者后续唤醒。
+            logging.getLogger(__name__).info("[主脑抢占] 当前轮次已被新到达的紧急刺激中断。")
         except (
             ModelError,
             CapacityError,
@@ -143,15 +151,25 @@ class ForegroundService:
             TimeoutError,
             httpx.HTTPError,
             EmbeddingProtocolError,
-        ):
-            # Session 已完成失败结案；没有独立新输入就不重新发起同轮预算。
-            pass
+        ) as error:
+            outcome = "failed"
+            logging.getLogger(__name__).error(
+                "[主脑中断] 本轮思考未能完成（%s）：%s",
+                type(error).__name__,
+                error,
+                extra={"error_type": type(error).__name__, "outcome": "failed"},
+                exc_info=(type(error), error, error.__traceback__),
+            )
         finally:
+            elapsed_ms = (time.perf_counter() - started) * 1000
             logging.getLogger(__name__).info(
-                "本轮输入处理已结束。",
+                "[主脑完成] 本轮输入处理结束（状态=%s，耗时 %.2fs）。",
+                outcome,
+                elapsed_ms / 1000.0,
                 extra={
                     "input_count": len(records),
-                    "duration_ms": (time.perf_counter() - started) * 1000,
+                    "outcome": outcome,
+                    "duration_ms": elapsed_ms,
                 },
             )
 
@@ -283,6 +301,11 @@ class ForegroundService:
         records = await self.runtime.store.absorb_turn_inputs(turn.turn_id)
         if not records:
             return None
+        logging.getLogger(__name__).info(
+            "[主脑并入] 思考中途新并入 %d 条唤醒级刺激。",
+            len(records),
+            extra={"input_count": len(records), "turn_id": turn.turn_id},
+        )
         return TurnIntakeBatch(
             tuple(record.input_id for record in records), await self.intake_message(records)
         )

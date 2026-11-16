@@ -1,185 +1,96 @@
 # 配置说明
 
-Engine 读取显式指定的 TOML 配置。先用最小配置完成控制台交互，再添加设备。
-完整字段及默认值见随包的 [default.toml](../src/purrcept_engine/app/default.toml)，
-字段校验见 [app/config.py](../src/purrcept_engine/app/config.py)。未知字段和错误类型
-会直接报错；修改配置后重启生效。WebUI 的运行期开关不会回写 TOML。
+Purrcept Engine 使用清晰易读的 `purrcept.toml` 进行配置，支持**交互式问答向导**、**环境变量插值**（`${ENV_VAR}`）以及**本机/局域网免密模型接入**（如 Ollama、vLLM、LM Studio）。
 
-Live2D 的模型表演偏好是独立文件，使用 `python -m purrcept_engine.app.live2d_studio`
-启动本机调节页。头身姿态、空闲活动与嘴部设置保存后由新版本控制器约每秒读取；
-不需要为每次调节重启。首次更新控制器代码仍须重启旧进程。路径、预览和备份规则见
-[Live2D 表演调节室](../src/purrcept_engine/plugins/live2d/README.md#表演调节室)。
+## 1. 一分钟快速初始化
 
-## 配置文件和路径
+在终端运行以下命令启动交互式引导向导：
 
 ```powershell
-purrcept-engine init
-purrcept-engine --config C:\Purrcept\purrcept.toml check
-purrcept-engine --config C:\Purrcept\purrcept.toml catalog
-purrcept-engine --config C:\Purrcept\purrcept.toml run
+uv run purrcept-engine init
 ```
 
-`init` 写出完整模板，已有文件不会覆盖。`check` 校验结构、模型用途引用、插件声明
-及依赖；`catalog` 展示当前配置的能力，两者都不探测模型、连接设备或启动主体。
-第三方插件的工厂导入必须遵守纯声明契约。
+向导会依次引导你选择模型接入类型（云端 API 或本地免密服务）、填写模型地址与密钥、设定角色名字，并自动为你开启常用的 `notebook`（随身笔记记忆）与 `bed`（自主休息）插件。
 
-`host.data_dir` 以及内置插件的相对路径以配置文件所在目录为基准，和启动时的
-工作目录无关。Windows 路径建议使用 TOML 单引号，例如 `data_dir = 'D:\Purrcept\data'`，
-或用正斜杠 `D:/Purrcept/data`。同一数据目录只能由一个宿主持有。
-凭据直接填在本地配置中；不支持 `${ENV_VAR}` 字符串插值。不要提交真实配置。
+如果你更喜欢直接编辑带完整注释的模板文件，可加 `--template` 参数（若需备份覆盖已有文件加 `--force`）：
 
-## 最小可交互配置
+```powershell
+uv run purrcept-engine init --template
+```
 
-以下是完整配置，可直接保存为 `purrcept.toml`。替换模型名、服务地址、凭据、实际
-上下文窗口和输出上限；这里的窗口数字只是示例，不能据此推断服务端能力。
+随时可在终端查阅全部 11 个内置插件的依赖与完整配置示例：
+
+```powershell
+uv run purrcept-engine plugins          # 列出所有内置插件概览
+uv run purrcept-engine plugins qq       # 查看指定插件的字段解释与可直接粘贴的 TOML 片段
+```
+
+校验与启动：
+
+```powershell
+uv run purrcept-engine check            # 校验配置语法、模型引用与插件依赖
+uv run purrcept-engine run              # 正常启动（终端默认输出人话生命周期日志）
+uv run purrcept-engine --debug run      # 开启 DEBUG 级别日志与详细堆栈排查问题
+```
+
+## 2. 最小单模型配置示例
+
+只需声明一个 OpenAI 兼容模型即可同时驱动主脑（`foreground`）、后台反思（`reflection`，省略时自动沿用 `foreground`）与收件箱注意评估（`attention`）：
 
 ```toml
 console = true
-plugins = []
 
 [host]
 data_dir = ".purrcept-engine"
 
 [models.main]
-kind = "generation"
-model = "openai/your-model"
-api_base = "http://127.0.0.1:4000/v1"
-api_key = "replace-with-your-key"
-context_window = 32000
-max_output_tokens = 4096
-supports_contents = ["text"]
+model = "openai/deepseek-chat"
+api_base = "https://api.deepseek.com/v1"
+api_key = "${DEEPSEEK_API_KEY}"   # 支持 ${VAR} 与 ${VAR:-默认值} 环境变量引用
 
 [subject]
 foreground = "main"
-reflection = "main"
 attention = "main"
 
 [subject.character]
 name = "小咕"
-one_line = "持续在线的伙伴。"
-speech_style = "用简洁自然的中文交流。"
+one_line = "住在你电脑里的连续在线 AI 伙伴。"
+speech_style = "用自然、简短的中文交流。"
 ```
 
-启动后在终端输入一行文字并回车。输入是主体的刺激；主体自行决定是否调用
-`me.console.output` 表达，内部最终文字不会自动打印为回复。EOF 只停止控制台
-输入，Ctrl+C 才关闭宿主。可先用 `python examples/action.py` 验证显式控制台
-能力和真实 Worker；该示例要求 `console = true`，不调用模型。
+### 本地免密模型（Ollama / vLLM / LM Studio）
 
-`init` 模板演示独立专用判断模型。若使用上面的单生成模型方案，请整体替换
-配置，或删除模板的 `[models.attention]` 并将 `subject.attention` 改为生成模型
-名称；不要保留未使用的占位端点。
-
-## 模型声明和用途
-
-`[models.任意名称]` 声明资源，`[subject]` 用名称引用它。前台和反思必须
-引用 `kind = "generation"` 的模型；两者可以共用端点，上下文压缩直接沿用所属会话的模型。前台保留连续历史；行为评审与记忆整理分别拥有每批空历史会话。
-注意可以引用生成模型或 `kind = "decision"` 的专用判断模型；省略 `attention`
-时不装配注意评估器，普通输入按无注意模型路径请求前台。
-
-| 字段 | 含义与约束 |
-| --- | --- |
-| `model` | 含协议前缀的模型名。生成路径当前只接入 `openai/`；专用判断使用 `typesafe/` 或 `openrouter/`。前缀选择传输协议，不表示自动选择服务地址。 |
-| `api_base` | 明确的 HTTP(S) 端点，不能内嵌账号密码、查询串或片段。OpenAI 兼容服务通常包含 `/v1`。 |
-| `api_key` | 必须明确提供非空凭据；本地无需认证的服务也应提供其接受的占位值。 |
-| `context_window` | 仅生成模型需要；输入与输出共享的实际窗口。 |
-| `max_output_tokens` | 仅生成模型需要；实际输出预留，必须小于窗口。前台、反思、摘要和生成式注意均使用所引用模型的配置值，不另设隐藏上限；提供方计入输出的推理也消耗此额度。 |
-| `input_limit` | 专用判断必填，表示其协议输入上限；生成模型可选，用来进一步限制输入。 |
-| `supports_contents` | 默认 `["text"]`，按真实传输能力声明 `image`、`audio`、`video`；声明不能替代实际媒体支持。 |
-
-### 容量与媒体
-
-成功模型请求返回 `usage.input_tokens` 后，Engine 按用途、配置名、端点、模型与
-编译器身份保存实际输入锚点。后续请求的静态输入和历史前缀完全相同时，沿用
-这份实际输入用量，只估算新增消息、工具结果与新动态尾部；缓存命中输入不
-重复相加，输出和推理用量不充当已知输入。旧动态尾部的用量保守保留在基线中。
-锚点只保存指纹和用量，不复制正文；重启可恢复。没有 usage、零值或失败响应
-不覆盖旧锚点。摘要重写、工具目录变更或媒体过期改变前缀时，新布局重新估算。
-
-实际用量另关联本轮恢复的原检查点摘要。静态声明与原历史仍匹配时，已观测超额
-可触发维护，不要求新输入也相同；重写历史、改变工具或编译器身份使该观察失效。
-正常保留近期轮次；只有真实超额且没有更旧区间时，维护才允许压缩已完成近期轮次。
-当前输入和未决原文仍受保护，不把旧请求的用量冒充新布局的计量结果。
-
-新增或没有可复用锚点的材料使用同一个内置多模态估算器，不需要配置或注册规则，
-也不按模型名切换算法。估算覆盖完整请求的文字、工具 schema、目录和动态状态，
-媒体 base64 先从计量副本中分离，不作为正文分词：
-
-- 文本：ASCII 每四字符约一 token，其他 Unicode 字符各约一 token，保留 JSON
-  结构开销；这是无 tokenizer 依赖的字符启发式。
-- 图片：读取实际尺寸，按 `256 + 256 × ceil(宽 / 512) × ceil(高 / 512)` 估算；
-  动图乘实际帧数。同尺寸 PNG/JPEG 不因压缩率或元信息产生巨大占用差异。
-- 音频：PyAV 自动识别文件容器并流式读取实际样本，以每秒 32 token 估算；
-  同长度 WAV/MP3 的结果接近，不随采样率或压缩体积成比例变化。
-- 远端图片：预检不下载 URL，无法读取尺寸时统一留出 2048 token 的规划额度；
-  该固定假设不代表已看过像素，也不保证覆盖任意远端图片的实际用量。
-
-这些系数是 Engine 的统一规划假设，不是任一模型的精确计量或误差上界。
-服务端明确拒绝摘要输入超窗时，维护在原截止内减半选择已冻结区间内的完整旧轮次；
-请求数量受可减半次数约束，不裁剪轮内正文或重放工具。失败和取消归还占位，
-后续独立维护可恢复同覆盖，已安装摘要及原请求/响应证据继续保留。
-未决待办只保护其所在完整轮次，历史维护仍可压缩之后的独立已完成区间；同一次
-维护选择最长可压缩区间，不跨过保护轮次或裁剪原文。候选仍须让完整请求缩小且
-在预算内；若受保护原文自身已超限，维护会明确失败，不删除待办或伪造完成。
-服务端实际口径存在差异，可参考 [Gemini token 说明](https://ai.google.dev/gemini-api/docs/tokens)
-与 [OpenAI 图片计量说明](https://developers.openai.com/api/docs/guides/images-vision)。
-预检仅解码已接管的内存材料；不读取外部路径或联网；媒体读取或解码失败会明确报错，不按零量
-放行。原始请求不被改写，完整原件仍参与指纹和证据记录。
-
-原生图片/音频仍需在 `supports_contents` 声明实际支持能力；不支持的输入媒体
-会以文字引用呈现，原件仍保存。声明不能替代传输支持，当前没有原生视频传输。
-PDF、Word、ZIP 等文件若只以附件引用呈现，只计入实际交付的引用文字，不能
-把文件已保存理解成正文已进入模型。布局和窗口详见 [输入材料契约](input-materials.md)。
-
-### 独立专用判断模型
-
-例如以下声明可替换生成式注意，再设置 `[subject] attention = "attention"`：
+当 `api_base` 指向本机回环（`localhost`、`127.0.0.1`、`::1`）或局域网私有地址（如 `192.168.x.x`）时，`api_key` 可直接省略或留空 `""`：
 
 ```toml
-[models.attention]
-kind = "decision"
-model = "typesafe/your-decision-model"
-api_base = "http://127.0.0.1:4001/v1"
-api_key = "replace-with-your-decision-key"
-input_limit = 8192
-supports_contents = ["text"]
+[models.main]
+model = "openai/qwen2.5:14b"
+api_base = "http://127.0.0.1:11434/v1"
+api_key = ""
 ```
 
-TypeSafe 路径追加 `/systemone`。OpenRouter 判断路径使用 `openrouter/` 前缀，
-例如 `openrouter/typesafe/jev-1.13`，端点为 `https://openrouter.ai/api`，SDK
-追加 `/alpha/decisions`，不要填聊天接口的 `/v1`。模型可用性以服务端为准。
-Engine 不会在判断失败后切换到聊天端点。
+## 3. 核心配置表速查
 
-## 主体、预算与历史
+| 配置块 / 字段 | 默认值 | 说明 |
+| --- | --- | --- |
+| `console` | `true` | 是否开启终端打字输入与 `me.console.output` 控制台表达能力。 |
+| `[web] enabled` / `port` | `false` / `8765` | 启用本机 WebUI 面板（需安装 `uv sync --extra web`）。 |
+| `[logging] level` | `"INFO"` | 日志级别：`DEBUG` / `INFO` / `WARNING` / `ERROR`，也可通过 CLI `--debug` 或 `--log-level` 覆盖。 |
+| `[models.<名称>]` | — | `model`（如 `openai/模型ID`）、`api_base`、`api_key`、`context_window`（默认 `64000`）、`max_output_tokens`（默认 `4096`）、`supports_contents`（默认 `["text"]`，可选加 `"image"`、`"audio"`）。 |
+| `[subject] foreground` | 必填 | 主脑连续对话与行动引用的生成模型名。 |
+| `[subject] reflection` | 同 `foreground` | 后台行为评审引用的生成模型名。 |
+| `[subject] attention` | `None` | 收件箱合批注意评估引用的模型名（可填同一个生成模型，或独立 `kind = "decision"` 专用判断模型）。 |
+| `[subject] proactive_thinking` | `false` | 空闲满 `proactive_idle_seconds`（默认 `300.0` 秒）时是否自动唤醒思考一次。 |
+| `[subject.character]` | 全空 | 固定角色卡六项：`name`、`one_line`、`persona`、`relationship`、`speech_style`、`notes`。 |
 
-`me.listen_audio` 与 `me.view_image` 是主体默认能力，无需新增 `[[plugins]]`。
-实例身份 `audio_file` 与 `image` 由默认资源占用。读取 WAV/MP3 的本地路径沿主
-配置目录解析，也可提供 HTTP(S) URL；音频最多20 MiB、10分钟，能力时限30秒。
-前台可声明 `supports_contents = ["text", "audio"]` 接收入站音频刺激；显式读取
-结果沿工具原生材料路径交付，不自动转写，实际模型端点必须支持音频输入协议。
+## 4. 启用内置插件
 
-| 配置区 | 默认值与用途 |
-| --- | --- |
-| `[subject.character]` | `name`、`one_line`、`persona`、`relationship`、`speech_style`、`notes` 六项固定身份文字，缺省为 `None`；不从长期认识恢复。 |
-| `subject.attention_batch_seconds` / `attention_batch_size` | `0.1` 秒 / `8` 条，普通注意合批门槛。 |
-| `subject.proactive_thinking` / `proactive_idle_seconds` | `false` / `300.0` 秒。启用后按静默或主脑未激活期限，在主脑空闲时触发一次思考；会产生模型费用。 |
-| `subject.reflection_batch_seconds` / `reflection_batch_turns` | `60.0` 秒 / `8` 轮，局部行为评审的合批触发条件。 |
-| `[subject.foreground_retry]` 等 | `attempts = 2` 含首次；`attempt_seconds = 120.0`、`total_seconds = 180.0`。注意默认每次 `5.0`、总计 `8.0` 秒。可分别设置 `reflection_retry`、`summary_retry`、`attention_retry`。 |
-| `[subject.foreground_turn]` / `[subject.reflection_turn]` | `max_requests = 8`、`total_seconds = 600.0`，限制整轮逻辑请求数与总时间；传输重试共用原逻辑请求预算。 |
-| `[context]` | 占用达到 `summary_trigger = 0.8` 时尝试历史维护，目标 `summary_target = 0.5`，必须小于触发比例。`input_reserve_fraction = 0.1` 为下一批输入预留额度，`protected_turns = 2` 保护近期完整轮次，`page_chars = 8000` 限制展开页。 |
-
-容量先扣除输出，再预留输入空间；若设置独立 `input_limit`，还会取更小上限。
-历史维护不会突破完整轮次保护或通过静默丢弃事实来满足预算。
-
-## 启用插件
-
-安装 extra 只提供依赖，`[[plugins]]` 才声明启用。把最小配置顶层的 `plugins = []`
-删除后，在文件末尾添加以下内容；TOML 不能同时定义空数组和同名数组表。
+在 `purrcept.toml` 末尾直接追加 `[[plugins]]` 段落即可启用插件（无需在文件顶部写 `plugins = []`）：
 
 ```toml
 [[plugins]]
 instance_id = "notebook"
 entry = "notebook"
-enabled = true
 [plugins.config]
 notebook_dir = "notes"
 skills_dir = "skills"
@@ -196,126 +107,8 @@ instance_id = "bed"
 entry = "bed"
 ```
 
-`instance_id` 在整个配置中唯一；`entry` 选择工厂，`config` 由对应插件严格校验。
-`enabled = false` 时不导入插件。上例时钟在 Windows 上需安装 `time` extra。
-`skills_dir` 相对 Notebook 根目录；上述示例对应配置目录的 `notes/skills`。
+全部 11 个内置插件（`notebook`、`clock`、`bed`、`qq`、`phone`、`computer`、`browser`、`meme`、`microphone`、`voice_input`、`live2d`）的带注释配置示例均已内置在 [default.toml](../src/purrcept_engine/app/default.toml) 中，也可随时执行 `uv run purrcept-engine plugins <插件名>` 在终端直接查看。
 
-QQ 的最小接入还需安装 `qq` extra，并在 OneBot 实现中启用相同的反向 WebSocket
-地址与令牌。以下示例监听 `ws://127.0.0.1:8095`，只允许明确列出的私聊，群聊全部拒收：
+## 5. 高级参数与资源配额
 
-```toml
-[[plugins]]
-instance_id = "qq"
-entry = "qq"
-[plugins.config]
-mode = "reverse"
-host = "127.0.0.1"
-port = 8095
-access_token = "replace-with-your-onebot-token"
-private_list_type = "whitelist"
-private_list = ["123456789"] # 替换为实际允许接收的 QQ 号。
-group_list_type = "whitelist"
-group_list = []
-```
-
-`whitelist` 只接收列出的账号或群，空白名单拒收全部；`blacklist` 排除列出项，
-空黑名单允许全部。默认是空黑名单，连接前请明确选择接收范围。
-插件设置见 [QQSettings](../src/purrcept_engine/plugins/qq/settings.py)。
-声音、收音、电脑、Live2D 的端点、设备和校准示例从 README 的内置能力表进入。
-语音合成插件可在其 `[plugins.config]` 中设置 `proxy = "http://127.0.0.1:10808"`；
-省略时直连，不读取环境代理。支持范围与共享超时见[声音输出说明](../src/purrcept_engine/plugins/audio/README.md)。
-浏览器需安装 `browser` extra，并显式准备 Patchright 浏览器程序，运行时不下载。
-
-电脑插件还提供 `me.computer.command(command=..., cwd=..., timeout_seconds=...)`。
-启用并显式连接电脑后，主体可以当前 Engine 账号运行宿主 PowerShell 命令，继承
-宿主环境与该账号权限。无需新增配置字段；目录、输出额度及超时语义见
-[电脑插件说明](../src/purrcept_engine/plugins/computer/README.md#宿主命令)。
-
-外部已安装包使用 `entry = "package.module:factory"`；本地插件放在配置目录的
-`plugins/包名/` 中并导出 `factory`，使用 `entry = "local/包名:factory"`。
-根目录 `plugins/` 不受 Git 追踪，也不随 Engine 分发。内置插件仍随包提供。
-
-中文梗百科使用 `entry = "meme"`，父节点由 `computer_id` 指定，默认能力路径为
-`me.computer.meme.*`。支持检索、详情、本地收藏、收藏列表和立即检查更新。
-`daily_enabled = true`、`daily_at = "09:00"`、`timezone = "Asia/Shanghai"` 默认
-每天在 Engine 运行期间拉取最近窗口，有变化才提交一条刺激；不会自动对外发消息。
-收藏和待投提醒存入 `.purrcept/meme/state-<instance_id>.json`。给 bot 的技能放在
-`.purrcept/notebook/skills/meme-library/SKILL.md`，由 Notebook 的技能目录发现，
-不安装到 Codex。配置示例与窗口、退避、重启语义见
-[梗百科插件说明](../src/purrcept_engine/plugins/meme/README.md)。
-
-## 面板、存储与执行额度
-
-安装 `web` extra 后添加 `[web] enabled = true`；`port` 默认 `8765`，`0` 表示系统
-分配端口。启动后终端打印含访问令牌的回环地址；面板只连接当前宿主，不需要 Node。
-数据写入 `host.data_dir/engine.sqlite3`，备份前应停止宿主并复制完整数据目录。
-`host.close_seconds = 30.0` 是正常关闭的观察期限，超时不代表资源已释放。
-
-`[execution]` 的常用上限是：`action_seconds = 180.0`、`max_calls = 64`、
-`max_workers = 4`、`max_provider_calls = 16`、`max_pending_inputs = 1024`，
-`pending_input_bytes = 268435456`。CPU、内存、源码、输出和 IPC 帧也有独立上限，
-完整列表见默认模板。额度限制并发、等待和材料大小，不承诺撤销已发生的外部效果。
-`[activities]` 默认最多 8 个活动，初次与最大剩余运行额度均为 3600 秒，
-检查点间隔 5 秒；暂停和离线时间不扣减。
-
-`[logging]` 默认保留 7 天、单文件 10 MiB、最多 7 份；`[diagnostics]` 默认保留
-7 天，单次流诊断 `max_bytes = 1048576`，所有请求、响应、已安装摘要副本和流诊断正文
-合计 `retained_bytes = 1073741824`。最旧可清理正文先淘汰，永久元数据仍保留。
-原始输入、真实行动回执、独立证据及其媒体不随诊断期限删除；保护项可使正文暂时超额。
-这不限制整个数据库大小。维护与成本策略见 [运行治理](governance.md)。Notebook 的向量配置位于 `plugins.config.embedding`，未配置时只用关键词检索。
-旧 `knowledge`、`subject.memory_*` 字段不再接受；按插件实例注入向量和重排后端。
-
-### Notebook 独立整理配置
-
-```toml
-[[plugins]]
-instance_id = "notes"
-entry = "notebook"
-[plugins.config]
-notebook_dir = "notes"
-notes_index_limit = 32
-notes_summary_chars = 140
-[plugins.config.consolidation]
-enabled = true
-model = "main" # 必须引用 models 中明确声明的生成模型。
-batch_seconds = 1800.0
-batch_changes = 32
-max_sources = 32
-max_requests = 8
-turn_seconds = 600.0
-scan_seconds = 60.0
-```
-
-未启用自动整理时仍可记笔记与检索；`enabled=false` 不调用整理生成模型。
-默认关闭自动整理，必须明确启用并选择模型，不能隐式借用行为反思配置。
-
-### Notebook 可选混合检索
-
-在上述 Notebook 插件配置中添加独立的向量端点声明即可启用关键词与向量混合检索。
-此配置与自动整理开关独立；启用后后台为缺失的当前笔记建立向量，搜索时计算查询向量。
-
-```toml
-[plugins.config.embedding]
-model = "openai/your-embedding-model" # 替换为服务端实际提供的模型名称。
-model_id = "notebook-embedding-v1" # 标识确定的向量空间；模型或版本变化时一并更换。
-api_base = "http://127.0.0.1:8000/v1" # 替换为实际 OpenAI 兼容 embedding 端点。
-# api_key = "your-key" # 无需凭据时省略，不从环境或其他模型配置借用。
-timeout_seconds = 30.0
-```
-
-未配置时只用 FTS5；已配置端点的失败会明确报告，不静默隐藏为关键词模式。
-`semantic_enabled` 表示路线已启用，`semantic_pending` 表示仍未建立向量的当前文件数；
-刚启用时旧笔记会逐批建立索引。搜索结果的 `snippet` 是最多240字的原文，
-`snippet_range` 给出文件字符位置；`snippet_matched=false` 的语义候选显示正文开头。
-
-## 常见问题
-
-- **校验通过但无法请求模型**：`check` 只核验声明；检查地址、凭据、协议前缀、
-  实际窗口及网络连通性，模型失败证据位于数据目录及面板记录中。
-- **启动后没有回答**：先确认 `console = true` 或已接入输入插件；主体还需显式
-  调用输出能力。通过 `catalog` 检查输出通道是否装配，并检查输入处理回执。
-- **启用插件提示缺少依赖**：在同一个环境安装对应 extra，再重启。
-- **数据目录已占用**：关闭原宿主或为新实例选择不同数据目录；不要删除活跃锁。
-- **启用媒体后容量拒绝**：核对实际窗口与输出额度、图片尺寸或音频时长；
-  内联 base64 不作为正文计数。读取或解码失败会明确报告材料错误，传输能力另由
-  `supports_contents` 及具体后端决定。
+上下文压缩（`[context]`）、隔离沙箱配额（`[execution]`）、持续活动额度（`[activities]`）与诊断保留期（`[diagnostics]`）均已内置稳妥的默认值，普通用户无需配置；需要精细调优时参见 `src/purrcept_engine/app/config.py` 中的字段定义。

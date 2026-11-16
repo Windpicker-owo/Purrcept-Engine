@@ -436,17 +436,22 @@ class CallDispatcher:
             error=outcome.error,
             media=outcome.media,
         )
+        detail = (
+            f"（{outcome.error}）"
+            if outcome.error and call.diagnostic_error is None
+            else ""
+        )
         logging.getLogger(__name__).log(
             logging.WARNING
             if receipt.state == "unknown"
             else logging.ERROR
             if receipt.state == "failed"
-            else logging.DEBUG,
-            "能力执行结果未知，需要核对。"
+            else logging.INFO,
+            f"[能力调用] {receipt.path} -> 结果待确认{detail}"
             if receipt.state == "unknown"
-            else "能力执行失败。"
+            else f"[能力调用] {receipt.path} -> 失败{detail}"
             if receipt.state == "failed"
-            else "能力执行已确认。",
+            else f"[能力调用] {receipt.path} -> 成功",
             extra={
                 "action_id": receipt.action_id,
                 "call_id": receipt.call_id,

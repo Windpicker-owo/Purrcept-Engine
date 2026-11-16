@@ -1,6 +1,7 @@
-"""纯配置和 CLI 退出所有权，不启动模型、真实设备或外部服务。"""
+"""验证 CLI 初始化向导、插件配置速查、参数覆盖与信号退出行为。"""
 
 import asyncio
+import io
 import signal
 from collections.abc import Callable, Iterator
 from pathlib import Path
@@ -13,17 +14,20 @@ from purrcept_engine.app.cli import main
 from purrcept_engine.app.config import EngineConfig, load_config
 from purrcept_engine.app.host import EngineHost
 from purrcept_engine.app.host_types import HostSnapshot
+from purrcept_engine.app.onboarding import render_plugin_guide, run_interactive_init
 
 
-def test_init_check_and_repeat_init_preserve_existing_config(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+def test_init_check_plugins_and_force_backup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     config_path = tmp_path / "purrcept.toml"
-    monkeypatch.setattr("sys.argv", ["purrcept-engine", "--config", str(config_path), "init"])
+    monkeypatch.setattr(
+        "sys.argv", ["purrcept-engine", "--config", str(config_path), "init", "--template"]
+    )
     assert main() == 0
     original = config_path.read_bytes()
     config = load_config(config_path)
-    assert not config.console and not config.web.enabled
+    assert config.console is True and not config.web.enabled
     assert not config.host.data_dir.exists()
 
     monkeypatch.setattr("sys.argv", ["purrcept-engine", "--config", str(config_path), "check"])
@@ -34,15 +38,71 @@ def test_init_check_and_repeat_init_preserve_existing_config(
     assert main() == 0
     assert not config.host.data_dir.exists()
 
-    monkeypatch.setattr("sys.argv", ["purrcept-engine", "--config", str(config_path), "init"])
+    monkeypatch.setattr("sys.argv", ["purrcept-engine", "plugins"])
+    assert main() == 0
+    assert "notebook" in capsys.readouterr().out
+
+    monkeypatch.setattr("sys.argv", ["purrcept-engine", "plugins", "qq"])
+    assert main() == 0
+    assert "OneBot" in capsys.readouterr().out
+
+    # 默认不覆盖已有文件；传入 --force 时自动备份并重新生成
+    monkeypatch.setattr(
+        "sys.argv", ["purrcept-engine", "--config", str(config_path), "init", "--template"]
+    )
     assert main() == 1
     assert config_path.read_bytes() == original
+
+    monkeypatch.setattr(
+        "sys.argv",
+        ["purrcept-engine", "--config", str(config_path), "init", "--template", "--force"],
+    )
+    assert main() == 0
+    backups = list(tmp_path.glob("purrcept.toml.bak-*"))
+    assert len(backups) == 1 and backups[0].read_bytes() == original
+
+
+def test_interactive_init_wizard_generates_valid_cloud_and_local_configs(tmp_path: Path) -> None:
+    cloud_answers = iter(
+        [
+            "1",
+            "https://api.deepseek.com/v1",
+            "deepseek-chat",
+            "${DEEPSEEK_KEY}",
+            "杰瑞喵",
+            "傲娇猫娘助手",
+            "y",
+            "n",
+        ]
+    )
+    buf = io.StringIO()
+    cloud_toml = run_interactive_init(
+        tmp_path / "cloud.toml",
+        input_fn=lambda _: next(cloud_answers),
+        output=buf,
+    )
+    (tmp_path / "cloud.toml").write_bytes(cloud_toml)
+    loaded_cloud = load_config(
+        tmp_path / "cloud.toml", environ={"DEEPSEEK_KEY": "sk-test-12345678"}
+    )
+    assert loaded_cloud.models["main"].model == "openai/deepseek-chat"
+    assert loaded_cloud.subject.character.name == "杰瑞喵"
+    assert any(p.entry == "notebook" for p in loaded_cloud.plugins)
+
+    local_answers = iter(["2", "http://127.0.0.1:11434/v1", "qwen2.5:14b", "", "小咕", "", "n", "n"])
+    local_toml = run_interactive_init(
+        tmp_path / "local.toml",
+        input_fn=lambda _: next(local_answers),
+        output=io.StringIO(),
+    )
+    (tmp_path / "local.toml").write_bytes(local_toml)
+    loaded_local = load_config(tmp_path / "local.toml")
+    assert loaded_local.models["main"].api_key.get_secret_value() == "local-no-auth"
+    assert "notebook" in render_plugin_guide("notebook")
 
 
 @pytest.fixture
 def signal_owner() -> Iterator[object]:
-    """外层信号所有者防止模拟 SystemExit 混入 asyncio.run 自带的强退处理。"""
-
     def owner(signum: int, frame: object) -> None:
         del signum, frame
 
@@ -65,7 +125,6 @@ def test_close_failure_preserves_force_exit_only_while_resources_remain(
     cancelled_group: bool,
     signal_owner: object,
 ) -> None:
-    """资源未归还时仍接受第二次信号；已释放的原始错误则正常向外报告。"""
     template = Path(cli.__file__).with_name("default.toml")
     config_path = tmp_path / "purrcept.toml"
     config_path.write_bytes(template.read_bytes())
@@ -80,7 +139,6 @@ def test_close_failure_preserves_force_exit_only_while_resources_remain(
     handlers: list[object] = []
 
     def press_ctrl_c() -> None:
-        """只调用本 CLI 安装的处理器，不向 pytest 或其他进程广播信号。"""
         handler = signal.getsignal(signal.SIGINT)
         handlers.append(handler)
         if not callable(handler):
@@ -139,7 +197,7 @@ def test_close_failure_preserves_force_exit_only_while_resources_remain(
         assert len(handlers) == 2 and handlers[0] is handlers[1]
         output = capsys.readouterr()
         assert "关闭失败，仍占用" in output.out and "storage" in output.out
-        assert "synthetic browser close failure" not in output.err
+        assert "synthetic browser close failure" in output.err
     else:
         assert main() == 1
         if delayed:
