@@ -1,5 +1,6 @@
 /**
- * 产品外壳：导航轨 + 主舞台 + Inspector（窄屏为 Sheet），hash 路由决定页面与选择。
+ * 产品外壳：导航轨 + 开放主舞台 + Inspector（窄屏为 Sheet），hash 路由决定页面与选择。
+ * 自动从服务端配置或对话通道读取当前 Bot 角色名（未配置时优雅回退），不硬编码特定角色名。
  */
 import { useEffect, useState, useSyncExternalStore, type ReactElement } from "react";
 import { breakpoints, Button, CelProvider, Feedback, Sheet } from "@purrcept/cel";
@@ -115,6 +116,8 @@ function PageBody({
   route,
   go,
   reviewWorkspace,
+  botName,
+  onBotNameChange,
 }: {
   page: Page;
   state: PanelState;
@@ -124,14 +127,16 @@ function PageBody({
   route: Route;
   go: (route: Route) => void;
   reviewWorkspace: ReviewWorkspace;
+  botName: string;
+  onBotNameChange: (name: string) => void;
 }): ReactElement {
   switch (page) {
     case "home":
-      return <Home state={state} agent={agent} attention={attention} go={go} />;
+      return <Home client={client} state={state} agent={agent} attention={attention} botName={botName} go={go} />;
     case "chat":
-      return <Chat client={client} state={state} go={go} />;
+      return <Chat client={client} state={state} botName={botName} onBotNameChange={onBotNameChange} go={go} />;
     case "memory":
-      return <Memory client={client} selected={route.id} go={go} />;
+      return <Memory client={client} selected={route.id} botName={botName} go={go} />;
     case "attention":
       return <Attention items={attention} go={go} />;
     case "timeline":
@@ -143,7 +148,7 @@ function PageBody({
     case "activities":
       return <Activities client={client} state={state} selected={route.id} go={go} />;
     case "system":
-      return <System state={state} client={client} go={go} />;
+      return <System state={state} client={client} onBotNameChange={onBotNameChange} go={go} />;
   }
 }
 
@@ -154,6 +159,7 @@ export function App({ client }: { client: PanelClient }): ReactElement {
   const [route, go] = useRoute();
   const narrow = useMediaQuery(breakpoints.inspector);
   const [reviewWorkspace] = useState(createReviewWorkspace);
+  const [botName, setBotName] = useState("");
 
   useEffect(() => {
     void client.refresh();
@@ -169,6 +175,38 @@ export function App({ client }: { client: PanelClient }): ReactElement {
       document.removeEventListener("visibilitychange", visible);
     };
   }, [client]);
+
+  // 从服务端配置或对话接口动态解析当前 Bot 名称；未提供该接口的合成测试宿主静默回退。
+  useEffect(() => {
+    let active = true;
+    const syncPersonaName = async (): Promise<void> => {
+      try {
+        const cfg = await client.loadConfig();
+        if (!active) return;
+        if (cfg.available && cfg.subject.character.name.trim()) {
+          setBotName(cfg.subject.character.name.trim());
+          return;
+        }
+      } catch {
+        // 离线或最小测试替身未挂载 /api/config 时继续尝试 /api/chat 或保持中性回退
+      }
+      if (!state.online) return;
+      try {
+        const feed = await client.chatFeed(1);
+        if (!active) return;
+        const candidate = feed.character_name.trim();
+        if (candidate && candidate !== "主体") {
+          setBotName(candidate);
+        }
+      } catch {
+        // 保持空字符串，由各页面优雅回退至“她”
+      }
+    };
+    void syncPersonaName();
+    return () => {
+      active = false;
+    };
+  }, [client, state.online, state.snapshot?.instance_id]);
 
   const attention = attentionItems(state.snapshot, state.entries);
   const connecting = state.snapshot === null && state.error === null;
@@ -204,8 +242,8 @@ export function App({ client }: { client: PanelClient }): ReactElement {
   }
 
   useEffect(() => {
-    document.title = `${agent.headline} · Purrcept`;
-  }, [agent.headline]);
+    document.title = botName ? `${agent.headline} · ${botName} · Purrcept` : `${agent.headline} · Purrcept`;
+  }, [agent.headline, botName]);
 
   const current = PAGES.find((item) => item.id === route.page);
   const age = state.receivedAt === null ? null : Math.floor((Date.now() - state.receivedAt) / 1000);
@@ -227,6 +265,14 @@ export function App({ client }: { client: PanelClient }): ReactElement {
           <header className="topbar">
             <div className="location">
               <span className="product-name">Purrcept</span>
+              {botName ? (
+                <>
+                  <span className="location-divider" aria-hidden="true">
+                    ·
+                  </span>
+                  <span className="location-persona">{botName}</span>
+                </>
+              ) : null}
               <span className="location-divider" aria-hidden="true">
                 /
               </span>
@@ -283,6 +329,8 @@ export function App({ client }: { client: PanelClient }): ReactElement {
                   route={route}
                   go={go}
                   reviewWorkspace={reviewWorkspace}
+                  botName={botName}
+                  onBotNameChange={setBotName}
                 />
               )}
             </div>

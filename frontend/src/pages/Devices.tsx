@@ -1,8 +1,10 @@
 /**
- * 设备与调音工作区：统一管理外部连接（手机配对、QQ、收音、电脑屏幕）及内嵌声线调音室与 Live2D 表演参数。
+ * 设备、声线与身体工作区（去卡片化主从分层架构）：
+ * - 01 主动通信与感官机架：仅将带快捷控制或实时通道摘要的设备（安卓手机、QQ、电脑观察、现场收音、语音输出、Live2D）渲染为紧凑操控台；
+ * - 02 内置感知与宿主插槽：将无按钮的底层器官（如图片读取、音频读取、clock、console、browser、bed）收拢为跟手胶囊芯片矩阵，彻底消灭大面积空白白盒。
  */
 import { useEffect, useState, type ReactElement } from "react";
-import { Button, Field, Switch, isLive } from "@purrcept/cel";
+import { Button, Field, Icon, Switch, isLive } from "@purrcept/cel";
 import type { PanelClient, PanelState } from "../client";
 import { isSnapshotDelayed } from "../client";
 import type { Device, DeviceControl, Json, ObjectValue } from "../contracts";
@@ -11,11 +13,43 @@ import { ALLOWED_CONTROLS, computerReason, deviceNote, deviceSummary, deviceTech
 import { deviceName } from "../model/names";
 import type { Route } from "../model/routes";
 import { deviceMark } from "../semantics";
-import { EmptyState, PageHeading, StateMark, TechDetails, time, Unavailable } from "../ui/common";
+import { EmptyState, FilterPill, PageHeading, StateMark, TechDetails, time, Unavailable } from "../ui/common";
 import { PhoneConnection } from "./PhoneConnection";
 import { Live2DStudioSection, VoiceStudioSection } from "./StudioPanel";
 
 type DevicesTab = "connections" | "studio" | "live2d";
+
+const ACTIVE_DECK_KINDS = new Set(["qq", "voice_input", "audio", "computer", "live2d"]);
+
+function isActiveDeck(device: Device): boolean {
+  if (device.kind === "phone") return false; // 由 PhoneConnection 专属机架承载，避免重复卡片
+  if (device.kind !== null && ACTIVE_DECK_KINDS.has(device.kind)) return true;
+  const allowed = ALLOWED_CONTROLS[device.kind ?? ""] ?? [];
+  return device.controls.some((c) => allowed.includes(c.key)) || deviceSummary(device).length > 0;
+}
+
+function deckAccent(kind: string | null): "sky" | "green" | "violet" {
+  if (kind === "qq" || kind === "voice_input") return "green";
+  if (kind === "computer" || kind === "live2d") return "violet";
+  return "sky";
+}
+
+function deckCode(device: Device): string {
+  switch (device.kind) {
+    case "qq":
+      return "DECK // SOCIAL LINK";
+    case "voice_input":
+      return "DECK // VOICE MIC";
+    case "audio":
+      return "DECK // AUDIO OUT";
+    case "computer":
+      return "DECK // DESKTOP EYE";
+    case "live2d":
+      return "DECK // AVATAR BODY";
+    default:
+      return `DECK // ${(device.kind ?? device.instance_id).toUpperCase()}`;
+  }
+}
 
 function QuickControl({
   client,
@@ -32,7 +66,8 @@ function QuickControl({
   args?: ObjectValue;
   reason?: string;
 }): ReactElement {
-  const disabledReason = targetReason(state, device.instance_id, control.key) ?? (device.revision === null ? "插件没有提供控制版本。" : reason);
+  const disabledReason =
+    targetReason(state, device.instance_id, control.key) ?? (device.revision === null ? "插件没有提供控制版本。" : reason);
   return (
     <Button
       variant="secondary"
@@ -273,14 +308,25 @@ export function Devices({
   const devices = state.snapshot?.devices ?? [];
   const liveId = state.online ? devices.find((device) => isLive(deviceMark(device).state))?.instance_id : undefined;
 
+  const activeDecks = devices.filter(isActiveDeck);
+  const passiveOrgans = devices.filter((d) => d.kind !== "phone" && !isActiveDeck(d));
+
   const switchTab = (next: DevicesTab): void => {
     go({ page: "devices", id: next === "connections" ? null : next });
   };
 
+  const formatDeviceStatus = (device: Device) =>
+    state.online
+      ? deviceMark(device)
+      : {
+          state: "warning" as const,
+          label: `${isSnapshotDelayed(state) ? "状态已过期 · 最近" : "连接中断 · 断开前"}${deviceMark(device).label}`,
+        };
+
   return (
     <>
-      <PageHeading title="设备、声线与身体">
-        统一管理外部通道连接、内嵌声线调音室（WAV/MP3/FLAC 试听与均衡预设）以及 Live2D 实时姿态口型参数。
+      <PageHeading eyebrow="BODY & LINK // 外部通信与内置感官" title="设备、声线与身体">
+        主动交互通道独立为操控机架，无按钮的底层宿主插件收拢为机能芯片插槽；点选任意机架或芯片即可在侧栏核对实时回执。
       </PageHeading>
 
       <div className="timeline-tools">
@@ -293,10 +339,14 @@ export function Devices({
               ["live2d", "Live2D 表演"],
             ] as const
           ).map(([key, label]) => (
-            <label key={key} className="filter" data-selected={activeTab === key}>
-              <input type="radio" name="devices-tab" checked={activeTab === key} onChange={() => switchTab(key)} />
-              {label}
-            </label>
+            <FilterPill
+              key={key}
+              group="devices-tab"
+              value={key}
+              label={label}
+              checked={activeTab === key}
+              onChange={() => switchTab(key)}
+            />
           ))}
         </fieldset>
       </div>
@@ -306,8 +356,102 @@ export function Devices({
       ) : activeTab === "live2d" ? (
         <Live2DStudioSection client={client} go={go} />
       ) : (
-        <>
-          <PhoneConnection client={client} online={state.online} target={devices.find((device) => device.kind === "phone")?.instance_id} />
+        <div className="devices-desk">
+          <section className="open-section" aria-labelledby="active-decks-heading">
+            <header className="editorial-header">
+              <div className="editorial-title-group">
+                <span className="big-num" aria-hidden="true">
+                  01
+                </span>
+                <div>
+                  <span className="eyebrow">ACTIVE CHANNELS // 可交互通道</span>
+                  <h2 id="active-decks-heading">主动通信与外部身体机架</h2>
+                </div>
+              </div>
+              <span className="eyebrow">{activeDecks.length + 1} 台操控机架</span>
+            </header>
+
+            <div className="object-grid deck-grid">
+              <PhoneConnection
+                client={client}
+                online={state.online}
+                target={devices.find((device) => device.kind === "phone")?.instance_id}
+              />
+
+              {activeDecks.map((device) => {
+                const status = formatDeviceStatus(device);
+                const note = deviceNote(device);
+                const summaryLines = deviceSummary(device);
+                const quickControls =
+                  device.kind !== "voice_input"
+                    ? device.controls.filter((control) => ALLOWED_CONTROLS[device.kind ?? ""]?.includes(control.key))
+                    : [];
+
+                return (
+                  <article
+                    className="channel-deck device-object"
+                    key={device.instance_id}
+                    data-accent={deckAccent(device.kind)}
+                    aria-current={selected === device.instance_id ? "true" : undefined}
+                  >
+                    <div className="deck-body">
+                      <div className="deck-top">
+                        <div>
+                          <span className="deck-code">{deckCode(device)}</span>
+                          <h2 className="deck-title">{deviceName(device)}</h2>
+                        </div>
+                        <StateMark {...status} live={device.instance_id === liveId} />
+                      </div>
+
+                      {summaryLines.map((line) => (
+                        <p key={line} className="deck-desc">
+                          {line}
+                        </p>
+                      ))}
+
+                      {quickControls.length > 0 || device.kind === "audio" || device.kind === "live2d" ? (
+                        <div className="actions">
+                          {quickControls.map((control) => (
+                            <QuickControl
+                              key={control.key}
+                              client={client}
+                              state={state}
+                              device={device}
+                              control={control}
+                              reason={
+                                control.fields.length > 0
+                                  ? "这个操作需要页面暂不支持的参数。"
+                                  : computerReason(device, control.key)
+                              }
+                            />
+                          ))}
+                          {device.kind === "audio" ? (
+                            <Button variant="secondary" onClick={() => switchTab("studio")}>
+                              打开调音室
+                            </Button>
+                          ) : null}
+                          {device.kind === "live2d" ? (
+                            <Button variant="secondary" onClick={() => switchTab("live2d")}>
+                              调节姿态与口型
+                            </Button>
+                          ) : null}
+                        </div>
+                      ) : null}
+
+                      {note !== null ? <p className="muted device-note">{note}</p> : null}
+                    </div>
+
+                    <div className="deck-actions">
+                      <Button variant="ghost" onClick={() => go({ page: "devices", id: device.instance_id })}>
+                        {device.kind === "voice_input" ? "设置收音" : "查看详情"}
+                      </Button>
+                    </div>
+                  </article>
+                );
+              })}
+            </div>
+          </section>
+
           {devices.length === 0 ? (
             <EmptyState
               icon="device"
@@ -320,65 +464,43 @@ export function Devices({
             >
               你可以在设置页一键添加 QQ、收音麦克风、语音输出、电脑观察或 Live2D 插件，重启后将在此展示连接状态。
             </EmptyState>
-          ) : (
-            <div className="object-grid">
-              {devices.map((device) => {
-                const status = state.online
-                  ? deviceMark(device)
-                  : {
-                      state: "warning" as const,
-                      label: `${isSnapshotDelayed(state) ? "状态已过期 · 最近" : "连接中断 · 断开前"}${deviceMark(device).label}`,
-                    };
-                const note = deviceNote(device);
-                return (
-                  <article className="device-object" key={device.instance_id} aria-current={selected === device.instance_id ? "true" : undefined}>
-                    <div className="object-header">
-                      <h2>{deviceName(device)}</h2>
+          ) : passiveOrgans.length > 0 ? (
+            <section className="open-section organs-rack" aria-labelledby="passive-organs-heading">
+              <header className="editorial-header">
+                <div className="editorial-title-group">
+                  <span className="big-num" aria-hidden="true">
+                    02
+                  </span>
+                  <div>
+                    <span className="eyebrow">SYSTEM ORGANS // 内置感知与宿主插槽</span>
+                    <h2 id="passive-organs-heading">底层能力芯片槽</h2>
+                  </div>
+                </div>
+                <span className="eyebrow">点击任意芯片展开技术回执（{passiveOrgans.length} 枚）</span>
+              </header>
+
+              <div className="chip-grid object-grid-chips">
+                {passiveOrgans.map((device) => {
+                  const status = formatDeviceStatus(device);
+                  const isSelected = selected === device.instance_id;
+                  return (
+                    <button
+                      key={device.instance_id}
+                      type="button"
+                      className="organ-chip pc-focusable"
+                      aria-current={isSelected ? "true" : undefined}
+                      onClick={() => go({ page: "devices", id: device.instance_id })}
+                    >
                       <StateMark {...status} live={device.instance_id === liveId} />
-                    </div>
-                    {deviceSummary(device).map((line) => (
-                      <p key={line}>{line}</p>
-                    ))}
-                    {device.kind !== "voice_input" ? (
-                      <div className="actions">
-                        {device.controls
-                          .filter((control) => ALLOWED_CONTROLS[device.kind ?? ""]?.includes(control.key))
-                          .map((control) => (
-                            <QuickControl
-                              key={control.key}
-                              client={client}
-                              state={state}
-                              device={device}
-                              control={control}
-                              reason={
-                                control.fields.length > 0 ? "这个操作需要页面暂不支持的参数。" : computerReason(device, control.key)
-                              }
-                            />
-                          ))}
-                        {device.kind === "audio" ? (
-                          <Button variant="secondary" onClick={() => switchTab("studio")}>
-                            打开调音室
-                          </Button>
-                        ) : null}
-                        {device.kind === "live2d" ? (
-                          <Button variant="secondary" onClick={() => switchTab("live2d")}>
-                            调节姿态与口型
-                          </Button>
-                        ) : null}
-                      </div>
-                    ) : null}
-                    {note !== null ? <p className="muted device-note">{note}</p> : null}
-                    <div className="actions">
-                      <Button variant="ghost" onClick={() => go({ page: "devices", id: device.instance_id })}>
-                        {device.kind === "voice_input" ? "设置收音" : "查看详情"}
-                      </Button>
-                    </div>
-                  </article>
-                );
-              })}
-            </div>
-          )}
-        </>
+                      <span className="organ-chip-name">{deviceName(device)}</span>
+                      <Icon name="chevron" />
+                    </button>
+                  );
+                })}
+              </div>
+            </section>
+          ) : null}
+        </div>
       )}
     </>
   );
@@ -388,7 +510,7 @@ export function DeviceDetail({ client, state, device }: { client: PanelClient; s
   return (
     <div className="detail device-detail">
       <h2>{deviceName(device)}</h2>
-      <StateMark {...(state.online ? deviceMark(device) : { state: "warning" as const, label: "状态已过期，操作暂停" })} />
+      <StateMark {...(state.online ? deviceMark(device) : { state: "warning", label: "状态已过期，操作暂停" })} />
       {deviceSummary(device).map((line) => (
         <p key={line}>{line}</p>
       ))}

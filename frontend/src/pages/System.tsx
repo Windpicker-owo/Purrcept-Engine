@@ -16,7 +16,7 @@ import type {
 import { targetReason } from "../model/controls";
 import type { Route } from "../model/routes";
 import { mark } from "../semantics";
-import { duration, EmptyNote, PageHeading, Section, StateMark, TechDetails } from "../ui/common";
+import { duration, EmptyNote, FilterPill, PageHeading, Section, StateMark, TechDetails } from "../ui/common";
 
 type SettingsTab = "persona" | "models" | "raw";
 
@@ -33,10 +33,12 @@ const COMPONENT_LABELS: Readonly<Record<string, string>> = {
 export function System({
   state,
   client,
+  onBotNameChange,
   go,
 }: {
   state: PanelState;
   client: PanelClient;
+  onBotNameChange?: (name: string) => void;
   go: (route: Route) => void;
 }): ReactElement {
   const [tab, setTab] = useState<SettingsTab>("persona");
@@ -66,6 +68,7 @@ export function System({
     });
     setPluginJsonDrafts(drafts);
     setRawToml(res.raw_toml);
+    onBotNameChange?.(res.subject.character.name.trim());
   };
 
   const load = async (): Promise<void> => {
@@ -272,10 +275,14 @@ export function System({
                   ["raw", "TOML 源码与健康"],
                 ] as const
               ).map(([key, label]) => (
-                <label key={key} className="filter" data-selected={tab === key}>
-                  <input type="radio" name="settings-tab" checked={tab === key} onChange={() => setTab(key)} />
-                  {label}
-                </label>
+                <FilterPill
+                  key={key}
+                  group="settings-tab"
+                  value={key}
+                  label={label}
+                  checked={tab === key}
+                  onChange={() => setTab(key)}
+                />
               ))}
             </fieldset>
           </div>
@@ -292,7 +299,7 @@ export function System({
                 }
               >
                 <div className="config-grid">
-                  <Field label="角色名字（name）" description="例如：杰瑞喵 / 小咕">
+                  <Field label="角色名字（name）" description="设置陪伴角色的名字，首页、私聊与手账标题将自动同步显示">
                     {(control) => (
                       <input
                         {...control}

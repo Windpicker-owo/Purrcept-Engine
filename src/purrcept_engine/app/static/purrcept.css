@@ -1,79 +1,106 @@
 /* 由 scripts/export_tokens.py 从 DESIGN.md 生成，请勿手动修改。 */
-/* Purrcept Cel 0.3.0 */
+/* Purrcept Cel 0.4.0 */
 
 :root {
   /* colors */
-  --pc-color-canvas: #F2F4F7;
-  --pc-color-atmosphere-sky: #E2EBFC;
-  --pc-color-atmosphere-peach: #FCEEE2;
+  --pc-color-canvas: #F4F8FD;
+  --pc-color-atmosphere-sky: #E3F0FF;
+  --pc-color-atmosphere-peach: #FFEFE8;
   --pc-color-surface: #FFFFFF;
-  --pc-color-surface-sunken: #F3F5F8;
-  --pc-color-surface-selected: #E8ECF2;
-  --pc-color-glass: rgba(255, 255, 255, 0.78);
-  --pc-color-ink: #15171A;
-  --pc-color-ink-secondary: #484D55;
-  --pc-color-ink-muted: #5E636B;
-  --pc-color-ink-disabled: #A3A7AD;
+  --pc-color-surface-sunken: #ECF3FA;
+  --pc-color-surface-selected: #DCEBFF;
+  --pc-color-paper: #FFFDF8;
+  --pc-color-paper-sunken: #F7F1E6;
+  --pc-color-paper-blush: #FFF0EC;
+  --pc-color-glass: rgba(255, 255, 255, 0.88);
+  --pc-color-ink: #182232;
+  --pc-color-ink-secondary: #3D4B63;
+  --pc-color-ink-muted: #53627A;
+  --pc-color-ink-warm: #5C4B43;
+  --pc-color-ink-disabled: #9BA8BC;
   --pc-color-on-ink: #FFFFFF;
-  --pc-color-outline: #D3D8E0;
-  --pc-color-outline-subtle: #E4E8EE;
-  --pc-color-focus-ring: #2456D6;
-  --pc-color-scrim: rgba(21, 23, 26, 0.32);
-  --pc-color-brand: #2456D6;
-  --pc-color-brand-hover: #1C47B8;
-  --pc-color-brand-pressed: #163A99;
+  --pc-color-outline: #C5D4E8;
+  --pc-color-outline-subtle: #DFE9F5;
+  --pc-color-outline-paper: #E6D9C8;
+  --pc-color-focus-ring: #0B5ED7;
+  --pc-color-scrim: rgba(24, 34, 50, 0.36);
+  --pc-color-cel-shadow-sky: #C7DDF8;
+  --pc-color-cel-shadow-paper: #E6D7C3;
+  --pc-color-brand: #0B5ED7;
+  --pc-color-brand-fill: #1A73E8;
+  --pc-color-brand-hover: #1562C9;
+  --pc-color-brand-pressed: #0E4FA8;
+  --pc-color-brand-signal: #29A8FF;
   --pc-color-on-brand: #FFFFFF;
-  --pc-color-brand-container: #E3EBFD;
-  --pc-color-on-brand-container: #173B8F;
-  --pc-color-active: #0A7480;
-  --pc-color-active-container: #DDF2F4;
-  --pc-color-on-active-container: #06525B;
-  --pc-color-success: #127236;
-  --pc-color-success-container: #E4F3E9;
-  --pc-color-on-success-container: #0F5A2B;
-  --pc-color-waiting: #9C5000;
-  --pc-color-waiting-signal: #F2A11F;
-  --pc-color-waiting-container: #FDF0DA;
-  --pc-color-on-waiting-container: #6B3800;
-  --pc-color-failed: #BC3329;
-  --pc-color-failed-hover: #A32B22;
-  --pc-color-failed-pressed: #8A1F17;
-  --pc-color-failed-container: #FBE8E5;
-  --pc-color-on-failed-container: #8A1F17;
-  --pc-color-paused: #6D4BC9;
-  --pc-color-paused-container: #EEE9FB;
-  --pc-color-on-paused-container: #3F2490;
+  --pc-color-brand-container: #DCEBFF;
+  --pc-color-on-brand-container: #0A439C;
+  --pc-color-blush-signal: #FF8A7A;
+  --pc-color-blush-container: #FFE6E0;
+  --pc-color-on-blush-container: #8C2D19;
+  --pc-color-tape-signal: #F5B547;
+  --pc-color-tape-container: #FDECC8;
+  --pc-color-on-tape-container: #6E4200;
+  --pc-color-active: #086A78;
+  --pc-color-active-signal: #12B5CB;
+  --pc-color-active-container: #D6F4F7;
+  --pc-color-on-active-container: #064E59;
+  --pc-color-success: #116E3A;
+  --pc-color-success-signal: #22C55E;
+  --pc-color-success-container: #DEF5E7;
+  --pc-color-on-success-container: #0D542B;
+  --pc-color-waiting: #944B00;
+  --pc-color-waiting-signal: #F59E0B;
+  --pc-color-waiting-container: #FDEFD6;
+  --pc-color-on-waiting-container: #693500;
+  --pc-color-failed: #BA2D25;
+  --pc-color-failed-signal: #F43F5E;
+  --pc-color-failed-hover: #9E241D;
+  --pc-color-failed-pressed: #851D17;
+  --pc-color-failed-container: #FCE6E4;
+  --pc-color-on-failed-container: #851D17;
+  --pc-color-paused: #6842C2;
+  --pc-color-paused-signal: #8B5CF6;
+  --pc-color-paused-container: #EDE7FC;
+  --pc-color-on-paused-container: #3E218A;
   --pc-color-mascot-fur: #FFFDF9;
-  --pc-color-mascot-fur-shade: #E9E2D8;
-  --pc-color-mascot-blush: #F3BDB3;
+  --pc-color-mascot-fur-shade: #EAE0D5;
+  --pc-color-mascot-blush: #FFB5AA;
 
   /* typography */
-  --pc-font-display: 700 48px/1.08 system-ui, -apple-system, "Segoe UI", "Microsoft YaHei", "PingFang SC", sans-serif;
-  --pc-font-display-letter-spacing: -0.025em;
-  --pc-font-headline: 700 28px/1.25 system-ui, -apple-system, "Segoe UI", "Microsoft YaHei", "PingFang SC", sans-serif;
-  --pc-font-headline-letter-spacing: -0.015em;
-  --pc-font-title: 600 17px/1.45 system-ui, -apple-system, "Segoe UI", "Microsoft YaHei", "PingFang SC", sans-serif;
+  --pc-font-display: 700 44px/1.12 "Resource Han Rounded CN", "M PLUS Rounded 1c", "MiSans", "HarmonyOS Sans SC", sans-serif;
+  --pc-font-display-letter-spacing: -0.02em;
+  --pc-font-headline: 700 26px/1.25 "Resource Han Rounded CN", "M PLUS Rounded 1c", "MiSans", "HarmonyOS Sans SC", sans-serif;
+  --pc-font-headline-letter-spacing: -0.01em;
+  --pc-font-title: 700 17px/1.45 "MiSans", "HarmonyOS Sans SC", "Plus Jakarta Sans", "PingFang SC", sans-serif;
   --pc-font-title-letter-spacing: normal;
-  --pc-font-body: 400 14px/1.6 system-ui, -apple-system, "Segoe UI", "Microsoft YaHei", "PingFang SC", sans-serif;
+  --pc-font-body: 400 14px/1.6 "MiSans", "HarmonyOS Sans SC", "Plus Jakarta Sans", "PingFang SC", sans-serif;
   --pc-font-body-letter-spacing: normal;
-  --pc-font-body-long: 400 16px/1.7 system-ui, -apple-system, "Segoe UI", "Microsoft YaHei", "PingFang SC", sans-serif;
-  --pc-font-body-long-letter-spacing: normal;
-  --pc-font-label: 600 13px/1.4 system-ui, -apple-system, "Segoe UI", "Microsoft YaHei", "PingFang SC", sans-serif;
-  --pc-font-label-letter-spacing: normal;
-  --pc-font-caption: 500 12px/1.4 system-ui, -apple-system, "Segoe UI", "Microsoft YaHei", "PingFang SC", sans-serif;
-  --pc-font-caption-letter-spacing: normal;
-  --pc-font-mono: 500 13px/1.5 ui-monospace, "SFMono-Regular", Consolas, "Microsoft YaHei", "PingFang SC", monospace;
+  --pc-font-body-long: 400 15px/1.65 "MiSans", "HarmonyOS Sans SC", "Plus Jakarta Sans", "PingFang SC", sans-serif;
+  --pc-font-body-long-letter-spacing: 0.01em;
+  --pc-font-label: 600 13px/1.4 "MiSans", "HarmonyOS Sans SC", "Plus Jakarta Sans", "PingFang SC", sans-serif;
+  --pc-font-label-letter-spacing: 0.01em;
+  --pc-font-caption: 500 12px/1.4 "MiSans", "HarmonyOS Sans SC", "Plus Jakarta Sans", "PingFang SC", sans-serif;
+  --pc-font-caption-letter-spacing: 0.01em;
+  --pc-font-hud: 600 12px/1.2 "JetBrains Mono", "Geist Mono", "SFMono-Regular", Consolas, monospace;
+  --pc-font-hud-letter-spacing: 0.06em;
+  --pc-font-hud-feature-settings: "tnum" 1, "zero" 1;
+  --pc-font-mono: 500 13px/1.55 "JetBrains Mono", "Geist Mono", "SFMono-Regular", Consolas, monospace;
   --pc-font-mono-letter-spacing: normal;
   --pc-font-mono-feature-settings: "tnum" 1, "zero" 1;
 
   /* rounded */
   --pc-radius-none: 0px;
   --pc-radius-xs: 6px;
-  --pc-radius-sm: 8px;
-  --pc-radius-md: 12px;
-  --pc-radius-lg: 16px;
-  --pc-radius-xl: 24px;
+  --pc-radius-sm: 10px;
+  --pc-radius-md: 14px;
+  --pc-radius-lg: 20px;
+  --pc-radius-xl: 28px;
   --pc-radius-full: 9999px;
+
+  /* shapes：复合不对称几何（对话气泡尖角与手账页签） */
+  --pc-shape-bubble-agent: var(--pc-radius-xs) var(--pc-radius-lg) var(--pc-radius-lg) var(--pc-radius-lg);
+  --pc-shape-bubble-user: var(--pc-radius-lg) var(--pc-radius-lg) var(--pc-radius-xs) var(--pc-radius-lg);
+  --pc-shape-note-tab: var(--pc-radius-lg) var(--pc-radius-lg) var(--pc-radius-lg) var(--pc-radius-xs);
 
   /* spacing */
   --pc-space-base: 4px;
@@ -88,41 +115,52 @@
   --pc-space-4xl: 96px;
   --pc-space-gutter: 32px;
   --pc-space-gutter-narrow: 16px;
-  --pc-space-island-gap: 12px;
-  --pc-space-sidebar: 72px;
-  --pc-space-inspector: 360px;
+  --pc-space-island-gap: 14px;
+  --pc-space-sidebar: 76px;
+  --pc-space-inspector: 368px;
   --pc-space-content-max: 1600px;
   --pc-space-touch-target: 44px;
 
-  /* elevation：外阴影只用墨色，inset 只用墨色或纯白受光边 */
-  --pc-shadow-control: 0 1px 2px rgba(21, 23, 26, 0.16), inset 0 1px 0 rgba(255, 255, 255, 0.22);
-  --pc-shadow-control-surface: 0 1px 2px rgba(21, 23, 26, 0.06);
-  --pc-shadow-well: inset 0 1px 2px rgba(21, 23, 26, 0.06);
-  --pc-shadow-panel: 0 1px 2px rgba(21, 23, 26, 0.04), 0 8px 24px rgba(21, 23, 26, 0.06), inset 0 1px 0 rgba(255, 255, 255, 0.9);
-  --pc-shadow-lifted: 0 2px 4px rgba(21, 23, 26, 0.05), 0 12px 32px rgba(21, 23, 26, 0.10), inset 0 1px 0 rgba(255, 255, 255, 0.9);
-  --pc-shadow-overlay: 0 2px 6px rgba(21, 23, 26, 0.06), 0 16px 40px rgba(21, 23, 26, 0.14), inset 0 1px 0 rgba(255, 255, 255, 0.7);
-  --pc-shadow-dialog: 0 4px 12px rgba(21, 23, 26, 0.08), 0 24px 64px rgba(21, 23, 26, 0.20);
+  /* elevation：零模糊赛璐璐硬边阴影 */
+  --pc-shadow-well: inset 0 2px 0 rgba(24, 34, 50, 0.05);
+  --pc-shadow-control: 0 3px 0 0 var(--pc-color-brand-pressed);
+  --pc-shadow-control-pressed: 0 1px 0 0 var(--pc-color-brand-pressed);
+  --pc-shadow-control-surface: 0 3px 0 0 var(--pc-color-cel-shadow-sky);
+  --pc-shadow-control-surface-pressed: 0 1px 0 0 var(--pc-color-cel-shadow-sky);
+  --pc-shadow-destructive: 0 3px 0 0 var(--pc-color-failed-pressed);
+  --pc-shadow-destructive-pressed: 0 1px 0 0 var(--pc-color-failed-pressed);
+  --pc-shadow-panel: 3px 4px 0 0 var(--pc-color-cel-shadow-sky);
+  --pc-shadow-notebook: 3px 4px 0 0 var(--pc-color-cel-shadow-paper);
+  --pc-shadow-sticker: 3px 3px 0 0 var(--pc-color-ink);
+  --pc-shadow-lifted: 4px 6px 0 0 var(--pc-color-cel-shadow-sky);
+  --pc-shadow-overlay: 6px 8px 0 0 rgba(24, 34, 50, 0.14);
+  --pc-shadow-dialog: 8px 10px 0 0 rgba(24, 34, 50, 0.22);
 
-  /* gradients：只给背景美术 */
-  --pc-gradient-atmosphere: radial-gradient(60% 55% at 0% 0%, var(--pc-color-atmosphere-sky) 0%, transparent 100%), radial-gradient(55% 50% at 100% 0%, var(--pc-color-atmosphere-peach) 0%, transparent 100%);
-  --pc-gradient-stage: linear-gradient(115deg, var(--pc-color-surface) 40%, var(--pc-color-atmosphere-sky) 100%);
+  /* gradients：只给背景美术与手账页眉 */
+  --pc-gradient-atmosphere: radial-gradient(58% 52% at 0% 0%, var(--pc-color-atmosphere-sky) 0%, transparent 100%), radial-gradient(52% 48% at 100% 0%, var(--pc-color-atmosphere-peach) 0%, transparent 100%);
+  --pc-gradient-stage: linear-gradient(118deg, var(--pc-color-surface) 42%, var(--pc-color-atmosphere-sky) 100%);
+  --pc-gradient-notebook-header: linear-gradient(180deg, var(--pc-color-paper-blush) 0%, var(--pc-color-paper) 100%);
+
+  /* patterns：学园半调网点与手账方格底纹 */
+  --pc-pattern-halftone: radial-gradient(circle, var(--pc-color-brand-container) 1.5px, transparent 1.6px);
+  --pc-pattern-notebook-grid: linear-gradient(to right, var(--pc-color-outline-paper) 1px, transparent 1px), linear-gradient(to bottom, var(--pc-color-outline-paper) 1px, transparent 1px);
 
   /* materials：只给导航轨与浮层 */
   --pc-material-glass-background: var(--pc-color-glass);
-  --pc-material-glass-filter: blur(24px) saturate(160%);
+  --pc-material-glass-filter: blur(16px) saturate(140%);
 
   /* motion：弹簧的 CSS 回退不可打断，可打断的位移请使用 motion.js */
-  --pc-motion-snap-duration: 318ms;
-  --pc-motion-snap-easing: linear(0, 0.0345, 0.1148, 0.2155, 0.3215, 0.4237, 0.5174, 0.6003, 0.672, 0.7329, 0.7839, 0.8261, 0.8608, 0.889, 0.9118, 0.9302, 0.9449, 0.9566, 0.9659, 0.9733, 0.9791, 0.9837, 0.9873, 0.9901, 0.9923, 0.994, 0.9954, 0.9964, 0.9972, 0.9979, 0.9983, 0.9987, 1);
-  --pc-motion-move-duration: 565ms;
-  --pc-motion-move-easing: linear(0, 0.0118, 0.0425, 0.0862, 0.1382, 0.1951, 0.2544, 0.3139, 0.3723, 0.4286, 0.4821, 0.5324, 0.5793, 0.6226, 0.6623, 0.6986, 0.7317, 0.7615, 0.7885, 0.8127, 0.8344, 0.8538, 0.8711, 0.8865, 0.9002, 0.9124, 0.9231, 0.9326, 0.9409, 0.9483, 0.9548, 0.9605, 0.9655, 0.9699, 0.9738, 0.9771, 0.9801, 0.9827, 0.9849, 0.9869, 0.9886, 0.9901, 0.9914, 0.9925, 0.9935, 0.9944, 0.9951, 0.9958, 0.9963, 0.9968, 0.9973, 0.9976, 0.9979, 0.9982, 0.9985, 0.9987, 0.9989, 1);
-  --pc-motion-arrive-duration: 631ms;
-  --pc-motion-arrive-easing: linear(0, 0.0085, 0.0315, 0.0654, 0.1075, 0.1552, 0.2066, 0.2601, 0.3144, 0.3683, 0.4212, 0.4722, 0.5211, 0.5674, 0.611, 0.6517, 0.6894, 0.7242, 0.7561, 0.7852, 0.8117, 0.8356, 0.8571, 0.8764, 0.8936, 0.9089, 0.9225, 0.9344, 0.9449, 0.954, 0.962, 0.9688, 0.9748, 0.9799, 0.9842, 0.9879, 0.9909, 0.9935, 0.9957, 0.9974, 0.9988, 1, 1.0009, 1.0016, 1.0021, 1.0025, 1.0027, 1.0029, 1.003, 1.003, 1.0029, 1.0028, 1.0027, 1.0026, 1.0025, 1.0023, 1.0021, 1.002, 1.0018, 1.0017, 1.0015, 1.0014, 1.0012, 1.0011, 1);
-  --pc-motion-settle-duration: 742ms;
-  --pc-motion-settle-easing: linear(0, 0.0062, 0.0234, 0.0493, 0.0823, 0.1207, 0.163, 0.2082, 0.2552, 0.303, 0.3511, 0.3987, 0.4453, 0.4907, 0.5343, 0.5761, 0.6158, 0.6533, 0.6886, 0.7215, 0.7521, 0.7805, 0.8066, 0.8305, 0.8524, 0.8723, 0.8903, 0.9066, 0.9211, 0.9341, 0.9457, 0.956, 0.965, 0.9728, 0.9797, 0.9856, 0.9907, 0.995, 0.9986, 1.0016, 1.0041, 1.0061, 1.0077, 1.0089, 1.0098, 1.0105, 1.0109, 1.0111, 1.0111, 1.011, 1.0108, 1.0104, 1.0101, 1.0096, 1.0091, 1.0086, 1.0081, 1.0076, 1.007, 1.0065, 1.006, 1.0055, 1.005, 1.0046, 1.0041, 1.0037, 1.0033, 1.003, 1.0026, 1.0023, 1.0021, 1.0018, 1.0016, 1.0014, 1.0012, 1);
-  --pc-motion-exit-duration: 388ms;
-  --pc-motion-exit-easing: linear(0, 0.024, 0.0823, 0.1594, 0.2448, 0.3315, 0.4153, 0.4934, 0.5646, 0.6283, 0.6845, 0.7335, 0.7759, 0.8122, 0.8432, 0.8695, 0.8916, 0.9103, 0.9258, 0.9388, 0.9497, 0.9586, 0.9661, 0.9722, 0.9772, 0.9814, 0.9848, 0.9876, 0.9899, 0.9918, 0.9933, 0.9946, 0.9956, 0.9964, 0.9971, 0.9977, 0.9981, 0.9985, 0.9988, 1);
-  --pc-motion-color-duration: 120ms;
+  --pc-motion-snap-duration: 250ms;
+  --pc-motion-snap-easing: linear(0, 0.0353, 0.1182, 0.2232, 0.3343, 0.4416, 0.5399, 0.6266, 0.7009, 0.7633, 0.8147, 0.8564, 0.8899, 0.9164, 0.9371, 0.9532, 0.9655, 0.9749, 0.9819, 0.9872, 0.9911, 0.9939, 0.9959, 0.9973, 0.9983, 1);
+  --pc-motion-move-duration: 457ms;
+  --pc-motion-move-easing: linear(0, 0.0135, 0.0483, 0.0975, 0.1558, 0.2192, 0.2845, 0.3496, 0.4128, 0.4731, 0.5298, 0.5824, 0.6308, 0.6749, 0.7148, 0.7506, 0.7827, 0.8113, 0.8365, 0.8588, 0.8784, 0.8955, 0.9105, 0.9235, 0.9347, 0.9445, 0.9529, 0.9601, 0.9663, 0.9716, 0.9761, 0.98, 0.9833, 0.986, 0.9884, 0.9903, 0.992, 0.9934, 0.9946, 0.9956, 0.9964, 0.997, 0.9976, 0.9981, 0.9984, 0.9988, 1);
+  --pc-motion-arrive-duration: 603ms;
+  --pc-motion-arrive-easing: linear(0, 0.0095, 0.0351, 0.0726, 0.1189, 0.1712, 0.2272, 0.285, 0.3433, 0.4007, 0.4566, 0.5101, 0.5609, 0.6086, 0.653, 0.694, 0.7316, 0.7659, 0.7969, 0.8249, 0.8499, 0.8722, 0.892, 0.9094, 0.9246, 0.9379, 0.9494, 0.9593, 0.9678, 0.975, 0.9811, 0.9862, 0.9904, 0.9939, 0.9967, 0.999, 1.0008, 1.0022, 1.0032, 1.004, 1.0045, 1.0048, 1.005, 1.005, 1.005, 1.0048, 1.0046, 1.0044, 1.0041, 1.0038, 1.0035, 1.0032, 1.003, 1.0027, 1.0024, 1.0022, 1.0019, 1.0017, 1.0015, 1.0013, 1.0011, 1);
+  --pc-motion-settle-duration: 725ms;
+  --pc-motion-settle-easing: linear(0, 0.0065, 0.0245, 0.0517, 0.0862, 0.1261, 0.1701, 0.2169, 0.2653, 0.3146, 0.3638, 0.4125, 0.46, 0.506, 0.5502, 0.5923, 0.6321, 0.6696, 0.7047, 0.7373, 0.7675, 0.7954, 0.8209, 0.8442, 0.8654, 0.8845, 0.9018, 0.9172, 0.931, 0.9432, 0.954, 0.9635, 0.9717, 0.9789, 0.9851, 0.9904, 0.9948, 0.9986, 1.0017, 1.0042, 1.0063, 1.0079, 1.0091, 1.01, 1.0106, 1.0109, 1.0111, 1.0111, 1.0109, 1.0107, 1.0103, 1.0099, 1.0094, 1.0089, 1.0084, 1.0079, 1.0073, 1.0068, 1.0062, 1.0057, 1.0052, 1.0047, 1.0043, 1.0038, 1.0034, 1.0031, 1.0027, 1.0024, 1.0021, 1.0018, 1.0016, 1.0014, 1.0012, 1);
+  --pc-motion-exit-duration: 353ms;
+  --pc-motion-exit-easing: linear(0, 0.0278, 0.0943, 0.1805, 0.2741, 0.3673, 0.4556, 0.5363, 0.6083, 0.6715, 0.7262, 0.7729, 0.8126, 0.8459, 0.8737, 0.8968, 0.916, 0.9317, 0.9447, 0.9552, 0.9639, 0.9709, 0.9766, 0.9812, 0.9849, 0.9879, 0.9903, 0.9923, 0.9938, 0.9951, 0.9961, 0.9969, 0.9975, 0.998, 0.9984, 0.9987, 1);
+  --pc-motion-color-duration: 100ms;
   --pc-motion-color-easing: linear;
   --pc-motion-hit-duration: 80ms;
   --pc-motion-pulse-duration: 1600ms;
@@ -134,69 +172,75 @@
   --pc-motion-stagger-max-items: 6;
 
   /* components */
-  --pc-button-primary-background: var(--pc-color-brand);
+  --pc-button-primary-background: var(--pc-color-brand-fill);
   --pc-button-primary-color: var(--pc-color-on-brand);
   --pc-button-primary-font: var(--pc-font-label);
   --pc-button-primary-radius: var(--pc-radius-full);
-  --pc-button-primary-height: 36px;
-  --pc-button-primary-padding: 0 16px;
+  --pc-button-primary-height: 38px;
+  --pc-button-primary-padding: 0 18px;
   --pc-button-secondary-background: var(--pc-color-surface);
   --pc-button-secondary-color: var(--pc-color-ink);
   --pc-button-secondary-outline: var(--pc-color-outline);
   --pc-button-secondary-font: var(--pc-font-label);
   --pc-button-secondary-radius: var(--pc-radius-full);
-  --pc-button-secondary-height: 36px;
-  --pc-button-secondary-padding: 0 16px;
+  --pc-button-secondary-height: 38px;
+  --pc-button-secondary-padding: 0 18px;
   --pc-button-ghost-background: transparent;
   --pc-button-ghost-color: var(--pc-color-ink-secondary);
   --pc-button-ghost-font: var(--pc-font-label);
   --pc-button-ghost-radius: var(--pc-radius-full);
-  --pc-button-ghost-height: 36px;
+  --pc-button-ghost-height: 38px;
   --pc-button-ghost-padding: 0 12px;
   --pc-button-destructive-background: var(--pc-color-failed);
   --pc-button-destructive-color: var(--pc-color-on-ink);
   --pc-button-destructive-font: var(--pc-font-label);
   --pc-button-destructive-radius: var(--pc-radius-full);
-  --pc-button-destructive-height: 36px;
-  --pc-button-destructive-padding: 0 16px;
+  --pc-button-destructive-height: 38px;
+  --pc-button-destructive-padding: 0 18px;
   --pc-input-background: var(--pc-color-surface);
   --pc-input-color: var(--pc-color-ink);
   --pc-input-outline: var(--pc-color-outline);
   --pc-input-font: var(--pc-font-body);
   --pc-input-radius: var(--pc-radius-md);
-  --pc-input-height: 40px;
-  --pc-input-padding: 0 12px;
+  --pc-input-height: 42px;
+  --pc-input-padding: 0 14px;
   --pc-nav-item-background: transparent;
   --pc-nav-item-color: var(--pc-color-ink-muted);
   --pc-nav-item-radius: var(--pc-radius-md);
-  --pc-nav-item-size: 44px;
+  --pc-nav-item-size: 46px;
   --pc-nav-item-current-background: var(--pc-color-brand-container);
   --pc-nav-item-current-color: var(--pc-color-on-brand-container);
   --pc-nav-item-current-radius: var(--pc-radius-md);
-  --pc-nav-item-current-size: 44px;
+  --pc-nav-item-current-size: 46px;
   --pc-panel-background: var(--pc-color-surface);
+  --pc-panel-outline: var(--pc-color-outline-subtle);
   --pc-panel-radius: var(--pc-radius-xl);
   --pc-panel-padding: var(--pc-space-lg);
+  --pc-notebook-sheet-background: var(--pc-color-paper);
+  --pc-notebook-sheet-outline: var(--pc-color-outline-paper);
+  --pc-notebook-sheet-radius: var(--pc-radius-lg);
+  --pc-notebook-sheet-padding: var(--pc-space-lg);
   --pc-object-surface-background: var(--pc-color-surface-sunken);
   --pc-object-surface-radius: var(--pc-radius-lg);
   --pc-object-surface-padding: var(--pc-space-md);
   --pc-stage-field-background: var(--pc-color-surface);
+  --pc-stage-field-outline: var(--pc-color-outline);
   --pc-stage-field-radius: var(--pc-radius-xl);
   --pc-stage-field-padding: var(--pc-space-xl);
   --pc-status-mark-size: 8px;
   --pc-status-mark-radius: var(--pc-radius-full);
   --pc-status-chip-font: var(--pc-font-caption);
   --pc-status-chip-radius: var(--pc-radius-full);
-  --pc-status-chip-height: 24px;
-  --pc-status-chip-padding: 0 8px;
+  --pc-status-chip-height: 26px;
+  --pc-status-chip-padding: 0 10px;
   --pc-progress-track-background: var(--pc-color-outline-subtle);
   --pc-progress-track-radius: var(--pc-radius-full);
-  --pc-progress-track-height: 4px;
+  --pc-progress-track-height: 6px;
   --pc-tooltip-background: var(--pc-color-ink);
   --pc-tooltip-color: var(--pc-color-on-ink);
   --pc-tooltip-font: var(--pc-font-caption);
   --pc-tooltip-radius: var(--pc-radius-sm);
-  --pc-tooltip-padding: 6px 8px;
+  --pc-tooltip-padding: 6px 10px;
 }
 
 @media (prefers-reduced-motion: reduce) {

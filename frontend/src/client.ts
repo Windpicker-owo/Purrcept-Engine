@@ -156,7 +156,7 @@ export class PanelClient {
   chatFeed = async (limit = 40): Promise<ChatFeed> =>
     parseChatFeed(await responseJson(await this.get(`/api/chat?limit=${limit}`)));
 
-  sendChat = async (text: string, senderName = "拾风"): Promise<{ input_id: string }> => {
+  sendChat = async (text: string, senderName = "伙伴"): Promise<{ input_id: string }> => {
     const res = await this.adminJsonPost("/api/chat", { text, sender_name: senderName });
     if (typeof res !== "object" || res === null || !("input_id" in res) || typeof res.input_id !== "string") {
       throw new ContractError("chat.send");
