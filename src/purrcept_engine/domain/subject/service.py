@@ -18,6 +18,7 @@ from purrcept_core.models import (
     SystemInstruction,
 )
 
+from purrcept_engine.domain.context.media_history import DEFAULT_MEDIA_CLEANUP_THRESHOLD_BYTES
 from purrcept_engine.domain.evidence.ports import EvidenceStore
 from purrcept_engine.domain.evidence.service import EvidenceService
 from purrcept_engine.domain.execution.catalog import Catalog
@@ -79,6 +80,7 @@ class SubjectService:
         prepare_history: PrepareHistory | None = None,
         compact_sleep_history: Callable[[], Awaitable[None]] | None = None,
         expression_sink: ExpressionSink | None = None,
+        media_cleanup_threshold_bytes: int = DEFAULT_MEDIA_CLEANUP_THRESHOLD_BYTES,
     ) -> None:
         """借用显式资源和纯声明，构造不联网、不推进输入或开启任务。
 
@@ -100,6 +102,7 @@ class SubjectService:
             prepare_history: 会话空闲时维护已提交历史的入口；None 不维护。
             compact_sleep_history: 睡眠时强制检查一次可压缩旧历史；None 不运行摘要。
             expression_sink: 批次采用后同步交付身体判断的有限借用，关闭归应用。
+            media_cleanup_threshold_bytes: 完整请求的历史媒体批量清理阈值。
         """
         self.store = store
         self.evidence = evidence
@@ -123,6 +126,7 @@ class SubjectService:
             "foreground",
             can_start=self.check,
             compiler=subject.compiler,
+            media_cleanup_threshold_bytes=media_cleanup_threshold_bytes,
         )
         self.attention_owner = uuid4().hex
         self.tasks: set[asyncio.Task[None]] = set()

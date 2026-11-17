@@ -443,6 +443,9 @@ class SessionStoreMixin(StoreBase):
                 raise StorageError("用量锚点编码损坏。", code="invalid_record") from error
             if value.get("type") != "UsageAnchor" or value.get("request_id") != row[0]:
                 raise StorageError("用量锚点来源身份不一致。", code="invalid_record")
+            # 旧计量没有记录已包含的动态尾部，不能继续复用其重复计量公式。
+            if "tail_tokens" not in value:
+                return None
             prefix = value.get("prefix")
             if not isinstance(prefix, list):
                 raise StorageError("用量锚点前缀形状无效。", code="invalid_record")
@@ -455,6 +458,7 @@ class SessionStoreMixin(StoreBase):
                     tuple(as_text(item) for item in prefix),
                     as_int(value.get("input_tokens")),
                     as_opt_text(value.get("history_digest")),
+                    as_int(value.get("tail_tokens")),
                 )
             except ValueError as error:
                 raise StorageError("用量锚点字段损坏。", code="invalid_record") from error

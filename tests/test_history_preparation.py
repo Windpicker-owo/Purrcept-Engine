@@ -107,10 +107,12 @@ async def refresh(budget: RequestBudget) -> DynamicState:
     return DynamicState("已提交来源状态与当前预算")
 
 
-async def test_observed_overflow_compacts_recent_completed_history_after_failed_tool_continuation(
+@pytest.mark.parametrize("observed_tokens", [6000, 7500])
+async def test_observed_warning_compacts_recent_completed_history_after_failed_tool_continuation(
     store: Store,
+    observed_tokens: int,
 ) -> None:
-    """服务端真实用量令轮内续问失败后，新输入仍能触发维护并保留首轮未决待办。"""
+    """实际用量达预警线后续问失败，新输入仍触发摘要；不必等实际输入超过全部预算。"""
     from purrcept_core.models.tools import FunctionTool
     from test_capacity_usage import Backend as UsageBackend
 
@@ -147,15 +149,15 @@ async def test_observed_overflow_compacts_recent_completed_history_after_failed_
     usage = UsageMeter(store, "test-history", compiler_identity("generation"), None)
 
     async def read() -> str:
-        """离线小结果，不制造新的世界效果或大正文。"""
-        return "小型工具结果"
+        """返回足以让高占用请求续问超额的离线正文，不产生世界效果。"""
+        return "x" * 5000
 
     tools = ToolSet((FunctionTool(read),))
     generation = UsageBackend(
         (
             ModelResponse(
                 Message(MessageRole.ASSISTANT, (ToolCallBlock("read", "read"),)),
-                usage=TokenUsage(7500, 20),
+                usage=TokenUsage(observed_tokens, 20),
             ),
             ModelResponse(Message.assistant("维护后继续处理"), usage=TokenUsage(1500, 20)),
         )

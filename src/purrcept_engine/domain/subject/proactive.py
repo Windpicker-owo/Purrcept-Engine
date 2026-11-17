@@ -1,7 +1,7 @@
 """主动思考的运行期开关、静默期限与主脑唤醒期限，不拥有额外调度循环。
 
 SubjectService 创建本对象，唯一刺激协调者在等待前调用 tick。真实新输入按同库
-接管游标只复位静默期限；主脑实际取批才复位唤醒期限，注意处理不能推迟后者。
+接管游标只复位静默期限；主脑轮次结束后复位唤醒期限，注意处理不能推迟后者。
 任一期限到达且主脑空闲时产生一次刺激；明确睡眠暂停两个期限，起床后重新计时。
 页面切换与接管串行，重启从配置重新计时，不补发停机或忙碌期间错过的多个周期。
 """
@@ -95,12 +95,12 @@ class ProactiveThinking:
                 self.last_error = None
             self.changed.set()
 
-    def foreground_started(self) -> None:
-        """协调者成功取出主脑快照后重置期限，工具请求和注意判断不调用此入口。
+    def foreground_finished(self) -> None:
+        """前台结案后重新等待完整间隔，成功、失败与抢占使用相同起点。
 
         Note:
-            与 tick 在同一协调任务内串行调用，无 await。一次唤醒只重置一次，
-            不因轮内多次模型请求、重试或注意处理而刷新主脑期限。
+            前台在 finally 中同步调用，早于完成通知和协调者重新查询。
+            忙碌时间不计入空闲间隔，轮内请求与注意判断均不刷新此期限。
         """
         now = asyncio.get_running_loop().time()
         self.quiet_deadline = now + self.seconds
@@ -126,7 +126,7 @@ class ProactiveThinking:
         Note:
             输入容量不足时记录 last_error，等待完整间隔再尝试新的周期，不删输入、
             不放宽额度、不热循环。观察冲突同样等待完整间隔，但新输入和注意处理
-            不能复位主脑期限。忙碌期间到期只合并为完成后的一次唤醒。
+            不能复位主脑期限。忙碌期间不累计唤醒，结案后重新等待完整间隔。
         """
         async with self.lock:
             if sleeping:
@@ -166,7 +166,7 @@ class ProactiveThinking:
                 IDLE_STIMULUS_PROMPT.render(
                     {
                         "seconds": self.seconds,
-                        "condition": "没有激活主脑"
+                        "condition": "主脑空闲"
                         if foreground_overdue
                         else "没有新的刺激且注意处理空闲",
                     }

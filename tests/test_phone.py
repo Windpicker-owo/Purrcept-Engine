@@ -82,6 +82,28 @@ class Inputs:
         return await self.store.input_processing(input_id)
 
 
+async def test_screen_off_revokes_control_and_unlock_does_not_restore_session(
+    tmp_path: Path,
+) -> None:
+    """手机沿现有权限帧报告息屏；恢复可连接资格不能自动恢复旧操控会话。"""
+    from purrcept_engine.plugins.phone.protocol import DeviceState
+    from purrcept_engine.values import decode_object
+
+    store = await Store.open(tmp_path / "screen.sqlite3")
+    try:
+        runtime = PhoneRuntime("phone", Inputs(store), store.phone("phone"))
+        peer = DevicePeer()
+        runtime.attach(peer)
+        runtime.control_session = "old-session"
+        for allowed in (False, True):
+            state = DeviceState.model_validate({"control_allowed": allowed, "accessibility": True})
+            runtime.set_device_state(peer, decode_object(state.model_dump_json().encode()))
+            assert runtime.control_session is None
+        assert runtime.snapshot()["online"] is True
+    finally:
+        await store.close()
+
+
 @pytest.mark.asyncio
 async def test_phone_journal_survives_reopen_and_rejects_conflicting_identity(
     tmp_path: Path,

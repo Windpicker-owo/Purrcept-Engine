@@ -158,6 +158,7 @@ class ForegroundService:
                 exc_info=(type(error), error, error.__traceback__),
             )
         finally:
+            self.runtime.proactive.foreground_finished()
             elapsed_ms = (time.perf_counter() - started) * 1000
             logging.getLogger(__name__).info(
                 "[主脑完成] 本轮输入处理结束（状态=%s，耗时 %.2fs）。",

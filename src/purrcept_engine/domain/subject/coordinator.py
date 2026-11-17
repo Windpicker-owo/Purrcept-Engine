@@ -146,7 +146,6 @@ class StimulusCoordinator:
                         )
                         if records:
                             self.runtime.check()
-                            self.runtime.proactive.foreground_started()
                             self.foreground = asyncio.create_task(
                                 self.runtime.foreground_service.run(records),
                                 name="subject-foreground",

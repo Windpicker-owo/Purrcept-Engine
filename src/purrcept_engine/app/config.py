@@ -379,7 +379,7 @@ class SubjectSettings(_Settings):
 
 
 class ContextSettings(_Settings):
-    """配置摘要阈值、近期轮数与 unknown 回执的整轮原文保护时长。
+    """配置摘要阈值、媒体清理大小、近期轮数与 unknown 回执的整轮原文保护时长。
 
     unknown_call_protection_seconds 从最新未知回执起算；过期只撤销自动保护，
     不将未知效果改记为成功，也不解除计划、活动及监管的独立保护。
@@ -389,8 +389,14 @@ class ContextSettings(_Settings):
     summary_target: Fraction = 0.5
     input_reserve_fraction: Annotated[float, Field(ge=0, lt=1, allow_inf_nan=False)] = 0.1
     protected_turns: PositiveInt = 2
+    media_cleanup_threshold_mb: PositiveInt = 30
     unknown_call_protection_seconds: PositiveSeconds = 86400.0
     page_chars: PositiveInt = 8000
+
+    @property
+    def media_cleanup_threshold_bytes(self) -> int:
+        """将历史媒体清理阈值从 MB 换算为实际请求字节数（1 MB = 1,000,000 字节）。"""
+        return self.media_cleanup_threshold_mb * 1_000_000
 
     @model_validator(mode="after")
     def _summary_target_precedes_trigger(self) -> Self:

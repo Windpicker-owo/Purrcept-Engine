@@ -6,9 +6,9 @@
  * - 所有角色称呼均从服务端动态配置传入，未配置时优雅回退为中性文案。
  */
 import { useEffect, useRef, useState, type ReactElement } from "react";
-import { AnimatePresence, motion, MotionConfig } from "motion/react";
+import { AnimatePresence, motion, MotionConfig, useReducedMotionConfig, type Transition } from "motion/react";
 import { ActionPath, Button, Icon, Mascot, STATES, transitions } from "@purrcept/cel";
-import type { ActionPathNode } from "@purrcept/cel";
+import type { ActionPathNode, AgentState } from "@purrcept/cel";
 import type { PanelClient, PanelState } from "../client";
 import type { Action, Snapshot } from "../contracts";
 import type { NotebookFileSummary } from "../model/admin";
@@ -59,6 +59,79 @@ function stripMarkdownPreview(raw: string): string {
   const joined = lines.join(" ").trim();
   if (!joined) return "这页手账已创建，点击下方入口即可展开完整纸面排版或继续添笔。";
   return joined.length > 120 ? `${joined.slice(0, 120)}…` : joined;
+}
+
+const HEADLINE_WIPE_TRANSITION: Transition = { type: "tween", duration: 0.42, ease: [0.22, 1, 0.36, 1] };
+const HEADLINE_SCAN_TRANSITION: Transition = {
+  left: HEADLINE_WIPE_TRANSITION,
+  opacity: { type: "tween", duration: 0.42, times: [0, 0.12, 0.82, 1], ease: "linear" },
+};
+const BANNER_FX_TRANSITION: Transition = { type: "tween", duration: 0.38, ease: [0.22, 1, 0.36, 1] };
+const BANNER_SHEEN_TRANSITION: Transition = {
+  left: { type: "tween", duration: 0.52, ease: [0.22, 1, 0.36, 1] },
+  opacity: { type: "tween", duration: 0.52, times: [0, 0.14, 0.76, 1], ease: "linear" },
+};
+
+/**
+ * 为状态/文案切换提供从 0 起步的严格单调序号：
+ * 首次挂载为 0（不播放切换扫掠），每次真实变化后同步递增以避免快速来回切换时 AnimatePresence key 冲突。
+ */
+function useTransitionSeq<T>(value: T): number {
+  const committedRef = useRef<{ value: T; seq: number }>({ value, seq: 0 });
+  const changed = !Object.is(committedRef.current.value, value);
+  const seq = changed ? committedRef.current.seq + 1 : committedRef.current.seq;
+
+  useEffect(() => {
+    if (!Object.is(committedRef.current.value, value)) {
+      committedRef.current = { value, seq: committedRef.current.seq + 1 };
+    }
+  }, [value]);
+
+  return seq;
+}
+
+function HomeHeadline({
+  headline,
+  state,
+  reduced,
+}: {
+  headline: string;
+  state: AgentState;
+  reduced: boolean;
+}): ReactElement {
+  const seq = useTransitionSeq(headline);
+  const family = STATES[state].family;
+
+  return (
+    <h1 aria-live="polite" className="home-headline" data-family={family} data-state={state}>
+      <span className="visually-hidden">{headline}</span>
+      <span className="home-headline-track" aria-hidden="true">
+        <AnimatePresence initial={false}>
+          <motion.span
+            key={seq}
+            className="home-headline-text"
+            initial={reduced ? { opacity: 0 } : { clipPath: "inset(0 100% 0 0)", opacity: 0.45 }}
+            animate={reduced ? { opacity: 1 } : { clipPath: "inset(0 0% 0 0)", opacity: 1 }}
+            exit={reduced ? { opacity: 0 } : { clipPath: "inset(0 0 0 100%)", opacity: 0.25 }}
+            transition={reduced ? transitions.color : HEADLINE_WIPE_TRANSITION}
+          >
+            {headline}
+          </motion.span>
+        </AnimatePresence>
+        {!reduced && seq > 0 ? (
+          <motion.span
+            key={`scan-${seq}`}
+            className="home-headline-scanline"
+            data-family={family}
+            data-state={state}
+            initial={{ left: "0%", opacity: 0 }}
+            animate={{ left: ["0%", "100%"], opacity: [0, 1, 1, 0] }}
+            transition={HEADLINE_SCAN_TRANSITION}
+          />
+        ) : null}
+      </span>
+    </h1>
+  );
 }
 
 function pathNodes(action: Action, snapshot: Snapshot, selfLabel: string): ActionPathNode[] {
@@ -112,6 +185,11 @@ export function Home({
   const recent = timelineItems(snapshot, state.entries, "all").slice(0, 5);
   const now = Date.now();
   const dynamicBanner = isDynamicBannerState(agent.state);
+  const reduced = useReducedMotionConfig() ?? false;
+  const stateSeq = useTransitionSeq(agent.state);
+  const detailSeq = useTransitionSeq(agent.detail);
+  const moodText = moodCaption(agent.state);
+  const moodSeq = useTransitionSeq(moodText);
 
   // 静默读取真实手账列表供桌角活页本预览；合成测试环境无此接口时安全跳过。
   useEffect(() => {
@@ -188,8 +266,21 @@ export function Home({
               ) : null}
             </div>
 
-            <h1 aria-live="polite">{agent.headline}</h1>
-            <p className="home-detail">{agent.detail}</p>
+            <HomeHeadline headline={agent.headline} state={agent.state} reduced={reduced} />
+            <div className="home-detail-slot">
+              <AnimatePresence initial={false}>
+                <motion.p
+                  key={detailSeq}
+                  className="home-detail"
+                  initial={reduced ? { opacity: 0 } : { opacity: 0, y: 5 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={reduced ? { opacity: 0 } : { opacity: 0, y: -4 }}
+                  transition={reduced ? transitions.color : transitions.snap}
+                >
+                  {agent.detail}
+                </motion.p>
+              </AnimatePresence>
+            </div>
 
             <AnimatePresence initial={false}>
               {attention.length > 0 && primaryAttention ? (
@@ -236,7 +327,20 @@ export function Home({
 
           <div className="home-mascot-col" data-state={agent.state}>
             <span className="mascot-mood-tag" aria-hidden="true">
-              {moodCaption(agent.state)}
+              <span className="mascot-mood-slot">
+                <AnimatePresence initial={false}>
+                  <motion.span
+                    key={moodSeq}
+                    className="mascot-mood-text"
+                    initial={reduced ? { opacity: 0 } : { opacity: 0, y: 4, scale: 0.94 }}
+                    animate={{ opacity: 1, y: 0, scale: 1 }}
+                    exit={reduced ? { opacity: 0 } : { opacity: 0, y: -3, scale: 0.96 }}
+                    transition={reduced ? transitions.color : transitions.snap}
+                  >
+                    {moodText}
+                  </motion.span>
+                </AnimatePresence>
+              </span>
             </span>
             <div className="home-mascot" data-state={agent.state} aria-hidden="true">
               <Mascot state={agent.state} gazeTarget={gaze} />
@@ -251,13 +355,36 @@ export function Home({
           data-family={STATES[agent.state].family}
           data-dynamic={dynamicBanner ? "true" : "false"}
         >
-          <div className="home-banner-fx" aria-hidden="true">
-            <span className="banner-wash" />
-            <span className="banner-flow-a" />
-            <span className="banner-flow-b" />
-            <span className="banner-dots" />
-            <span className="banner-top-gleam" />
-          </div>
+          <AnimatePresence initial={false}>
+            <motion.div
+              key={agent.state}
+              className="home-banner-fx"
+              data-state={agent.state}
+              aria-hidden="true"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              transition={reduced ? transitions.color : BANNER_FX_TRANSITION}
+            >
+              <span className="banner-wash" />
+              <span className="banner-flow-a" />
+              <span className="banner-flow-b" />
+              <span className="banner-dots" />
+              <span className="banner-top-gleam" />
+            </motion.div>
+          </AnimatePresence>
+          {!reduced && stateSeq > 0 ? (
+            <motion.span
+              key={`banner-sheen-${stateSeq}`}
+              className="banner-transition-sheen"
+              data-state={agent.state}
+              data-family={STATES[agent.state].family}
+              aria-hidden="true"
+              initial={{ left: "-24%", opacity: 0 }}
+              animate={{ left: ["-24%", "118%"], opacity: [0, 0.78, 0.78, 0] }}
+              transition={BANNER_SHEEN_TRANSITION}
+            />
+          ) : null}
 
           {snapshot !== null && latest !== undefined ? (
             <>
@@ -270,7 +397,20 @@ export function Home({
                         ? "LIVE // 当前行动"
                         : "RECENT // 最近一次行动"}
                   </span>
-                  <span className="banner-rhythm-tag">{bannerRhythmLabel(agent.state)}</span>
+                  <span className="banner-rhythm-slot">
+                    <AnimatePresence initial={false}>
+                      <motion.span
+                        key={agent.state}
+                        className="banner-rhythm-tag"
+                        initial={reduced ? { opacity: 0 } : { opacity: 0, x: -6 }}
+                        animate={{ opacity: 1, x: 0 }}
+                        exit={reduced ? { opacity: 0 } : { opacity: 0, x: 6 }}
+                        transition={reduced ? transitions.color : transitions.snap}
+                      >
+                        {bannerRhythmLabel(agent.state)}
+                      </motion.span>
+                    </AnimatePresence>
+                  </span>
                 </div>
                 <Button variant="ghost" onClick={() => go({ page: "timeline", id: latest.action_id })}>
                   查看这次行动
@@ -292,17 +432,54 @@ export function Home({
             <>
               <div className="home-path-heading">
                 <div className="home-path-badges">
-                  <span className="pc-eyebrow">{bannerRhythmLabel(agent.state)}</span>
+                  <span className="banner-rhythm-slot">
+                    <AnimatePresence initial={false}>
+                      <motion.span
+                        key={agent.state}
+                        className="pc-eyebrow"
+                        initial={reduced ? { opacity: 0 } : { opacity: 0, x: -6 }}
+                        animate={{ opacity: 1, x: 0 }}
+                        exit={reduced ? { opacity: 0 } : { opacity: 0, x: 6 }}
+                        transition={reduced ? transitions.color : transitions.snap}
+                      >
+                        {bannerRhythmLabel(agent.state)}
+                      </motion.span>
+                    </AnimatePresence>
+                  </span>
                 </div>
-                <span className="banner-standby-title">{stateWord(agent.state)}</span>
+                <span className="banner-standby-slot">
+                  <AnimatePresence initial={false}>
+                    <motion.span
+                      key={agent.state}
+                      className="banner-standby-title"
+                      initial={reduced ? { opacity: 0 } : { opacity: 0, y: 4 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      exit={reduced ? { opacity: 0 } : { opacity: 0, y: -4 }}
+                      transition={reduced ? transitions.color : transitions.snap}
+                    >
+                      {stateWord(agent.state)}
+                    </motion.span>
+                  </AnimatePresence>
+                </span>
               </div>
               <div className="home-path-standby">
-                <StateMark state={agent.state} label={agent.headline} />
-                <span className="item-subtitle">
-                  {snapshot === null
-                    ? "连上本机服务后，这里会实时铺开她的行动节点与回执轨迹。"
-                    : `当前尚无近期行动节点；有新消息或任务触发时，${selfName}的行动轨迹会在这里展开。`}
-                </span>
+                <AnimatePresence initial={false}>
+                  <motion.div
+                    key={`${agent.state}-${agent.headline}`}
+                    className="home-path-standby-inner"
+                    initial={reduced ? { opacity: 0 } : { opacity: 0, y: 4 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={reduced ? { opacity: 0 } : { opacity: 0, y: -4 }}
+                    transition={reduced ? transitions.color : transitions.snap}
+                  >
+                    <StateMark state={agent.state} label={agent.headline} />
+                    <span className="item-subtitle">
+                      {snapshot === null
+                        ? "连上本机服务后，这里会实时铺开她的行动节点与回执轨迹。"
+                        : `当前尚无近期行动节点；有新消息或任务触发时，${selfName}的行动轨迹会在这里展开。`}
+                    </span>
+                  </motion.div>
+                </AnimatePresence>
               </div>
             </>
           )}

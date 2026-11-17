@@ -80,7 +80,8 @@ api_key = ""
 | `[subject] foreground` | 必填 | 主脑连续对话与行动引用的生成模型名。 |
 | `[subject] reflection` | 同 `foreground` | 后台行为评审引用的生成模型名。 |
 | `[subject] attention` | `None` | 收件箱合批注意评估引用的模型名（可填同一个生成模型，或独立 `kind = "decision"` 专用判断模型）。 |
-| `[subject] proactive_thinking` | `false` | 空闲满 `proactive_idle_seconds`（默认 `300.0` 秒）时是否自动唤醒思考一次。 |
+| `[subject] proactive_thinking` | `false` | 从主脑轮次结束起空闲满 `proactive_idle_seconds`（默认 `300.0` 秒）时是否自动唤醒思考一次。 |
+| `[context] media_cleanup_threshold_mb` | `30` | 完整 SDK 请求的 UTF-8 JSON 超过此 MB 数时，一次清理已完成历史中的媒体；包含 base64 编码，1 MB = 1,000,000 字节。当前轮次媒体保留。 |
 | `[subject.character]` | 全空 | 固定角色卡六项：`name`、`one_line`、`persona`、`relationship`、`speech_style`、`notes`。 |
 
 ## 4. 启用内置插件

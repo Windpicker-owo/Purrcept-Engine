@@ -217,6 +217,7 @@ async def build_subject(
                 retry=config.subject.summary_retry,
                 output_tokens=settings.max_output_tokens,
                 observe_usage=summary_usage.observe,
+                media_cleanup_threshold_bytes=config.context.media_cleanup_threshold_bytes,
                 diagnostic_bytes=diagnostic_bytes,
                 can_start=can_start,
                 compiler=compile_materials,
@@ -425,6 +426,7 @@ async def build_subject(
         can_start=can_start,
         prepare_history=history,
         compact_sleep_history=compact_sleep_history,
+        media_cleanup_threshold_bytes=config.context.media_cleanup_threshold_bytes,
     )
     background = BackgroundService(
         store,

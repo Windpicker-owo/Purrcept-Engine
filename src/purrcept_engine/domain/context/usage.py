@@ -3,7 +3,7 @@
 应用按用途、端点及模型隔离 UsageMeter，并在启动时从同库恢复最后锚点。
 只有完整静态输入及消息前缀逐值一致时，旧输入才沿用实际 input_tokens，
 新增消息仍采用唯一内置估算器。摘要、工具目录变化或媒体过期改变前缀时，
-整份新布局重新估算。另存已提交历史摘要以匹配真实超额观察：新输入变化时
+整份新布局重新估算。另存已提交历史摘要以匹配实际高占用观察：新输入变化时
 仍可触发同历史维护，但不把旧用量套给新请求。这里不推断 tokenizer 或取得客户端。
 """
 
@@ -35,11 +35,12 @@ class UsageAnchor:
         prefix: 按顺序冻结的完整消息摘要，不包含请求局部动态尾部。
         input_tokens: 服务端报告的完整输入用量，包含缓存命中的输入。
         history_digest: 请求所恢复的已提交检查点摘要；仅供同历史维护触发，不替代输入计量。
+        tail_tokens: 当时动态尾部的本地估算，用于后续替换尾部的净增量核算。
 
     Note:
         动态尾部虽不参与前缀匹配，其当时用量仍包含在 input_tokens 中。
-        不估算或扣除这份旧尾部；新尾部按新材料计入，保守余量不会逐轮累积，
-        因为每次有效响应都会重新提供完整实际输入用量。输出和推理用量不当作
+        只把新材料估算减去旧尾部估算的差值加到实际用量，避免重复计入整份尾部。
+        差值仍是规划估计，不声称取得了尾部的服务端精确用量。输出和推理用量不当作
         已知输入，后续实际重放的响应消息属于新增 payload。
     """
 
@@ -50,6 +51,7 @@ class UsageAnchor:
     prefix: tuple[str, ...]
     input_tokens: int
     history_digest: str | None = None
+    tail_tokens: int = 0
 
     def __post_init__(self) -> None:
         """拒绝无效持久字段，损坏锚点不能成为零用量或跨协议容量凭据。"""
@@ -57,6 +59,12 @@ class UsageAnchor:
             raise ValueError("用量锚点身份或协议无效。")
         if isinstance(self.input_tokens, bool) or self.input_tokens <= 0:
             raise ValueError("用量锚点必须来自正的实际输入用量。")
+        if (
+            isinstance(self.tail_tokens, bool)
+            or not isinstance(self.tail_tokens, int)
+            or self.tail_tokens < 0
+        ):
+            raise ValueError("动态尾部估算必须为非负整数。")
         digests = (self.static_digest, *self.prefix)
         if self.history_digest is not None:
             digests = (*digests, self.history_digest)
@@ -98,7 +106,7 @@ class UsageStore(Protocol):
 
 @dataclass(frozen=True, slots=True)
 class UsageEstimate:
-    """容量预检的实际基线与新材料估算，零基线表示没有可复用用量。"""
+    """容量预检的实际基线与净增量；尾部缩小时增量可以为负。"""
 
     input_tokens: int
     observed_tokens: int = 0
@@ -186,7 +194,7 @@ class UsageMeter:
         self.anchor = anchor if anchor is None or anchor.compiler == compiler else None
 
     def estimate(self, payload: JsonObject) -> UsageEstimate:
-        """复用匹配前缀的实际完整输入，只估算其后的新消息及动态尾部。
+        """复用匹配前缀的实际完整输入，仅追加新消息与动态尾部替换的净增量。
 
         Args:
             payload: 本次实际 SDK 输入，调用期间不得修改。
@@ -210,9 +218,9 @@ class UsageMeter:
             if isinstance(raw, list):
                 added = raw[len(anchor.prefix) :]
                 delta: JsonObject = {field: added}
-                new_tokens = estimate_tokens(delta) if added else 0
+                new_tokens = (estimate_tokens(delta) if added else 0) - anchor.tail_tokens
                 return UsageEstimate(
-                    anchor.input_tokens + new_tokens,
+                    max(1, anchor.input_tokens + new_tokens),
                     anchor.input_tokens,
                     new_tokens,
                     anchor.request_id,
@@ -229,7 +237,7 @@ class UsageMeter:
             checkpoint_json: 当前待维护的已提交历史原件。
 
         Returns:
-            先前成功响应的完整实际输入，或 None。新输入变化不抹掉超额观察，
+            先前成功响应的完整实际输入，或 None。新输入变化不抹掉高占用观察，
             但这份旧用量不能冒充新请求估算或摘要候选的计量结果。
         """
         anchor = self.anchor
@@ -276,6 +284,14 @@ class UsageMeter:
                 reminder.key == ENGINE_STATE_REMINDER_KEY for reminder in request.reminders
             )
             stable = prefix[:-1] if has_tail else prefix
+            raw_messages = payload[field]
+            if has_tail and not isinstance(raw_messages, list):
+                raise TypeError("动态尾部只能出现在 SDK 消息列表中。")
+            tail_tokens = (
+                estimate_tokens({field: raw_messages[-1:]})
+                if has_tail and isinstance(raw_messages, list)
+                else 0
+            )
             assert response.usage is not None
             history_digest = request.metadata.get("engine.history_digest")
             return UsageAnchor(
@@ -286,6 +302,7 @@ class UsageMeter:
                 stable,
                 response.usage.input_tokens,
                 history_digest if isinstance(history_digest, str) else None,
+                tail_tokens,
             )
 
         anchor = await prepare_off_loop(freeze)

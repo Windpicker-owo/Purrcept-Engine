@@ -95,7 +95,7 @@ class CoordinatorStore(SessionStore, RequestEvidenceSink, MediaStore, Protocol):
         Args:
             submission: 调度器生成的可信定时事实，不携带停音或抢占信号。
             expected_sequence: 计时所观察的最新接管序号。
-            foreground_overdue: 主脑未激活期限已到；允许新刺激和未完成注意判断，
+            foreground_overdue: 主脑空闲期限已到；允许新刺激和未完成注意判断，
                 但已有主脑唤醒意图或在处理的轮次时仍不接管。
 
         Returns:

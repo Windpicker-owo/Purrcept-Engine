@@ -11,7 +11,13 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
-from purrcept_core.models import Message, ModelEventSink, ModelRequest, ModelResponse
+from purrcept_core.models import (
+    Message,
+    ModelEventSink,
+    ModelRequest,
+    ModelResponse,
+    ModelUnavailableError,
+)
 
 from purrcept_engine import EngineConfig, EngineHost, InputSource, InputSubmission
 from purrcept_engine.app.panel import ControlRequest
@@ -31,6 +37,7 @@ class _Model:
     )
     release: asyncio.Event | None = None
     response: str = "内部想法，不对外发送。"
+    error: Exception | None = None
 
     async def generate(
         self, request: ModelRequest, *, model: str, emit: ModelEventSink | None = None
@@ -38,6 +45,8 @@ class _Model:
         self.requests.put_nowait(request)
         if self.release is not None:
             await self.release.wait()
+        if self.error is not None:
+            raise self.error
         return ModelResponse(Message.assistant(self.response))
 
 
@@ -63,6 +72,7 @@ def _config(
                 "attention_batch_seconds": 0.01,
                 "proactive_thinking": enabled,
                 "proactive_idle_seconds": seconds,
+                "foreground_retry": {"attempts": 1},
             },
         },
         base_dir=path,
@@ -169,6 +179,44 @@ async def test_idle_stimulus_is_dated_wakes_without_attention_and_does_not_pile_
     assert _idle_count(tmp_path) == count
 
 
+@pytest.mark.parametrize("failed", [False, True])
+async def test_long_foreground_waits_full_interval_after_completion(
+    tmp_path: Path, failed: bool
+) -> None:
+    """轮次超过空闲间隔后，成功和模型失败都不能在结案后立即再次唤醒。"""
+    seconds = 0.4
+    release = asyncio.Event()
+    model = _Model(
+        release=release,
+        error=ModelUnavailableError("离线失败替身", provider="offline") if failed else None,
+    )
+    config = _config(tmp_path, enabled=True, seconds=seconds)
+    # 失败会唤起后台反思；使用独立后端，队列只观察前台真实唤醒。
+    config = config.model_copy(
+        update={
+            "models": {**config.models, "reflection": config.models["main"]},
+            "subject": config.subject.model_copy(update={"reflection": "reflection"}),
+        }
+    )
+    host = EngineHost(config, generation_backends={"main": model, "reflection": _Model()})
+    await host.start()
+    try:
+        await host.submit(_input("long-turn"))
+        await asyncio.wait_for(model.requests.get(), 5)
+        await asyncio.sleep(seconds * 1.2)
+        assert model.requests.empty() and _idle_count(tmp_path) == 0
+        ended_at = asyncio.get_running_loop().time()
+        release.set()
+        with pytest.raises(TimeoutError):
+            await asyncio.wait_for(model.requests.get(), seconds * 0.65)
+        await asyncio.wait_for(model.requests.get(), 5)
+        assert asyncio.get_running_loop().time() - ended_at >= seconds
+        assert _idle_count(tmp_path) == 1
+    finally:
+        release.set()
+        await host.close()
+
+
 async def test_new_stimulus_resets_idle_interval_after_processing(tmp_path: Path) -> None:
     model = _Model()
     seconds = 0.3
@@ -191,10 +239,10 @@ async def test_new_stimulus_resets_idle_interval_after_processing(tmp_path: Path
         await host.close()
 
 
-async def test_continuous_observe_inputs_wake_since_last_foreground_activation(
+async def test_continuous_observe_inputs_wake_since_last_foreground_completion(
     tmp_path: Path,
 ) -> None:
-    """连续背景输入只重置无刺激期限，实际主脑唤醒独立重置另一个期限。"""
+    """连续背景输入只重置静默期限，主脑结案独立重置空闲期限。"""
     seconds = 0.5
     model = _Model()
     attention = _Model(response='{"attention":"observe"}')
@@ -229,7 +277,7 @@ async def test_continuous_observe_inputs_wake_since_last_foreground_activation(
         # 主脑取批早于传输到达，允许两次材料准备耗时不同，仍不能沿启动旧期限早醒。
         assert asyncio.get_running_loop().time() - activated_at >= seconds * 0.9
         text = request.messages[-1].text
-        assert "没有激活主脑" in text and "没有新的刺激" not in text
+        assert "主脑空闲" in text and "没有新的刺激" not in text
         assert admitted.input_id in text and "真实新刺激" in text
         assert attention.requests.qsize() >= 3 and _idle_count(tmp_path) == 1
     finally:
@@ -257,7 +305,7 @@ async def test_foreground_timeout_wakes_during_attention_and_late_result_is_stal
         await asyncio.wait_for(attention.requests.get(), 5)
         request = await asyncio.wait_for(model.requests.get(), 1)
         assert admitted.input_id in request.messages[-1].text
-        assert "没有激活主脑" in request.messages[-1].text
+        assert "主脑空闲" in request.messages[-1].text
         attention_release.set()
         await asyncio.sleep(0.45)
         assert model.requests.empty() and _idle_count(tmp_path) == 1

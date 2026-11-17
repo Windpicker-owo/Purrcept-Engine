@@ -82,6 +82,18 @@ class PhoneLedger:
                     ).fetchone()
                     if associated is not None:
                         message.update(turn_id=str(associated[0]), turn_state=str(associated[1]))
+                        if processing[1] == "processed" and associated[1] == "succeeded":
+                            # 一轮可能合并多条输入，行动只锚定其中一条。沿确切输入、
+                            # 调用和出站事件关联查真实接管事实，不能用空闲或缺少气泡推断。
+                            replied = c.execute(
+                                "SELECT EXISTS(SELECT 1 FROM turn_inputs ti "
+                                "JOIN actions a ON a.input_id=ti.input_id "
+                                "JOIN calls call ON call.action_id=a.action_id "
+                                "JOIN phone_events event ON event.identity='out:'||call.call_id "
+                                "WHERE ti.turn_id=? AND event.plugin=? AND event.device_id=?)",
+                                (associated[0], self._plugin, device_id),
+                            ).fetchone()[0]
+                            message["replied"] = bool(replied)
                     # 最近一次真实派发保留在消息详情中。短行动可能已在两次实时
                     # 采样之间结束，不能为了播放动画而伪造仍在执行。
                     last_call = c.execute(

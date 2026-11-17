@@ -176,7 +176,25 @@ code { font: var(--pc-font-mono); font-variant-numeric: tabular-nums; background
 .home-overview { position: relative; z-index: 1; display: grid; grid-template-columns: minmax(0, 7fr) minmax(0, 5fr); align-items: end; gap: var(--pc-space-lg); min-height: calc(var(--pc-space-4xl) * 2); }
 .home-copy { display: flex; flex-direction: column; align-items: flex-start; gap: var(--pc-space-sm); min-width: 0; padding: var(--pc-space-lg) 0 var(--pc-space-lg); }
 .home-kicker { display: flex; flex-wrap: wrap; align-items: center; gap: var(--pc-space-sm); }
-.home-copy h1 { font: var(--pc-font-display); font-variant-numeric: tabular-nums; letter-spacing: var(--pc-font-display-letter-spacing); text-wrap: balance; }
+.home-copy h1 { width: 100%; font: var(--pc-font-display); font-variant-numeric: tabular-nums; letter-spacing: var(--pc-font-display-letter-spacing); text-wrap: balance; }
+.home-headline-track { position: relative; display: inline-grid; max-width: 100%; overflow-x: clip; padding-block: 4px; margin-block: -4px; vertical-align: bottom; }
+.home-headline-text { grid-area: 1 / 1; display: block; min-width: 0; }
+.home-headline-scanline { position: absolute; top: 2px; bottom: 2px; left: 0; width: 3px; border-radius: var(--pc-radius-full); background-color: var(--pc-color-brand-signal); transform: translateX(-50%) skewX(-10deg); pointer-events: none; z-index: 2; }
+.home-headline-scanline::before { content: ""; position: absolute; top: 0; bottom: 0; right: 100%; width: 20px; background-color: var(--pc-color-brand-container); opacity: 0.62; border-top-left-radius: var(--pc-radius-xs); border-bottom-left-radius: var(--pc-radius-xs); }
+.home-headline-scanline[data-family="active"] { background-color: var(--pc-color-active-signal); }
+.home-headline-scanline[data-family="active"]::before { background-color: var(--pc-color-active-container); }
+.home-headline-scanline[data-state="reasoning"] { background-color: var(--pc-color-brand-signal); }
+.home-headline-scanline[data-state="reasoning"]::before { background-color: var(--pc-color-blush-container); }
+.home-headline-scanline[data-family="waiting"] { background-color: var(--pc-color-waiting-signal); }
+.home-headline-scanline[data-family="waiting"]::before { background-color: var(--pc-color-waiting-container); }
+.home-headline-scanline[data-family="success"] { background-color: var(--pc-color-success-signal); }
+.home-headline-scanline[data-family="success"]::before { background-color: var(--pc-color-success-container); }
+.home-headline-scanline[data-family="failed"] { background-color: var(--pc-color-failed-signal); }
+.home-headline-scanline[data-family="failed"]::before { background-color: var(--pc-color-failed-container); }
+.home-headline-scanline[data-family="paused"] { background-color: var(--pc-color-paused-signal); }
+.home-headline-scanline[data-family="paused"]::before { background-color: var(--pc-color-paused-container); }
+.home-detail-slot { position: relative; display: grid; width: 100%; min-width: 0; }
+.home-detail-slot > .home-detail { grid-area: 1 / 1; margin: 0; }
 .home-detail { color: var(--pc-color-ink-secondary); font: var(--pc-font-body-long); font-variant-numeric: tabular-nums; max-width: 40em; }
 
 /* 斜贴平安签与按需弹出的撕票待办条（替代空白大卡片） */
@@ -189,22 +207,41 @@ code { font: var(--pc-font-mono); font-variant-numeric: tabular-nums; background
 /* 吉祥物后景层：下颌自然没入下方前景横幅（z-index: 2），上沿紧贴腮红下方形成“探出头”遮挡效果 */
 .home-mascot-col { position: relative; justify-self: center; display: flex; flex-direction: column; align-items: center; width: min(calc(100% - var(--pc-space-xl) * 2), calc(var(--pc-space-4xl) * 3)); min-width: 0; margin-bottom: -2px; clip-path: inset(-36px -24px -44px -24px); }
 .mascot-mood-tag { align-self: flex-end; margin-bottom: calc(var(--pc-space-xs) * -1); z-index: 2; padding: 3px var(--pc-space-sm); border: 1.5px solid var(--pc-color-ink); border-radius: var(--pc-shape-bubble-agent); background: var(--pc-color-surface); color: var(--pc-color-ink); font: var(--pc-font-caption); font-weight: 600; font-variant-numeric: tabular-nums; box-shadow: var(--pc-shadow-sticker); transform: rotate(2deg); transition: transform var(--pc-motion-snap-duration) var(--pc-motion-snap-easing); }
+.mascot-mood-slot { position: relative; display: inline-grid; align-items: center; }
+.mascot-mood-text { grid-area: 1 / 1; display: inline-block; white-space: nowrap; }
 .home-mascot { line-height: 0; display: flex; justify-content: center; width: 100%; max-width: 100%; min-width: 0; transition: transform var(--pc-motion-snap-duration) var(--pc-motion-snap-easing); }
 .home-mascot[data-state="paused"] { transform: translateY(6px); }
 .home-mascot .pc-mascot { width: 100%; max-width: 100%; }
 
 /* 舞台前景横幅（z-index: 2 不透明底面遮挡吉祥物下半部 + 状态驱动静态/动态色彩层） */
-.home-path { position: relative; z-index: 2; overflow: hidden; display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 3fr); align-items: center; gap: var(--pc-space-lg); min-height: calc(var(--pc-space-3xl) + var(--pc-space-lg)); padding: var(--pc-space-md) var(--pc-space-lg); border: 2px solid var(--pc-color-ink); border-radius: var(--pc-radius-xl); background-color: var(--pc-color-surface); box-shadow: var(--pc-shadow-panel); box-sizing: border-box; transition: border-color var(--pc-motion-color-duration) var(--pc-motion-color-easing), box-shadow var(--pc-motion-snap-duration) var(--pc-motion-snap-easing); }
+.home-path { position: relative; z-index: 2; overflow: hidden; display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 3fr); align-items: center; gap: var(--pc-space-lg); min-height: calc(var(--pc-space-3xl) + var(--pc-space-lg)); padding: var(--pc-space-md) var(--pc-space-lg); border: 2px solid var(--pc-color-ink); border-radius: var(--pc-radius-xl); background-color: var(--pc-color-surface); box-shadow: var(--pc-shadow-panel); box-sizing: border-box; transition: border-color var(--pc-motion-move-duration) var(--pc-motion-move-easing), box-shadow var(--pc-motion-move-duration) var(--pc-motion-move-easing); }
 .home-path-heading, .home-path-track, .home-path-standby, .path-summary-note { position: relative; z-index: 1; min-width: 0; }
 .home-path-heading { display: flex; flex-direction: column; align-items: flex-start; gap: var(--pc-space-xs); }
 .home-path-badges { display: flex; flex-wrap: wrap; align-items: center; gap: var(--pc-space-xs); min-width: 0; }
+.banner-rhythm-slot, .banner-standby-slot { position: relative; display: inline-grid; align-items: center; min-width: 0; }
+.banner-rhythm-slot > *, .banner-standby-slot > * { grid-area: 1 / 1; }
 .banner-rhythm-tag { display: inline-flex; align-items: center; padding: 1px var(--pc-space-xs); border: 1px solid var(--pc-color-outline); border-radius: var(--pc-radius-full); background-color: var(--pc-color-surface); color: var(--pc-color-ink-secondary); font: var(--pc-font-hud); font-variant-numeric: tabular-nums; letter-spacing: var(--pc-font-hud-letter-spacing); overflow-wrap: anywhere; }
 .banner-standby-title { font: var(--pc-font-label); font-variant-numeric: tabular-nums; font-weight: 700; color: var(--pc-color-ink); }
-.home-path-standby { display: flex; flex-direction: column; align-items: flex-start; gap: var(--pc-space-xxs); }
+.home-path-standby { position: relative; display: grid; width: 100%; min-width: 0; }
+.home-path-standby-inner { grid-area: 1 / 1; display: flex; flex-direction: column; align-items: flex-start; gap: var(--pc-space-xxs); width: 100%; min-width: 0; }
 
 /* 横幅内部动态/静态美术分层（全部承载于不透明 .home-path 之上，零文字对比度折损） */
 .home-banner-fx { position: absolute; inset: 0; z-index: 0; pointer-events: none; overflow: hidden; border-radius: inherit; }
 .home-banner-fx > span { position: absolute; pointer-events: none; }
+.banner-transition-sheen { position: absolute; inset-block: -12%; left: 0; width: 14%; transform: skewX(-22deg); background-color: var(--pc-color-surface); pointer-events: none; z-index: 0; }
+.banner-transition-sheen::after { content: ""; position: absolute; inset-block: 0; right: 0; width: 3px; background-color: var(--pc-color-brand-signal); }
+.banner-transition-sheen[data-family="active"] { background-color: var(--pc-color-active-container); }
+.banner-transition-sheen[data-family="active"]::after { background-color: var(--pc-color-active-signal); }
+.banner-transition-sheen[data-state="reasoning"] { background-color: var(--pc-color-brand-container); }
+.banner-transition-sheen[data-state="reasoning"]::after { background-color: var(--pc-color-brand-signal); }
+.banner-transition-sheen[data-family="waiting"] { background-color: var(--pc-color-waiting-container); }
+.banner-transition-sheen[data-family="waiting"]::after { background-color: var(--pc-color-waiting-signal); }
+.banner-transition-sheen[data-family="success"] { background-color: var(--pc-color-success-container); }
+.banner-transition-sheen[data-family="success"]::after { background-color: var(--pc-color-success-signal); }
+.banner-transition-sheen[data-family="failed"] { background-color: var(--pc-color-failed-container); }
+.banner-transition-sheen[data-family="failed"]::after { background-color: var(--pc-color-failed-signal); }
+.banner-transition-sheen[data-family="paused"] { background-color: var(--pc-color-paused-container); }
+.banner-transition-sheen[data-family="paused"]::after { background-color: var(--pc-color-paused-signal); }
 .banner-wash { inset: 0; background-image: var(--pc-gradient-stage); opacity: 0.92; transition: background-color var(--pc-motion-color-duration) var(--pc-motion-color-easing), opacity var(--pc-motion-color-duration) var(--pc-motion-color-easing); }
 .banner-flow-a { inset-block: 0; right: 0; width: 42%; clip-path: polygon(26% 0, 100% 0, 100% 100%, 6% 100%); background-color: var(--pc-color-brand-container); opacity: 0.44; }
 .banner-flow-b { inset-block: 0; right: 0; width: 0; opacity: 0; }
@@ -212,59 +249,59 @@ code { font: var(--pc-font-mono); font-variant-numeric: tabular-nums; background
 .banner-top-gleam { top: 0; inset-inline: 0; height: 3px; background-color: var(--pc-color-brand-signal); opacity: 0.36; }
 
 /* 1. 安静完成与小憩：静态柔和色面，无持续循环动画 */
-.home-path[data-state="completed"] .banner-wash { background-image: none; background-color: var(--pc-color-surface); opacity: 1; }
-.home-path[data-state="completed"] .banner-flow-a { width: 52%; clip-path: polygon(22% 0, 100% 0, 100% 100%, 0 100%); background-color: var(--pc-color-success-container); opacity: 0.88; }
-.home-path[data-state="completed"] .banner-top-gleam { background-color: var(--pc-color-success-signal); opacity: 0.8; }
+.home-banner-fx[data-state="completed"] .banner-wash { background-image: none; background-color: var(--pc-color-surface); opacity: 1; }
+.home-banner-fx[data-state="completed"] .banner-flow-a { width: 52%; clip-path: polygon(22% 0, 100% 0, 100% 100%, 0 100%); background-color: var(--pc-color-success-container); opacity: 0.88; }
+.home-banner-fx[data-state="completed"] .banner-top-gleam { background-color: var(--pc-color-success-signal); opacity: 0.8; }
 
-.home-path[data-state="paused"] .banner-wash { background-image: none; background-color: var(--pc-color-paused-container); opacity: 0.48; }
-.home-path[data-state="paused"] .banner-flow-a { width: 46%; clip-path: polygon(24% 0, 100% 0, 100% 100%, 4% 100%); background-color: var(--pc-color-paused-container); opacity: 0.88; }
-.home-path[data-state="paused"] .banner-top-gleam { background-color: var(--pc-color-paused-signal); opacity: 0.68; }
+.home-banner-fx[data-state="paused"] .banner-wash { background-image: none; background-color: var(--pc-color-paused-container); opacity: 0.48; }
+.home-banner-fx[data-state="paused"] .banner-flow-a { width: 46%; clip-path: polygon(24% 0, 100% 0, 100% 100%, 4% 100%); background-color: var(--pc-color-paused-container); opacity: 0.88; }
+.home-banner-fx[data-state="paused"] .banner-top-gleam { background-color: var(--pc-color-paused-signal); opacity: 0.68; }
 
 /* 2. 专注执行（acting）：疾风青蔚赛璐璐斜切流光扫掠 + 网点微移 */
-.home-path[data-state="acting"] .banner-wash { background-image: none; background-color: var(--pc-color-active-container); opacity: 0.72; }
-.home-path[data-state="acting"] .banner-flow-a { inset-block: -20%; left: 0; right: auto; width: 44%; clip-path: none; background-color: var(--pc-color-brand-container); opacity: 0.92; animation: pc-banner-sweep calc(var(--pc-motion-pulse-duration) * 1.65) var(--pc-motion-color-easing) infinite; }
-.home-path[data-state="acting"] .banner-flow-b { inset-block: -20%; left: 0; right: auto; width: 20%; background-color: var(--pc-color-active-signal); opacity: 0.22; animation: pc-banner-sweep calc(var(--pc-motion-pulse-duration) * 1.65) var(--pc-motion-color-easing) infinite; animation-delay: calc(var(--pc-motion-pulse-duration) * -0.55); }
-.home-path[data-state="acting"] .banner-dots { opacity: 0.78; animation: pc-banner-dots-drift calc(var(--pc-motion-pulse-duration) * 1.5) var(--pc-motion-color-easing) infinite; }
-.home-path[data-state="acting"] .banner-top-gleam { background-color: var(--pc-color-active-signal); opacity: 0.96; }
+.home-banner-fx[data-state="acting"] .banner-wash { background-image: none; background-color: var(--pc-color-active-container); opacity: 0.72; }
+.home-banner-fx[data-state="acting"] .banner-flow-a { inset-block: -20%; left: 0; right: auto; width: 44%; clip-path: none; background-color: var(--pc-color-brand-container); opacity: 0.92; animation: pc-banner-sweep calc(var(--pc-motion-pulse-duration) * 1.65) var(--pc-motion-color-easing) infinite; }
+.home-banner-fx[data-state="acting"] .banner-flow-b { inset-block: -20%; left: 0; right: auto; width: 20%; background-color: var(--pc-color-active-signal); opacity: 0.22; animation: pc-banner-sweep calc(var(--pc-motion-pulse-duration) * 1.65) var(--pc-motion-color-easing) infinite; animation-delay: calc(var(--pc-motion-pulse-duration) * -0.55); }
+.home-banner-fx[data-state="acting"] .banner-dots { opacity: 0.78; animation: pc-banner-dots-drift calc(var(--pc-motion-pulse-duration) * 1.5) var(--pc-motion-color-easing) infinite; }
+.home-banner-fx[data-state="acting"] .banner-top-gleam { background-color: var(--pc-color-active-signal); opacity: 0.96; }
 
 /* 3. 思考与回顾记忆（reasoning）：晴空蓝 × 手账暖桃双色呼吸潮汐交融 */
 .home-path[data-state="reasoning"] { box-shadow: var(--pc-shadow-notebook); }
-.home-path[data-state="reasoning"] .banner-wash { background-image: none; background-color: var(--pc-color-paper-blush); opacity: 0.62; }
-.home-path[data-state="reasoning"] .banner-flow-a { top: -60%; bottom: -60%; left: -10%; right: auto; width: 66%; clip-path: none; border-radius: var(--pc-radius-full); background-color: var(--pc-color-brand-container); opacity: 0.9; animation: pc-banner-wave-a calc(var(--pc-motion-pulse-duration) * 2) var(--pc-motion-color-easing) infinite alternate; }
-.home-path[data-state="reasoning"] .banner-flow-b { top: -60%; bottom: -60%; right: -8%; left: auto; width: 62%; border-radius: var(--pc-radius-full); background-color: var(--pc-color-blush-container); opacity: 0.92; animation: pc-banner-wave-b calc(var(--pc-motion-pulse-duration) * 2) var(--pc-motion-color-easing) infinite alternate; }
-.home-path[data-state="reasoning"] .banner-top-gleam { opacity: 0.92; animation: pc-banner-gleam-think calc(var(--pc-motion-pulse-duration) * 2) var(--pc-motion-color-easing) infinite alternate; }
+.home-banner-fx[data-state="reasoning"] .banner-wash { background-image: none; background-color: var(--pc-color-paper-blush); opacity: 0.62; }
+.home-banner-fx[data-state="reasoning"] .banner-flow-a { top: -60%; bottom: -60%; left: -10%; right: auto; width: 66%; clip-path: none; border-radius: var(--pc-radius-full); background-color: var(--pc-color-brand-container); opacity: 0.9; animation: pc-banner-wave-a calc(var(--pc-motion-pulse-duration) * 2) var(--pc-motion-color-easing) infinite alternate; }
+.home-banner-fx[data-state="reasoning"] .banner-flow-b { top: -60%; bottom: -60%; right: -8%; left: auto; width: 62%; border-radius: var(--pc-radius-full); background-color: var(--pc-color-blush-container); opacity: 0.92; animation: pc-banner-wave-b calc(var(--pc-motion-pulse-duration) * 2) var(--pc-motion-color-easing) infinite alternate; }
+.home-banner-fx[data-state="reasoning"] .banner-top-gleam { opacity: 0.92; animation: pc-banner-gleam-think calc(var(--pc-motion-pulse-duration) * 2) var(--pc-motion-color-easing) infinite alternate; }
 
 /* 4. 倾听与感知新消息（perceiving）：自吉祥物下方扩散的晴青同心声波涟漪 */
-.home-path[data-state="perceiving"] .banner-wash { background-image: none; background-color: var(--pc-color-active-container); opacity: 0.58; }
-.home-path[data-state="perceiving"] .banner-flow-a,
-.home-path[data-state="perceiving"] .banner-flow-b { top: -84px; bottom: auto; right: 14%; left: auto; width: 220px; height: 220px; clip-path: none; border: 3px solid var(--pc-color-active-signal); border-radius: var(--pc-radius-full); background-color: var(--pc-color-brand-container); animation: pc-banner-ripple calc(var(--pc-motion-pulse-duration) * 1.45) var(--pc-motion-color-easing) infinite; }
-.home-path[data-state="perceiving"] .banner-flow-b { border-color: var(--pc-color-brand-signal); animation-delay: calc(var(--pc-motion-pulse-duration) * -0.725); }
-.home-path[data-state="perceiving"] .banner-top-gleam { background-color: var(--pc-color-active-signal); opacity: 0.88; }
+.home-banner-fx[data-state="perceiving"] .banner-wash { background-image: none; background-color: var(--pc-color-active-container); opacity: 0.58; }
+.home-banner-fx[data-state="perceiving"] .banner-flow-a,
+.home-banner-fx[data-state="perceiving"] .banner-flow-b { top: -84px; bottom: auto; right: 14%; left: auto; width: 220px; height: 220px; clip-path: none; border: 3px solid var(--pc-color-active-signal); border-radius: var(--pc-radius-full); background-color: var(--pc-color-brand-container); animation: pc-banner-ripple calc(var(--pc-motion-pulse-duration) * 1.45) var(--pc-motion-color-easing) infinite; }
+.home-banner-fx[data-state="perceiving"] .banner-flow-b { border-color: var(--pc-color-brand-signal); animation-delay: calc(var(--pc-motion-pulse-duration) * -0.725); }
+.home-banner-fx[data-state="perceiving"] .banner-top-gleam { background-color: var(--pc-color-active-signal); opacity: 0.88; }
 
 /* 5. 待你拍板与连接波动（waiting-user / warning）：暖琥珀呼吸灯带 */
 .home-path[data-state="waiting-user"],
 .home-path[data-state="warning"] { box-shadow: var(--pc-shadow-notebook); }
-.home-path[data-state="waiting-user"] .banner-wash,
-.home-path[data-state="warning"] .banner-wash { background-image: none; background-color: var(--pc-color-waiting-container); opacity: 0.82; }
-.home-path[data-state="waiting-user"] .banner-flow-a,
-.home-path[data-state="warning"] .banner-flow-a { inset-block: -20%; left: -8%; right: auto; width: 62%; clip-path: none; background-color: var(--pc-color-tape-container); animation: pc-banner-amber-pulse calc(var(--pc-motion-pulse-duration) * 1.5) var(--pc-motion-color-easing) infinite alternate; }
-.home-path[data-state="waiting-user"] .banner-flow-b,
-.home-path[data-state="warning"] .banner-flow-b { inset-block: -20%; right: -6%; left: auto; width: 34%; background-color: var(--pc-color-waiting-signal); opacity: 0.18; animation: pc-banner-amber-pulse calc(var(--pc-motion-pulse-duration) * 1.5) var(--pc-motion-color-easing) infinite alternate-reverse; }
-.home-path[data-state="waiting-user"] .banner-top-gleam,
-.home-path[data-state="warning"] .banner-top-gleam { background-color: var(--pc-color-waiting-signal); opacity: 0.92; }
+.home-banner-fx[data-state="waiting-user"] .banner-wash,
+.home-banner-fx[data-state="warning"] .banner-wash { background-image: none; background-color: var(--pc-color-waiting-container); opacity: 0.82; }
+.home-banner-fx[data-state="waiting-user"] .banner-flow-a,
+.home-banner-fx[data-state="warning"] .banner-flow-a { inset-block: -20%; left: -8%; right: auto; width: 62%; clip-path: none; background-color: var(--pc-color-tape-container); animation: pc-banner-amber-pulse calc(var(--pc-motion-pulse-duration) * 1.5) var(--pc-motion-color-easing) infinite alternate; }
+.home-banner-fx[data-state="waiting-user"] .banner-flow-b,
+.home-banner-fx[data-state="warning"] .banner-flow-b { inset-block: -20%; right: -6%; left: auto; width: 34%; background-color: var(--pc-color-waiting-signal); opacity: 0.18; animation: pc-banner-amber-pulse calc(var(--pc-motion-pulse-duration) * 1.5) var(--pc-motion-color-easing) infinite alternate-reverse; }
+.home-banner-fx[data-state="waiting-user"] .banner-top-gleam,
+.home-banner-fx[data-state="warning"] .banner-top-gleam { background-color: var(--pc-color-waiting-signal); opacity: 0.92; }
 
 /* 6. 等待外部响应（waiting-external）：晴空微澜缓慢守候 */
-.home-path[data-state="waiting-external"] .banner-wash { background-image: none; background-color: var(--pc-color-atmosphere-sky); opacity: 0.78; }
-.home-path[data-state="waiting-external"] .banner-flow-a { inset-block: -30%; left: 14%; right: auto; width: 56%; clip-path: none; border-radius: var(--pc-radius-full); background-color: var(--pc-color-brand-container); animation: pc-banner-wave-a calc(var(--pc-motion-pulse-duration) * 2.4) var(--pc-motion-color-easing) infinite alternate; }
-.home-path[data-state="waiting-external"] .banner-top-gleam { background-color: var(--pc-color-brand-signal); opacity: 0.68; }
+.home-banner-fx[data-state="waiting-external"] .banner-wash { background-image: none; background-color: var(--pc-color-atmosphere-sky); opacity: 0.78; }
+.home-banner-fx[data-state="waiting-external"] .banner-flow-a { inset-block: -30%; left: 14%; right: auto; width: 56%; clip-path: none; border-radius: var(--pc-radius-full); background-color: var(--pc-color-brand-container); animation: pc-banner-wave-a calc(var(--pc-motion-pulse-duration) * 2.4) var(--pc-motion-color-easing) infinite alternate; }
+.home-banner-fx[data-state="waiting-external"] .banner-top-gleam { background-color: var(--pc-color-brand-signal); opacity: 0.68; }
 
 /* 7. 异常阻断（failed）：清晰珊瑚警示稳态，不制造焦虑闪烁 */
-.home-path[data-state="failed"] .banner-wash { background-image: none; background-color: var(--pc-color-failed-container); opacity: 0.9; }
-.home-path[data-state="failed"] .banner-flow-a { width: 48%; clip-path: polygon(22% 0, 100% 0, 100% 100%, 0 100%); background-color: var(--pc-color-blush-container); opacity: 0.88; }
-.home-path[data-state="failed"] .banner-top-gleam { background-color: var(--pc-color-failed-signal); opacity: 0.95; }
+.home-banner-fx[data-state="failed"] .banner-wash { background-image: none; background-color: var(--pc-color-failed-container); opacity: 0.9; }
+.home-banner-fx[data-state="failed"] .banner-flow-a { width: 48%; clip-path: polygon(22% 0, 100% 0, 100% 100%, 0 100%); background-color: var(--pc-color-blush-container); opacity: 0.88; }
+.home-banner-fx[data-state="failed"] .banner-top-gleam { background-color: var(--pc-color-failed-signal); opacity: 0.95; }
 
 @media (prefers-reduced-motion: reduce) {
-  .home-path[data-state] .home-banner-fx > span { animation: none; }
+  .home-banner-fx[data-state] > span { animation: none; }
 }
 
 /* 下半屏非对称桌案：左流（无框时间刻度 + 状态灯牌） + 右册（实体活页手账） */

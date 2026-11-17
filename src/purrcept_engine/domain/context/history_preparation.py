@@ -26,7 +26,7 @@ from purrcept_engine.domain.context.delivery import ToolDeliveryGate
 from purrcept_engine.domain.context.history import HistoryMaintenance
 from purrcept_engine.domain.context.history_ports import HistoryContext, HistoryStore
 from purrcept_engine.domain.context.maintenance import SummaryError, freeze_summary_source
-from purrcept_engine.domain.context.media_history import expire_history_media
+from purrcept_engine.domain.context.media_history import HistoryMedia
 from purrcept_engine.domain.context.usage import UsageMeter
 from purrcept_engine.domain.model_requests.ports import MaterialCompiler
 from purrcept_engine.domain.model_requests.service import RequestBudget, prepare_off_loop
@@ -79,9 +79,8 @@ def preview_request(
         request_budget=None,
     )
     if checkpoint is not None:
-        # 首发预览与真实会话恢复使用同一媒体窗口，避免已经过期的媒体
-        # 仍计入容量或触发一次携带大量原生媒体的历史摘要。
-        conversation.restore(expire_history_media(checkpoint))
+        # 这里只恢复 Core 的完整前缀；调用方在真实 SDK 布局形成后判断媒体大小。
+        conversation.restore(checkpoint)
     flow = conversation.ask(message)
     try:
         effect = next(flow)
@@ -188,25 +187,41 @@ class HistoryPreparation:
                 capacity=self.assess,
                 host_state=dynamic.host_payload,
                 reminder_key=DynamicReminder.source_id,
+                history_media=HistoryMedia(
+                    candidate.history.turn_boundaries[-1]
+                    if candidate is not None and candidate.history.turn_boundaries
+                    else 0,
+                    compiler=self.compiler,
+                    threshold_bytes=self.context.media_cleanup_threshold_bytes,
+                ),
             )
 
         def measure() -> tuple[CapacityAssessment, int | None]:
             """完整媒体布局和 JSON 编码可能较大，准备工作不能阻塞麦克风采集。"""
-            materials, _ = self.compiler(layout(checkpoint), model=self.model)
+            request = layout(checkpoint)
+            materials, _ = self.compiler(request, model=self.model)
             payload = decode_object(materials.encode("utf-8")).get("payload")
             if not isinstance(payload, dict):
                 raise TypeError("Core 实际布局缺少 SDK payload。")
+            # 批量清理已改变旧媒体输入，旧实际用量不能再要求这份新布局做摘要。
+            history_unchanged = (
+                checkpoint is None
+                or request.messages[: len(checkpoint.history.messages)]
+                == checkpoint.history.messages
+            )
             observed = (
-                self.usage.history_input_tokens(payload, checkpoint_json) if self.usage else None
+                self.usage.history_input_tokens(payload, checkpoint_json)
+                if self.usage and history_unchanged
+                else None
             )
             return self.assess(payload), observed
 
         before, observed = await prepare_off_loop(measure)
         budget.check()
-        observed_overflow = observed is not None and observed > before.input_budget
-        if (
-            not force and not before.maintenance_due and not observed_overflow
-        ) or checkpoint is None:
+        observed_due = (
+            observed is not None and observed / before.input_budget >= self.context.summary_trigger
+        )
+        if (not force and not before.maintenance_due and not observed_due) or checkpoint is None:
             return session
 
         # 未决保护来自数据库中的因果关系；外界正文或工具 JSON 同名字段不能
@@ -237,8 +252,8 @@ class HistoryPreparation:
             protected_turns=self.context.protected_turns,
             protected_message_indices=positions,
         )
-        if source is None and observed_overflow:
-            # 实际成功输入已超过额度，最近两轮保护不能形成永久死锁。仅在没有
+        if source is None and (observed_due or not before.within_budget):
+            # 实际用量已达预警线或估算已超额，最近两轮保护不能形成死锁。仅在没有
             # 更旧区间时允许压缩已完成近期轮次；当前输入和真实未决保护仍不可覆盖。
             source = freeze_summary_source(
                 checkpoint,

@@ -3,12 +3,97 @@
 import asyncio
 from pathlib import Path
 
+import pytest
+from purrcept_core.models import ConversationCheckpoint, ConversationState, Message, ReminderState
+
+from purrcept_engine.domain.context.checkpoints import encode_checkpoint
 from purrcept_engine.domain.model_requests.models import RequestEvidence, RequestScope
 from purrcept_engine.infrastructure.sqlite.store import Store
+from purrcept_engine.plugin_system import CallContext
 from purrcept_engine.plugins.phone.protocol import ChatSubmission
 from purrcept_engine.plugins.phone.runtime import PhoneRuntime
 from purrcept_engine.values import JsonObject, encode_json
 from tests.test_phone import Inputs
+from tests.test_subject_storage import submission
+
+
+@pytest.mark.parametrize("reply", ["none", "same", "other_device", "other_plugin", "unrelated"])
+async def test_completed_batch_reply_fact_uses_actual_phone_events(
+    tmp_path: Path, reply: str
+) -> None:
+    """只有实际接管到本手机的因果回复才计入；普通工具、其他输入和其他设备不冒充。"""
+    store = await Store.open(tmp_path / "reply.sqlite3")
+    try:
+        ledger = store.phone("phone")
+        await ledger.pair("device", "Phone", "synthetic")
+        runtime = PhoneRuntime("phone", Inputs(store), ledger)
+        inputs: list[str] = []
+        for native_id in ("one", "two"):
+            admitted = await runtime.submit_chat(
+                "device",
+                ChatSubmission(
+                    message_id=native_id,
+                    text="同批输入",
+                    occurred_at="2026-11-17T00:00:00Z",
+                ),
+            )
+            inputs.append(str(admitted["input_id"]))
+        turn = await store.begin_turn("turn", "foreground", 0, 1, tuple(inputs))
+        in_flight = (await ledger.progress("device"))["messages"]
+        assert isinstance(in_flight, list)
+        assert all(isinstance(item, dict) and "replied" not in item for item in in_flight)
+
+        anchor = inputs[0]
+        if reply == "unrelated":
+            anchor = (await store.admit(submission("unrelated", wake=True))).input_id
+        await store.begin_action(
+            "action", catalog_version="catalog", source="private", input_id=anchor
+        )
+        await store.begin_call(
+            "call",
+            action_id="action",
+            sequence=1,
+            path="me.phone.screen" if reply == "none" else "me.phone.chat.send",
+            target_id="phone",
+            arguments_json="{}",
+        )
+        await store.mark_call_started("call")
+        if reply != "none":
+            sender = runtime
+            if reply == "other_plugin":
+                other = store.phone("other")
+                await other.pair("device", "Other", "synthetic-other")
+                sender = PhoneRuntime("other", Inputs(store), other)
+            elif reply == "other_device":
+                await ledger.revoke()
+                await ledger.pair("other-device", "Other phone", "synthetic-other")
+            outcome = await sender.send_chat(
+                "实际回复", CallContext("call", "action", 999999999, anchor)
+            )
+            assert outcome.state == "confirmed"
+        await store.record_call_result(
+            "call", state="confirmed", result_json="{}", error_type=None, error=None
+        )
+        await store.finish_action(
+            "action", state="completed", result_json=None, output="", error=None
+        )
+        checkpoint = ConversationCheckpoint(
+            ConversationState(
+                (Message.user("输入"), Message.assistant("内部结果")),
+                turn_index=1,
+                turn_boundaries=(2,),
+            ),
+            ReminderState(),
+        )
+        await store.finish_turn(turn, "succeeded", checkpoint_json=encode_checkpoint(checkpoint))
+        completed = (await ledger.progress("device"))["messages"]
+        assert isinstance(completed, list) and len(completed) == 2
+        for item in completed:
+            assert isinstance(item, dict)
+            assert item["stage"] == "processed"
+            assert item["replied"] is (reply == "same")
+    finally:
+        await store.close()
 
 
 async def test_phone_progress_follows_committed_causal_stages_without_private_content(
@@ -111,7 +196,11 @@ async def test_phone_progress_follows_committed_causal_stages_without_private_co
         assert (await runtime.experience("other-device"))["messages"] == []
         assert (await store.phone("other-plugin").progress("device"))["messages"] == []
         await store.finish_turn(turn, "cancelled", error_json='{"error_type":"synthetic"}')
-        assert (await runtime.experience("device"))["activity"] == {"phase": "idle"}
+        cancelled = await runtime.experience("device")
+        assert cancelled["activity"] == {"phase": "idle"}
+        cancelled_messages = cancelled["messages"]
+        assert isinstance(cancelled_messages, list)
+        assert all(isinstance(item, dict) and "replied" not in item for item in cancelled_messages)
     finally:
         await store.close()
 

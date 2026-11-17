@@ -201,7 +201,8 @@ notes = ""
 # # [context]
 # # summary_trigger = 0.8        # 上下文占用达 80% 时触发旧轮次摘要压缩
 # # summary_target = 0.5         # 压缩目标比例
-# # protected_turns = 2          # 始终保留完整原文的最近轮数
+# # protected_turns = 2          # 常规摘要保留最近轮数；容量告警无旧区间时可压缩已完成近期轮次
+# # media_cleanup_threshold_mb = 30 # 完整请求超过 30 MB 时批量清理历史媒体；含 base64，1 MB = 1,000,000 字节
 # # unknown_call_protection_seconds = 86400.0 # 未知回执仅在最近 24 小时自动保护整轮原文
 
 # # [execution]

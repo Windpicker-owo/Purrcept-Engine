@@ -5,7 +5,7 @@ HistoryMaintenance 借用目标会话模型及权威账本。先按容量选择�
 user 压缩提示词提交一个逻辑请求；唯一传输重试仍由 ModelGenerationBackend 提供。
 完整候选用目标会话同一请求布局/计量分母复查，事务确认后才返回新版本。仅服务端
 明确超窗时缩小完整区间，失败归还占位；所有原历史及实际响应证据继续保留，不切换
-模型或裁剪轮内正文。摘要实际读取的材料遵守与前台相同的媒体窗口；来源冻结与归档
+模型或裁剪轮内正文。摘要实际读取的材料遵守与前台相同的媒体大小清理规则；来源冻结与归档
 仍保留原检查点。
 """
 
@@ -40,7 +40,10 @@ from purrcept_engine.domain.context.maintenance import (
     candidate_checkpoint,
     shorten_summary_source,
 )
-from purrcept_engine.domain.context.media_history import expire_history_media
+from purrcept_engine.domain.context.media_history import (
+    DEFAULT_MEDIA_CLEANUP_THRESHOLD_BYTES,
+    HistoryMedia,
+)
 from purrcept_engine.domain.context.summary_materials import summary_message
 from purrcept_engine.domain.context.templates import SUMMARY_PROMPT
 from purrcept_engine.domain.model_requests.models import (
@@ -161,15 +164,11 @@ def summary_request(
         按原会话消息顺序追加压缩指令的完整 Core 请求。
 
     Note:
-        直接沿用原会话的多轮消息结构、工具调用记录与媒体窗口视图，不把历史二次转码为
+        直接沿用原会话的多轮消息结构、工具调用记录与媒体，不把历史二次转码为
         JSON 文本档案，避免结构转换导致信息丢失。静态材料仍可复用前缀缓存；调用方先选择
         能容纳的完整区间，仍只派发一次逻辑请求，不重置预算。
     """
-    # 来源和归档仍是原检查点；只对摘要实际读取的视图应用媒体窗口。
-    # 否则正式请求已移除的旧媒体会在维护路径重新大量上传。
-    visible = expire_history_media(source.checkpoint).history.messages[
-        source.start_message : source.end_message
-    ]
+    visible = source.checkpoint.history.messages[source.start_message : source.end_message]
     specs = tools.specs if isinstance(tools, ToolSet) else tuple(tools)
     return ModelRequest(
         (*visible, SUMMARY_PROMPT.message(MessageRole.USER)),
@@ -204,6 +203,7 @@ async def prepare_summary_request(
     compiler: MaterialCompiler,
     instructions: tuple[SystemInstruction, ...] = (),
     tools: ToolSet | tuple[ToolSpec, ...] = (),
+    media_cleanup_threshold_bytes: int = DEFAULT_MEDIA_CLEANUP_THRESHOLD_BYTES,
 ) -> tuple[SummarySource, ModelRequest]:
     """派发前有界选择可容纳的旧完整区间，不消费模型请求或修改存储。
 
@@ -216,6 +216,7 @@ async def prepare_summary_request(
         compiler: 按实际 SDK 布局冻结完整请求材料的纯编译器。
         instructions: 目标会话的稳定 system 指令序列。
         tools: 目标会话声明的工具集合或规格。
+        media_cleanup_threshold_bytes: 完整摘要请求的历史媒体批量清理阈值。
 
     Returns:
         冻结的摘要来源及按目标会话实际布局构造的完整请求。
@@ -239,6 +240,13 @@ async def prepare_summary_request(
                 tools=tools,
             )
         )
+        # 摘要同样先形成包含静态目录的真实请求，再按大小一次清理所读旧区间。
+        media = HistoryMedia(
+            len(request.messages) - 1,
+            compiler=compiler,
+            threshold_bytes=media_cleanup_threshold_bytes,
+        )
+        request = await prepare_off_loop(partial(media.prepare, request, model=model))
         try:
             measured = await prepare_off_loop(
                 partial(_assessment, request, model, capacity, compiler)
@@ -284,6 +292,7 @@ class HistoryMaintenance:
         diagnostic_bytes: int,
         can_start: Callable[[], None] | None = None,
         observe_usage: UsageObserver | None = None,
+        media_cleanup_threshold_bytes: int = DEFAULT_MEDIA_CLEANUP_THRESHOLD_BYTES,
     ) -> None:
         """固定命名资源与内置计量入口，失败不寻找另一模型。
 
@@ -298,6 +307,7 @@ class HistoryMaintenance:
             output_tokens: 为本次生成预留的最大输出 token 数。
             diagnostic_bytes: 单次尝试允许保留的流诊断字节数，不裁剪原参数或完整响应。
             observe_usage: 成功证据提交后的摘要输入用量保存入口；None 不保存锚点。
+            media_cleanup_threshold_bytes: 摘要请求的历史媒体批量清理阈值。
             can_start: 实际派发前重新检查的资格回调，等待后仍须复核。 None
                 表示不附加调用方资格条件，宿主固定门槛仍生效。
 
@@ -319,6 +329,7 @@ class HistoryMaintenance:
             can_start,
         )
         self.observe_usage = observe_usage
+        self.media_cleanup_threshold_bytes = media_cleanup_threshold_bytes
         self._closed = False
         self._active = False
         self._wrappers: set[ModelGenerationBackend] = set()
@@ -384,6 +395,7 @@ class HistoryMaintenance:
                     compiler=self.compiler,
                     instructions=base.instructions,
                     tools=base.tools,
+                    media_cleanup_threshold_bytes=self.media_cleanup_threshold_bytes,
                 )
                 try:
                     return await self._attempt(

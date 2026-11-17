@@ -32,6 +32,7 @@ from purrcept_engine.domain.context.capacity import (
     assess_capacity,
     check_capacity,
 )
+from purrcept_engine.domain.context.token_estimation import estimate_tokens
 from purrcept_engine.domain.context.usage import UsageMeter, history_fingerprint
 from purrcept_engine.domain.model_requests.models import RequestScope
 from purrcept_engine.domain.model_requests.service import ModelGenerationBackend, RequestBudget
@@ -263,7 +264,7 @@ async def test_missing_zero_and_failed_usage_never_replace_valid_anchor(tmp_path
         await store.close()
 
 
-async def test_dynamic_tail_is_new_material_and_does_not_accumulate_old_estimates(
+async def test_dynamic_tail_replacement_counts_only_net_growth(
     tmp_path: Path,
 ) -> None:
     store = await Store.open(tmp_path / "tail.sqlite3")
@@ -284,7 +285,8 @@ async def test_dynamic_tail_is_new_material_and_does_not_accumulate_old_estimate
             reminders=(SystemReminder((TextBlock("新动态状态"),), key="engine.committed_state"),),
         )
         measured = usage.estimate(payload(updated))
-        assert measured.observed_tokens == 12_000 and 0 < measured.new_tokens < 100
+        assert measured.observed_tokens == 12_000 and measured.new_tokens == 0
+        assert measured.input_tokens == 12_000
         await invoke(
             store,
             usage,
@@ -293,7 +295,80 @@ async def test_dynamic_tail_is_new_material_and_does_not_accumulate_old_estimate
         )
         again = usage.estimate(payload(original))
         assert again.observed_tokens == 12_020
-        assert again.new_tokens < 100
+        assert again.new_tokens == 0 and again.input_tokens == 12_020
+    finally:
+        await store.close()
+
+
+async def test_large_dynamic_tail_does_not_overflow_after_usage_and_restart(tmp_path: Path) -> None:
+    """重现 762234 实际输入的现场：重复尾部不能把同一请求推过 782035 预算。"""
+    database = tmp_path / "large-tail.sqlite3"
+    store = await Store.open(database)
+    original = replace(
+        request(),
+        reminders=(SystemReminder((TextBlock("动态状态" * 7000),), key="engine.committed_state"),),
+        settings=ModelSettings(max_output_tokens=131_072),
+    )
+    try:
+        usage = await meter(store)
+        await invoke(
+            store,
+            usage,
+            Backend((ModelResponse(Message.assistant("完成"), usage=TokenUsage(762_234, 955)),)),
+            original,
+        )
+        assert usage.estimate(payload(original)).input_tokens == 762_234
+    finally:
+        await store.close()
+    store = await Store.open(database)
+    try:
+        restored = await meter(store)
+        assessment = check_capacity(
+            payload(original), GenerationCapacity(1_000_000, 131_072), usage=restored
+        )
+        assert assessment.input_budget == 782_035
+        assert assessment.estimate.input_units == 762_234
+        assert assessment.estimate.new_input_units == 0
+    finally:
+        await store.close()
+
+
+@pytest.mark.parametrize("new_tail", ["短尾部", "增大的动态状态" * 2000], ids=["shrink", "grow"])
+async def test_tail_growth_and_shrink_keep_new_tool_messages_in_the_delta(
+    tmp_path: Path, new_tail: str
+) -> None:
+    store = await Store.open(tmp_path / "tail-delta.sqlite3")
+    original = replace(
+        request(),
+        reminders=(SystemReminder((TextBlock("旧尾部" * 1000),), key="engine.committed_state"),),
+    )
+    try:
+        usage = await meter(store)
+        await invoke(
+            store,
+            usage,
+            Backend((ModelResponse(Message.assistant("完成"), usage=TokenUsage(30_000, 3)),)),
+            original,
+        )
+        candidate = replace(
+            original,
+            messages=(
+                *original.messages,
+                Message.assistant("新的模型响应"),
+                Message.user("新工具结果"),
+            ),
+            reminders=(SystemReminder((TextBlock(new_tail),), key="engine.committed_state"),),
+        )
+        old_payload, new_payload = payload(original), payload(candidate)
+        old_messages, new_messages = old_payload["messages"], new_payload["messages"]
+        assert isinstance(old_messages, list) and isinstance(new_messages, list)
+        expected_delta = estimate_tokens(
+            {"messages": new_messages[len(old_messages) - 1 :]}
+        ) - estimate_tokens({"messages": old_messages[-1:]})
+        measured = usage.estimate(new_payload)
+        assert measured.new_tokens == expected_delta
+        assert measured.input_tokens == 30_000 + expected_delta
+        assert (expected_delta < 0) == (new_tail == "短尾部")
     finally:
         await store.close()
 

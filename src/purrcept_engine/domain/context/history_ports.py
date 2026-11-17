@@ -9,8 +9,18 @@ class HistoryContext(Protocol):
     """应用借出的历史保护配置，运行期不可由模型修改。"""
 
     @property
+    def summary_trigger(self) -> float:
+        """返回估算和同历史实际用量共用的摘要触发比例。"""
+        ...
+
+    @property
+    def media_cleanup_threshold_bytes(self) -> int:
+        """返回完整 SDK 请求触发历史媒体批量清理的字节数。"""
+        ...
+
+    @property
     def protected_turns(self) -> int:
-        """返回必须原样保留的近期完整轮次数。"""
+        """返回常规摘要保护的近期轮数；容量告警且无旧区间时允许压缩已完成近期轮次。"""
         ...
 
 

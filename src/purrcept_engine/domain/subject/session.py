@@ -8,8 +8,8 @@ batch 策略仅保留提交版本而从空历史开始，也不维护前批历�
 独立入账；中途并入但模型从未回应的输入释放回收件箱，不随本轮记为失败。
 动态尾部由同步 ReminderSource 投影内存值，在实际
 请求边界异步刷新后重投影一次；同一逻辑请求的重试不再次刷新。
-恢复时冻结最近两轮媒体窗口，当前轮所有工具请求共用同一历史；旧媒体
-原位过期，权威原件仍由输入、请求和回执保留。新历史仅随成功轮次安装。
+完整恢复媒体前缀，仅在实际请求大小超限时批量清理已完成历史媒体；当前轮次
+的新媒体始终保留。清理决定沿用到后续工具请求，新历史仅随成功轮次安装。
 Engine 工具原文在完整下一请求首发前经过交付 Gate；之后请求和最终检查点
 保留同一实际交付，不能把容量回执重新展开为未经呈现的正文。
 生成结束后先封存代次，再结案和归还借用；结案仍占用会话，但不再接受抢占取消。
@@ -45,7 +45,10 @@ from purrcept_core.models import (
 from purrcept_engine.domain.context.capacity import CapacityAssessment
 from purrcept_engine.domain.context.checkpoints import decode_checkpoint, encode_checkpoint
 from purrcept_engine.domain.context.delivery import ToolDeliveryGate
-from purrcept_engine.domain.context.media_history import expire_history_media
+from purrcept_engine.domain.context.media_history import (
+    DEFAULT_MEDIA_CLEANUP_THRESHOLD_BYTES,
+    HistoryMedia,
+)
 from purrcept_engine.domain.context.presentation import render_host_state
 from purrcept_engine.domain.context.templates import DYNAMIC_STATE_PROMPT, ENGINE_STATE_REMINDER_KEY
 from purrcept_engine.domain.context.usage import history_fingerprint
@@ -330,6 +333,7 @@ class PreparedGenerationBackend:
         delivery: ToolDeliveryGate | None = None,
         history_digest: str | None = None,
         intake: TurnIntakeLedger | None = None,
+        history_media: HistoryMedia | None = None,
     ) -> None:
         """借用本轮所有者和纯计量入口。
 
@@ -340,6 +344,7 @@ class PreparedGenerationBackend:
             capacity: 对完整实际请求执行容量核验的函数。
             presented: 真实请求成功门槛的完整材料呈现回调。 None 表示没有额外的呈现追踪回调。
             delivery: 本轮工具原文交付门槛；None 不执行候选交付替换。
+            history_media: 本轮独占的媒体大小门槛及清理决定。
             history_digest: 本轮恢复的原检查点身份，供实际用量确认后的维护触发使用。
             intake: 本轮中途接管记账；派发与成功响应时分别推进前缀。None 表示未启用。
 
@@ -354,6 +359,7 @@ class PreparedGenerationBackend:
         self.delivery = delivery
         self.history_digest = history_digest
         self.intake = intake
+        self.history_media = history_media
         self.last_capacity: CapacityAssessment | None = None
 
     async def generate(
@@ -423,7 +429,10 @@ class PreparedGenerationBackend:
                 capacity=self.capacity,
                 host_state=self.reminder.state.host_payload,
                 reminder_key=self.reminder.source_id,
+                history_media=self.history_media,
             )
+        elif self.history_media is not None:
+            current = self.history_media.prepare(current, model=model)
         materials, _ = self.backend.compiler(current, model=model)
         envelope = decode_object(materials.encode("utf-8"))
         payload = envelope["payload"]
@@ -471,6 +480,7 @@ class ContinuousSession:
         compiler: MaterialCompiler,
         can_start: Callable[[], None],
         history_policy: Literal["continuous", "batch"] = "continuous",
+        media_cleanup_threshold_bytes: int = DEFAULT_MEDIA_CLEANUP_THRESHOLD_BYTES,
     ) -> None:
         """保存有限账本和宿主资格，不在构造时打开库或调用模型。
 
@@ -480,6 +490,7 @@ class ContinuousSession:
             compiler: 按实际 SDK 布局冻结完整请求材料的纯编译器。
             can_start: 实际派发前重新检查的资格回调，等待后仍须复核。
             history_policy: continuous 恢复已提交历史；batch 只读取 CAS 版本且每批从空历史开始。
+            media_cleanup_threshold_bytes: 完整 SDK 请求超过此字节数时，批量清理已完成历史媒体。
         """
         self.compiler = compiler
         self.store = store
@@ -487,6 +498,7 @@ class ContinuousSession:
         if history_policy not in ("continuous", "batch"):
             raise ValueError("会话历史策略必须明确为 continuous 或 batch。")
         self.history_policy = history_policy
+        self.media_cleanup_threshold_bytes = media_cleanup_threshold_bytes
         self.can_start = can_start
         self._generation = 0
         self._interrupted_generation = 0
@@ -772,6 +784,19 @@ class ContinuousSession:
             if intake is not None:
                 ledger = TurnIntakeLedger()
                 self._intake = ledger
+            restored = None
+            previous_checkpoint = previous.checkpoint_json
+            if previous_checkpoint is not None:
+                # 恢复完整前缀，是否清理媒体由每次真实请求大小决定，不随轮龄改写缓存。
+                restored = await prepare_off_loop(lambda: decode_checkpoint(previous_checkpoint))
+                budget.check()
+            history_media = HistoryMedia(
+                restored.history.turn_boundaries[-1]
+                if restored is not None and restored.history.turn_boundaries
+                else 0,
+                compiler=self.compiler,
+                threshold_bytes=self.media_cleanup_threshold_bytes,
+            )
             prepared = PreparedGenerationBackend(
                 wrapped,
                 reminder,
@@ -781,6 +806,7 @@ class ContinuousSession:
                 delivery=delivery,
                 history_digest=history_fingerprint(previous.checkpoint_json),
                 intake=ledger,
+                history_media=history_media,
             )
             conversation = Model(prepared, model).conversation(
                 instructions=instructions,
@@ -791,13 +817,7 @@ class ContinuousSession:
                 continuation_policy="client_managed",
                 request_budget=None,
             )
-            previous_checkpoint = previous.checkpoint_json
-            if previous_checkpoint is not None:
-                # 只在线程中转换冻结材料；Conversation 的恢复仍由本轮唯一所有者执行。
-                restored = await prepare_off_loop(
-                    lambda: expire_history_media(decode_checkpoint(previous_checkpoint))
-                )
-                budget.check()
+            if restored is not None:
                 conversation.restore(restored)
 
             input_poll: _TurnIntakeEffect | None = None
@@ -844,6 +864,15 @@ class ContinuousSession:
                         messages=delivery.project(checkpoint.history.messages),
                     ),
                 )
+            # Core 仍拥有原消息；只在成功结案时安装本轮实际采用的媒体清理，
+            # 避免下一轮重新恢复已从真实请求移除的大媒体而反复破坏前缀。
+            checkpoint = replace(
+                checkpoint,
+                history=replace(
+                    checkpoint.history,
+                    messages=history_media.project(checkpoint.history.messages),
+                ),
+            )
             # 历史编码仍包含近期原生媒体，完整校验不能占住实时采集所在的事件循环。
             # 取消仍等待纯计算归还，只有当前预算继续有效时才允许提交检查点。
             checkpoint_json = await prepare_off_loop(lambda: encode_checkpoint(checkpoint))

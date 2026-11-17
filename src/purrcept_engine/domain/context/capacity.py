@@ -67,7 +67,7 @@ class CapacityEstimate:
         unit: 估算采用的参考计数单位。
         usage_request_id: 可复用前缀实际用量的请求身份；None 表示没有已知基线。
         observed_input_tokens: 服务端确认的旧输入总量，缓存命中不另行相加。
-        new_input_units: 相同布局前缀以外的新增材料估算；没有基线时为 None。
+        new_input_units: 新消息及动态尾部替换的净增量，可因尾部缩小而为负；没有基线时为 None。
 
     Note:
         实例字段在构造后不可重新赋值；嵌套值的冻结范围由字段所属契约决定。

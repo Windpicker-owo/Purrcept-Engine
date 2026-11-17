@@ -26,6 +26,7 @@ from purrcept_core.models.tools import ToolResult
 
 from purrcept_engine.domain.context.audio_receipts import audio_text_view
 from purrcept_engine.domain.context.capacity import CapacityAssessment, CapacityError
+from purrcept_engine.domain.context.media_history import HistoryMedia
 from purrcept_engine.domain.context.presentation import render_host_state
 from purrcept_engine.domain.evidence.models import EvidencePage
 from purrcept_engine.domain.model_requests.ports import MaterialCompiler
@@ -443,6 +444,7 @@ class ToolDeliveryGate:
         capacity: CapacityCheck,
         host_state: JsonObject | None = None,
         reminder_key: str | None = None,
+        history_media: HistoryMedia | None = None,
     ) -> ModelRequest:
         """计量完整实际请求，仅选择本轮尚未发出的 Engine 原文结果。
 
@@ -452,6 +454,7 @@ class ToolDeliveryGate:
             capacity: 对完整实际请求执行容量核验的函数。
             host_state: 本次逻辑请求冻结的宿主动态投影。
             reminder_key: 当前动态尾部的提醒键，用于替换而非累加状态材料。
+            history_media: 本轮历史媒体清理决定；先按真实尾部计量，再选择工具正文。
 
         Returns:
             按实际消息顺序构造的完整 Core 请求。
@@ -460,6 +463,12 @@ class ToolDeliveryGate:
             RuntimeError: 待交付工具结果不在 Core 的真实下一请求中。
         """
         current = replace(request, messages=self.project(request.messages))
+        if history_media is not None:
+            current = history_media.prepare(
+                current,
+                model=model,
+                measured_request=self._project_tail(current, host_state, reminder_key),
+            )
         if not self._pending:
             return self._project_tail(current, host_state, reminder_key)
 
