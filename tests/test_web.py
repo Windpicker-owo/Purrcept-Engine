@@ -11,6 +11,9 @@ import httpx
 import pytest
 
 from purrcept_engine.app import cli
+from purrcept_engine.app.admin_config import VisualSave, save_config_file
+from purrcept_engine.app.admin_notebooks import list_notebooks_sync
+from purrcept_engine.app.config import load_config
 from purrcept_engine.app.panel import ControlRequest
 from purrcept_engine.app.web import WebServer, create_app
 from purrcept_engine.domain.controls.models import ControlRecord
@@ -241,14 +244,77 @@ async def test_write_needs_token_and_closed_shape_and_blocks_raw_python_exec() -
         assert (await client.get("/api/controls/one")).json()["state"] == "admitted"
 
 
+def test_notebook_list_only_previews_paths_accepted_by_resolver(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """模拟解析目录项时得到根外目标；预览列表与正文详情共用解析后的路径。"""
+    config = tmp_path / "purrcept.toml"
+    config.write_text("", encoding="utf-8")
+    root = tmp_path / "notes"
+    root.mkdir()
+    local = root / "local.md"
+    local.write_text("# local", encoding="utf-8")
+    alias = root / "alias.md"
+    alias.write_text("# alias", encoding="utf-8")
+    outside = tmp_path / "outside.md"
+    outside.write_text("# outside", encoding="utf-8")
+    resolve = Path.resolve
+
+    def resolve_entry(path: Path, strict: bool = False) -> Path:
+        return outside if path == alias else resolve(path, strict)
+
+    monkeypatch.setattr(Path, "resolve", resolve_entry)
+    listed = list_notebooks_sync(config)
+    assert "local.md" in str(listed) and "alias.md" not in str(listed)
+
+
+@pytest.mark.parametrize("endpoint", ["https://api.openai.com/v1", "https://gateway.invalid/v1"])
+def test_switch_model_provider_uses_new_credential_and_preserves_custom_gateway(
+    tmp_path: Path, endpoint: str
+) -> None:
+    """已保存的旧表单也能从 OpenAI 切到 Gemini；自建网关仍按显式配置使用。"""
+    import hashlib
+
+    config = tmp_path / "purrcept.toml"
+    config.write_text(
+        f'[models.main]\nmodel="openai/model"\napi_base="{endpoint}"\napi_key="old"\n'
+        '[subject]\nforeground="main"\n',
+        encoding="utf-8",
+    )
+    payload = VisualSave.model_validate(
+        {
+            "mode": "visual",
+            "revision": hashlib.sha256(config.read_bytes()).hexdigest(),
+            "general": {"data_dir": "data", "web_port": 8765},
+            "subject": {"foreground": "main"},
+            "models": [
+                {"name": "main", "model": "gemini/model", "api_base": endpoint, "api_key": "new"}
+            ],
+        }
+    )
+    save_config_file(config, payload, owner_data_dir=None)
+    model = load_config(config).models["main"]
+    assert model.api_base == (None if "api.openai.com" in endpoint else endpoint)
+    assert model.api_key.get_secret_value() == "new"
+
+
 @pytest.mark.parametrize("clear_api_base", [False, True])
 async def test_true_admin_config_notebooks_and_studio_endpoints(
-    tmp_path: Path, clear_api_base: bool
+    tmp_path: Path, clear_api_base: bool, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     template = Path(cli.__file__).with_name("default.toml")
     config_path = tmp_path / "purrcept.toml"
     raw_text = template.read_text(encoding="utf-8").replace(
-        'api_key = ""', 'api_key = "sk-super-secret-value-999"', 1
+        '\napi_key = ""',
+        '\napi_key = "${PURRCEPT_TEST_KEY:-synthetic-fallback}"\nproxy = "${PURRCEPT_TEST_PROXY}"',
+        1,
+    )
+    monkeypatch.setenv("PURRCEPT_TEST_PROXY", "http://127.0.0.1:9080")
+    raw_text += (
+        '\n[[plugins]]\ninstance_id = "social"\nentry = "qq"\n'
+        'config = {access_token = "synthetic-qq-secret"}\n'
+        '\n[[plugins]]\ninstance_id = "notes2"\nentry = "notebook"\n'
+        '[plugins.config.embedding]\napi_key = "synthetic-embedding-secret"\n'
     )
     config_path.write_text(raw_text, encoding="utf-8")
     data_dir = (tmp_path / ".purrcept-engine").resolve()
@@ -271,8 +337,17 @@ async def test_true_admin_config_notebooks_and_studio_endpoints(
         assert cfg_resp.status_code == 200
         cfg = cfg_resp.json()
         assert cfg["available"] is True
-        assert "sk-super-secret-value-999" not in cfg["raw_toml"]
+        assert cfg["validation_error"] is None
+        for secret in ("synthetic-fallback", "synthetic-qq-secret", "synthetic-embedding-secret"):
+            assert secret not in cfg_resp.text
         assert "********" in cfg["raw_toml"]
+        raw_save = await client.post(
+            "/api/config",
+            headers=headers,
+            json={"mode": "raw", "revision": cfg["revision"], "raw_toml": cfg["raw_toml"]},
+        )
+        assert raw_save.status_code == 200
+        cfg = raw_save.json()
 
         visual_save = await client.post(
             "/api/config",
@@ -309,18 +384,21 @@ async def test_true_admin_config_notebooks_and_studio_endpoints(
                     for m in cfg["models"]
                 ],
                 "plugins": [
+                    *reversed(cfg["plugins"]),
                     {
                         "instance_id": "notebook",
                         "entry": "notebook",
                         "enabled": True,
                         "config": {"notebook_dir": "notes"},
-                    }
+                    },
                 ],
             },
         )
         assert visual_save.status_code == 200 and visual_save.json()["saved"] is True
         disk_after = config_path.read_text(encoding="utf-8")
-        assert "sk-super-secret-value-999" in disk_after
+        assert "${PURRCEPT_TEST_KEY:-synthetic-fallback}" in disk_after
+        assert "${PURRCEPT_TEST_PROXY}" in disk_after
+        assert "synthetic-qq-secret" in disk_after and "synthetic-embedding-secret" in disk_after
         assert 'name = "杰瑞喵"' in disk_after
         assert 'level = "DEBUG"' in disk_after
         if clear_api_base:
@@ -339,10 +417,24 @@ async def test_true_admin_config_notebooks_and_studio_endpoints(
         )
         assert note_save.status_code == 200
         note_rev = note_save.json()["revision"]
+        duplicate = await client.post(
+            "/api/notebooks/file",
+            headers=headers,
+            json={
+                "instance": "notebook",
+                "path": "journal/2026-11-15.md",
+                "content": "另一篇随笔",
+                "revision": "missing",
+            },
+        )
+        assert duplicate.status_code == 409
 
         nb_list = await client.get("/api/notebooks")
         assert nb_list.status_code == 200
-        assert nb_list.json()["instances"][0]["files"][0]["path"] == "journal/2026-11-15.md"
+        listed = next(
+            item for item in nb_list.json()["instances"] if item["instance_id"] == "notebook"
+        )
+        assert listed["files"][0]["path"] == "journal/2026-11-15.md"
 
         note_read = await client.get(
             "/api/notebooks/file?instance=notebook&path=journal/2026-11-15.md"

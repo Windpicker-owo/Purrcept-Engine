@@ -223,19 +223,25 @@ class VoiceInputRuntime:
             )
         }
 
-    async def status(self) -> JsonObject:
-        """查询最近发言的权威处理阶段，返回当前收音状态。
-
-        Note:
-            按 input_id 查询真实处理阶段，观察不重投已接管音频或文字。
-        """
-        for item in tuple(self.history):
-            input_id = item.get("input_id")
-            if isinstance(input_id, str):
+    async def status(self, input_id: str | None = None) -> JsonObject:
+        """返回当前收音状态；按本实例近期接管的输入身份查询单次处理结果。"""
+        result = self.receipt()
+        result["recognition_state"] = "recognizing" if self.utterances else "idle"
+        result["pending_utterances"] = len(self.utterances)
+        if self.history:
+            result["latest_input_id"] = self.history[-1]["input_id"]
+        if input_id is not None:
+            if not any(item["input_id"] == input_id for item in self.history):
+                result["input_status"] = {"input_id": input_id, "known": False}
+            else:
                 processing = await self.inputs.query_processing(input_id)
-                item["processing_stage"] = processing.stage if processing else None
-                item["processing_reason"] = processing.reason if processing else None
-        return self.snapshot()
+                result["input_status"] = {
+                    "input_id": input_id,
+                    "known": True,
+                    "processing_stage": processing.stage if processing else None,
+                    "processing_reason": processing.reason if processing else None,
+                }
+        return result
 
     def set_vad_interrupt(self, enabled: bool) -> JsonObject:
         """切换本次运行的 VAD 自动停播，收音和分段继续使用原有状态。

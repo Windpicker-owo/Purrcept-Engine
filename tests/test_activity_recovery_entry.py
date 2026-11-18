@@ -196,7 +196,13 @@ def _action(request: ModelRequest, identity: str) -> JsonObject:
 
 
 def _material(request: ModelRequest, identity: str) -> JsonObject:
-    result = _action(request, identity)["result"]
+    """跟随工具回执中的值引用读取本次唯一观察结果。"""
+    action = _action(request, identity)
+    calls = action["calls"]
+    assert isinstance(calls, list) and len(calls) == 1
+    call = calls[0]
+    assert isinstance(call, dict) and action["result_equals_call"] == call["call_id"]
+    result = call["result"]
     assert isinstance(result, dict)
     return result
 

@@ -400,9 +400,10 @@ async def test_real_store_speech_started_only_requests_playback_stop_and_preserv
         record = await store.get_input(inputs.admissions[1].input_id)
         assert record is not None and record.source.display_name == "本机麦克风"
         status = await runtime.status()
-        history = status["history"]
-        assert isinstance(history, list) and isinstance(history[0], dict)
-        assert history[0]["processing_stage"] == "priority"
+        assert "history" not in status and "完整识别文字" not in str(status)
+        assert status["latest_input_id"] == inputs.admissions[1].input_id
+        detail = (await runtime.status(inputs.admissions[1].input_id))["input_status"]
+        assert isinstance(detail, dict) and detail["processing_stage"] == "priority"
         await runtime.stop()
         assert capture.closed.is_set() and runtime.snapshot()["session_id"] == ""
         assert await store.get_input(inputs.admissions[1].input_id) == record

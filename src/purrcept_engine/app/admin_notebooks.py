@@ -1,4 +1,7 @@
-"""真后台模式（True Admin Mode）Notebook 记忆与技能 Markdown 读写服务。"""
+"""为后台列举、读取和编辑 Markdown 手账，文件身份限制在配置的笔记目录内。
+
+编辑使用读取时的内容哈希，新建要求目标不存在。列表只生成预览，检索与索引归笔记插件。
+"""
 
 from __future__ import annotations
 
@@ -85,12 +88,14 @@ def list_notebooks_sync(config_path: Path | None) -> JsonObject:
                 ):
                     continue
                 try:
-                    stat = child.stat()
+                    rel = child.relative_to(root).as_posix()
+                    target = _safe_note_path(root, rel)
+                    stat = target.stat()
                     if stat.st_size > _MAX_NOTE_BYTES:
                         continue
-                    rel = child.relative_to(root).as_posix()
-                    raw_text = child.read_text(encoding="utf-8")
-                except (OSError, UnicodeError):
+                    raw_text = target.read_text(encoding="utf-8")
+                except (OSError, ValueError):
+                    # 枚举期间文件可能消失；越界链接与不可读文件都不产生预览。
                     continue
                 top_folder = rel.split("/", 1)[0] if "/" in rel else ""
                 parsed = parse_note(
@@ -164,13 +169,14 @@ def save_note_sync(config_path: Path | None, payload: NoteSave) -> JsonObject:
         raise FileNotFoundError("未找到对应的笔记本实例。")
     root.mkdir(parents=True, exist_ok=True)
     target = _safe_note_path(root, payload.path)
-    if target.exists():
+    creating = payload.revision in (None, "", "missing")
+    if not creating:
+        if not target.is_file():
+            raise ValueError("原笔记文件已不存在，请刷新列表。")
         existing = target.read_bytes()
         existing_rev = hashlib.sha256(existing).hexdigest()
-        if payload.revision not in (None, "missing") and payload.revision != existing_rev:
+        if payload.revision != existing_rev:
             raise ValueError("笔记已在后台被主体或外部编辑器更新，请重新读取后再保存。")
-    elif payload.revision not in (None, "", "missing"):
-        raise ValueError("原笔记文件已不存在，请刷新列表。")
 
     target.parent.mkdir(parents=True, exist_ok=True)
     encoded = payload.content.encode("utf-8")
@@ -180,7 +186,14 @@ def save_note_sync(config_path: Path | None, payload: NoteSave) -> JsonObject:
             handle.write(encoded)
             handle.flush()
             os.fsync(handle.fileno())
-        os.replace(temp_name, target)
+        if creating:
+            # 同目录硬链接原子发布完整文件，同时拒绝覆盖并发创建的同名笔记。
+            try:
+                os.link(temp_name, target)
+            except FileExistsError as error:
+                raise ValueError("同名笔记已存在，请更换新笔记的路径或打开原文编辑。") from error
+        else:
+            os.replace(temp_name, target)
     finally:
         Path(temp_name).unlink(missing_ok=True)
     stat = target.stat()

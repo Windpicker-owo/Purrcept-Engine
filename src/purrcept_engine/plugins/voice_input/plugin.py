@@ -52,6 +52,12 @@ class _Start(_Empty):
     )
 
 
+class _Status(_Empty):
+    input_id: str | None = Field(
+        default=None, min_length=1, description="可选，查询本机最近接管的指定发言。"
+    )
+
+
 class _VadInterrupt(_Empty):
     enabled: bool = Field(description="是否在持续人声确认后自动停止语音播放。")
 
@@ -95,8 +101,8 @@ def make_factory(
             instance_id + ":voice_input.status",
             object_id,
             "status",
-            "查询实际收音、识别及已接管输入处理状态。",
-            _Empty,
+            "查询收音、识别与待处理数量；指定 input_id 可核对该发言的处理阶段。",
+            _Status,
             20.0,
             "await {path}()",
         )
@@ -152,10 +158,10 @@ def make_factory(
                 del parameters, context
                 return CallOutcome("confirmed", await runtime.devices())
 
-            async def run_status(parameters: _Empty, context: CallContext) -> CallOutcome:
-                """只读当前插件已取得的业务状态。"""
-                del parameters, context
-                return CallOutcome("confirmed", await runtime.status())
+            async def run_status(parameters: _Status, context: CallContext) -> CallOutcome:
+                """仅在点名发言时查询其处理阶段。"""
+                del context
+                return CallOutcome("confirmed", await runtime.status(parameters.input_id))
 
             async def run_start(parameters: _Start, context: CallContext) -> CallOutcome:
                 """按明确设备与模式开始收音，拒绝不满足准入的配置。"""

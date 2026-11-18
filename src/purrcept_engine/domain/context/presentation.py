@@ -88,10 +88,15 @@ def action_receipt(action: ActionRecord) -> JsonObject:
     }
     if action.output:
         receipt["output"] = action.output
-    if action.result_json is not None:
-        action_result = cast(JsonValue, json.loads(audio_text_view(action.result_json)))
-        if action_result is not None:
-            receipt["result"] = action_result
+    if action.result_json is not None and action.result_json != "null":
+        # Worker 与调用账本使用同一 JSON 编码。逐字相等时可复用那份值，
+        # 避免布尔值、数字或模型自行重组的对象在比较中被混同。
+        for call in action.calls:
+            if call.state == "confirmed" and call.result_json == action.result_json:
+                receipt["result_equals_call"] = call.call_id
+                break
+        else:
+            receipt["result"] = cast(JsonValue, json.loads(audio_text_view(action.result_json)))
     if action.error is not None:
         receipt["error"] = action.error
     return receipt

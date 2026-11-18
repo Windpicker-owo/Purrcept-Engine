@@ -113,7 +113,9 @@ def admin_routes(
             return _json({"error": "chat_invalid", "message": "请填写非空的聊天消息。"}, 400)
         except ValueError as err:
             status = 413 if str(err) == "payload_too_large" else 400
-            return _json({"error": "chat_invalid", "message": "消息内容无效或超过长度上限。"}, status)
+            return _json(
+                {"error": "chat_invalid", "message": "消息内容无效或超过长度上限。"}, status
+            )
         if not body.text.strip():
             return _json({"error": "chat_empty", "message": "消息内容不能为空白。"}, 400)
         try:
@@ -134,7 +136,7 @@ def admin_routes(
             try:
                 view = await asyncio.to_thread(read_config_view, config_path)
                 return _json(view)
-            except (OSError, UnicodeError, tomllib.TOMLDecodeError) as err:
+            except (OSError, UnicodeError, tomllib.TOMLDecodeError, ParseError) as err:
                 return _json({"error": "config_read_failed", "message": str(err)}, 409)
 
         try:
@@ -160,7 +162,9 @@ def admin_routes(
             )
         except ValueError as err:
             status = 413 if str(err) == "payload_too_large" else 400
-            return _json({"error": "config_invalid", "message": "配置提交内容过大或格式无效。"}, status)
+            return _json(
+                {"error": "config_invalid", "message": "配置提交内容过大或格式无效。"}, status
+            )
 
         async with config_lock:
             try:

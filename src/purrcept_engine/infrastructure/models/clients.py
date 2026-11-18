@@ -33,15 +33,59 @@ if TYPE_CHECKING:
 
 __all__ = ["DecisionResource", "GenerationResource"]
 
+# LiteLLM 1.109.1 的兼容目录描述线上协议；其中这些服务商在生成时有自己的
+# HTTP 派发分支，仍需 AsyncHTTPHandler。其余兼容服务商复用 OpenAI SDK。
+_NATIVE_COMPATIBLE_PROVIDERS = frozenset(
+    {
+        "deepseek",
+        "azure_ai",
+        "fireworks_ai",
+        "together_ai",
+        "ragflow",
+        "xai",
+        "groq",
+        "opencode_go",
+        "cometapi",
+        "hosted_vllm",
+        "edenai",
+    }
+)
+
+
+def _openai_endpoint(settings: ModelConnection) -> str | None:
+    """按固定版本的生成路由选客户端，兼容服务商的默认端点取自 SDK。"""
+    from litellm import get_llm_provider
+    from litellm.constants import openai_compatible_providers
+    from litellm.llms.openai_like.json_loader import (  # pyright: ignore[reportMissingTypeStubs]
+        JSONProviderRegistry,
+    )
+
+    _, provider, _, resolved_base = get_llm_provider(
+        settings.model, api_base=settings.api_base, api_key=settings.api_key.get_secret_value()
+    )
+    if provider == "openai":
+        return settings.api_base or "https://api.openai.com/v1"
+    if provider in _NATIVE_COMPATIBLE_PROVIDERS:
+        return None
+    if (
+        provider in openai_compatible_providers
+        or provider in {"custom_openai", "bigmodel"}
+        or JSONProviderRegistry.exists(provider)
+    ):
+        endpoint = settings.api_base or resolved_base
+        if not endpoint:
+            raise ConfigError(f"{provider} 未提供默认服务地址，请填写 api_base。")
+        return endpoint
+    return None
+
 
 class GenerationResource:
     """应用创建的生成资源，按模型前缀借给 LiteLLM 对应的实例客户端。
 
-    ``create`` 只构造已校验端点的客户端，不探测模型或启动生成；调用方将
+    ``create`` 只保存已校验的模型配置，不探测模型或启动生成；调用方将
     ``backend`` 交给 Core。同一宿主事件循环内的并发生成各用独立请求，
-    共用客户端连接池。openai/ 使用 OpenAI 客户端，其余前缀使用 LiteLLM
-    原生 HTTP handler；服务商映射和默认地址由 SDK 决定，不强制套 OpenAI 协议。
-    原生 handler 在首次生成时初始化，未使用资源的关闭不导入 LiteLLM。
+    共用客户端连接池。首次生成时按服务商派发协议选择 OpenAI 客户端或
+    LiteLLM 原生 HTTP handler；未使用资源的关闭不导入 LiteLLM。
     应用应先终止新借用并等待在途调用，再调用 ``close``。重复或被取消的
     关闭等待加入同一清理任务，不关闭 LiteLLM 全局缓存或其他宿主客户端。
     """
@@ -58,21 +102,6 @@ class GenerationResource:
         self._http: httpx.AsyncClient | None = None
         self._client: AsyncOpenAI | None = None
         self._native_handler: object | None = None
-        if settings.model.startswith("openai/"):
-            self._http = httpx.AsyncClient(
-                trust_env=False,
-                proxy=settings.proxy,
-                event_hooks={"request": [self._remove_implicit_account_headers]},
-            )
-            self._client = AsyncOpenAI(
-                api_key=settings.api_key.get_secret_value(),
-                # 不指定地址时采用 OpenAI 默认值，避免环境中的网关地址改变该绑定。
-                base_url=settings.api_base or "https://api.openai.com/v1",
-                organization="",
-                project="",
-                max_retries=0,
-                http_client=self._http,
-            )
         self._settings = settings
         self._backend: LiteLLMBackend | None = None
         self._close_task: asyncio.Task[None] | None = None
@@ -102,8 +131,7 @@ class GenerationResource:
         Args:
             request: 已经按 Core 协议组装的完整生成请求。
             model: 本次调用使用的显式模型名，不在领域层推断替代模型。
-            emit: 流事件观察回调；None 表示不向外部观察者投递。 None
-                表示不向外部观察者发送流事件。
+            emit: 流事件观察回调；None 表示不向外部观察者投递。
 
         Returns:
             通过协议与证据提交门槛的真实模型响应。
@@ -118,22 +146,6 @@ class GenerationResource:
             # 使配置、资源装配和未使用资源的关闭不触发此第三方外部副作用。
             from purrcept_litellm import LiteLLMBackend
 
-            if self._client is None:
-                # Lifecycle: 原生协议仍借用本实例独占的 HTTP 池，不能退入 SDK 全局
-                # 客户端缓存。底层重试关闭，整轮重试继续由 Engine 的请求服务拥有。
-                transport_module = import_module("litellm.llms.custom_httpx.http_handler")
-                create_handler = cast(
-                    Callable[..., object], transport_module.__dict__["AsyncHTTPHandler"]
-                )
-                handler = create_handler(
-                    # 缓存查询、创建与生成必须共用同一代理传输，不能只代理最终生成。
-                    transport=httpx.AsyncHTTPTransport(
-                        proxy=self._settings.proxy, retries=0, trust_env=False
-                    ),
-                )
-                self._native_handler = handler
-                # SDK handler 没有类型桩，在此读取实例池，不向其它模块扩散动态类型。
-                self._http = cast(httpx.AsyncClient, getattr(handler, "client"))  # noqa: B009
             self._backend = LiteLLMBackend(
                 api_key=self._settings.api_key.get_secret_value(),
                 api_base=self._settings.api_base,
@@ -161,6 +173,44 @@ class GenerationResource:
 
     async def _complete(self, **kwargs: object) -> object:
         """借用实例客户端进入真实 LiteLLM，不进入其全局客户端缓存。"""
+        # 首次选择路由位于适配器的异常映射边界内，配置错误也能留下正常的请求回执。
+        # 同一事件循环在第一个 await 前安装客户端，并发生成共享同一连接池。
+        if self._client is None and self._native_handler is None:
+            endpoint = _openai_endpoint(self._settings)
+            if endpoint is not None:
+                http = httpx.AsyncClient(
+                    trust_env=False,
+                    proxy=self._settings.proxy,
+                    event_hooks={"request": [self._remove_implicit_account_headers]},
+                )
+                try:
+                    self._client = AsyncOpenAI(
+                        api_key=self._settings.api_key.get_secret_value(),
+                        base_url=endpoint,
+                        organization="",
+                        project="",
+                        max_retries=0,
+                        http_client=http,
+                    )
+                except Exception:
+                    await http.aclose()
+                    raise
+            else:
+                # Lifecycle: 原生协议仍借用本实例独占的 HTTP 池，不能退入 SDK 全局
+                # 客户端缓存。底层重试关闭，整轮重试继续由 Engine 的请求服务拥有。
+                transport_module = import_module("litellm.llms.custom_httpx.http_handler")
+                create_handler = cast(
+                    Callable[..., object], transport_module.__dict__["AsyncHTTPHandler"]
+                )
+                handler = create_handler(
+                    # 缓存查询、创建与生成必须共用同一代理传输，不能只代理最终生成。
+                    transport=httpx.AsyncHTTPTransport(
+                        proxy=self._settings.proxy, retries=0, trust_env=False
+                    ),
+                )
+                self._native_handler = handler
+                # SDK handler 没有类型桩，在此读取实例池，不向其它模块扩散动态类型。
+                self._http = cast(httpx.AsyncClient, getattr(handler, "client"))  # noqa: B009
         module = import_module("litellm")
         function = cast(Callable[..., Awaitable[object]], module.__dict__["acompletion"])
         client = self._client if self._client is not None else self._native_handler

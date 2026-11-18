@@ -12,6 +12,7 @@ from purrcept_engine import EngineConfig, EngineHost
 from purrcept_engine.app.panel import ControlRequest
 from purrcept_engine.domain.controls.models import ControlError
 from purrcept_engine.domain.execution.catalog import CapabilityDeclaration, ObjectDeclaration
+from purrcept_engine.domain.execution.models import CallOutcome as CallState
 from purrcept_engine.domain.execution.providers import CallContext, CallOutcome, FunctionCapability
 from purrcept_engine.infrastructure.sqlite.store import Store
 from purrcept_engine.plugin_system.contracts import (
@@ -21,6 +22,48 @@ from purrcept_engine.plugin_system.contracts import (
     typed_factory,
 )
 from purrcept_engine.plugin_system.panels import DevicePanel, PanelControl, PreviewFrame
+
+
+async def test_chat_projects_only_confirmed_expressions(tmp_path: Path) -> None:
+    """尝试、半途停止和素材合成都保留行动记录；聊天正文只认已确认表达。"""
+    store = await Store.open(tmp_path / "chat.sqlite3")
+    try:
+        await store.begin_action(
+            "action", catalog_version="catalog", source="source", input_id=None
+        )
+        calls: list[tuple[str, str, CallState, str]] = [
+            ("qq", "send", "failed", "null"),
+            ("qq", "send", "unknown", "null"),
+            ("qq", "send", "confirmed", "{}"),
+            ("microphone", "record", "confirmed", '"local.wav"'),
+            ("microphone", "speak", "confirmed", '{"completed":false}'),
+            ("microphone", "speak", "confirmed", '{"completed":true}'),
+            ("chat", "send", "confirmed", '{"delivery_state":"queued"}'),
+        ]
+        for sequence, (target, name, state, result) in enumerate(calls):
+            identity = str(sequence)
+            await store.begin_call(
+                identity,
+                action_id="action",
+                sequence=sequence,
+                path=f"me.custom.{name}",
+                target_id=f"instance:{target}",
+                arguments_json='{"text":"你好"}',
+            )
+            await store.mark_call_started(identity)
+            await store.record_call_result(
+                identity, state=state, result_json=result, error_type=None, error=None
+            )
+        feed = await store.chat_projection(limit=10)
+        actions = feed["actions"]
+        assert isinstance(actions, list) and isinstance(actions[0], dict)
+        replies = actions[0]["replies"]
+        assert isinstance(replies, list)
+        assert [r["call_id"] for r in replies if isinstance(r, dict)] == ["2", "5", "6"]
+        recorded = actions[0]["calls"]
+        assert isinstance(recorded, list) and len(recorded) == len(calls)
+    finally:
+        await store.close()
 
 
 class _Empty(BaseModel):

@@ -371,6 +371,8 @@ async def test_decision_wire_preserves_order_and_sdk_refusal(
     ("model", "api_base", "expected_host"),
     [
         ("openai/gpt-4o-mini", None, "api.openai.com"),
+        ("perplexity/sonar", None, "api.perplexity.ai"),
+        ("cerebras/llama-3.3-70b", None, "api.cerebras.ai"),
         ("gemini/gemini-2.5-flash", None, "generativelanguage.googleapis.com"),
         ("gemini/gemini-2.5-flash", "https://gemini.invalid", "gemini.invalid"),
     ],
@@ -436,7 +438,7 @@ async def test_generation_uses_provider_default_or_explicit_endpoint(
         if model.startswith("gemini/"):
             assert "streamGenerateContent" in requests[0].url.path
         else:
-            assert requests[0].url.path == "/v1/chat/completions"
+            assert requests[0].url.path.endswith("/chat/completions")
     finally:
         await resource.close()
     assert clients and all(client.is_closed for client in clients)

@@ -330,9 +330,11 @@ async def test_name_alias_and_frontmatter_page_only_return_current_fragment(
     await notes.write("tea/SKILL.md", content)
     first = await notes.read("tea", max_chars=40)
     assert first["path"] == "tea/SKILL.md" and first["name"] == "tea"
-    assert first["body"] == content[content.index("正文") : 40]
+    assert first["body_offset"] == content.index("正文")
+    assert "body" not in first
     continuation = await notes.read("tea", cursor=_text(first, "next_cursor"), max_chars=40)
-    assert continuation["body"] == content[40:]
+    assert continuation["content"] == content[40:]
+    assert "body" not in continuation and "body_offset" not in continuation
     await notes.write("other.md", "---\nname: tea\n---\n另一篇")
     with pytest.raises(NotebookError) as rejected:
         await notes.read("tea")

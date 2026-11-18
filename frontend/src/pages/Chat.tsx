@@ -46,12 +46,10 @@ function replyChannelLabel(channel: string): string {
       return "当面回应";
     case "voice":
       return "现场语音";
-    case "voice_file":
-      return "语音留言";
     case "qq":
       return "QQ 消息";
     case "phone":
-      return "手机推送";
+      return "手机消息已入队";
     default:
       return channel;
   }

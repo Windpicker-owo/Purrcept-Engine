@@ -1,4 +1,8 @@
-"""真后台模式（True Admin Mode）配置文件读写、脱敏与目标插件路径解析。"""
+"""为后台编辑器读取、校验并原子保存配置文件，解析调音室与身体插件的配置路径。
+
+源码和表单共用凭据掩码。校验使用展开环境变量的副本，写回时保留 TOML 表达式。
+配置在重启时由宿主加载，这里的保存只更新磁盘与备份。
+"""
 
 from __future__ import annotations
 
@@ -7,13 +11,12 @@ import os
 import re
 import tempfile
 import tomllib
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping, MutableMapping, MutableSequence
 from pathlib import Path
-from typing import Literal, TypeGuard
+from typing import Literal, TypeGuard, cast
 
 import tomlkit
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
-from tomlkit.exceptions import ParseError
 from tomlkit.items import AoT, Table
 
 from purrcept_engine.app.config import EngineConfig
@@ -24,7 +27,8 @@ from purrcept_engine.plugins.live2d.models import ModelProfile
 from purrcept_engine.values import JsonObject, JsonValue
 
 _MASKED_SECRET = "********"
-_ENV_PATTERN = re.compile(r"\$\{[A-Za-z_][A-Za-z0-9_]*(?::-[^}]*)?\}")
+_ENV_REFERENCE = re.compile(r"\$\{[A-Za-z_][A-Za-z0-9_]*(?::-)?\}")
+_CREDENTIAL_FIELDS = {"api_key", "access_token", "asr_api_key", "authorization", "password"}
 
 
 def is_mapping(value: object) -> TypeGuard[Mapping[object, object]]:
@@ -115,11 +119,9 @@ def _mask_key_hint(raw_key: str) -> tuple[str, str | None, bool]:
     stripped = raw_key.strip()
     if not stripped:
         return "免密 / 未填写", None, False
-    if _ENV_PATTERN.search(stripped):
+    if _ENV_REFERENCE.fullmatch(stripped):
         return f"环境变量：{stripped}", stripped, True
-    if len(stripped) <= 6:
-        return "已设置（已隐藏）", None, True
-    return f"{stripped[:3]}••••{stripped[-3:]}", None, True
+    return "已设置（已隐藏）", None, True
 
 
 def _table_child(container: tomlkit.TOMLDocument | Table, key: str) -> Table | None:
@@ -138,49 +140,43 @@ def _ensure_table(container: tomlkit.TOMLDocument | Table, key: str) -> Table:
     return created
 
 
-def _mask_document_secrets(text: str) -> str:
-    """将源码视图中的明文 api_key 替换为掩码，保留注释与 ${ENV_VAR} 占位符不变。"""
-    try:
-        doc = tomlkit.parse(text)
-        raw_parsed: object = tomllib.loads(text)
-    except (ParseError, tomllib.TOMLDecodeError):
-        return text
-    raw_models = raw_parsed.get("models") if is_str_dict(raw_parsed) else None
-    models = _table_child(doc, "models")
-    if models is not None and is_str_dict(raw_models):
-        for name in raw_models:
-            entry = _table_child(models, name)
-            if entry is not None and "api_key" in entry:
-                raw_item = entry.item("api_key").unwrap()
-                if (
-                    isinstance(raw_item, str)
-                    and raw_item.strip()
-                    and not _ENV_PATTERN.search(raw_item)
-                ):
-                    entry["api_key"] = _MASKED_SECRET
-    return tomlkit.dumps(doc)
+def _credential_fields(
+    node: object, path: tuple[str | int, ...] = ()
+) -> Iterator[tuple[tuple[str | int, ...], MutableMapping[str, object], str, str]]:
+    """遍历 TOML 表及内联表。插件按实例与入口匹配，以便列表重排后仍能还原凭据。"""
+    if isinstance(node, MutableMapping):
+        table = cast(MutableMapping[str, object], node)
+        for key, value in table.items():
+            location = (*path, key)
+            if key.lower() in _CREDENTIAL_FIELDS and isinstance(value, str):
+                yield location, table, key, value
+            else:
+                yield from _credential_fields(value, location)
+    elif isinstance(node, MutableSequence):
+        for index, item in enumerate(cast(MutableSequence[object], node)):
+            if path == ("plugins",) and is_str_dict(item):
+                location = (*path, str(item.get("instance_id")), str(item.get("entry")))
+            else:
+                location = (*path, index)
+            yield from _credential_fields(item, location)
 
 
-def _restore_masked_secrets(proposed_text: str, original_raw: Mapping[str, object]) -> str:
-    """在源码保存模式下，将未改动的掩码还原为磁盘上的原明文密钥。"""
-    doc = tomlkit.parse(proposed_text)
-    proposed_raw: object = tomllib.loads(proposed_text)
-    proposed_models = proposed_raw.get("models") if is_str_dict(proposed_raw) else None
-    orig_models = original_raw.get("models")
-    models = _table_child(doc, "models")
-    if models is not None and is_str_dict(proposed_models) and is_str_dict(orig_models):
-        for name in proposed_models:
-            entry = _table_child(models, name)
-            orig_entry = orig_models.get(name)
-            if (
-                entry is not None
-                and "api_key" in entry
-                and is_str_dict(orig_entry)
-                and entry.item("api_key").unwrap() == _MASKED_SECRET
-            ):
-                orig_key = orig_entry.get("api_key")
-                if isinstance(orig_key, str):
-                    entry["api_key"] = orig_key
+def _config_secret_view(text: str, *, original: str | None = None) -> str:
+    """读取时仅公开独立环境引用，保存时按同一字段身份还原未修改的掩码。"""
+    doc = tomlkit.parse(text)
+    previous = (
+        {path: value for path, _, _, value in _credential_fields(tomlkit.parse(original))}
+        if original is not None
+        else {}
+    )
+    for path, table, key, value in _credential_fields(doc):
+        if original is None:
+            if value and not _ENV_REFERENCE.fullmatch(value):
+                table[key] = _MASKED_SECRET
+        elif value == _MASKED_SECRET:
+            if path not in previous:
+                raise ConfigError("新增或更名的模型、插件凭据需要重新填写。")
+            table[key] = previous[path]
     return tomlkit.dumps(doc)
 
 
@@ -204,12 +200,15 @@ def read_config_view(config_path: Path | None) -> JsonObject:
     raw_bytes = config_path.read_bytes()
     revision = hashlib.sha256(raw_bytes).hexdigest()
     text = raw_bytes.decode("utf-8-sig")
-    raw_loaded: object = tomllib.loads(text)
+    masked_text = _config_secret_view(text)
+    raw_loaded: object = tomllib.loads(masked_text)
     raw_data: Mapping[str, object] = raw_loaded if is_str_dict(raw_loaded) else {}
 
     validation_error: str | None = None
     try:
-        EngineConfig.validate(raw_data, base_dir=config_path.parent)
+        EngineConfig.validate(
+            tomllib.loads(text), base_dir=config_path.parent, interpolate_env=True
+        )
     except ConfigError as error:
         validation_error = str(error)
 
@@ -340,7 +339,7 @@ def read_config_view(config_path: Path | None) -> JsonObject:
         "models": models_out,
         "plugins": plugins_out,
         "plugin_catalog": catalog_out,
-        "raw_toml": _mask_document_secrets(text),
+        "raw_toml": masked_text,
     }
 
 
@@ -383,18 +382,31 @@ def _apply_visual_update(original_text: str, payload: VisualSave) -> str:
             del models_tbl[existing]
     for m in payload.models:
         entry = _ensure_table(models_tbl, m.name)
+        raw_previous = orig_models.get(m.name)
+        previous: Mapping[str, object] = raw_previous if is_str_dict(raw_previous) else {}
+        old_model = str(previous.get("model", ""))
+        switched = bool(old_model) and old_model.partition("/")[0] != m.model.partition("/")[0]
+        endpoint = m.api_base.strip()
+        # 早期表单把 OpenAI 公共端点写入新条目。切换服务商时收回这项默认值，
+        # 自建网关和本次明确修改的地址继续按用户填写的值保存。
+        if (
+            switched
+            and old_model.startswith("openai/")
+            and endpoint == previous.get("api_base")
+            and endpoint.rstrip("/") == "https://api.openai.com/v1"
+        ):
+            endpoint = ""
         entry["kind"] = m.kind
         entry["model"] = m.model
-        if m.api_base.strip():
-            entry["api_base"] = m.api_base.strip()
+        if endpoint:
+            entry["api_base"] = endpoint
         elif "api_base" in entry:
             # TOML 不表示 null，后台清空地址时删除字段，让服务商选择默认端点。
             del entry["api_base"]
-        if not m.keep_existing_key or m.api_key.strip():
+        if switched or not m.keep_existing_key or m.api_key.strip():
             entry["api_key"] = m.api_key
         else:
-            prev = orig_models.get(m.name)
-            prev_key = prev.get("api_key") if is_str_dict(prev) else None
+            prev_key = previous.get("api_key")
             if isinstance(prev_key, str):
                 entry["api_key"] = prev_key
             elif "api_key" not in entry:
@@ -467,15 +479,16 @@ def save_config_file(
         raise ConfigError("配置文件已在磁盘上被其他操作修改，请点击重新读取后再保存。")
 
     original_text = original_bytes.decode("utf-8-sig")
-    loaded_orig: object = tomllib.loads(original_text)
-    original_raw: Mapping[str, object] = loaded_orig if is_str_dict(loaded_orig) else {}
     if isinstance(payload, VisualSave):
         proposed = _apply_visual_update(original_text, payload)
     else:
-        proposed = _restore_masked_secrets(payload.raw_toml, original_raw)
+        proposed = payload.raw_toml
+    proposed = _config_secret_view(proposed, original=original_text)
 
     parsed_proposed: object = tomllib.loads(proposed)
-    validated = EngineConfig.validate(parsed_proposed, base_dir=resolved_path.parent)
+    validated = EngineConfig.validate(
+        parsed_proposed, base_dir=resolved_path.parent, interpolate_env=True
+    )
 
     if owner_data_dir is not None and owner_data_dir.resolve() != validated.host.data_dir.resolve():
         raise ConfigError("运行期间不允许更改正在占用的 host.data_dir 目录。")

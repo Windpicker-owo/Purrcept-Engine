@@ -614,7 +614,7 @@ class WorkPorts(Ports):
                 identity, state=state, result_json=result, error_type=None, error=None
             )
         await self.store.finish_action(
-            "work-action", state="completed", result_json="null", output="", error=None
+            "work-action", state="completed", result_json=calls[0][3], output="", error=None
         )
         action = await self.store.get_action("work-action")
         assert action is not None
@@ -782,6 +782,7 @@ async def test_current_tail_does_not_duplicate_or_bypass_frozen_action_delivery(
     else:
         receipt = payload(delivered(result)[0])
         assert receipt["type"] == "ActionReceipt"
+        assert receipt["result_equals_call"] == "long-read" and "result" not in receipt
         assert "source" not in receipt and "catalog_version" not in receipt
         second_call = obj(items(receipt["calls"])[1])
         assert "history" not in second_call and "arguments_json" not in second_call

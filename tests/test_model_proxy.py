@@ -37,6 +37,8 @@ class LocalHTTPRoutes(httpx.AsyncClient):
     ("provider", "cache_mode"),
     [
         ("openai", CacheMode.AUTO),
+        ("perplexity", CacheMode.AUTO),
+        ("cerebras", CacheMode.AUTO),
         ("gemini", CacheMode.AUTO),
         ("gemini", CacheMode.DISABLED),
         ("gemini", CacheMode.EXPLICIT),
@@ -154,7 +156,12 @@ async def test_explicit_proxy_carries_sdk_generation_cache_and_decision(
             finally:
                 await decision.close()
         else:
-            model = "gemini/gemini-4-hydrogen" if provider == "gemini" else "openai/synthetic"
+            model = {
+                "gemini": "gemini/gemini-4-hydrogen",
+                "perplexity": "perplexity/sonar",
+                "cerebras": "cerebras/llama-3.3-70b",
+                "openai": "openai/synthetic",
+            }[provider]
             generation = GenerationResource.create(
                 GenerationModelSettings.model_validate(
                     {

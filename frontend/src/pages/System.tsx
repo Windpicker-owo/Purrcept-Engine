@@ -162,14 +162,14 @@ export function System({
         name: `model_${idx}`,
         kind: "generation",
         model: "openai/gpt-4.1-mini",
-        api_base: "https://api.openai.com/v1",
+        api_base: "",
         api_key_hint: "免密 / 未填写",
         env_expr: null,
         has_api_key: false,
         context_window: 64000,
         max_output_tokens: 4096,
         input_limit: 16000,
-        new_api_key: "${OPENAI_API_KEY}",
+        new_api_key: "",
       },
     ]);
   };
@@ -556,7 +556,7 @@ export function System({
                             />
                           )}
                         </Field>
-                        <Field label="API Base 地址">
+                        <Field label="API Base 地址" description="留空使用所选服务商的默认地址，自建网关可填写完整地址。">
                           {(control) => (
                             <input
                               {...control}
@@ -571,7 +571,7 @@ export function System({
                             />
                           )}
                         </Field>
-                        <Field label={`API Key（当前：${m.api_key_hint}）`} description="留空则保持原密钥不变；支持 ${ENV_VAR} 语法">
+                        <Field label={`API Key（当前：${m.api_key_hint}）`} description="同一服务商可留空沿用密钥；切换服务商时请填写对应密钥或环境变量。">
                           {(control) => (
                             <input
                               {...control}

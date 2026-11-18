@@ -6,14 +6,16 @@
 
 from __future__ import annotations
 
+import json
 import sqlite3
 import time
+from typing import cast
 
 import purrcept_engine.domain.execution.models as execution_models
 from purrcept_engine.errors import StorageError
 from purrcept_engine.infrastructure.sqlite import activities, execution
 from purrcept_engine.infrastructure.sqlite.rows import as_int, as_text
-from purrcept_engine.values import ActionProtocolError, JsonObject, JsonValue, decode_object
+from purrcept_engine.values import JsonObject, JsonValue, decode_object
 
 
 def runtime(connection: sqlite3.Connection) -> JsonObject:
@@ -193,40 +195,33 @@ def chat_feed(connection: sqlite3.Connection, *, limit: int = 40) -> JsonObject:
 
 
 def _extract_reply(call: execution_models.CallRecord) -> JsonObject | None:
-    """从控制台、语音或外部消息调用参数与回执中提取可读的主体发言。"""
-    path = call.path
-    channel: str | None = None
-    if path == "me.console.output" or path.endswith(".console.output"):
-        channel = "console"
-    elif path.endswith(":microphone.speak") or path.endswith(".microphone.speak"):
-        channel = "voice"
-    elif path.endswith(":microphone.record") or path.endswith(".microphone.record"):
-        channel = "voice_file"
-    elif ".qq." in path or ":qq." in path:
-        channel = "qq"
-    elif ".phone." in path:
-        channel = "phone"
-    if channel is None:
+    """仅把已确认的表达列作发言；其他尝试仍在同一行动的逐次调用列表中。"""
+    if call.state != "confirmed":
         return None
-
-    text: str | None = None
-    for raw in (call.result_json, call.arguments_json):
-        if not raw:
-            continue
-        try:
-            parsed = decode_object(raw.encode("utf-8"))
-        except (ActionProtocolError, ValueError):
-            continue
-        candidate = parsed.get("text") or parsed.get("message") or parsed.get("content")
-        if isinstance(candidate, str) and candidate.strip():
-            text = candidate
-            break
-    if text is None:
+    # 路径段由用户配置。目标身份保留内置对象种类，末段是实际调用的能力。
+    target = call.target_id.rsplit(":", 1)[-1]
+    operation = call.path.rsplit(".", 1)[-1]
+    if (target, operation) == ("console", "output"):
+        channel = "console"
+    elif (target, operation) == ("microphone", "speak"):
+        # 接管或中断播放都不能证明完整的这段文字已播完。
+        playback = cast(JsonValue, json.loads(call.result_json)) if call.result_json else None
+        if not isinstance(playback, dict) or playback.get("completed") is not True:
+            return None
+        channel = "voice"
+    elif (target, operation) == ("qq", "send"):
+        channel = "qq"
+    elif (target, operation) == ("chat", "send"):
+        channel = "phone"
+    else:
+        return None
+    text = decode_object(call.arguments_json.encode()).get("text")
+    if not isinstance(text, str) or not text.strip():
         return None
     return {
         "call_id": call.call_id,
         "channel": channel,
-        "path": path,
+        "path": call.path,
         "state": call.state,
         "text": text[:4000],
         "truncated": len(text) > 4000,

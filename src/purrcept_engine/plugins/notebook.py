@@ -1600,7 +1600,7 @@ class Notebook:
         return self._page(page, requested)
 
     def _page(self, page: EvidencePage, requested: str) -> JsonObject:
-        """核游标来源，并只交付当前片段，旧 body 字段也不能重新带出整篇正文。"""
+        """核对游标来源，交付一份原文并标出本页前置元数据的长度。"""
         snapshot = page.snapshot
         source = decode_object(snapshot.source_json.encode("utf-8"))
         if (
@@ -1614,7 +1614,6 @@ class Notebook:
         body_start = source.get("body_start")
         if fragment is None or isinstance(body_start, bool) or not isinstance(body_start, int):
             raise RuntimeError("Notebook 原文页缺少合法范围或正文起点。")
-        body = page.text[max(0, body_start - fragment.start) :] if fragment.end > body_start else ""
         result: JsonObject = {
             "path": source["path"],
             "name": source["name"],
@@ -1630,8 +1629,8 @@ class Notebook:
         }
         if source["description"] is not None:
             result["description"] = source["description"]
-        if body_start > 0:
-            result["body"] = body
+        if body_start > fragment.start:
+            result["body_offset"] = min(body_start, fragment.end) - fragment.start
         if page.next_cursor is not None:
             result["next_cursor"] = page.next_cursor
         return result
@@ -1875,6 +1874,7 @@ def _declare(instance_id: str, settings: NotebookSettings, base_dir: Path) -> Pl
         "读取指定笔记的稳定版本与原文片段。",
         'await me.notebook.read(path="how-to-rest.md")',
         "path 保留唯一 name/stem 别名；cursor 续读同一已存快照，不重新取文件。"
+        "content 是本页原文；body_offset 是正文在本页的字符起点，省略表示 0。"
         "修改局部内容使用 edit，仅提交所需片段和本次返回的 version。",
     )
     write = declaration(
