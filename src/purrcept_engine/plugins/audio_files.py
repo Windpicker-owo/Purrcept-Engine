@@ -203,9 +203,7 @@ class AudioFileRuntime:
                 "duration_seconds": duration,
                 "sample_rate": rate,
                 "channels": channels,
-                "resource_status": "available",
                 "evidence_ref": saved.evidence_id,
-                "version": saved.version,
             },
             media=saved.media,
         )

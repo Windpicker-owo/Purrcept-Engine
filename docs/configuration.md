@@ -58,6 +58,27 @@ one_line = "住在你电脑里的连续在线 AI 伙伴。"
 speech_style = "用自然、简短的中文交流。"
 ```
 
+`api_base` 为可选字段，省略时使用模型服务商的默认地址。生成模型按 LiteLLM
+前缀选择协议，例如 `openai/模型名` 使用 OpenAI 兼容协议，`gemini/模型名`
+使用 Gemini 原生协议；自建或第三方网关仍可显式填写 `api_base`。
+省略地址时仍需提供远程模型的 `api_key`。
+
+### 为模型启用代理
+
+在需要代理的模型下填写 `proxy`，支持 HTTP(S) 代理和混合端口的 HTTP 协议：
+
+```toml
+[models.studio]
+model = "gemini/gemini-4-hydrogen"
+api_key = "${GEMINI_API_KEY}"
+proxy = "http://127.0.0.1:10808"
+```
+
+将端口替换为代理软件的 HTTP 或混合代理端口。`proxy` 也支持 `${ENV_VAR}`
+插值；省略时直连，不自动读取 `HTTP_PROXY`、`HTTPS_PROXY` 或 `ALL_PROXY`。
+生成、缓存查询及缓存创建共用此模型的代理；专用判断模型也支持该字段。
+`api_base` 继续表示模型服务端点，不用于填写本地代理。
+
 ### 本地免密模型（Ollama / vLLM / LM Studio）
 
 当 `api_base` 指向本机回环（`localhost`、`127.0.0.1`、`::1`）或局域网私有地址（如 `192.168.x.x`）时，`api_key` 可直接省略或留空 `""`：
@@ -76,7 +97,7 @@ api_key = ""
 | `console` | `true` | 是否开启终端打字输入与 `me.console.output` 控制台表达能力。 |
 | `[web] enabled` / `port` | `false` / `8765` | 启用本机 WebUI 面板（需安装 `uv sync --extra web`）。 |
 | `[logging] level` | `"INFO"` | 日志级别：`DEBUG` / `INFO` / `WARNING` / `ERROR`，也可通过 CLI `--debug` 或 `--log-level` 覆盖。 |
-| `[models.<名称>]` | — | `model`（如 `openai/模型ID`）、`api_base`、`api_key`、`context_window`（默认 `64000`）、`max_output_tokens`（默认 `4096`）、`supports_contents`（默认 `["text"]`，可选加 `"image"`、`"audio"`）。 |
+| `[models.<名称>]` | — | `model`（如 `openai/模型ID` 或 `gemini/模型ID`）、可选的 `api_base`（省略使用服务商默认地址）、`api_key`、`context_window`（默认 `64000`）、`max_output_tokens`（默认 `4096`）、`supports_contents`（默认 `["text"]`，可选加 `"image"`、`"audio"`）。 |
 | `[subject] foreground` | 必填 | 主脑连续对话与行动引用的生成模型名。 |
 | `[subject] reflection` | 同 `foreground` | 后台行为评审引用的生成模型名。 |
 | `[subject] attention` | `None` | 收件箱合批注意评估引用的模型名（可填同一个生成模型，或独立 `kind = "decision"` 专用判断模型）。 |

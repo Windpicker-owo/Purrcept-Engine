@@ -79,7 +79,7 @@ from purrcept_engine.domain.model_requests.service import (
     classify_failure,
 )
 from purrcept_engine.errors import StorageError
-from purrcept_engine.infrastructure.models.clients import DecisionResource, OpenAIGenerationResource
+from purrcept_engine.infrastructure.models.clients import DecisionResource, GenerationResource
 from purrcept_engine.infrastructure.models.compiler import compile_materials
 from purrcept_engine.infrastructure.sqlite import model_requests as sql
 from purrcept_engine.infrastructure.sqlite.store import Store
@@ -562,7 +562,7 @@ async def test_actual_sdk_http_payload_matches_recorded_ordered_materials(
             "max_output_tokens": 1000,
         }
     )
-    resource = OpenAIGenerationResource.create(settings)
+    resource = GenerationResource.create(settings)
     sink = _Sink()
     wrapper = ModelGenerationBackend(
         resource,
@@ -659,7 +659,7 @@ async def test_real_sdk_retry_has_two_http_attempts_and_preserves_same_payload(
                 "max_output_tokens": 1000,
             }
         )
-        resource = OpenAIGenerationResource.create(generation_settings)
+        resource = GenerationResource.create(generation_settings)
         wrapper = ModelGenerationBackend(
             resource,
             sink,

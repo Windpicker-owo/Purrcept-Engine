@@ -26,7 +26,7 @@ from purrcept_engine.domain.execution.ports import ActionExecutor
 from purrcept_engine.errors import ConfigError, HostStateError
 from purrcept_engine.infrastructure.models.clients import (
     DecisionResource,
-    OpenAIGenerationResource,
+    GenerationResource,
 )
 from purrcept_engine.infrastructure.sqlite.store import Store
 from purrcept_engine.plugin_system.captions import SpeechCaption
@@ -115,7 +115,7 @@ class EngineAssembly:
             if isinstance(settings, GenerationModelSettings):
                 backend = self.state.generation_backends.get(name)
                 if backend is None:
-                    resource = OpenAIGenerationResource.create(settings)
+                    resource = GenerationResource.create(settings)
                     self.state.models[name] = resource
                     backend = resource.backend
                 generation[name] = backend

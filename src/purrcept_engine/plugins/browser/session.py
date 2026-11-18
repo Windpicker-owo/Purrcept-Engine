@@ -311,15 +311,18 @@ class BrowserSession:
         source = decode_object(snapshot.source_json.encode())
         if source.get("plugin") != self.instance_id:
             raise BrowserInputError("cursor属于另一浏览器实例。")
-        return {
-            **source,
-            "content": page.text,
-            "evidence_ref": snapshot.evidence_id,
-            "slice_ref": fragment.slice_ref,
-            "range": {"unit": fragment.unit, "start": fragment.start, "end": fragment.end},
-            "next_cursor": page.next_cursor,
-            "complete": page.next_cursor is None,
-        }
+        result: JsonObject = {key: value for key, value in source.items() if key != "plugin"}
+        result.update(
+            {
+                "content": page.text,
+                "evidence_ref": snapshot.evidence_id,
+                "slice_ref": fragment.slice_ref,
+                "range": {"unit": fragment.unit, "start": fragment.start, "end": fragment.end},
+                "next_cursor": page.next_cursor,
+                "complete": page.next_cursor is None,
+            }
+        )
+        return result
 
     async def search(self, query: str) -> JsonObject:
         """保留原搜索引擎/条数，同时保存完整结果页HTML，不把空解析冒充全部无结果。
@@ -541,9 +544,13 @@ class BrowserSession:
             "width": width,
             "height": height,
             "sha256": digest,
-            "source": source,
+            "url": view.url,
+            "title": view.title,
+            "acquired_via": capture.acquired_via,
             "evidence_ref": committed.evidence_id,
         }
+        if capture.original_error is not None:
+            value["original_error"] = capture.original_error
         if ref is None and created:
             self._screenshots.append(path)
             try:

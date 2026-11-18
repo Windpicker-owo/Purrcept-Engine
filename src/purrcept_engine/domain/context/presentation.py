@@ -6,8 +6,10 @@ render_attention_context 只整理注意的有限工作背景，render_host_stat
 执行时间线只派生已保存记录的可读 UTC 时间，不采样当前时钟或推测平台送达。
 """
 
+import json
 import re
 from datetime import UTC, datetime
+from typing import cast
 
 from purrcept_engine.domain.context.audio_receipts import audio_text_view
 from purrcept_engine.domain.context.templates import (
@@ -17,7 +19,7 @@ from purrcept_engine.domain.context.templates import (
 )
 from purrcept_engine.domain.execution.models import ActionRecord
 from purrcept_engine.serialization import render_field_tree, render_yaml
-from purrcept_engine.values import JsonObject
+from purrcept_engine.values import JsonObject, JsonValue
 
 
 def execution_times(record: JsonObject) -> JsonObject:
@@ -51,21 +53,53 @@ def execution_times(record: JsonObject) -> JsonObject:
     return times
 
 
+def _utc_iso(timestamp: float | None) -> str | None:
+    if timestamp is None:
+        return None
+    return datetime.fromtimestamp(timestamp, UTC).isoformat()
+
+
+def action_receipt(action: ActionRecord) -> JsonObject:
+    """生成面向模型的精简行动回执，去掉源码回显、重复历史与转义 JSON。"""
+    calls: list[JsonValue] = []
+    for call in action.calls:
+        entry: JsonObject = {
+            "call_id": call.call_id,
+            "path": call.path,
+            "state": call.state,
+            "receipt_revision": call.receipt_revision,
+            "started_at": _utc_iso(call.started_at),
+            "finished_at": _utc_iso(call.finished_at),
+        }
+        if call.result_json is not None:
+            entry["result"] = cast(JsonValue, json.loads(audio_text_view(call.result_json)))
+        if call.error_type is not None:
+            entry["error_type"] = call.error_type
+        if call.error is not None:
+            entry["error"] = call.error
+        calls.append(entry)
+    receipt: JsonObject = {
+        "type": "ActionReceipt",
+        "action_id": action.action_id,
+        "state": action.state,
+        "finished_at": _utc_iso(action.finished_at),
+        "evidence_ref": f"action_result:{action.action_id}",
+        "calls": calls,
+    }
+    if action.output:
+        receipt["output"] = action.output
+    if action.result_json is not None:
+        action_result = cast(JsonValue, json.loads(audio_text_view(action.result_json)))
+        if action_result is not None:
+            receipt["result"] = action_result
+    if action.error is not None:
+        receipt["error"] = action.error
+    return receipt
+
+
 def action_timeline(action: ActionRecord) -> JsonObject:
-    """为完整与容量引用回执提供相同的可读行动时间线。
-
-    Args:
-        action: 已独立保存的实际行动结果，不以模型说法或 Worker 自报替代。
-
-    Returns:
-        含行动、逐次调用身份及 UTC 时间的派生投影，不包含结果正文或平台推测。
-
-    Note:
-        本投影不代替原始行动证据；即使正文超窗，模型仍可核对宿主记录的先后。
-    """
+    """为容量引用回执提供可读行动时间线。"""
     return {
-        "meaning": "以下均为宿主记录时间（UTC）；started_at 是派发时间，finished_at 是"
-        "结果记录时间，不等于平台实际送达或外部效果的精确发生时间；null 表示尚未记录。",
         "action_id": action.action_id,
         **execution_times({"created_at": action.created_at, "finished_at": action.finished_at}),
         "calls": [
@@ -222,9 +256,6 @@ def render_host_state(payload: JsonObject) -> str:
         "宿主当前状态（全部未决工作；设备状态是观察事实，不是行动许可）",
         {
             "request_time": payload.get("request_time", {}),
-            "execution_time_meaning": "调用时间为宿主 Unix 秒数；recorded_times_utc 是其 UTC 表示。"
-            "started_at 为派发记录，finished_at 为结果记录，不证明外部效果的精确发生时间。"
-            "work.observed_at 是读取工作状态的时间，区别于 request_time.current_time。",
             "work": current,
             "capabilities": payload.get("request_materials", {}),
             "budget": {

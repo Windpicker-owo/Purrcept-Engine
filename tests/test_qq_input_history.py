@@ -431,7 +431,7 @@ async def test_history_cursor_keeps_same_snapshot_and_does_not_refetch(rig: Rig)
                     "message_id": index,
                     "self_id": 100,
                     "user_id": 999,
-                    "message": "原文" + str(index),
+                    "message": "原文消息内容_" * 10 + str(index),
                     "time": 1700000000 + index,
                 }
                 for index in range(1, 5)
@@ -558,9 +558,7 @@ async def test_large_history_body_has_independent_smaller_readable_source(rig: R
     assert isinstance(outcome.value, dict)
     messages = outcome.value["messages"]
     assert isinstance(messages, list) and isinstance(messages[0], dict)
-    reference = messages[0]["body_ref"]
-    assert isinstance(reference, dict)
-    identity = reference["evidence_ref"]
+    identity = messages[0]["body_ref"]
     assert isinstance(identity, str)
     page = await rig.service.evidence.read_evidence(identity, max_chars=13)
     assert page.text == body[:13] and page.next_cursor is not None

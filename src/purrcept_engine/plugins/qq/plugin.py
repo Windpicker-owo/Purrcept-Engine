@@ -382,13 +382,6 @@ class QQCapabilities:
                 message,
                 context,
                 temporary=temporary,
-                extra={
-                    "text": parameters.text,
-                    "image_count": len(parameters.images or []),
-                    "file_count": len(parameters.files or []),
-                    "voice_count": int(bool(parameters.voice)),
-                    "has_voice": bool(parameters.voice),
-                },
             )
         if isinstance(parameters, p.Empty):
             actions = {
@@ -431,8 +424,7 @@ class QQCapabilities:
                     "message_id": parameters.message_id,
                     "emoji_id": parameters.emoji_id,
                     "added": parameters.add,
-                    "platform_reported_success": True,
-                    "actual": data,
+                    **({"actual": data} if data is not None else {}),
                 },
             )
         if isinstance(parameters, p.Recall):
@@ -443,8 +435,7 @@ class QQCapabilities:
                 lambda data: {
                     "message_id": parameters.message_id,
                     "recalled": True,
-                    "confirmation_source": "platform_acknowledgement",
-                    "actual": data,
+                    **({"actual": data} if data is not None else {}),
                 },
             )
         if isinstance(parameters, p.Unmute):
@@ -466,8 +457,7 @@ class QQCapabilities:
                     "user_id": parameters.user_id,
                     "duration_seconds": duration,
                     "muted": duration > 0,
-                    "actual": data,
-                    "confirmation_source": "platform_acknowledgement",
+                    **({"actual": data} if data is not None else {}),
                 },
             )
         if isinstance(parameters, p.Poke):
@@ -483,8 +473,7 @@ class QQCapabilities:
                     "target_id": parameters.target_id,
                     "user_id": str(params["user_id"]),
                     "poked": True,
-                    "actual": data,
-                    "confirmation_source": "platform_acknowledgement",
+                    **({"actual": data} if data is not None else {}),
                 },
             )
         if isinstance(parameters, p.Forward):
@@ -539,7 +528,7 @@ class QQCapabilities:
                 context,
                 extra={
                     "source_forward_id": parameters.forward_id,
-                    "source_response": reference,
+                    "source_ref": reference,
                     "mode": "direct",
                 },
             )
@@ -704,14 +693,15 @@ class QQCapabilities:
                     target_id=target_id,
                 )
                 self.service.cache.remember(self.service.scope(generation), cached)
-            return {
+            outcome: JsonObject = {
                 "chat": chat,
                 "target_id": target_id,
                 "message_id": message_id or None,
-                "unknown_fields": [] if message_id else ["message_id"],
-                "platform_reported_success": True,
                 **(extra or {}),
             }
+            if not message_id:
+                outcome["unknown_fields"] = ["message_id"]
+            return outcome
 
         return await self.service.rpc(action, params, context, result, temporary=temporary)
 
@@ -724,8 +714,7 @@ class QQCapabilities:
             target: 明确的私聊或群聊转发目标，不使用原消息身份替代新结果。
 
         Returns:
-            业务对象，按实际结果提供 chat、target_id、message_id、forward_id、
-            platform_reported_success 字段。
+            业务对象，按实际结果提供 chat、target_id、message_id、forward_id 字段。
         """
         mapping = object_value(data)
         return {
@@ -733,7 +722,6 @@ class QQCapabilities:
             "target_id": target,
             "message_id": id_text(mapping.get("message_id")) or None,
             "forward_id": id_text(mapping.get("forward_id", mapping.get("res_id"))) or None,
-            "platform_reported_success": True,
         }
 
     async def forward(

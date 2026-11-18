@@ -769,7 +769,7 @@ async def test_current_tail_does_not_duplicate_or_bypass_frozen_action_delivery(
     assert '"arguments_json": > {"target_id":"qq-scope","text":"实际发送内容"}' in call_material
     assert '"target_id": > platform-instance' in call_material
     transmitted = encode(transport.payloads[1]["messages"])
-    assert transmitted.count("L" * 60_000) == (2 if full_delivery else 0)
+    assert transmitted.count("L" * 60_000) == (1 if full_delivery else 0)
     assert ("platform-confirmed-42" in transmitted) is full_delivery
     original = await store.evidence.get_evidence("action_result:work-action")
     assert original is not None
@@ -779,6 +779,13 @@ async def test_current_tail_does_not_duplicate_or_bypass_frozen_action_delivery(
         instruction = obj(payload(delivered(result)[0])["retry"])["instruction"]
         assert isinstance(instruction, str) and "平台详细字段尚未交付" in instruction
         assert call_material.count('"details_presented": false') == 3
+    else:
+        receipt = payload(delivered(result)[0])
+        assert receipt["type"] == "ActionReceipt"
+        assert "source" not in receipt and "catalog_version" not in receipt
+        second_call = obj(items(receipt["calls"])[1])
+        assert "history" not in second_call and "arguments_json" not in second_call
+        assert obj(second_call["result"])["message_id"] == "platform-confirmed-42"
 
     resumed_gate = ToolDeliveryGate(compiler=compile_materials)
     resumed_tools = foreground(store, resumed_gate)

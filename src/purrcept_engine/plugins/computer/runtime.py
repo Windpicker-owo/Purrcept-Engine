@@ -428,9 +428,9 @@ class ComputerRuntime:
         )
         committed = await self._evidence.capture(snapshot, (MediaAsset(frame.data, "image/jpeg"),))
         value: JsonObject = {
-            **source,
+            "captured_at": source["captured_at"],
+            "foreground": source["foreground"],
             "evidence_ref": committed.evidence_id,
-            "media_type": "image/jpeg",
             "sha256": committed.media[0].media_id,
         }
         # 权威媒体先完成接管；磁盘失败不能抹掉已取得的图像或伪造可发送路径。
@@ -582,6 +582,20 @@ class ComputerRuntime:
             "candidate": self._candidate is not None,
             "error": self._error,
         }
+
+    def receipt(self) -> JsonObject:
+        """返回面向主体的精简电脑状态回执，策略配置与代次留在 snapshot。"""
+        frame = self._latest
+        result: JsonObject = {
+            "connected": bool(self._connection) and self._driver is not None and self._driver.alive,
+            "observing": self._observing,
+        }
+        if frame is not None:
+            result["last_window_title"] = frame.foreground.title
+            result["captured_at"] = frame.captured_at
+        if self._error is not None:
+            result["error"] = self._error
+        return result
 
     async def prepare_request(self) -> JsonObject:
         """给主体连接、观察及最新窗口语境，不把驱动参数和进程句柄当作认知材料。

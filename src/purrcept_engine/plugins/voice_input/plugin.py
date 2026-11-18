@@ -161,16 +161,16 @@ def make_factory(
                 """按明确设备与模式开始收音，拒绝不满足准入的配置。"""
                 del context
                 try:
-                    return CallOutcome(
-                        "confirmed", await runtime.start(parameters.mode, parameters.device)
-                    )
+                    await runtime.start(parameters.mode, parameters.device)
                 except VoiceInputError as error:
                     raise CapabilityInputError(str(error)) from error
+                return CallOutcome("confirmed", runtime.receipt())
 
             async def run_stop(parameters: _Empty, context: CallContext) -> CallOutcome:
                 """明确停止当前收音并等待捕获资源归还。"""
                 del parameters, context
-                return CallOutcome("confirmed", await runtime.stop())
+                await runtime.stop()
+                return CallOutcome("confirmed", runtime.receipt())
 
             async def run_vad_interrupt(
                 parameters: _VadInterrupt, context: CallContext
@@ -178,9 +178,10 @@ def make_factory(
                 """由同一运行时切换停播策略，不重建采集或识别资源。"""
                 del context
                 try:
-                    return CallOutcome("confirmed", runtime.set_vad_interrupt(parameters.enabled))
+                    runtime.set_vad_interrupt(parameters.enabled)
                 except VoiceInputError as error:
                     raise CapabilityInputError(str(error)) from error
+                return CallOutcome("confirmed", runtime.receipt())
 
             return PluginRuntime(
                 (

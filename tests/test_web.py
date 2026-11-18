@@ -241,7 +241,10 @@ async def test_write_needs_token_and_closed_shape_and_blocks_raw_python_exec() -
         assert (await client.get("/api/controls/one")).json()["state"] == "admitted"
 
 
-async def test_true_admin_config_notebooks_and_studio_endpoints(tmp_path: Path) -> None:
+@pytest.mark.parametrize("clear_api_base", [False, True])
+async def test_true_admin_config_notebooks_and_studio_endpoints(
+    tmp_path: Path, clear_api_base: bool
+) -> None:
     template = Path(cli.__file__).with_name("default.toml")
     config_path = tmp_path / "purrcept.toml"
     raw_text = template.read_text(encoding="utf-8").replace(
@@ -296,7 +299,7 @@ async def test_true_admin_config_notebooks_and_studio_endpoints(tmp_path: Path) 
                         "name": m["name"],
                         "kind": m["kind"],
                         "model": m["model"],
-                        "api_base": m["api_base"],
+                        "api_base": "" if clear_api_base else m["api_base"],
                         "api_key": "",
                         "keep_existing_key": True,
                         "context_window": m["context_window"],
@@ -320,6 +323,9 @@ async def test_true_admin_config_notebooks_and_studio_endpoints(tmp_path: Path) 
         assert "sk-super-secret-value-999" in disk_after
         assert 'name = "杰瑞喵"' in disk_after
         assert 'level = "DEBUG"' in disk_after
+        if clear_api_base:
+            saved_config = await client.get("/api/config")
+            assert all(model["api_base"] == "" for model in saved_config.json()["models"])
 
         note_save = await client.post(
             "/api/notebooks/file",

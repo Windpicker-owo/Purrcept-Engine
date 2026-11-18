@@ -191,19 +191,19 @@ class AudioRuntime:
 
     def _payload(self, speech: _Speech, playback: PlaybackResult) -> JsonObject:
         """保留完全未开始、已合成未播放及部分播放的区别。"""
-        return {
+        result: JsonObject = {
             "playback_id": speech.playback_id,
-            "call_id": speech.context.call_id,
-            "action_id": speech.context.action_id,
-            "input_id": speech.context.input_id,
             "accepted": True,
             "synthesis_started": speech.synthesis_started,
             "synthesized": speech.synthesized,
             "byte_size": speech.byte_size,
-            "stop_reason": speech.revoked,
-            "body": speech.body,
             **playback.json(),
         }
+        if speech.revoked is not None:
+            result["stop_reason"] = speech.revoked
+        if speech.body is not None:
+            result["body"] = speech.body
+        return result
 
     async def speak(self, parameters: SpeechParameters, context: CallContext) -> CallOutcome:
         """接管本次合成与现场播放，返回真实声音阶段回执。
@@ -511,7 +511,8 @@ class AudioRuntime:
         """声音事实不依赖 Worker/会话成功；取消等待者追加真实迟到逐次回执。"""
         if not isinstance(outcome.value, dict):
             raise RuntimeError("现场播放必须返回结构化真实结果。")
-        outcome.value["body"] = speech.body
+        if speech.body is not None:
+            outcome.value["body"] = speech.body
         await self._fact(speech.playback_id, "finished", outcome.value)
         if speech.expiration is not None:
             speech.expiration.cancel()

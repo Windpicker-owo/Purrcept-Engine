@@ -18,7 +18,10 @@ from purrcept_engine.domain.context.delivery import (
     evidence_fallback,
     presented_evidence_calls,
 )
-from purrcept_engine.domain.context.presentation import action_timeline, render_material
+from purrcept_engine.domain.context.presentation import (
+    action_receipt,
+    action_timeline,
+)
 from purrcept_engine.domain.context.tool_errors import model_input_boundary
 from purrcept_engine.domain.evidence.models import EvidenceSnapshot, Version, WakeupPlan
 from purrcept_engine.domain.evidence.ports import EvidenceStore
@@ -217,14 +220,14 @@ class ForegroundTools:
                 needs_reflection=False,
             )
         native = await self.ports.media_blocks(media)
-        # 原文仍逐字保存；可读时间是派生材料，完整/引用两条交付路径都要保留。
+        # 原文仍逐字保存；给模型的工具回执只保留精简字段、已解码结果与 UTC 时间。
+        receipt = encode(action_receipt(result))
         timeline = action_timeline(result)
         return ToolDelivery(
             ToolResult(
                 content=(
-                    TextBlock(audio_text_view(original)),
+                    TextBlock(audio_text_view(receipt)),
                     *native,
-                    TextBlock(render_material("行动时间线（宿主记录，非平台送达证明）", timeline)),
                 )
             ),
             {

@@ -1,6 +1,6 @@
 """借用官方 LiteLLM 判断编译器，以宿主 HTTPX 客户端完成一次派发。
 
-官方 1.105.0 的公开 adecisions 不转交请求级客户端，其默认 HTTP handler
+官方 1.109.1 的公开 adecisions 不转交请求级客户端，其默认 HTTP handler
 还会隐式重发连接错误。本模块固定借用该版本的编译、签名、响应转换和错误
 映射接缝，只替换网络派发所有者；不修改 SDK 源码、全局函数或客户端缓存。
 DecisionResource 创建并关闭 HTTPX 客户端，本模块只借用，重试由请求服务决定。
@@ -24,7 +24,6 @@ class _PreparedDecision(Protocol):
     logging_obj: object
     provider_config: object
     ir_request: object
-    body: object
     api_base: object
     api_key: object
     headers: object
@@ -114,6 +113,7 @@ async def send_decision(http: DecisionHttp, payload: Mapping[str, object]) -> ob
     handler = cast(_DecisionHandler, calls.__dict__["_HANDLER"])
     format_response = cast(Callable[..., object], calls.__dict__["_format_response"])
     map_error = cast(Callable[..., Exception], calls.__dict__["_map_upstream_exception"])
+    request_body = cast(Callable[[_PreparedDecision], object], calls.__dict__["_request_body"])
 
     options = dict(payload)
     parameters = {
@@ -122,6 +122,8 @@ async def send_decision(http: DecisionHttp, payload: Mapping[str, object]) -> ob
             "model",
             "questions",
             "safety_identifier",
+            "audio",
+            "videos",
             "api_key",
             "api_base",
             "timeout",
@@ -132,6 +134,10 @@ async def send_decision(http: DecisionHttp, payload: Mapping[str, object]) -> ob
     parameters["decision_input"] = options.pop("input", None)
     call = prepare(**parameters, kwargs=options)
 
+    # SDK 1.109.1 将提供商请求体转换移到派发阶段；继续借用该转换，
+    # 不在宿主复制 TypeSafe 或 OpenRouter 的字段映射。
+    body = request_body(call)
+
     try:
         response = await handler.adecisions(
             model=call.model,
@@ -139,7 +145,8 @@ async def send_decision(http: DecisionHttp, payload: Mapping[str, object]) -> ob
             logging_obj=call.logging_obj,
             provider_config=call.provider_config,
             request=call.ir_request,
-            body=call.body,
+            body=body,
+            logged_body=body,
             api_base=call.api_base,
             api_key=call.api_key,
             headers=call.headers,

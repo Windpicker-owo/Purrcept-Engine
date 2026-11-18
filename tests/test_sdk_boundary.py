@@ -52,7 +52,7 @@ from purrcept_core.models import (
 if TYPE_CHECKING:
     from purrcept_engine.infrastructure.models.clients import (
         DecisionResource,
-        OpenAIGenerationResource,
+        GenerationResource,
     )
 
 _GENERATION_BASE = "https://generation.invalid/v1"
@@ -73,6 +73,7 @@ class _Wire:
     mode: Literal["ok", "connect_error", "timeout", "pending"] = "ok"
     status: int = 200
     requests: list[httpx.Request] = field(default_factory=lambda: list[httpx.Request]())
+    clients: list[httpx.AsyncClient] = field(default_factory=lambda: list[httpx.AsyncClient]())
     entered: asyncio.Event = field(default_factory=asyncio.Event)
     cancelled: asyncio.Event = field(default_factory=asyncio.Event)
 
@@ -141,7 +142,8 @@ def wire(monkeypatch: pytest.MonkeyPatch) -> _Wire:
     transport = httpx.MockTransport(recorded.respond)
 
     def async_transport(client: httpx.AsyncClient, url: httpx.URL) -> httpx.MockTransport:
-        del client, url
+        del url
+        recorded.clients.append(client)
         return transport
 
     def reject_sync(request: httpx.Request) -> httpx.Response:
@@ -263,14 +265,14 @@ async def _invoke(path: Literal["generation", "decision", "openrouter"]) -> None
             await decision.close()
 
 
-def _generation_resource() -> OpenAIGenerationResource:
+def _generation_resource() -> GenerationResource:
     """用显式网关配置建立生成所有者，不触及真实运行配置。"""
     from pydantic import SecretStr
 
     from purrcept_engine.app.config import GenerationModelSettings
-    from purrcept_engine.infrastructure.models.clients import OpenAIGenerationResource
+    from purrcept_engine.infrastructure.models.clients import GenerationResource
 
-    return OpenAIGenerationResource.create(
+    return GenerationResource.create(
         GenerationModelSettings(
             kind="generation",
             model=_MODEL,
@@ -365,6 +367,81 @@ async def test_decision_wire_preserves_order_and_sdk_refusal(
     assert isinstance(result.answer("restricted"), DecisionRefusal)
 
 
+@pytest.mark.parametrize(
+    ("model", "api_base", "expected_host"),
+    [
+        ("openai/gpt-4o-mini", None, "api.openai.com"),
+        ("gemini/gemini-2.5-flash", None, "generativelanguage.googleapis.com"),
+        ("gemini/gemini-2.5-flash", "https://gemini.invalid", "gemini.invalid"),
+    ],
+)
+async def test_generation_uses_provider_default_or_explicit_endpoint(
+    monkeypatch: pytest.MonkeyPatch, model: str, api_base: str | None, expected_host: str
+) -> None:
+    """真实 SDK 选择默认或显式端点，HTTP 替身验证 Gemini 原生协议与连接池关闭。"""
+    from purrcept_engine.app.config import GenerationModelSettings
+    from purrcept_engine.infrastructure.models.clients import GenerationResource
+
+    requests: list[httpx.Request] = []
+    clients: list[httpx.AsyncClient] = []
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        assert request.url.host == expected_host
+        requests.append(request)
+        if model.startswith("gemini/"):
+            chunk = {
+                "candidates": [
+                    {
+                        "content": {"role": "model", "parts": [{"text": "ok"}]},
+                        "finishReason": "STOP",
+                        "index": 0,
+                    }
+                ],
+                "usageMetadata": {
+                    "promptTokenCount": 12,
+                    "candidatesTokenCount": 1,
+                    "totalTokenCount": 13,
+                },
+                "modelVersion": "gemini-2.5-flash",
+            }
+        else:
+            chunk = {
+                "id": "synthetic-default",
+                "model": "gpt-4o-mini",
+                "object": "chat.completion.chunk",
+                "created": 1,
+                "choices": [{"index": 0, "delta": {"content": "ok"}, "finish_reason": "stop"}],
+            }
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/event-stream"},
+            content=f"data: {json.dumps(chunk)}\n\ndata: [DONE]\n\n",
+            request=request,
+        )
+
+    transport = httpx.MockTransport(respond)
+
+    def select(client: httpx.AsyncClient, url: httpx.URL) -> httpx.MockTransport:
+        clients.append(client)
+        return transport
+
+    monkeypatch.setattr(httpx.AsyncClient, "_transport_for_url", select)
+    settings = GenerationModelSettings.model_validate(
+        {"model": model, "api_key": "synthetic-key", "api_base": api_base}
+    )
+    resource = GenerationResource.create(settings)
+    try:
+        result = await resource.generate(ModelRequest((Message.user("hello"),)), model=model)
+        assert result.message.text == "ok" and len(requests) == 1
+        if model.startswith("gemini/"):
+            assert "streamGenerateContent" in requests[0].url.path
+        else:
+            assert requests[0].url.path == "/v1/chat/completions"
+    finally:
+        await resource.close()
+    assert clients and all(client.is_closed for client in clients)
+
+
 def test_explicit_configuration_ignores_conflicting_environment() -> None:
     """独立进程提供冲突环境，避免修改嵌入宿主的全进程环境。"""
     environment = _isolated_environment()
@@ -444,10 +521,10 @@ httpx.Client.send = forbid_sync
 httpx.AsyncClient.send = forbid_async
 
 from purrcept_engine.app.config import DecisionModelSettings, GenerationModelSettings
-from purrcept_engine.infrastructure.models.clients import OpenAIGenerationResource, DecisionResource
+from purrcept_engine.infrastructure.models.clients import GenerationResource, DecisionResource
 assert 'litellm' not in sys.modules
 
-generation = OpenAIGenerationResource.create(GenerationModelSettings(
+generation = GenerationResource.create(GenerationModelSettings(
     kind='generation', model='openai/synthetic', api_key=SecretStr('synthetic'),
     api_base='https://generation.invalid/v1',
     context_window=1000, max_output_tokens=100,
@@ -492,6 +569,9 @@ async def test_resource_close_is_shared_and_rejects_new_calls(
     resource = _generation_resource() if path == "generation" else _decision_resource(path)
     if isinstance(resource, DecisionResource):
         await resource.backend.decide(_decision_request(), model=_DECISION_TARGETS[path][0])
+    else:
+        await resource.backend.generate(_generation_request(), model=_MODEL)
+    owned_client = wire.clients[-1]
     attempts_before_close = len(wire.requests)
     entered = asyncio.Event()
     release = asyncio.Event()
@@ -500,6 +580,10 @@ async def test_resource_close_is_shared_and_rejects_new_calls(
 
     async def delayed_close(client: httpx.AsyncClient) -> None:
         nonlocal close_count
+        # SDK 的后台清理可能同时关闭其他客户端；这里只核验当前资源的归还次数。
+        if client is not owned_client:
+            await original_close(client)
+            return
         close_count += 1
         entered.set()
         await release.wait()
@@ -546,7 +630,7 @@ async def test_decision_rejects_images_without_substituting_descriptions(
     )
     resource = _decision_resource(path)
     try:
-        with pytest.raises(ModelRequestError, match="input_image content parts are not supported"):
+        with pytest.raises(ModelRequestError, match=r"does not support parameters: .*input_image"):
             await resource.backend.decide(request, model=_DECISION_TARGETS[path][0])
     finally:
         await resource.close()

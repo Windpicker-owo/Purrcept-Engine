@@ -222,7 +222,7 @@ class Live2DRuntime:
         if task is not None and task.done() and not task.cancelled():
             await task
         if self._connected:
-            return CallOutcome("confirmed", self.snapshot())
+            return CallOutcome("confirmed", self.receipt())
         return await asyncio.shield(self._begin_recovery())
 
     async def start(self) -> None:
@@ -281,11 +281,11 @@ class Live2DRuntime:
                     # 帧/分析循环已经保存原失败；下面按其类型结束或继续本轮。
                     pass
                 if self._connected:
-                    return CallOutcome("confirmed", self.snapshot())
+                    return CallOutcome("confirmed", self.receipt())
             failure = self._last_failure
             if failure is None:
                 return outcome
-            outcome = CallOutcome("failed", self.snapshot(), type(failure).__name__, str(failure))
+            outcome = CallOutcome("failed", self.receipt(), type(failure).__name__, str(failure))
             if not isinstance(failure, BodyUnavailable):
                 return outcome
         if outcome is None:
@@ -298,7 +298,7 @@ class Live2DRuntime:
             if self._stopping:
                 raise HostStateError("身体已经停止新连接。")
             if self._connected:
-                return CallOutcome("confirmed", self.snapshot())
+                return CallOutcome("confirmed", self.receipt())
             self._cleaning_connection = True
             try:
                 if self._driver is not None:
@@ -352,7 +352,7 @@ class Live2DRuntime:
                     self._last_failure = failure
                     self._error = {"error_type": type(failure).__name__, "message": str(failure)}
                     return CallOutcome(
-                        "failed", self.snapshot(), type(failure).__name__, str(failure)
+                        "failed", self.receipt(), type(failure).__name__, str(failure)
                     )
                 raise
             self._connected, self._error = True, None
@@ -375,7 +375,7 @@ class Live2DRuntime:
                 self._analysis_task.add_done_callback(self._loop_done)
             self._loop = asyncio.create_task(self._run(), name="live2d:" + self.instance_id)
             self._loop.add_done_callback(self._loop_done)
-            return CallOutcome("confirmed", self.snapshot())
+            return CallOutcome("confirmed", self.receipt())
 
     def _loop_done(self, task: asyncio.Task[None]) -> None:
         """程序故障记录原型并保留到关闭，不静默转换成视觉离线。"""
@@ -826,6 +826,21 @@ class Live2DRuntime:
             "speech_dropped_events": self._speech.dropped_events,
         }
 
+    def receipt(self) -> JsonObject:
+        """返回面向主体的精简连接回执，诊断计数与内部代次留在 snapshot。"""
+        intent = self._intent
+        result: JsonObject = {
+            "connected": self._connected,
+            "adopted": intent is not None and intent.adopted_at is not None,
+        }
+        if self._playback is not None:
+            result["playback_id"] = self._playback
+        if self._error is not None:
+            result["error"] = self._error
+        if self._recovery is not None and not self._recovery.done():
+            result["recovering"] = True
+        return result
+
     async def prepare_request(self) -> JsonObject:
         """保留身体可用性和实际采用状态，音素分析队列与重连计数留给诊断。"""
         state = self.snapshot()
@@ -887,7 +902,7 @@ class Live2DRuntime:
                 self._analyzer = None
             if self._analysis_task is not None:
                 await self._analysis_task
-            return CallOutcome("confirmed", self.snapshot())
+            return CallOutcome("confirmed", self.receipt())
 
     async def stop_inputs(self) -> None:
         """关闭禁止新表达/连接。

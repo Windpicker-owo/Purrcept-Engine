@@ -37,9 +37,7 @@ async def test_large_history_pages_bound_metadata_and_preserve_full_bodies(rig: 
     assert isinstance(first, dict) and isinstance(first["next_cursor"], str)
     messages = first["messages"]
     assert isinstance(messages, list) and isinstance(messages[0], dict)
-    reference = messages[0]["body_ref"]
-    assert isinstance(reference, dict)
-    body_id = reference["evidence_ref"]
+    body_id = messages[0]["body_ref"]
     assert isinstance(body_id, str)
     page = await rig.service.evidence.read_evidence(body_id, max_chars=100)
     assert page.text == body[:100] and page.next_cursor is not None
@@ -93,7 +91,7 @@ async def test_history_does_not_repeat_onebot_text_but_keeps_original_reference(
     assert "raw_message" not in item and "authored_text" not in item
     assert encode_json(outcome.value).decode().count("唯一正文") == 1
     reference = item["original_ref"]
-    assert isinstance(reference, dict) and isinstance(reference["evidence_ref"], str)
-    page = await rig.service.evidence.read_evidence(reference["evidence_ref"], max_chars=4000)
+    assert isinstance(reference, str)
+    page = await rig.service.evidence.read_evidence(reference, max_chars=4000)
     original = decode_object(page.text.encode())
     assert original["text"] == "唯一正文" and isinstance(original["raw_message"], list)

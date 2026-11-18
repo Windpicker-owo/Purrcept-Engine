@@ -185,6 +185,18 @@ class VoiceInputRuntime:
             "recognition_state": "recognizing" if self.utterances else "idle",
         }
 
+    def receipt(self) -> JsonObject:
+        """返回面向主体的精简收音状态回执，设备列表、历史和内部版本留在 snapshot。"""
+        result: JsonObject = {
+            "state": self.state,
+            "mode": self.mode,
+            "device": self.device,
+            "vad_interrupt_enabled": self.vad_interrupt_enabled,
+        }
+        if self.error is not None:
+            result["error"] = self.error
+        return result
+
     async def prepare_request(self) -> JsonObject:
         """交付收音能力与实际阶段。
 

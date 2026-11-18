@@ -28,6 +28,7 @@ from pydantic import (
     SecretStr,
     StringConstraints,
     ValidationError,
+    ValidationInfo,
     field_serializer,
     field_validator,
     model_validator,
@@ -233,10 +234,11 @@ class LoggingSettings(_Settings):
 
 
 class _ModelSettings(_Settings):
-    """模型连接公共字段；本机与局域网服务可留空 api_key。"""
+    """模型连接公共字段；proxy 显式选择 HTTP 代理，省略时直连服务商。"""
 
     model: NonEmptyString
-    api_base: NonEmptyString
+    api_base: NonEmptyString | None = None
+    proxy: NonEmptyString | None = None
     api_key: SecretStr = SecretStr("")
     supports_contents: tuple[ContentKind, ...] = ("text",)
 
@@ -251,9 +253,11 @@ class _ModelSettings(_Settings):
         validate_supported_contents(value)
         return value
 
-    @field_validator("api_base")
+    @field_validator("api_base", "proxy")
     @classmethod
-    def _explicit_endpoint(cls, value: str) -> str:
+    def _explicit_endpoint(cls, value: str | None, info: ValidationInfo) -> str | None:
+        if value is None:
+            return None
         try:
             parts = urlsplit(value)
             valid = (
@@ -263,19 +267,22 @@ class _ModelSettings(_Settings):
                 and parts.password is None
                 and not parts.query
                 and not parts.fragment
+                and (info.field_name != "proxy" or parts.path in {"", "/"})
             )
             _ = parts.port
         except ValueError:
-            raise ValueError("api_base 必须是完整的 http(s):// 地址，且不能内嵌账号密码") from None
+            raise ValueError(
+                f"{info.field_name} 必须是完整的 http(s):// 地址，且不能内嵌账号密码"
+            ) from None
         if not valid:
-            raise ValueError("api_base 必须是完整的 http(s):// 地址，且不能内嵌账号密码")
+            raise ValueError(f"{info.field_name} 必须是完整的 http(s):// 地址，且不能内嵌账号密码")
         return value
 
     @model_validator(mode="after")
     def _check_or_fill_credential(self) -> Self:
         raw_key = self.api_key.get_secret_value().strip()
         if not raw_key:
-            if _is_local_or_private_endpoint(self.api_base):
+            if self.api_base is not None and _is_local_or_private_endpoint(self.api_base):
                 object.__setattr__(self, "api_key", SecretStr(_LOCAL_NO_AUTH_PLACEHOLDER))
             else:
                 raise ValueError(

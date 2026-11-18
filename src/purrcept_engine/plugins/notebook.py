@@ -1615,23 +1615,26 @@ class Notebook:
         if fragment is None or isinstance(body_start, bool) or not isinstance(body_start, int):
             raise RuntimeError("Notebook 原文页缺少合法范围或正文起点。")
         body = page.text[max(0, body_start - fragment.start) :] if fragment.end > body_start else ""
-        return {
+        result: JsonObject = {
             "path": source["path"],
             "name": source["name"],
-            "description": source["description"],
             "skill": source["description"] is not None,
             "version": source["file_version"],
             "bytes": source["bytes"],
             "content": page.text,
-            "body": body,
-            "source": source,
             "evidence_ref": snapshot.evidence_id,
             "evidence_version": snapshot.version,
             "slice_ref": fragment.slice_ref,
             "range": {"unit": fragment.unit, "start": fragment.start, "end": fragment.end},
-            "next_cursor": page.next_cursor,
             "complete": page.next_cursor is None,
         }
+        if source["description"] is not None:
+            result["description"] = source["description"]
+        if body_start > 0:
+            result["body"] = body
+        if page.next_cursor is not None:
+            result["next_cursor"] = page.next_cursor
+        return result
 
     async def write(
         self, path: str, content: str, *, expected_version: str | None = None

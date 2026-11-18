@@ -76,7 +76,7 @@ class ModelPayload(BaseModel):
     name: str = Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_-]+$")
     kind: Literal["generation", "decision"] = "generation"
     model: str = Field(min_length=1, max_length=256)
-    api_base: str = Field(min_length=1, max_length=512)
+    api_base: str = Field(default="", max_length=512)
     api_key: str = ""
     keep_existing_key: bool = True
     context_window: int = Field(default=64000, gt=0)
@@ -229,9 +229,7 @@ def read_config_view(config_path: Path | None) -> JsonObject:
 
     log_sec = raw_data.get("logging")
     log_level_raw = log_sec.get("level", "INFO") if is_str_dict(log_sec) else "INFO"
-    log_level = (
-        log_level_raw if log_level_raw in ("DEBUG", "INFO", "WARNING", "ERROR") else "INFO"
-    )
+    log_level = log_level_raw if log_level_raw in ("DEBUG", "INFO", "WARNING", "ERROR") else "INFO"
 
     subj_sec = raw_data.get("subject")
     subj_dict: Mapping[str, object] = subj_sec if is_str_dict(subj_sec) else {}
@@ -276,9 +274,7 @@ def read_config_view(config_path: Path | None) -> JsonObject:
                 continue
             cfg_raw = p.get("config")
             cfg_obj: JsonObject = (
-                {k: _to_json_value(v) for k, v in cfg_raw.items()}
-                if is_str_dict(cfg_raw)
-                else {}
+                {k: _to_json_value(v) for k, v in cfg_raw.items()} if is_str_dict(cfg_raw) else {}
             )
             plugins_out.append(
                 {
@@ -366,9 +362,7 @@ def _apply_visual_update(original_text: str, payload: VisualSave) -> str:
     loaded_orig: object = tomllib.loads(original_text)
     original_raw: Mapping[str, object] = loaded_orig if is_str_dict(loaded_orig) else {}
     orig_models_raw = original_raw.get("models")
-    orig_models: Mapping[str, object] = (
-        orig_models_raw if is_str_dict(orig_models_raw) else {}
-    )
+    orig_models: Mapping[str, object] = orig_models_raw if is_str_dict(orig_models_raw) else {}
 
     doc["console"] = payload.general.console
 
@@ -391,7 +385,11 @@ def _apply_visual_update(original_text: str, payload: VisualSave) -> str:
         entry = _ensure_table(models_tbl, m.name)
         entry["kind"] = m.kind
         entry["model"] = m.model
-        entry["api_base"] = m.api_base
+        if m.api_base.strip():
+            entry["api_base"] = m.api_base.strip()
+        elif "api_base" in entry:
+            # TOML 不表示 null，后台清空地址时删除字段，让服务商选择默认端点。
+            del entry["api_base"]
         if not m.keep_existing_key or m.api_key.strip():
             entry["api_key"] = m.api_key
         else:
@@ -545,8 +543,7 @@ def resolve_studio_target(config_path: Path | None) -> tuple[Path, int, str]:
             rate_raw = cfg.get("sample_rate", 32000)
             rate = (
                 rate_raw
-                if isinstance(rate_raw, int)
-                and rate_raw in {16000, 24000, 32000, 44100, 48000}
+                if isinstance(rate_raw, int) and rate_raw in {16000, 24000, 32000, 44100, 48000}
                 else 32000
             )
             exe = str(cfg.get("processing_executable", "ffmpeg")).strip() or "ffmpeg"
@@ -586,9 +583,7 @@ def resolve_live2d_target(config_path: Path | None) -> tuple[Path, str] | None:
             continue
         pref_rel = str(cfg.get("preferences_path", "")).strip()
         pref_path = (
-            (base / pref_rel).resolve()
-            if pref_rel
-            else prof_path.with_suffix(".preferences.json")
+            (base / pref_rel).resolve() if pref_rel else prof_path.with_suffix(".preferences.json")
         )
         return pref_path, profile.model_id
     return None

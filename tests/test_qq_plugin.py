@@ -295,12 +295,12 @@ async def test_actual_provider_uses_one_frozen_action_and_params(
     _, request, value = await rig.call(name, arguments, data)
     assert request["action"] == action and request["params"] == params
     assert rig.socket.sent.empty()
-    reference = value["raw_response"]
-    assert isinstance(reference, dict)
+    reference = value["raw_ref"]
+    assert isinstance(reference, str)
     with sqlite3.connect(rig.directory / "engine.sqlite3") as database:
         row = database.execute(
             "SELECT payload_json FROM knowledge_evidence WHERE evidence_id=?",
-            (reference["evidence_ref"],),
+            (reference,),
         ).fetchone()
     assert row is not None
     saved = decode_object(str(row[0]).encode())
@@ -371,7 +371,7 @@ async def test_file_url_requires_real_http_link_and_keeps_raw_response(
     call = action.calls[0]
     assert call.state == "unknown" and call.error_type == "ConnectionRejected"
     assert call.result_json is not None
-    assert isinstance(decode_object(call.result_json.encode())["raw_response"], dict)
+    assert isinstance(decode_object(call.result_json.encode())["raw_ref"], str)
 
 
 async def test_real_worker_uses_qq_capability_and_platform_identity(rig: Rig) -> None:
@@ -431,9 +431,7 @@ async def test_late_file_url_uses_same_protocol_validation(tmp_path: Path) -> No
                 await asyncio.sleep(0.005)
         assert current.calls[0].state == "unknown"
         assert current.calls[0].result_json is not None
-        assert isinstance(
-            decode_object(current.calls[0].result_json.encode())["raw_response"], dict
-        )
+        assert isinstance(decode_object(current.calls[0].result_json.encode())["raw_ref"], str)
     finally:
         await host.close()
 
@@ -519,7 +517,7 @@ async def test_invalid_envelope_is_unknown_and_retcode_rejection_keeps_raw(rig: 
         assert action.calls[0].state == state
         assert action.calls[0].result_json is not None
         value = decode_object(action.calls[0].result_json.encode())
-        assert isinstance(value["raw_response"], dict)
+        assert isinstance(value["raw_ref"], str)
         if state == "failed":
             assert value["retcode"] == -10000 and action.calls[0].error == "风控"
     assert rig.socket.sent.empty()

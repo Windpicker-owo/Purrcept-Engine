@@ -95,6 +95,36 @@ def test_minimal_single_model_config_infers_defaults_and_local_no_auth(tmp_path:
     assert config.subject.reflection == "main"
 
 
+@pytest.mark.parametrize("kind", ["generation", "decision"])
+def test_model_endpoint_can_be_omitted_without_weakening_explicit_url_validation(
+    tmp_path: Path, kind: str
+) -> None:
+    values: dict[str, object] = {
+        "kind": kind,
+        "model": "gemini/gemini-2.5-flash" if kind == "generation" else "typesafe/jev-1.13.0",
+        "api_key": "synthetic-key",
+    }
+    if kind == "decision":
+        values["input_limit"] = 8192
+    config = EngineConfig.validate(
+        {
+            "models": {
+                "main": {"model": "openai/test", "api_key": "synthetic-key"},
+                "target": values,
+            },
+            "subject": {"foreground": "main", "attention": "target"},
+        },
+        base_dir=tmp_path,
+    )
+    assert config.models["target"].api_base is None
+    with pytest.raises(ValidationError):
+        GenerationModelSettings.model_validate(
+            {"model": "openai/test", "api_key": "synthetic-key", "api_base": ""}
+        )
+    with pytest.raises(ValidationError, match="api_key"):
+        GenerationModelSettings.model_validate({"model": "openai/test"})
+
+
 def test_environment_variable_interpolation_and_missing_var_error(tmp_path: Path) -> None:
     toml_file = tmp_path / "purrcept.toml"
     toml_file.write_text(
@@ -123,6 +153,34 @@ notes = "价格符号转义 $$100"
     assert loaded.models["main"].api_base == "https://api.deepseek.com/v1"
     assert loaded.models["main"].api_key.get_secret_value() == "sk-live-test-key"
     assert loaded.subject.character.notes == "价格符号转义 $100"
+
+
+@pytest.mark.parametrize("settings", [GenerationModelSettings, DecisionModelSettings])
+def test_model_proxy_accepts_http_and_rejects_unsupported_or_ambiguous_urls(
+    settings: type[GenerationModelSettings] | type[DecisionModelSettings],
+) -> None:
+    """显式代理在启动时校验，避免 SOCKS 依赖或错填服务地址导致运行期失败。"""
+    values: dict[str, object] = {
+        "kind": "decision" if settings is DecisionModelSettings else "generation",
+        "model": "synthetic-model",
+        "api_key": "synthetic-key",
+        "input_limit": 8192,
+    }
+    assert settings.model_validate(values).proxy is None
+    for proxy in ("http://127.0.0.1:10808", "https://proxy.invalid:8443"):
+        assert settings.model_validate({**values, "proxy": proxy}).proxy == proxy
+    for proxy in (
+        "",
+        "127.0.0.1:10808",
+        "socks5://127.0.0.1:10808",
+        "http://user:password@proxy.invalid",
+        "http://proxy.invalid:invalid",
+        "http://proxy.invalid?token=secret",
+        "http://proxy.invalid#fragment",
+        "http://proxy.invalid/path",
+    ):
+        with pytest.raises(ValidationError):
+            settings.model_validate({**values, "proxy": proxy})
 
 
 def test_models_mapping_and_values_are_immutable(tmp_path: Path) -> None:

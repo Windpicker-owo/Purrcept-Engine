@@ -18,7 +18,7 @@ from purrcept_engine import (
     StorageError,
 )
 from purrcept_engine.infrastructure.locking import InstanceLock
-from purrcept_engine.infrastructure.models.clients import OpenAIGenerationResource
+from purrcept_engine.infrastructure.models.clients import GenerationResource
 from purrcept_engine.infrastructure.sqlite.store import Store
 from purrcept_engine.plugin_system.contracts import (
     PluginBlueprint,
@@ -374,11 +374,11 @@ async def test_starting_plugin_can_admit_input_but_public_operations_wait_until_
 async def test_model_assembly_failure_closes_storage_before_unlock(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    def fail_creation(*args: object, **kwargs: object) -> OpenAIGenerationResource:
+    def fail_creation(*args: object, **kwargs: object) -> GenerationResource:
         del args, kwargs
         raise ArithmeticError("synthetic assembly failure")
 
-    monkeypatch.setattr(OpenAIGenerationResource, "create", fail_creation)
+    monkeypatch.setattr(GenerationResource, "create", fail_creation)
     host = EngineHost(_config(tmp_path))
     with pytest.raises(ArithmeticError, match="synthetic assembly failure"):
         await host.start()

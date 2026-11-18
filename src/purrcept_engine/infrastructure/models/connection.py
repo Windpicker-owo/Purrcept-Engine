@@ -14,11 +14,16 @@ class ModelConnection(Protocol):
         ...
 
     @property
-    def api_base(self) -> str:
-        """返回已解析端点。"""
+    def api_base(self) -> str | None:
+        """返回显式端点；None 使用模型服务商的默认地址。"""
         ...
 
     @property
     def api_key(self) -> SecretStr:
         """返回配置明确提供的凭据。"""
+        ...
+
+    @property
+    def proxy(self) -> str | None:
+        """返回此模型专用的 HTTP(S) 代理；None 直连，不继承环境代理。"""
         ...

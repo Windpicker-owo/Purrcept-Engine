@@ -154,11 +154,6 @@ class CommandRunner:
             "exit_code": None,
             "cwd": str(directory),
             "stdout": "",
-            "stderr": "",
-            "stdout_truncated": False,
-            "stderr_truncated": False,
-            "timed_out": False,
-            "interrupted": False,
         }
         if generation != self._generation or loop.time() >= deadline:
             return CallOutcome("failed", value, "CommandNotStarted", "连接已撤销或行动期限已到。")
@@ -219,15 +214,18 @@ class CommandRunner:
                     process.close()
                     self._running.remove(running)
 
-        value.update(
-            stdout=output.data.decode("utf-8", errors="replace"),
-            stderr=errors.data.decode("utf-8", errors="replace"),
-            stdout_truncated=output.truncated,
-            stderr_truncated=errors.truncated,
-            interrupted=running.interrupted,
-        )
-        if value["timed_out"] or running.interrupted:
-            reason = "CommandTimeout" if value["timed_out"] else "CommandInterrupted"
+        stderr_text = errors.data.decode("utf-8", errors="replace")
+        value["stdout"] = output.data.decode("utf-8", errors="replace")
+        if stderr_text:
+            value["stderr"] = stderr_text
+        if output.truncated:
+            value["stdout_truncated"] = True
+        if errors.truncated:
+            value["stderr_truncated"] = True
+        if running.interrupted:
+            value["interrupted"] = True
+        if value.get("timed_out") or running.interrupted:
+            reason = "CommandTimeout" if value.get("timed_out") else "CommandInterrupted"
             return CallOutcome("unknown", value, reason, "命令已终止；此前产生的外部效果不会回滚。")
         if value["exit_code"] != 0:
             return CallOutcome("failed", value, "CommandExitError", "命令返回非零退出码。")

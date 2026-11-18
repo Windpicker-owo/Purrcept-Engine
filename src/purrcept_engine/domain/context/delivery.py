@@ -10,8 +10,10 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
+from datetime import UTC, datetime
 from typing import Literal
 
 from purrcept_core.models import (
@@ -215,9 +217,55 @@ def _receipt_value_matches(original: JsonValue, current: JsonValue) -> bool:
     return original == current
 
 
+def _utc_iso(value: JsonValue) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return datetime.fromtimestamp(value, UTC).isoformat()
+    return None
+
+
+def _receipt_json_matches(delivered: JsonValue, current_raw: JsonValue) -> bool:
+    if not isinstance(current_raw, str):
+        return False
+    return delivered == json.loads(current_raw) or delivered == json.loads(
+        audio_text_view(current_raw)
+    )
+
+
 def _full_action_matches(payload: JsonObject, current: JsonObject) -> bool:
-    """只匹配真实 ActionRecord 的当前同版本调用，不以身份字符串代替内容。"""
-    if payload.get("type") != "ActionRecord" or (
+    """只匹配真实 ActionReceipt 或 ActionRecord 的当前同版本调用，不以身份字符串代替内容。"""
+    kind = payload.get("type")
+    if kind == "ActionReceipt":
+        if payload.get("action_id") != current.get("action_id") or payload.get(
+            "state"
+        ) != current.get("action_state"):
+            return False
+        calls = payload.get("calls")
+        if not isinstance(calls, list):
+            raise RuntimeError("Engine 完整行动工具结果缺少调用列表。")
+        for original in calls:
+            if not isinstance(original, dict):
+                raise RuntimeError("Engine 完整行动调用结果形状无效。")
+            if (
+                original.get("call_id") != current.get("call_id")
+                or original.get("path") != current.get("path")
+                or original.get("state") != current.get("state")
+                or original.get("receipt_revision") != current.get("receipt_revision")
+                or original.get("started_at") != _utc_iso(current.get("started_at"))
+                or original.get("finished_at") != _utc_iso(current.get("finished_at"))
+                or original.get("error_type") != current.get("error_type")
+                or original.get("error") != current.get("error")
+            ):
+                continue
+            current_result = current.get("result_json")
+            if current_result is None:
+                if "result" not in original:
+                    return True
+            elif "result" in original and _receipt_json_matches(original["result"], current_result):
+                return True
+        return False
+    if kind != "ActionRecord" or (
         payload.get("action_id") != current.get("action_id")
         or payload.get("state") != current.get("action_state")
         or payload.get("input_id") != current.get("input_id")
@@ -586,7 +634,6 @@ class ToolDeliveryGate:
                 "mode": mode,
                 "original_ref": raw["original_ref"],
                 "details_presented": mode == "full_tool_message",
-                "instruction": "引用不表示已读；依赖未交付正文或平台详细字段时先 read_evidence。",
             }
             selected.append(projected)
         projected_state: JsonObject = {**host_state, "work": {**work, "calls": selected}}

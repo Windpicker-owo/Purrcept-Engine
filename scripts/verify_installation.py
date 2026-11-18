@@ -43,9 +43,9 @@ def installed_packages() -> dict[str, str]:
 
     expected = {
         "purrcept_core": "0.6.0",
-        "purrcept_litellm": "0.2.2",
+        "purrcept_litellm": "0.2.3",
         "purrcept_engine": "0.1.0",
-        "litellm": "1.105.0",
+        "litellm": "1.109.1",
     }
     for module in (purrcept_core, purrcept_engine, purrcept_litellm):
         if module.__file__ is None or "site-packages" not in Path(module.__file__).parts:

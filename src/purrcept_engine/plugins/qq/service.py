@@ -581,14 +581,14 @@ class QQService:
             result["forward"] = {"nodes": forwards, "issues": issues, "complete": not issues}
         return result
 
-    async def raw_reply(self, reply: Reply) -> JsonObject:
+    async def raw_reply(self, reply: Reply) -> str:
         """完整信封先入快照，拒绝/缺字段也不丢实际平台原文。
 
         Args:
             reply: 传输层实际收到的回包，保留接受状态与原生 data。
 
         Returns:
-            业务对象，按实际结果提供 evidence_ref、version、level、entry、arguments 字段。
+            已保存原始平台回包快照的 evidence_id。
         """
         snapshot = EvidenceSnapshot(
             evidence_id=self.instance_id + ":qq:rpc:" + reply.echo,
@@ -606,13 +606,7 @@ class QQService:
             occurred_at=reply.received_at,
         )
         saved = await self.evidence.put_evidence(snapshot)
-        return {
-            "evidence_ref": saved.evidence_id,
-            "version": saved.version,
-            "level": "evidence",
-            "entry": "read_evidence",
-            "arguments": {"id": saved.evidence_id, "level": "evidence"},
-        }
+        return saved.evidence_id
 
     async def reply_outcome(
         self, reply: Reply, project: Callable[[JsonValue], JsonObject]
@@ -642,27 +636,20 @@ class QQService:
                 {
                     "action": reply.action,
                     "phase": "received_invalid_response",
-                    "raw_response": reference,
+                    "raw_ref": reference,
                 },
                 type(error).__name__,
                 str(error),
             )
-        value.update(
-            {
-                "action": reply.action,
-                "connection_generation": reply.generation,
-                "echo": reply.echo,
-                "raw_response": reference,
-            }
-        )
+        value["raw_ref"] = reference
         return CallOutcome("confirmed", value)
 
-    def error_outcome(self, error: QQCallError, reference: JsonObject | None = None) -> CallOutcome:
+    def error_outcome(self, error: QQCallError, reference: str | None = None) -> CallOutcome:
         """发送阶段决定未开始/未知/拒绝，断线和 timeout 不撤销真实效果。
 
         Args:
             error: 当前流程已经取得的真实故障或失败说明。
-            reference: 包含身份与确切版本的认识或原文引用。 None 表示本次没有附加引用。
+            reference: 已保存原始平台回包快照的 evidence_id。 None 表示本次没有附加引用。
 
         Returns:
             实际确认、失败或未知结论，以及可 JSON 化的业务值和原生媒体引用。
@@ -670,11 +657,11 @@ class QQService:
         value: JsonObject = {
             "action": error.action,
             "phase": error.phase,
-            "connection_generation": error.generation,
-            "echo": error.echo,
-            "raw_response": reference,
-            "retcode": None if error.response is None else error.response.get("retcode"),
         }
+        if reference is not None:
+            value["raw_ref"] = reference
+        if error.response is not None and "retcode" in error.response:
+            value["retcode"] = error.response.get("retcode")
         return CallOutcome(
             "unknown" if error.phase == "unknown" else "failed",
             value,
@@ -734,7 +721,7 @@ class QQService:
 
     async def lookup(
         self, action: str, params: JsonObject, context: CallContext
-    ) -> tuple[JsonValue, JsonObject]:
+    ) -> tuple[JsonValue, str]:
         """多阶段写入的前置只读步骤超时后不续写，实际原响应仍保存。
 
         Args:
@@ -743,7 +730,7 @@ class QQService:
             context: 宿主或 Core 注入的可信调用上下文，不由模型自行填写。
 
         Returns:
-            平台实际 data 以及保留接受状态的原生业务事实。
+            平台实际 data 以及已保存原响应快照的 evidence_id。
         """
         reply = await self.client.request(action, params, context=context)
         reference = await self.raw_reply(reply)
@@ -839,7 +826,7 @@ class QQService:
         }
         source = "platform"
         failure: JsonObject | None = None
-        raw_reference: JsonObject | None = None
+        raw_reference: str | None = None
         generation = self.client.generation
         try:
             data, raw_reference = await self.lookup(action, params, context)
@@ -859,25 +846,23 @@ class QQService:
                 self.cache.remember(self.scope(generation), message)
         except QQCallError as error:
             if error.response is not None and error.echo is not None:
-                raw_reference = {
-                    "evidence_ref": self.instance_id + ":qq:rpc:" + error.echo,
-                    "version": 1,
-                    "entry": "read_evidence",
-                }
+                raw_reference = self.instance_id + ":qq:rpc:" + error.echo
             messages = self.cache.read(self.scope(generation), chat, target, count)
             if not messages:
                 value = self.error_outcome(error).value
+                failure_result: JsonObject = {
+                    "chat": chat,
+                    "target_id": target,
+                    "source": "unavailable",
+                    "messages": None,
+                    "platform_failure": value,
+                    "coverage": {"complete": None, "cache_available": False},
+                }
+                if raw_reference is not None:
+                    failure_result["raw_ref"] = raw_reference
                 return CallOutcome(
                     "failed",
-                    {
-                        "chat": chat,
-                        "target_id": target,
-                        "source": "unavailable",
-                        "messages": None,
-                        "platform_failure": value,
-                        "raw_response": raw_reference,
-                        "coverage": {"complete": None, "cache_available": False},
-                    },
+                    failure_result,
                     type(error).__name__,
                     str(error),
                 )
@@ -895,7 +880,7 @@ class QQService:
             "target_id": target,
             "source": source,
             "platform_failure": failure,
-            "raw_response": raw_reference,
+            "raw_ref": raw_reference,
             "requested_count": count,
             "coverage": {
                 "known_count": len(messages),
@@ -968,11 +953,7 @@ class QQService:
             "sender_name": message.get("sender_name"),
             "time": message.get("time"),
             "text": message.get("text"),
-            "original_ref": {
-                "evidence_ref": original.evidence_id,
-                "version": 1,
-                "entry": "read_evidence",
-            },
+            "original_ref": original.evidence_id,
         }
         page_chars = min(self.evidence.page_chars, _READ_PAGE_CHARS)
         if len(encode_json(item).decode()) + 2 <= page_chars:
@@ -992,19 +973,8 @@ class QQService:
             "sender_id": message.get("sender_id"),
             "time": message.get("time"),
             "text": None,
-            "level": "overview",
-            "body_ref": {
-                "evidence_ref": body.evidence_id,
-                "version": 1,
-                "entry": "read_evidence",
-                "arguments": {"id": body.evidence_id},
-            },
-            "original_ref": {
-                "evidence_ref": original.evidence_id,
-                "version": 1,
-                "entry": "read_evidence",
-            },
-            "coverage": "完整正文和原字段在独立快照；本卡片未呈现正文。",
+            "body_ref": body.evidence_id,
+            "original_ref": original.evidence_id,
         }
 
     def history_page(self, page: EvidencePage) -> CallOutcome:
@@ -1028,31 +998,22 @@ class QQService:
         raw_items: object = json.loads(page.text)
         items = decode_object(encode_json({"items": raw_items}))["items"]
         value: JsonObject = {
-            **{
-                key: metadata.get(key)
-                for key in (
-                    "chat",
-                    "target_id",
-                    "source",
-                    "platform_failure",
-                    "raw_response",
-                    "requested_count",
-                )
-            },
+            "chat": metadata.get("chat"),
+            "target_id": metadata.get("target_id"),
+            "source": metadata.get("source"),
+            "requested_count": metadata.get("requested_count"),
             "coverage": {
                 key: object_value(metadata.get("coverage")).get(key)
                 for key in ("known_count", "complete", "remote_total")
             },
             "messages": items,
             "evidence_ref": snapshot.evidence_id,
-            "version": snapshot.version,
-            "slice_ref": None if page.slice is None else page.slice.slice_ref,
-            "range": None
-            if page.slice is None
-            else {"unit": page.slice.unit, "start": page.slice.start, "end": page.slice.end},
             "next_cursor": page.next_cursor,
-            "level": page.level,
         }
+        if metadata.get("platform_failure") is not None:
+            value["platform_failure"] = metadata["platform_failure"]
+        if metadata.get("raw_ref") is not None:
+            value["raw_ref"] = metadata["raw_ref"]
         return CallOutcome("confirmed", value, media=snapshot.media)
 
     async def _match_sticker(self, image: JsonObject) -> StickerRecord | None:

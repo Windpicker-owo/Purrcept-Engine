@@ -117,7 +117,7 @@ uv run purrcept-engine plugins qq       # 查看指定插件的字段说明与�
 
 | 常用配置项 | 说明 |
 | --- | --- |
-| `[models.main]` | `model` 填 `openai/实际模型名`，`api_base` 填兼容端点，`api_key` 支持 `${ENV_VAR}`（本机/局域网免密服务可留空 `""`）。 |
+| `[models.main]` | `model` 使用 LiteLLM 服务商前缀，如 `openai/实际模型名` 或 `gemini/实际模型名`；`api_base` 可省略以使用服务商默认端点，也可显式指定网关。`api_key` 支持 `${ENV_VAR}`（本机/局域网免密服务可留空 `""`）。 |
 | `[subject]` | `foreground = "main"` 即可同时驱动主脑与后台反思，`attention = "main"` 复用同一生成模型完成收件箱评估。 |
 | `[subject.character]` | 配置角色名字 `name`、一句话简介 `one_line`、性格 `persona` 与说话风格 `speech_style`。 |
 | `[[plugins]]` | 在文件末尾取消注释或追加 `[[plugins]]` 即可启用插件，无需改动文件顶部。 |

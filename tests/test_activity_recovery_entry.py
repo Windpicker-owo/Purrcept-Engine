@@ -196,9 +196,9 @@ def _action(request: ModelRequest, identity: str) -> JsonObject:
 
 
 def _material(request: ModelRequest, identity: str) -> JsonObject:
-    result = _action(request, identity)["result_json"]
-    assert isinstance(result, str)
-    return decode_object(result.encode("utf-8"))
+    result = _action(request, identity)["result"]
+    assert isinstance(result, dict)
+    return result
 
 
 def _call(identity: str, command: str, activity_id: str) -> ToolCallBlock:
@@ -582,9 +582,8 @@ async def test_one_model_response_cannot_authorize_its_second_action_before_pres
                 first, second = _action(request, "first"), _action(request, "premature")
                 assert first["action_id"] != second["action_id"]
                 for action in (first, second):
-                    result = action["result_json"]
-                    if isinstance(result, str):
-                        material = decode_object(result.encode("utf-8"))
+                    material = action.get("result")
+                    if isinstance(material, dict):
                         assert material["command"] is None and material["decision_required"] is True
                 assert fixture.commands == []
                 return ModelResponse(

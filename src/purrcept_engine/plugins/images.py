@@ -206,9 +206,7 @@ class ImageRuntime:
                 "media_id": reference.media_id,
                 "width": width,
                 "height": height,
-                "resource_status": "available",
                 "evidence_ref": saved.evidence_id,
-                "version": saved.version,
             },
             media=saved.media,
         )

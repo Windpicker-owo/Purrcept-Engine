@@ -239,13 +239,10 @@ async def test_late_stimulus_is_dated_before_previous_reply_and_clock_refreshes(
         calls = action["calls"]
         assert isinstance(calls, list) and len(calls) == 1 and isinstance(calls[0], dict)
         finished = calls[0]["finished_at"]
-        assert isinstance(finished, (float, int))
-        receipt_time = datetime.fromtimestamp(finished, UTC)
+        assert isinstance(finished, str)
+        receipt_time = datetime.fromisoformat(finished)
         assert second_time < effects[0] <= receipt_time <= _clock(after_action)
-        assert any(
-            isinstance(block, TextBlock) and receipt_time.isoformat() in block.text
-            for block in receipt.content[1:]
-        )
+        assert len(receipt.content) == 1
     finally:
         release.set()
         await host.close()

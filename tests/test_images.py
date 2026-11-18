@@ -109,7 +109,7 @@ async def test_local_images_keep_original_bytes_and_native_content(
         assert result.state == "confirmed"
         assert isinstance(result.value, dict)
         assert result.value["width"] == 17 and result.value["height"] == 9
-        assert result.value["resource_status"] == "available"
+        assert "resource_status" not in result.value
         assert len(result.media) == 1
         assert await store.get_media(result.media[0].media_id) == data
         blocks = await media_blocks(store, result.media)

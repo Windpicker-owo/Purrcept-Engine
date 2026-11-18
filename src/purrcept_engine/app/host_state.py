@@ -34,7 +34,7 @@ from purrcept_engine.domain.inputs.models import (
 from purrcept_engine.domain.notebook.embedding import EmbeddingProvider, Reranker
 from purrcept_engine.errors import ConfigError, HostStateError
 from purrcept_engine.infrastructure.locking import InstanceLock
-from purrcept_engine.infrastructure.models.clients import DecisionResource, OpenAIGenerationResource
+from purrcept_engine.infrastructure.models.clients import DecisionResource, GenerationResource
 from purrcept_engine.infrastructure.sqlite.store import Store
 from purrcept_engine.plugin_system.audio_port import AudioOutputPort
 from purrcept_engine.plugin_system.contracts import PluginFactory, PluginRuntime
@@ -129,7 +129,7 @@ class EngineState:
         self.version = 0
         self.lock = InstanceLock(config.host.data_dir)
         self.store: Store | None = None
-        self.models: dict[str, OpenAIGenerationResource | DecisionResource] = {}
+        self.models: dict[str, GenerationResource | DecisionResource] = {}
         self.plugins: dict[str, PluginRuntime] = {}
         self.audio_output: AudioOutputPort | None = None
         self.input_tasks: set[asyncio.Task[Admission]] = set()

@@ -1,8 +1,9 @@
-"""拥有生成网关及 TypeSafe/OpenRouter 判断的显式客户端与关闭进度。
+"""拥有 LiteLLM 生成及 TypeSafe/OpenRouter 判断的实例客户端与关闭进度。
 
 应用按已校验模型配置创建资源，借出 ``backend`` 给 Core，并在在途借用结束后
 关闭资源。模型材料、重试预算和请求证据属于主体会话；这里仅固定传输来源、
 关闭 SDK 隐式重试并收回本实例的 HTTP 客户端，不修改 SDK 全局配置。
+生成和判断连接只使用模型显式配置的 proxy，不受宿主环境代理影响。
 """
 
 from __future__ import annotations
@@ -30,15 +31,17 @@ from purrcept_engine.infrastructure.models.decision_transport import DecisionHtt
 if TYPE_CHECKING:
     from purrcept_litellm import LiteLLMBackend, LiteLLMDecisionBackend
 
-__all__ = ["DecisionResource", "OpenAIGenerationResource"]
+__all__ = ["DecisionResource", "GenerationResource"]
 
 
-class OpenAIGenerationResource:
-    """应用创建并拥有的 OpenAI 兼容生成路径，可被会话重复借用。
+class GenerationResource:
+    """应用创建的生成资源，按模型前缀借给 LiteLLM 对应的实例客户端。
 
     ``create`` 只构造已校验端点的客户端，不探测模型或启动生成；调用方将
     ``backend`` 交给 Core。同一宿主事件循环内的并发生成各用独立请求，
-    共用客户端连接池；首次 SDK 初始化在第一个等待点前完成。
+    共用客户端连接池。openai/ 使用 OpenAI 客户端，其余前缀使用 LiteLLM
+    原生 HTTP handler；服务商映射和默认地址由 SDK 决定，不强制套 OpenAI 协议。
+    原生 handler 在首次生成时初始化，未使用资源的关闭不导入 LiteLLM。
     应用应先终止新借用并等待在途调用，再调用 ``close``。重复或被取消的
     关闭等待加入同一清理任务，不关闭 LiteLLM 全局缓存或其他宿主客户端。
     """
@@ -49,33 +52,33 @@ class OpenAIGenerationResource:
         Args:
             settings: 当前组件已校验的配置或纯声明。
 
-        Raises:
-            ConfigError: 首批生成路径需要显式 openai/ 模型协议标识。
-
         Note:
             不建立真实连接。
         """
-        if not settings.model.startswith("openai/"):
-            raise ConfigError("首批生成路径需要显式 openai/ 模型协议标识")
-
-        self._http = httpx.AsyncClient(
-            trust_env=False,
-            event_hooks={"request": [self._remove_implicit_account_headers]},
-        )
-        self._client = AsyncOpenAI(
-            api_key=settings.api_key.get_secret_value(),
-            base_url=settings.api_base,
-            organization="",
-            project="",
-            max_retries=0,
-            http_client=self._http,
-        )
+        self._http: httpx.AsyncClient | None = None
+        self._client: AsyncOpenAI | None = None
+        self._native_handler: object | None = None
+        if settings.model.startswith("openai/"):
+            self._http = httpx.AsyncClient(
+                trust_env=False,
+                proxy=settings.proxy,
+                event_hooks={"request": [self._remove_implicit_account_headers]},
+            )
+            self._client = AsyncOpenAI(
+                api_key=settings.api_key.get_secret_value(),
+                # 不指定地址时采用 OpenAI 默认值，避免环境中的网关地址改变该绑定。
+                base_url=settings.api_base or "https://api.openai.com/v1",
+                organization="",
+                project="",
+                max_retries=0,
+                http_client=self._http,
+            )
         self._settings = settings
         self._backend: LiteLLMBackend | None = None
         self._close_task: asyncio.Task[None] | None = None
 
     @classmethod
-    def create(cls, settings: ModelConnection) -> OpenAIGenerationResource:
+    def create(cls, settings: ModelConnection) -> GenerationResource:
         """从已校验配置建立一个独立所有者，不读取环境凭据或探测服务。
 
         Args:
@@ -87,7 +90,7 @@ class OpenAIGenerationResource:
         return cls(settings)
 
     @property
-    def backend(self) -> OpenAIGenerationResource:
+    def backend(self) -> GenerationResource:
         """借出本资源的 Core 生成边界，读取此属性不导入或调用 SDK。"""
         return self
 
@@ -115,6 +118,22 @@ class OpenAIGenerationResource:
             # 使配置、资源装配和未使用资源的关闭不触发此第三方外部副作用。
             from purrcept_litellm import LiteLLMBackend
 
+            if self._client is None:
+                # Lifecycle: 原生协议仍借用本实例独占的 HTTP 池，不能退入 SDK 全局
+                # 客户端缓存。底层重试关闭，整轮重试继续由 Engine 的请求服务拥有。
+                transport_module = import_module("litellm.llms.custom_httpx.http_handler")
+                create_handler = cast(
+                    Callable[..., object], transport_module.__dict__["AsyncHTTPHandler"]
+                )
+                handler = create_handler(
+                    # 缓存查询、创建与生成必须共用同一代理传输，不能只代理最终生成。
+                    transport=httpx.AsyncHTTPTransport(
+                        proxy=self._settings.proxy, retries=0, trust_env=False
+                    ),
+                )
+                self._native_handler = handler
+                # SDK handler 没有类型桩，在此读取实例池，不向其它模块扩散动态类型。
+                self._http = cast(httpx.AsyncClient, getattr(handler, "client"))  # noqa: B009
             self._backend = LiteLLMBackend(
                 api_key=self._settings.api_key.get_secret_value(),
                 api_base=self._settings.api_base,
@@ -130,14 +149,22 @@ class OpenAIGenerationResource:
             等待者取消不取消资源清理。
         """
         if self._close_task is None:
-            self._close_task = asyncio.create_task(self._client.close(), name="generation-close")
+            self._close_task = asyncio.create_task(self._close_client(), name="generation-close")
         await asyncio.shield(self._close_task)
+
+    async def _close_client(self) -> None:
+        """关闭已取得的实例连接池；未使用原生资源不为清理创建 handler。"""
+        if self._client is not None:
+            await self._client.close()
+        elif self._http is not None:
+            await self._http.aclose()
 
     async def _complete(self, **kwargs: object) -> object:
         """借用实例客户端进入真实 LiteLLM，不进入其全局客户端缓存。"""
         module = import_module("litellm")
         function = cast(Callable[..., Awaitable[object]], module.__dict__["acompletion"])
-        return await function(client=self._client, **kwargs)
+        client = self._client if self._client is not None else self._native_handler
+        return await function(client=client, **kwargs)
 
     async def _remove_implicit_account_headers(self, request: httpx.Request) -> None:
         """在实际派发边界移除配置未声明的组织及项目账号控制头。"""
@@ -222,7 +249,9 @@ class DecisionResource:
             # 显式传输关闭环境代理及底层重试，不进入 SDK 默认 handler 的隐式重发。
             self._http = httpx.AsyncClient(
                 trust_env=False,
-                transport=httpx.AsyncHTTPTransport(retries=0, trust_env=False),
+                transport=httpx.AsyncHTTPTransport(
+                    proxy=self._settings.proxy, retries=0, trust_env=False
+                ),
             )
             self._handler = DecisionHttp(self._http)
             self._backend = LiteLLMDecisionBackend(

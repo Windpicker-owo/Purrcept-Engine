@@ -182,17 +182,19 @@ def make_factory(driver_factory: Callable[[], ComputerDriver]) -> PluginFactory:
             async def run_status(parameters: _Empty, context: CallContext) -> CallOutcome:
                 """只读当前插件已取得的业务状态。"""
                 del parameters, context
-                return CallOutcome("confirmed", computer.snapshot())
+                return CallOutcome("confirmed", computer.receipt())
 
             async def run_connect(parameters: _Empty, context: CallContext) -> CallOutcome:
                 """明确取得电脑驱动连接，不自动开始持续观察。"""
                 del parameters, context
-                return CallOutcome("confirmed", await computer.connect())
+                await computer.connect()
+                return CallOutcome("confirmed", computer.receipt())
 
             async def run_disconnect(parameters: _Empty, context: CallContext) -> CallOutcome:
                 """明确停止当前电脑连接及相关观察借用。"""
                 del parameters, context
-                return CallOutcome("confirmed", await computer.disconnect())
+                await computer.disconnect()
+                return CallOutcome("confirmed", computer.receipt())
 
             async def run_foreground(parameters: _Empty, context: CallContext) -> CallOutcome:
                 """查询当前连接实际取得的前台窗口信息。"""
@@ -215,10 +217,10 @@ def make_factory(driver_factory: Callable[[], ComputerDriver]) -> PluginFactory:
                 """按明确策略开始持续观察或采用指定观察配置。"""
                 del context
                 try:
-                    result = await computer.observe(parameters.operation)
+                    await computer.observe(parameters.operation)
                 except ComputerError as error:
                     raise CapabilityInputError(str(error)) from error
-                return CallOutcome("confirmed", result)
+                return CallOutcome("confirmed", computer.receipt())
 
             async def run_command(
                 parameters: CommandParameters, context: CallContext

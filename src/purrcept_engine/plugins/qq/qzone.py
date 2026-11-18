@@ -85,7 +85,7 @@ def cards(data: JsonValue, *, feeds: bool) -> JsonObject:
 
 
 def write_result(name: str, data: JsonValue, request: JsonObject) -> JsonObject:
-    """分离 requested 与 actual。
+    """提取实际写入回执，不回显完整请求参数和确认套话。
 
     Args:
         name: 九项已声明空间能力中的当前操作名。
@@ -93,34 +93,24 @@ def write_result(name: str, data: JsonValue, request: JsonObject) -> JsonObject:
         request: 按真实 SDK 布局编译的完整请求 JSON。
 
     Returns:
-        业务对象，按实际结果提供 requested、platform_reported_success、actual、unknown_fields
-        字段。
+        业务对象，按实际结果提供身份字段、仅在缺失时附带 unknown_fields，以及非空 actual。
 
     Note:
         成功信封不补成平台未返回的 tid/right/id。
     """
     mapping = object_value(data)
-    result: JsonObject = {
-        "requested": request,
-        "platform_reported_success": True,
-        "actual": mapping,
-        "unknown_fields": [],
-    }
+    result: JsonObject = {}
+    if mapping:
+        result["actual"] = mapping
     unknown: list[JsonValue] = []
     if name == "qzone_post":
         result["tid"] = id_text(mapping.get("tid")) or None
         result["ugc_right"] = mapping.get("ugc_right")
-        result["text"] = request.get("content")
-        images = request.get("images")
-        result["image_count"] = len(images) if isinstance(images, list) else 0
         unknown.extend(key for key in ("tid", "ugc_right") if mapping.get(key) is None)
     elif name == "qzone_comment":
         result["tid"] = request.get("tid")
-        result["text"] = request.get("content")
         result["target_uin"] = id_text(request.get("target_uin"))
         result["comment_id"] = id_text(mapping.get("comment_id", mapping.get("cid"))) or None
-        images = request.get("images")
-        result["image_count"] = len(images) if isinstance(images, list) else 0
         if result["comment_id"] is None:
             unknown.append("comment_id")
     elif name == "qzone_set_right":
@@ -135,7 +125,6 @@ def write_result(name: str, data: JsonValue, request: JsonObject) -> JsonObject:
                 "target_uin": id_text(request.get("target_uin")),
                 "abstime": request.get("abstime", 0),
                 "liked": name == "qzone_like",
-                "confirmation_source": "platform_acknowledgement",
             }
         )
     elif name == "qzone_delete":
@@ -143,7 +132,6 @@ def write_result(name: str, data: JsonValue, request: JsonObject) -> JsonObject:
             {
                 "tid": request.get("tid"),
                 "deleted": True,
-                "confirmation_source": "platform_acknowledgement",
             }
         )
     elif name == "qzone_ban":
@@ -152,8 +140,8 @@ def write_result(name: str, data: JsonValue, request: JsonObject) -> JsonObject:
                 "user_id": id_text(request.get("user_id")),
                 "enable": request.get("enable"),
                 "banned": request.get("enable"),
-                "confirmation_source": "platform_acknowledgement",
             }
         )
-    result["unknown_fields"] = unknown
+    if unknown:
+        result["unknown_fields"] = unknown
     return result
