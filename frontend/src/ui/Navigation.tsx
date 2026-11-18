@@ -5,10 +5,19 @@
 import { useEffect, useState, type ReactElement } from "react";
 import { motion } from "motion/react";
 import { breakpoints, Icon, Sheet, transitions } from "@purrcept/cel";
-import { PAGES, routeHref, type Page } from "../model/routes";
+import { PAGES, routeHref, type Page, type PageMeta } from "../model/routes";
 import { BrandMark } from "./common";
 
 const MOBILE_PAGES: readonly Page[] = ["home", "chat", "memory", "devices"];
+
+function PageIcon({ name }: { name: PageMeta["icon"] }): ReactElement {
+  if (name !== "statistics") return <Icon name={name} />;
+  return (
+    <svg className="pc-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth={1.75} strokeLinecap="round" aria-hidden="true" focusable="false">
+      <path d="M2.5 13h11M4.5 10V7.5M8 10V4.5M11.5 10V2.5" />
+    </svg>
+  );
+}
 
 export function useMediaQuery(query: string): boolean {
   const [matches, setMatches] = useState(() => window.matchMedia(query).matches);
@@ -47,7 +56,7 @@ export function Navigation({ page, attentionCount }: { page: Page; attentionCoun
               aria-current={active ? "page" : undefined}
             >
               {active ? <motion.span layoutId="nav-current" className="nav-indicator" transition={transitions.move} aria-hidden="true" /> : null}
-              <Icon name={item.icon} />
+              <PageIcon name={item.icon} />
               <span>{compact && item.id === "timeline" ? "记录" : item.label}</span>
               {item.id === "home" && attentionCount > 0 ? (
                 <span className="nav-count" aria-label={`${attentionCount} 项待处理`}>
@@ -73,7 +82,7 @@ export function Navigation({ page, attentionCount }: { page: Page; attentionCoun
           </button>
         ) : null}
       </nav>
-      <Sheet open={moreOpen} onOpenChange={setMoreOpen} title="更多页面" description="配置与人设、行动审查、时间线与持续目标。">
+      <Sheet open={moreOpen} onOpenChange={setMoreOpen} title="更多页面" description="运行记录、API 统计与设置。">
         <nav className="more-pages" aria-label="更多页面">
           {PAGES.filter((item) => !MOBILE_PAGES.includes(item.id)).map((item) => (
             <a
@@ -82,7 +91,7 @@ export function Navigation({ page, attentionCount }: { page: Page; attentionCoun
               href={routeHref({ page: item.id, id: null })}
               onClick={() => setMoreOpen(false)}
             >
-              <Icon name={item.icon} />
+              <PageIcon name={item.icon} />
               <span>
                 <strong>{item.label}</strong>
                 <span>{item.description}</span>

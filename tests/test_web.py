@@ -50,6 +50,9 @@ class Host:
     async def query_panel(self) -> JsonObject:
         return {"instance_id": "current", "phase": "running"}
 
+    async def query_model_usage(self, *, since: float) -> JsonObject:
+        return {"since": since}
+
     async def query_chat(self, *, limit: int = 40) -> JsonObject:
         return {
             "inputs": [
@@ -154,6 +157,12 @@ async def test_read_query_and_preview_have_finite_current_facts() -> None:
         assert session.json() == {"token": "token", "instance_id": "current"}
         assert session.headers["cache-control"] == "no-store"
         assert (await client.get("/api/snapshot")).json()["phase"] == "running"
+        assert (await client.get("/api/model-usage?period=all")).json() == {"since": 0.0}
+        before = time.time()
+        usage = await client.get("/api/model-usage?period=24h")
+        assert before <= usage.json()["since"] + 86400 <= time.time()
+        assert usage.headers["cache-control"] == "no-store"
+        assert (await client.get("/api/model-usage?period=invalid")).status_code == 400
         image = await client.get("/api/preview/computer")
         assert image.content == b"cached-image" and image.headers["x-captured-at"] == "1.0"
         assert (
@@ -193,6 +202,7 @@ async def test_read_and_write_reject_wrong_host_origin_or_real_client(
     )
     async with httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1:8765") as client:
         assert (await client.get("/api/session", headers=headers)).status_code == 403
+        assert (await client.get("/api/model-usage", headers=headers)).status_code == 403
         assert (
             await client.post(
                 "/api/controls", json=command(), headers=headers | {"X-Purrcept-Token": "token"}

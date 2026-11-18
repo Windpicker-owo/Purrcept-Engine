@@ -86,6 +86,55 @@ export function reviewPage(value: unknown): { items: Action[]; next_cursor: stri
   const v = object(value, "review_page");
   return { items: list(v.items, "items", action), next_cursor: nullable(v.next_cursor, "next_cursor", text) };
 }
+
+export type ModelUsagePeriod = "24h" | "7d" | "30d" | "all";
+
+export interface UsageTotals {
+  attempts: number;
+  reported_attempts: number;
+  input_tokens: number;
+  output_tokens: number;
+  total_tokens: number;
+  cached_input_tokens: number;
+  cache_write_input_tokens: number;
+  reasoning_tokens: number;
+  cache_hit_rate: number | null;
+}
+
+export interface ModelUsage {
+  total: UsageTotals;
+  models: (UsageTotals & { model: string })[];
+}
+
+/** 校验模型用量接口返回的全局汇总和按模型明细。 */
+export function modelUsage(value: unknown): ModelUsage {
+  const root = object(value, "model_usage");
+  if (!Array.isArray(root.models)) throw new ContractError("model_usage.models");
+  return {
+    total: usageTotals(object(root.total, "model_usage.total"), "model_usage.total"),
+    models: root.models.map((entry: unknown, index: number) => {
+      const field = `model_usage.models[${index}]`;
+      const row = object(entry, field);
+      return { model: text(row.model, `${field}.model`), ...usageTotals(row, field) };
+    }),
+  };
+}
+
+function usageTotals(row: Record<string, unknown>, field: string): UsageTotals {
+  const rate = nullable(row.cache_hit_rate, `${field}.cache_hit_rate`, number);
+  if (rate !== null && rate > 1) throw new ContractError(`${field}.cache_hit_rate`);
+  return {
+    attempts: integer(row.attempts, `${field}.attempts`),
+    reported_attempts: integer(row.reported_attempts, `${field}.reported_attempts`),
+    input_tokens: integer(row.input_tokens, `${field}.input_tokens`),
+    output_tokens: integer(row.output_tokens, `${field}.output_tokens`),
+    total_tokens: integer(row.total_tokens, `${field}.total_tokens`),
+    cached_input_tokens: integer(row.cached_input_tokens, `${field}.cached_input_tokens`),
+    cache_write_input_tokens: integer(row.cache_write_input_tokens, `${field}.cache_write_input_tokens`),
+    reasoning_tokens: integer(row.reasoning_tokens, `${field}.reasoning_tokens`),
+    cache_hit_rate: rate,
+  };
+}
 /** 权威活动版本、预算与恢复要求，页面不自行推进运行累计。 */
 export interface Activity {
   activity_id: string; definition: string; goal: string; state: string; version: number;

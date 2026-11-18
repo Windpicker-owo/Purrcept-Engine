@@ -19,6 +19,7 @@ import { Chat } from "./pages/Chat";
 import { DeviceDetail, Devices } from "./pages/Devices";
 import { Home } from "./pages/Home";
 import { Memory } from "./pages/Memory";
+import { ModelUsagePage } from "./pages/ModelUsage";
 import { Reviews } from "./pages/Reviews";
 import { System } from "./pages/System";
 import { Timeline } from "./pages/Timeline";
@@ -147,6 +148,8 @@ function PageBody({
       return <Devices client={client} state={state} selected={route.id} go={go} />;
     case "activities":
       return <Activities client={client} state={state} selected={route.id} go={go} />;
+    case "model-usage":
+      return <ModelUsagePage client={client} />;
     case "system":
       return <System state={state} client={client} onBotNameChange={onBotNameChange} go={go} />;
   }

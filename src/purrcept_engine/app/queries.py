@@ -58,6 +58,10 @@ class HostQueries:
         """读取可还原的模型请求材料及传输尝试记录。"""
         return await self._require_store().get_request(request_id)
 
+    async def query_model_usage(self, *, since: float) -> JsonObject:
+        """读取当前宿主账本中从指定 Unix 时间戳开始的模型用量汇总。"""
+        return await self._require_store(reject_closed=True).model_usage_statistics(since=since)
+
     def query_health(self) -> JsonObject:
         """读取当前处理资格和各组件故障快照。"""
         state = self.state

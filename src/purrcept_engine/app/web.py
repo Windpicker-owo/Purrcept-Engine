@@ -11,6 +11,7 @@ import asyncio
 import hashlib
 import secrets
 import socket
+import time
 from collections.abc import Generator
 from contextlib import contextmanager
 from importlib.resources import files
@@ -32,6 +33,8 @@ from purrcept_engine.errors import HostStateError, StorageError
 from purrcept_engine.plugin_system.panels import PairingOperation, PreviewFrame
 from purrcept_engine.values import ActionProtocolError, JsonObject, decode_object
 
+_MODEL_USAGE_WINDOWS = {"24h": 86400, "7d": 7 * 86400, "30d": 30 * 86400, "all": None}
+
 
 class PanelHost(Protocol):
     """服务借用的有限宿主端口；不授予任意 Python 代码执行。"""
@@ -52,6 +55,10 @@ class PanelHost(Protocol):
 
     async def query_panel(self) -> JsonObject:
         """读取真实运行状态，请求不打开设备。"""
+        ...
+
+    async def query_model_usage(self, *, since: float) -> JsonObject:
+        """读取指定 Unix 时间戳以来的模型调用与 token 统计。"""
         ...
 
     async def query_reviews(self, before: str | None = None, *, kind: str = "action") -> JsonObject:
@@ -101,6 +108,17 @@ def create_app(
     async def snapshot(request: Request) -> Response:
         del request
         return _json(await host.query_panel())
+
+    async def model_usage(request: Request) -> Response:
+        """将相对时间范围转换为宿主账本的查询起点。"""
+        period = request.query_params.get("period", "7d")
+        if period not in _MODEL_USAGE_WINDOWS:
+            return _json(
+                {"error": "invalid_period", "message": "模型用量统计的时间范围无效。"}, 400
+            )
+        window = _MODEL_USAGE_WINDOWS[period]
+        since = 0.0 if window is None else time.time() - window
+        return _json(await host.query_model_usage(since=since))
 
     async def submit(request: Request) -> Response:
         payload = bytearray()
@@ -220,6 +238,7 @@ def create_app(
             Route("/api/health", health),
             Route("/api/session", session),
             Route("/api/snapshot", snapshot),
+            Route("/api/model-usage", model_usage),
             Route("/api/controls", submit, methods=["POST"]),
             Route("/api/controls/{request_id}", result),
             Route("/api/reviews", reviews),

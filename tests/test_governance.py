@@ -13,6 +13,7 @@ import time
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from PIL import Image
@@ -22,6 +23,7 @@ from purrcept_core.models import (
     Message,
     ModelResponse,
     ReminderState,
+    TokenUsage,
 )
 
 from purrcept_engine.domain.context.checkpoints import encode_checkpoint
@@ -47,6 +49,7 @@ from purrcept_engine.domain.model_requests.models import (
 from purrcept_engine.domain.subject.human_feedback import HumanFeedback
 from purrcept_engine.errors import StorageError
 from purrcept_engine.infrastructure.sqlite import analysis_work, archive, projections
+from purrcept_engine.infrastructure.sqlite import model_requests as model_storage
 from purrcept_engine.infrastructure.sqlite.maintenance_cli import maintain
 from purrcept_engine.infrastructure.sqlite.store import Store
 from purrcept_engine.serialization import encode
@@ -122,14 +125,19 @@ async def test_retry_schedule_and_only_related_evidence_can_reopen_exhausted_sco
 
 
 async def _request(
-    store: Store, identity: str = "request", scope: str = "foreground"
+    store: Store,
+    identity: str = "request",
+    scope: str = "foreground",
+    *,
+    model: str = "test",
+    usage: TokenUsage | None = None,
 ) -> tuple[RequestEvidence, AttemptEvidence]:
     """写入一项有完整模型材料、响应、参数事件和已提交终态的合成调用。"""
     request = RequestEvidence(
         identity,
         RequestScope(scope, identity),
         "generation",
-        "test",
+        model,
         '{"payload":{"messages":[{"role":"user","content":"' + "x" * 2048 + '"}]}}',
         "compiler",
         1,
@@ -142,7 +150,7 @@ async def _request(
     result = AttemptEvidence(
         start,
         "succeeded",
-        encode(ModelResponse(Message.assistant("ok"))),
+        encode(ModelResponse(Message.assistant("ok"), usage=usage)),
         None,
         "[]",
         "[]",
@@ -204,6 +212,60 @@ async def test_usage_anchor_survives_without_pinning_diagnostic_bodies(tmp_path:
         assert await store.get_usage_anchor("foreground") == anchor
         record = await store.get_request(request.request_id)
         assert record is not None and record.request.materials_json is None
+    finally:
+        await store.close()
+
+
+async def test_model_usage_uses_weighted_totals_after_response_expiry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """按开始时间筛选持久用量，缺失回执仍计尝试，命中率由输入 token 加权。"""
+    clock = [1_800_000_000.0]
+    monkeypatch.setattr(model_storage, "time", SimpleNamespace(time=lambda: clock[0]))
+    store = await Store.open(tmp_path / "usage.sqlite3")
+    try:
+        await _request(store, "old", model="small", usage=TokenUsage(10, 2, cached_input_tokens=10))
+        clock[0] += 10
+        await _request(
+            store,
+            "recent",
+            "attention",
+            model="large",
+            usage=TokenUsage(90, 18, cache_write_input_tokens=30, reasoning_tokens=7),
+        )
+        await _request(store, "no-usage", model="large")
+        await store.expire_model_bodies(before=clock[0] + 1, now=clock[0] + 2, max_bytes=1)
+        record = await store.get_request("old")
+        assert record is not None
+        attempt = record.attempts[0].result
+        assert attempt is not None and attempt.response_json is None
+
+        usage = await store.model_usage_statistics(since=0)
+        assert usage["total"] == {
+            "attempts": 3,
+            "reported_attempts": 2,
+            "input_tokens": 100,
+            "output_tokens": 20,
+            "total_tokens": 120,
+            "cached_input_tokens": 10,
+            "cache_write_input_tokens": 30,
+            "reasoning_tokens": 7,
+            "cache_hit_rate": 0.1,
+        }
+        models = usage["models"]
+        assert isinstance(models, list)
+        assert len(models) == 2
+        large, small = models
+        assert isinstance(large, dict) and large["model"] == "large"
+        assert (large["attempts"], large["reported_attempts"], large["cache_hit_rate"]) == (2, 1, 0)
+        assert isinstance(small, dict) and small["model"] == "small"
+        assert small["cache_hit_rate"] == 1.0
+
+        recent = await store.model_usage_statistics(since=clock[0])
+        assert recent["models"] == [large]
+        empty = await store.model_usage_statistics(since=clock[0] + 1)
+        assert empty["models"] == []
+        assert isinstance(empty["total"], dict) and empty["total"]["cache_hit_rate"] is None
     finally:
         await store.close()
 

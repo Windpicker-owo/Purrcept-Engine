@@ -8,12 +8,13 @@ import {
   controlResult,
   credentials,
   health,
+  modelUsage,
   review,
   reviewPage,
   reviewTargets,
   snapshot,
 } from "./contracts";
-import type { Action, ControlRequest, ControlResult, Health, ObjectValue, Review, Snapshot } from "./contracts";
+import type { Action, ControlRequest, ControlResult, Health, ModelUsage, ModelUsagePeriod, ObjectValue, Review, Snapshot } from "./contracts";
 import {
   parseChatFeed,
   parseConfigView,
@@ -302,6 +303,10 @@ export class PanelClient {
 
   reviews = async (before: string | null = null): Promise<{ items: Action[]; next_cursor: string | null }> =>
     reviewPage(await responseJson(await this.get(`/api/reviews${before === null ? "" : `?before=${encodeURIComponent(before)}`}`)));
+
+  /** 按需读取本机账本用量，独立于常规宿主快照。 */
+  modelUsage = async (period: ModelUsagePeriod): Promise<ModelUsage> =>
+    modelUsage(await responseJson(await this.get(`/api/model-usage?period=${period}`)));
 
   reviewTargets = async (kind: "action" | "turn" | "call", before: string | null = null) =>
     reviewTargets(await responseJson(await this.get(`/api/reviews?kind=${kind}${before === null ? "" : `&before=${encodeURIComponent(before)}`}`)));

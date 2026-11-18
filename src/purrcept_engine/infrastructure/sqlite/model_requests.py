@@ -2,7 +2,8 @@
 
 本模块定义主体交给 Store 的不可变值与单连接 SQL 事务，不打开连接、不调用
 模型，也不决定重试。请求材料和完整响应属于权威事实；详细流诊断另带覆盖
-标记。开始记录先于外部请求，结果记录不能覆盖旧尝试。启动恢复只标记中断，
+标记。用量汇总读取尝试的长期元数据，无需还原正文。开始记录先于外部请求，
+结果记录不能覆盖旧尝试。启动恢复只标记中断，
 不重发模型请求。Store 在自己的线程和权威提交队列中调用这些函数。
 """
 
@@ -34,6 +35,7 @@ from purrcept_engine.errors import StorageError
 from purrcept_engine.infrastructure.sqlite import analysis_work, archive, retention
 from purrcept_engine.infrastructure.sqlite.rows import as_int, as_opt_text, as_text
 from purrcept_engine.serialization import encode
+from purrcept_engine.values import JsonObject, JsonValue
 
 _logger = logging.getLogger(__name__)
 
@@ -371,6 +373,64 @@ def get_request(connection: sqlite3.Connection, request_id: str) -> RequestRecor
         return RequestRecord(
             request, state, _number(row[2]), _optional_number(row[3]), attempts, status
         )
+
+
+def usage_statistics(connection: sqlite3.Connection, *, since: float) -> JsonObject:
+    """按尝试的开始时间汇总模型用量，since 为含边界的 Unix 时间戳。"""
+    # 一次 SELECT 保证各模型与总览使用同一批记录。重试计作独立尝试，只在
+    # 有用量回执时累加 token。正文和诊断的保留策略不会影响此查询。
+    rows: list[tuple[object, ...]] = connection.execute(
+        """
+        WITH attempt_usage AS (
+            SELECT request_id, json_extract(result_json, '$.usage_json') AS usage
+            FROM model_attempts
+            WHERE created_at >= ?
+        )
+        SELECT json_extract(r.evidence_json, '$.model') AS model,
+               count(*) AS attempts, count(u.usage) AS reported_attempts,
+               coalesce(sum(json_extract(u.usage, '$.input_tokens')), 0) AS input_tokens,
+               coalesce(sum(json_extract(u.usage, '$.output_tokens')), 0) AS output_tokens,
+               coalesce(sum(json_extract(u.usage, '$.cached_input_tokens')), 0),
+               coalesce(sum(json_extract(u.usage, '$.cache_write_input_tokens')), 0),
+               coalesce(sum(json_extract(u.usage, '$.reasoning_tokens')), 0)
+        FROM attempt_usage u JOIN model_requests r ON r.request_id = u.request_id
+        GROUP BY model
+        ORDER BY input_tokens + output_tokens DESC, model
+        """,
+        (since,),
+    ).fetchall()
+    # 汇总字段顺序与 SELECT 中的计数列一致。
+    totals: dict[str, int] = dict.fromkeys(
+        (
+            "attempts",
+            "reported_attempts",
+            "input_tokens",
+            "output_tokens",
+            "cached_input_tokens",
+            "cache_write_input_tokens",
+            "reasoning_tokens",
+        ),
+        0,
+    )
+    models: list[JsonValue] = []
+    for model, *values in rows:
+        counts = {field: as_int(value) for field, value in zip(totals, values, strict=True)}
+        models.append({"model": as_text(model), **_usage_summary(counts)})
+        for field, count in counts.items():
+            totals[field] += count
+    return {"total": _usage_summary(totals), "models": models}
+
+
+def _usage_summary(counts: dict[str, int]) -> JsonObject:
+    """从累计 token 计算比率，空分母或超出输入量的缓存计数无法解释为命中率。"""
+    inputs = counts["input_tokens"]
+    cached = counts["cached_input_tokens"]
+    # 与 Core 的 total_tokens 口径一致，缓存和推理子项单独展示，避免重复计数。
+    return {
+        **counts,
+        "total_tokens": inputs + counts["output_tokens"],
+        "cache_hit_rate": cached / inputs if 0 < inputs and cached <= inputs else None,
+    }
 
 
 def initialize(connection: sqlite3.Connection) -> None:

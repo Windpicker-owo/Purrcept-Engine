@@ -24,8 +24,8 @@ pre, .excerpt { font: var(--pc-font-mono); font-variant-numeric: tabular-nums; b
 code { font: var(--pc-font-mono); font-variant-numeric: tabular-nums; background: var(--pc-color-surface-sunken); padding: 0 var(--pc-space-xxs); border-radius: var(--pc-radius-xs); }
 .visually-hidden { position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 
-/* 外壳：导航轨与开放画布之间保留透气间距，晴空与蜜桃环境光晕自然铺开 */
-.panel-shell { display: grid; grid-template-columns: var(--pc-space-sidebar) minmax(0, 1fr); gap: var(--pc-space-island-gap); min-height: 100vh; padding: var(--pc-space-island-gap); box-sizing: border-box; }
+/* 外壳隔离首页前景的层级，使挂在外壳之外的 Cel 抽屉始终可操作。 */
+.panel-shell { isolation: isolate; display: grid; grid-template-columns: var(--pc-space-sidebar) minmax(0, 1fr); gap: var(--pc-space-island-gap); min-height: 100vh; padding: var(--pc-space-island-gap); box-sizing: border-box; }
 .panel-shell[data-inspector="true"] { grid-template-columns: var(--pc-space-sidebar) minmax(0, 1fr) var(--pc-space-inspector); }
 .skip-link { position: fixed; z-index: 2; left: var(--pc-space-md); top: var(--pc-space-md); padding: var(--pc-space-sm); background: var(--pc-color-surface); border: 1.5px solid var(--pc-color-outline); border-radius: var(--pc-radius-full); box-shadow: var(--pc-shadow-overlay); transform: translateY(-200%); }
 .skip-link:focus-visible { transform: none; }
@@ -92,6 +92,21 @@ code { font: var(--pc-font-mono); font-variant-numeric: tabular-nums; background
 .empty-state { display: flex; flex-direction: column; align-items: flex-start; gap: var(--pc-space-sm); padding: var(--pc-space-xl) 0; max-width: calc(var(--pc-space-inspector) * 2); }
 .page > .empty-state { max-width: none; padding: var(--pc-space-xl); }
 .empty-state > h2 { margin: var(--pc-space-xs) 0 0; }
+
+/* API 用量：全局数字共用连续网格，明细保留模型间的列对齐。 */
+.usage-metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, calc(var(--pc-space-touch-target) * 2 + var(--pc-space-md))), 1fr)); gap: var(--pc-space-md); margin: 0; }
+.usage-metrics dt { font: var(--pc-font-caption); font-variant-numeric: tabular-nums; color: var(--pc-color-ink-muted); }
+.usage-metrics dd { margin: var(--pc-space-xxs) 0 0; font: var(--pc-font-title); font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.usage-metrics meter { display: block; width: 100%; max-width: calc(var(--pc-space-touch-target) * 3); height: var(--pc-space-sm); margin-top: var(--pc-space-xxs); }
+.usage-metrics meter::-webkit-meter-bar { border: 0; border-radius: var(--pc-radius-full); background: var(--pc-color-surface-sunken); }
+.usage-metrics meter::-webkit-meter-optimum-value { border-radius: var(--pc-radius-full); background: var(--pc-color-brand-fill); }
+.usage-breakdown { margin-top: var(--pc-space-md); padding-top: var(--pc-space-md); border-top: 1px solid var(--pc-color-outline-subtle); }
+.usage-breakdown dd { font: var(--pc-font-body); font-variant-numeric: tabular-nums; }
+.usage-table { width: 100%; table-layout: fixed; border-collapse: collapse; font: var(--pc-font-body); font-variant-numeric: tabular-nums; }
+.usage-table :is(th, td) { padding: var(--pc-space-sm) var(--pc-space-xxs); text-align: end; overflow-wrap: anywhere; }
+.usage-table thead { font: var(--pc-font-caption); font-variant-numeric: tabular-nums; color: var(--pc-color-ink-muted); }
+.usage-table tr > :first-child { width: 40%; padding-inline-start: 0; text-align: start; }
+.usage-table tbody tr { border-top: 1px solid var(--pc-color-outline-subtle); }
 
 /* ------------------------------------------------------------------------- */
 /* 首页：开放式学园桌案 + 探头遮挡前景状态横幅 + 左竖线时间流 + 右侧手账册    */
@@ -605,6 +620,12 @@ select:disabled { color: var(--pc-color-ink-muted); background: var(--pc-color-s
   .desk-split { grid-template-columns: minmax(0, 1fr); gap: var(--pc-space-lg); }
 }
 @media (--pc-navigation) {
+  .usage-period { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); width: min(100%, calc(var(--pc-space-touch-target) * 8)); box-sizing: border-box; border-radius: var(--pc-radius-xl); }
+  .usage-period > .filter { padding-inline: var(--pc-space-xs); text-align: center; }
+  .usage-table { font: var(--pc-font-caption); font-variant-numeric: tabular-nums; }
+  .usage-table tr > :first-child { width: 34%; }
+  .usage-table tr > :nth-child(2) { width: 17%; }
+  .usage-table tr > :nth-child(3) { width: 25%; }
   .panel-shell { grid-template-columns: minmax(0, 1fr); gap: var(--pc-space-xs); padding: var(--pc-space-xs) var(--pc-space-xs) calc(var(--pc-space-3xl) + var(--pc-space-lg) + env(safe-area-inset-bottom)); }
   .navigation { position: fixed; top: auto; left: var(--pc-space-xs); right: var(--pc-space-xs); bottom: calc(var(--pc-space-xs) + env(safe-area-inset-bottom)); height: auto; flex-direction: row; align-items: stretch; justify-content: space-around; gap: 0; overflow: visible; padding: var(--pc-space-xxs); }
   .wordmark { display: none; }

@@ -415,6 +415,10 @@ class EngineHost:
         """
         return await self._queries.query_request(request_id)
 
+    async def query_model_usage(self, *, since: float) -> JsonObject:
+        """汇总当前宿主账本中从指定 Unix 时间戳开始的模型用量。"""
+        return await self._queries.query_model_usage(since=since)
+
     def query_health(self) -> JsonObject:
         """读取启动和组件健康，不打开数据库、插件或模型资源。"""
         return self._queries.query_health()

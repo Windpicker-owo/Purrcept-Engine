@@ -32,6 +32,7 @@ from purrcept_engine.infrastructure.sqlite import execution as execution_storage
 from purrcept_engine.infrastructure.sqlite import model_requests as model_storage
 from purrcept_engine.infrastructure.sqlite.rows import as_text, require_positive
 from purrcept_engine.infrastructure.sqlite.store_base import StoreBase
+from purrcept_engine.values import JsonObject
 
 _logger = logging.getLogger("purrcept_engine.infrastructure.sqlite.store")
 
@@ -120,6 +121,12 @@ class ExecutionStoreMixin(StoreBase):
         self._validate_id(request_id)
         return await self._submit(
             lambda connection: model_storage.get_request(connection, request_id)
+        )
+
+    async def model_usage_statistics(self, *, since: float) -> JsonObject:
+        """在存储线程读取从指定 Unix 时间戳开始的全部模型尝试用量。"""
+        return await self._submit(
+            lambda connection: model_storage.usage_statistics(connection, since=since)
         )
 
     async def requests_for_turn(self, owner_id: str, turn_id: str) -> tuple[RequestRecord, ...]:
