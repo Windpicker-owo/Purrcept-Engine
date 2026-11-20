@@ -149,13 +149,13 @@ function PageBody({
     case "activities":
       return <Activities client={client} state={state} selected={route.id} go={go} />;
     case "model-usage":
-      return <ModelUsagePage client={client} />;
+      return <ModelUsagePage client={client} botName={botName} go={go} />;
     case "system":
       return <System state={state} client={client} onBotNameChange={onBotNameChange} go={go} />;
   }
 }
 
-const OFFLINE_CAPABLE_PAGES: readonly Page[] = ["home", "system", "memory", "devices"];
+const OFFLINE_CAPABLE_PAGES: readonly Page[] = ["home", "system", "memory", "devices", "model-usage"];
 
 export function App({ client }: { client: PanelClient }): ReactElement {
   const state = useSyncExternalStore(client.subscribe, client.getState);

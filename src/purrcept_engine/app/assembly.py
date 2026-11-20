@@ -37,6 +37,9 @@ _BUILTIN_ENTRIES = {
     "computer": "purrcept_engine.plugins.computer:factory",
     "browser": "purrcept_engine.plugins.browser.plugin:factory",
     "meme": "purrcept_engine.plugins.meme:factory",
+    "gpt_image": "purrcept_engine.plugins.gpt_image:factory",
+    # 旧配置入口仍加载同一个工厂，能力路径由新版目录声明。
+    "image_generation": "purrcept_engine.plugins.gpt_image:factory",
     "microphone": "purrcept_engine.plugins.audio.plugin:factory",
     "live2d": "purrcept_engine.plugins.live2d.plugin:factory",
     "voice_input": "purrcept_engine.plugins.voice_input:factory",

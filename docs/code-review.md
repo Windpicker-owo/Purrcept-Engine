@@ -47,7 +47,7 @@
 | `domain/` | **纯业务规则（不碰 SQL、不碰网络、不碰子进程）** | 改主脑/注意提示词（`domain/subject/prompts.py`）、改刺激合批与睡眠唤醒逻辑（`coordinator.py`）、改上下文压缩与 Token 估算（`domain/context/`） |
 | `infrastructure/` | **脏活累活实现层（SQLite、模型请求、沙箱子进程）** | 改数据库表或查询（`infrastructure/sqlite/`）、改 OpenAI/LiteLLM 请求适配（`infrastructure/models/`）、改 Windows Worker 进程隔离（`infrastructure/execution/` & `processes/`） |
 | `plugin_system/` | **给插件作者看的公共接口清单** | 几乎不用改，除非你要给所有插件新增一种通用宿主端口 |
-| `plugins/` | **11 个互不耦合的具体设备/平台插件** | 改 QQ 消息格式去 `plugins/qq/`，改 TTS 与 FFmpeg 音效去 `plugins/audio/`，改记忆手账去 `plugins/notebook.py`，改 VTube Studio 口型表情去 `plugins/live2d/` |
+| `plugins/` | **具体设备和平台插件** | 改 QQ 消息格式去 `plugins/qq/`，改 TTS 与 FFmpeg 音效去 `plugins/audio/`，改记忆手账去 `plugins/notebook.py`，改 VTube Studio 口型表情去 `plugins/live2d/` |
 
 ---
 

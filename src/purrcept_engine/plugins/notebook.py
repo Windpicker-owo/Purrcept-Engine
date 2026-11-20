@@ -69,12 +69,14 @@ from purrcept_engine.plugin_system import (
 from purrcept_engine.plugins.notebook_memory import (
     ConsolidationSettings,
     NotebookMemory,
+    is_memory_topic,
     render_revision,
 )
 from purrcept_engine.plugins.skills import ParsedNote, note_overview, note_preview, parse_note
 from purrcept_engine.values import JsonObject, JsonValue, decode_object, encode_json
 
 _SUFFIXES = frozenset({".md", ".markdown"})
+_NOTES_PER_COLLECTION = 4
 _INVALID_SEGMENT = re.compile(r'[\x00-\x1f<>:"|?*]')
 _DEVICE_NAME = re.compile(r"^(?:CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\.|$)", re.IGNORECASE)
 _HOW_TO_REST = """---
@@ -1423,11 +1425,9 @@ class Notebook:
         }
 
     async def publish_revision(self, revision: Revision, sources: tuple[Document, ...]) -> None:
-        """仅向 memory/ 发布有据整理页；输入和目标版本须在同一文件锁内重核。"""
-        if not revision.path.startswith("memory/") or revision.path.startswith(
-            "memory/attachments/"
-        ):
-            raise NotebookError("后台只能写入 memory/ 整理区域。", code="memory_target")
+        """发布分类活页；输入和目标版本须在同一文件锁内重核。"""
+        if not is_memory_topic(revision.path):
+            raise NotebookError("后台只能写入固定分类活页或人物卡。", code="memory_target")
         content = render_revision(revision)
 
         def write() -> JsonObject:
@@ -1494,8 +1494,8 @@ class Notebook:
         """每次逻辑请求前取得技能和普通笔记的有界摘要目录。
 
         Returns:
-            skills 与 skills_directory 描述技能；notes_index 提供普通笔记及整理页摘要。
-            notes_truncated 表示摘要条数达到上限，incomplete 与 issues 明确扫描缺口。
+            skills 与 skills_directory 描述技能；notes_index 优先提供分类活页摘要。
+            notes_truncated 表示目录按配额省略了摘要，incomplete 与 issues 明确扫描缺口。
 
         Note:
             正文不进入目录；普通笔记只提供路径、摘要和实际文件修改时间。
@@ -1503,24 +1503,53 @@ class Notebook:
         scan = await self.synchronize()
         now = datetime.now().astimezone()
         recent = {f"journal/{now:%Y-%m-%d}.md", f"journal/{now - timedelta(days=1):%Y-%m-%d}.md"}
+
+        def priority(note: ParsedNote) -> tuple[int, float, str]:
+            """让持续维护的记忆先占目录名额，沿用普通笔记的时间顺序。"""
+            if is_memory_topic(note.path):
+                group = 0
+            elif note.path in recent:
+                group = 1
+            elif Path(note.path).name == ".overview.md":
+                group = 2
+            else:
+                group = 3
+            return group, -note.occurred_at, note.path
+
+        # 旧分片继续参加显式搜索。自动注入只保留稳定的记忆入口，
+        # 避免一次性的派生页挤掉人物卡和常用普通笔记。
         notes = sorted(
-            (note for note in scan.notes if not note.skill),
-            key=lambda note: (
-                0 if note.path in recent else 1 if Path(note.path).name == ".overview.md" else 2,
-                -note.occurred_at,
-                note.path,
+            (
+                note
+                for note in scan.notes
+                if not note.skill
+                and (
+                    note.path.split("/", 1)[0].casefold() != "memory" or is_memory_topic(note.path)
+                )
             ),
+            key=priority,
         )
-        index: list[JsonValue] = [
-            {
-                "path": note.path,
-                "name": note.name,
-                "summary": note_preview(note, max_chars=self._notes_summary_chars),
-                "bytes": note.byte_count,
-                "updated_at": note.occurred_at,
-            }
-            for note in notes[: self._notes_index_limit]
-        ]
+        index: list[JsonValue] = []
+        shown_per_collection: dict[str, int] = {}
+        for note in notes:
+            if len(index) == self._notes_index_limit:
+                break
+            collection, nested, _ = note.path.partition("/")
+            if nested and priority(note)[0] == 3:
+                # 连载和历史日志仍可搜索；同一个普通目录只借出少量自动摘要。
+                count = shown_per_collection.get(collection, 0)
+                if count >= _NOTES_PER_COLLECTION:
+                    continue
+                shown_per_collection[collection] = count + 1
+            index.append(
+                {
+                    "path": note.path,
+                    "name": note.name,
+                    "summary": note_preview(note, max_chars=self._notes_summary_chars),
+                    "bytes": note.byte_count,
+                    "updated_at": note.occurred_at,
+                }
+            )
         skill_scan = (
             await self._io(lambda: self._files.scan(self._skills_dir)) if self._skills_dir else scan
         )
@@ -1531,7 +1560,7 @@ class Notebook:
             "incomplete": bool(scan.issues),
             "issues": list(scan.issues),
             "notes_index": index,
-            "notes_truncated": len(notes) > self._notes_index_limit,
+            "notes_truncated": len(index) < len(notes),
         }
 
     async def tree(self, path: str = "") -> JsonObject:

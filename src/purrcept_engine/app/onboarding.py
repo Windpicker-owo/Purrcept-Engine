@@ -1,7 +1,7 @@
 """提供交互式 ``purrcept-engine init`` 配置向导与内置插件配置速查手册。
 
 让新用户无需翻阅源码或记忆复杂的 TOML 结构，即可在终端通过几步问答生成经过严格校验
-的可运行 ``purrcept.toml``，并随时通过 ``purrcept-engine plugins`` 查阅全部 11 个内置插件的配置项。
+的可运行 ``purrcept.toml``，并随时通过 ``purrcept-engine plugins`` 查阅内置插件的配置项。
 """
 
 from __future__ import annotations
@@ -210,6 +210,31 @@ timezone = "Asia/Shanghai\"""",
             ("daily_enabled", "是否开启每日新梗提醒，默认 true"),
             ("daily_at", "每日推送时刻（HH:MM），默认 '09:00'"),
             ("timezone", "IANA 时区名，默认 'Asia/Shanghai'"),
+            ("state_max_mib", "收藏和提醒状态文件上限，默认 64 MiB，可设为 8–256"),
+        ),
+    ),
+    PluginGuideEntry(
+        entry="gpt_image",
+        title="OpenAI 生图与编辑 (GPT Image)",
+        capability_prefix="me.computer.gpt_image.*",
+        extra="需启用 Computer 插件",
+        summary="挂载到已启用的 Computer 插件，生成和编辑图像，返回媒体 ID 与本机文件。",
+        toml_snippet="""[[plugins]]
+instance_id = "gpt_image"
+entry = "gpt_image"
+[plugins.config]
+computer_id = "computer"
+api_key = "${OPENAI_API_KEY}"
+model = "gpt-image-2.6-flare\"""",
+        key_fields=(
+            ("computer_id", "所属 Computer 插件的 instance_id，默认 'computer'"),
+            ("api_key", "有 GPT Image 使用权限的 OpenAI API 密钥"),
+            ("model", "默认 GPT Image 模型 ID，generate 和 edit 可按次覆盖"),
+            ("api_base", "图片 API 基址，默认 'https://api.openai.com/v1'"),
+            ("output_dir", "出图目录，默认 '.purrcept/image-generation'，相对主配置目录"),
+            ("timeout_seconds", "OpenAI 请求总期限，默认 150 秒，行动期限仍由执行器限制"),
+            ("moderation", "OpenAI 内容审核级别，默认 'auto'"),
+            ("safety_identifier", "可选，单用户部署可填写非明文身份的稳定标识"),
         ),
     ),
     PluginGuideEntry(

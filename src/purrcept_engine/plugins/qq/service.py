@@ -677,6 +677,7 @@ class QQService:
         project: Callable[[JsonValue], JsonObject],
         *,
         temporary: tuple[Path, ...] = (),
+        generation: int | None = None,
     ) -> CallOutcome:
         """一次真实调用与同身份迟到提交。
 
@@ -686,6 +687,7 @@ class QQService:
             context: 宿主或 Core 注入的可信调用上下文，不由模型自行填写。
             project: 将原生 data 转为模型可见业务值的投影函数。
             temporary: 本次调用持有的临时媒体路径，真实借用结束后才清理。 默认不附加此类条目。
+            generation: 多阶段操作所绑定的连接代次，断线后不得改借新会话。
 
         Returns:
             实际确认、失败或未知结论，以及可 JSON 化的业务值和原生媒体引用。
@@ -709,7 +711,9 @@ class QQService:
                     await self.media.io(lambda: self.media.release(temporary))
 
         try:
-            reply = await self.client.request(action, params, context=context, on_late=late)
+            reply = await self.client.request(
+                action, params, context=context, generation=generation, on_late=late
+            )
         except QQCallError as error:
             if error.phase != "unknown" and temporary:
                 await self.media.io(lambda: self.media.release(temporary))
@@ -720,7 +724,12 @@ class QQService:
         return outcome
 
     async def lookup(
-        self, action: str, params: JsonObject, context: CallContext
+        self,
+        action: str,
+        params: JsonObject,
+        context: CallContext,
+        *,
+        generation: int | None = None,
     ) -> tuple[JsonValue, str]:
         """多阶段写入的前置只读步骤超时后不续写，实际原响应仍保存。
 
@@ -728,11 +737,12 @@ class QQService:
             action: 原生 OneBot 操作名，与回包 echo 分别关联。
             params: 当前原生协议方法使用的显式参数。
             context: 宿主或 Core 注入的可信调用上下文，不由模型自行填写。
+            generation: 可选的固定连接代次，后续写入仍需使用同一代次。
 
         Returns:
             平台实际 data 以及已保存原响应快照的 evidence_id。
         """
-        reply = await self.client.request(action, params, context=context)
+        reply = await self.client.request(action, params, context=context, generation=generation)
         reference = await self.raw_reply(reply)
         return platform_data(reply), reference
 

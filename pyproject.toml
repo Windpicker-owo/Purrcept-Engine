@@ -84,7 +84,7 @@ exclude = [
 addopts = "--strict-config --strict-markers"
 asyncio_mode = "auto"
 testpaths = ["tests"]
-pythonpath = ["src"]
+pythonpath = ["src", "plugins"]
 
 [tool.ruff]
 line-length = 100
@@ -101,7 +101,7 @@ docstring-code-format = true
 venvPath = "."
 venv = ".venv"
 include = ["src", "tests", "examples"]
-extraPaths = ["src"]
+extraPaths = ["src", "plugins"]
 pythonVersion = "3.12"
 typeCheckingMode = "strict"
 reportUnnecessaryTypeIgnoreComment = "error"

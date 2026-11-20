@@ -27,9 +27,10 @@ from purrcept_engine.plugins.qq.ports import (
     Listener,
     QQCallError,
     Reply,
+    encode_request,
 )
 from purrcept_engine.plugins.qq.settings import QQSettings
-from purrcept_engine.values import ActionProtocolError, JsonObject, decode_object, encode_json
+from purrcept_engine.values import ActionProtocolError, JsonObject, decode_object
 
 EventHandler = Callable[[JsonObject, int], Awaitable[None]]
 GapHandler = Callable[[JsonObject, str], None]
@@ -498,8 +499,8 @@ class QQClient:
         future: asyncio.Future[Reply] = asyncio.get_running_loop().create_future()
         future.add_done_callback(_observe)
         pending = _Pending(action, actual_generation, echo, future, on_late)
-        request = encode_json({"action": action, "params": params, "echo": echo}).decode("utf-8")
-        if len(request.encode("utf-8")) > self.settings.frame_bytes:
+        request = encode_request(action, params, echo=echo)
+        if len(request) > self.settings.frame_bytes:
             raise QQCallError(
                 "QQ 请求帧超过配置字节上限，尚未发送。",
                 action=action,
@@ -511,7 +512,7 @@ class QQClient:
         try:
             async with timer:
                 pending.sending = True
-                await connection.send(request)
+                await connection.send(request.decode("utf-8"))
                 reply = await asyncio.shield(future)
             self._pending.pop(echo, None)
             return reply

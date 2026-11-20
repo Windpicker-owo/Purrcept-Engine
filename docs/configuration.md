@@ -18,7 +18,7 @@ uv run purrcept-engine init
 uv run purrcept-engine init --template
 ```
 
-随时可在终端查阅全部 11 个内置插件的依赖与完整配置示例：
+随时可在终端查阅内置插件的依赖与完整配置示例：
 
 ```powershell
 uv run purrcept-engine plugins          # 列出所有内置插件概览
@@ -129,7 +129,54 @@ instance_id = "bed"
 entry = "bed"
 ```
 
-全部 11 个内置插件（`notebook`、`clock`、`bed`、`qq`、`phone`、`computer`、`browser`、`meme`、`microphone`、`voice_input`、`live2d`）的带注释配置示例均已内置在 [default.toml](../src/purrcept_engine/app/default.toml) 中，也可随时执行 `uv run purrcept-engine plugins <插件名>` 在终端直接查看。
+内置插件的带注释配置示例见 [default.toml](../src/purrcept_engine/app/default.toml)，也可运行 `uv run purrcept-engine plugins <插件名>` 查看。外部 B 站插件的本地清单与替换适配器见 [B 站插件](bilibili.md)。
+
+### OpenAI 生图与编辑
+
+启用 Computer 插件，并在运行 Engine 的环境中提供 `OPENAI_API_KEY`。
+在 `purrcept.toml` 追加下列配置。`computer_id` 对应 Computer 插件的 `instance_id`。
+生图插件直接调用 OpenAI Images API，Computer 设备无需先执行 `connect()`。
+
+```toml
+[[plugins]]
+instance_id = "gpt_image"
+entry = "gpt_image"
+[plugins.config]
+computer_id = "computer"
+api_key = "${OPENAI_API_KEY}"
+model = "gpt-image-2.6-flare"
+```
+
+Bot 可用 `me.computer.gpt_image.generate(prompt=..., size="1536x1024")` 从文字生图，
+用 `me.computer.gpt_image.edit(images=[media_id], prompt=...)` 继续编辑。
+已有的 `entry = "image_generation"` 配置也会注册到新路径。
+
+两个工具都接受可选的 `model`，省略时使用插件配置。要比较 `gpt-image-2.6-flare`
+和 `gpt-image-2.6-sunburst`，可用相同的提示词与出图设置分别调用，回执中的 `model`
+会标明每张图所用的模型。
+
+`images` 依次接受底图和参考图。入站图片可用 `{"input_id": input_id, "image_index": 0}`
+指定，序号从 0 开始。也可传 `me.view_image` 或生图结果的 `media_id`、
+HTTPS 图像 URL 或 OpenAI Files API 的 `file_id`。局部编辑可传首张底图对应的
+透明 PNG `mask` 或 `markup`。本地原件通过 data URL 上传，单图最大约 15 MiB，
+每次上传的本地原件合计最多 64 MiB。
+
+两个工具支持自定义尺寸、质量、背景和张数，输出 PNG、JPEG、WebP 或动画 GIF。
+使用兼容模型时可设置复杂度、压缩率以及 GIF 帧数与时长。生成工具还支持 SVG，
+以文件形式交付。使用 `partial_images=1` 至 `3` 时会接收并保存流式中间图，
+在动作完成回执的 `previews` 中提供。模型、组织验证和预览功能的权限要求见
+[OpenAI 图像生成指南](https://developers.openai.com/api/docs/guides/image-generation)。
+
+结果中的 `images[i].path` 默认位于主配置目录的 `.purrcept/image-generation` 下，
+QQ 可用 `me.phone.qq.send(chat=..., target_id=..., images=[path])` 发送位图，
+也可用 `files=[path]` 发送 SVG 文件。
+QQ 插件按完整请求帧核算图片空间。帧装不下时，本地图片可通过 `file://` 引用随消息发送，
+OneBot 网关须能读取该路径。
+若自定义 `output_dir` 到 QQ 默认媒体根目录之外，请将该目录加入 QQ 插件的
+`extra_media_roots`。默认回执提供文件路径和媒体 ID，适用于纯文本主脑。
+主脑模型声明 `supports_contents = ["text", "image"]` 时，可设置 `include_media=True`
+让主脑同时查看位图。
+其他字段与默认值可运行 `uv run purrcept-engine plugins gpt_image` 查看。
 
 ## 5. 高级参数与资源配额
 

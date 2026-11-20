@@ -58,6 +58,10 @@ class EvidenceAccess:
         """
         return await self._ledger.capture(snapshot, assets)
 
+    async def get_media(self, media_id: str) -> bytes | None:
+        """读取已知摘要对应的完整原件，供显式媒体工具复用。"""
+        return await self._ledger.get_media(media_id)
+
     async def put_evidence(
         self, snapshot: EvidenceSnapshot, *, needs_reflection: bool = False
     ) -> EvidenceSnapshot:

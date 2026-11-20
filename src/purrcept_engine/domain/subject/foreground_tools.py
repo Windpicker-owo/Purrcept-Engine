@@ -176,8 +176,10 @@ class ForegroundTools:
     #     定闹铃）必须通过此工具进行。
     #     每次调用都在全新的隔离环境中运行，不保留上次变量或导入，me 不自动存在。
     #     使用路径前必须写 from world import me, world；能力必须 await 并传 schema 关键字。
-    #     可使用顶层 await 和 return，不要包进函数或 asyncio.run。dotted_path 是调用路径。
-    #     return 返回继续查看的结果，print 只输出调试。禁止反射、文件、网络、函数、类和 lambda。
+    #     直接写顶层 await 和 return，可用局部 def 和 lambda 复用逻辑。dotted_path 是调用路径。
+    #     用 from world import RemoteCapabilityError 和 try/except RemoteCapabilityError as error
+    #     处理单个可选能力的失败，可查看 error.error_type 和 str(error)，然后继续独立步骤。
+    #     return 返回继续查看的结果，print 只输出调试。禁止反射、文件、网络和类定义。
     #     失败后按回执纠正，不猜测已经完成，也不重放 UNKNOWN。
     @model_input_boundary
     async def play_action(self, action_code: str) -> ToolResult:
@@ -185,8 +187,10 @@ class ForegroundTools:
         你对外部世界的全部表达与控制（说话、发QQ、调神态动作、记笔记、定闹铃）必须通过此工具进行。
         每次调用都在全新的隔离环境中运行，不保留上次变量或导入，me 不自动存在。
         使用路径前必须写 from world import me, world；能力必须 await 并传 schema 关键字。
-        可使用顶层 await 和 return，不要包进函数或 asyncio.run。dotted_path 是调用路径。
-        return 返回继续查看的结果，print 只输出调试。禁止反射、文件、网络、函数、类和 lambda。
+        直接写顶层 await 和 return，可用局部 def 和 lambda 复用逻辑。dotted_path 是调用路径。
+        用 from world import RemoteCapabilityError 和 try/except RemoteCapabilityError as error
+        处理单个可选能力的失败，可查看 error.error_type 和 str(error)，然后继续独立步骤。
+        return 返回继续查看的结果，print 只输出调试。禁止反射、文件、网络和类定义。
         失败后按回执纠正，不猜测已经完成，也不重放 UNKNOWN。
         """
         return (await self._action_result(action_code)).result

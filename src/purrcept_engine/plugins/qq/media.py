@@ -21,9 +21,10 @@ import httpx
 from purrcept_engine.infrastructure.files import DownloadError, download_file
 from purrcept_engine.plugin_system import MediaAsset
 from purrcept_engine.plugins.qq.parameters import Send
+from purrcept_engine.plugins.qq.ports import encode_request, message_request
 from purrcept_engine.plugins.qq.settings import QQSettings, resolve_path
 from purrcept_engine.plugins.qq.voice import MAX_VOICE_BYTES, VoiceError, decode_voice
-from purrcept_engine.values import JsonValue, encode_json
+from purrcept_engine.values import JsonObject, JsonValue, encode_json
 
 
 class QQMediaError(ValueError):
@@ -73,7 +74,7 @@ def sniff_type(data: bytes) -> str:
 class MediaOwner:
     """build 创建的文件/HTTP 所有者，close 只回收本次登记的临时文件。
 
-    未确认发送的临时语音保留到真实 echo 或传输关闭；不删除用户提供的文件。
+    未确认发送的临时附件保留到真实 echo 或传输关闭；不删除用户提供的文件。
     临时文件最多 pending_calls 个，未知请求不能无界扩张磁盘暂存。
     """
 
@@ -299,16 +300,14 @@ class MediaOwner:
         ):
             return parameters.text, ()
         segments: list[JsonValue] = []
-        prepared_bytes = 2
+        action, params = message_request(parameters.chat, parameters.target_id, segments)
+        prepared_bytes = len(encode_request(action, params))
 
         def add(segment: JsonValue) -> None:
-            """先核验聚合载荷预算，再接纳一个原生消息分段。"""
+            """记录段的实际 UTF-8 字节，最终以完整请求预算决定图片来源。"""
             nonlocal prepared_bytes
-            proposed = prepared_bytes + len(encode_json(segment)) + int(bool(segments))
-            if proposed > self.settings.frame_bytes:
-                raise QQMediaError("QQ 附件组合超过请求帧容量，尚未发送。")
+            prepared_bytes += len(encode_json(segment)) + int(bool(segments))
             segments.append(segment)
-            prepared_bytes = proposed
 
         temporary: list[Path] = []
         if parameters.reply:
@@ -330,17 +329,8 @@ class MediaOwner:
                     source = self.path(raw).as_uri()
                 else:
                     data = self.decode_base64(raw)
-                    if len(self._temporary) >= self.settings.pending_calls:
-                        raise QQMediaError("未确认语音临时文件名额已满。")
-                    self.media_dir.mkdir(parents=True, exist_ok=True)
                     suffix = ".wav" if data.startswith(b"RIFF") else ".mp3"
-                    descriptor, name = tempfile.mkstemp(
-                        prefix="voice-", suffix=suffix, dir=self.media_dir
-                    )
-                    path = Path(name)
-                    self._temporary.add(path)
-                    with os.fdopen(descriptor, "wb") as stream:
-                        stream.write(data)
+                    path = self._stage_media(data, prefix="voice-", suffix=suffix)
                     temporary.append(path)
                     source = path.as_uri()
             add({"type": "record", "data": {"file": source}})
@@ -349,14 +339,78 @@ class MediaOwner:
             if parameters.at and not parameters.voice and not text[0].isspace():
                 text = " " + text
             add({"type": "text", "data": {"text": text}})
+
+        # 先为全部附件和信封预留空间，避免前面的图片内联后挤掉后续段。
+        local_images: list[tuple[JsonObject, Path, int]] = []
+        encoded_images: list[tuple[JsonObject, str, bytes]] = []
         for raw in parameters.images or []:
-            add({"type": "image", "data": {"file": self.image_source(raw)}})
+            image_data: JsonObject = {"file": raw}
+            if raw.startswith("base64://"):
+                content = self.decode_base64(raw.removeprefix("base64://"))
+                encoded_images.append((image_data, raw, content))
+            elif not is_url(raw):
+                path = self.path(raw)
+                uri = path.as_uri()
+                reference_bytes = len(encode_json(uri))
+                # 极小图片的内联编码可能比长路径更短，把它也计入最小可发送帧。
+                inline = self._inline_image(path, capacity=reference_bytes)
+                image_data["file"] = inline or uri
+                if inline is None:
+                    local_images.append((image_data, path, reference_bytes))
+            add({"type": "image", "data": image_data})
         for raw in parameters.files or []:
             if is_url(raw):
                 raise QQMediaError("files 必须为允许目录内的本地文件。")
             path = self.path(raw)
             add({"type": "file", "data": {"file": path.as_uri(), "name": path.name}})
+
+        # 直接给出的 Base64 原样保留，只有帧装不下时才暂存为文件引用。
+        limit = self.settings.frame_bytes
+        for image_data, raw, content in sorted(
+            encoded_images, key=lambda image: len(image[1]), reverse=True
+        ):
+            if prepared_bytes <= limit:
+                break
+            try:
+                suffix = "." + sniff_type(content).split("/")[1]
+            except QQMediaError:
+                # 保留可由平台自行解释的内联格式，继续寻找能换成文件的图片。
+                continue
+            path = self._stage_media(content, prefix="image-", suffix=suffix)
+            uri = path.as_uri()
+            saved = len(encode_json(raw)) - len(encode_json(uri))
+            if saved > 0:
+                image_data["file"] = uri
+                prepared_bytes -= saved
+                temporary.append(path)
+            else:
+                self.release((path,))
+        if prepared_bytes > limit:
+            raise QQMediaError(
+                "QQ 附件组合超过请求帧容量，尚未发送。"
+                f"需要 {prepared_bytes} 字节，上限 {limit} 字节。"
+            )
+
+        # 对能放进余量的小图片保留原先的内联行为。先按文件大小估算，读完再核验。
+        for image_data, path, reference_bytes in local_images:
+            capacity = limit - prepared_bytes + reference_bytes
+            source = self._inline_image(path, capacity=capacity)
+            if source is not None:
+                image_data["file"] = source
+                prepared_bytes += len(encode_json(source)) - reference_bytes
         return segments, tuple(temporary)
+
+    def _stage_media(self, content: bytes, *, prefix: str, suffix: str) -> Path:
+        """登记临时文件后再写入，准备失败或实际发送结束时可统一回收。"""
+        if len(self._temporary) >= self.settings.pending_calls:
+            raise QQMediaError("QQ 未确认附件的临时文件名额已满。")
+        self.media_dir.mkdir(parents=True, exist_ok=True)
+        descriptor, name = tempfile.mkstemp(prefix=prefix, suffix=suffix, dir=self.media_dir)
+        path = Path(name)
+        self._temporary.add(path)
+        with os.fdopen(descriptor, "wb") as stream:
+            stream.write(content)
+        return path
 
     def image_source(self, raw: str) -> str:
         """为小图片构造内联来源，较大图片使用受限本地 file URI。
@@ -373,9 +427,17 @@ class MediaOwner:
             self.decode_base64(raw.removeprefix("base64://"))
             return raw
         path = self.path(raw)
-        if path.stat().st_size > self.settings.image_max_bytes:
-            return path.as_uri()
-        return "base64://" + base64.b64encode(self.read(raw)).decode("ascii")
+        return self._inline_image(path) or path.as_uri()
+
+    def _inline_image(self, path: Path, *, capacity: int | None = None) -> str | None:
+        """先估算 Base64 编码尺寸，文件读取后按实际编码复核剩余帧预算。"""
+        size = path.stat().st_size
+        if size > self.settings.image_max_bytes:
+            return None
+        if capacity is not None and len('"base64://"') + 4 * ((size + 2) // 3) > capacity:
+            return None
+        source = "base64://" + base64.b64encode(self.read(str(path))).decode("ascii")
+        return source if capacity is None or len(encode_json(source)) <= capacity else None
 
     def qzone_sources(self, values: list[str]) -> list[JsonValue]:
         """逐项核验空间图片组合容量，不先把全部本地图片展开到内存。
@@ -397,7 +459,7 @@ class MediaOwner:
         return sources
 
     def release(self, paths: tuple[Path, ...]) -> None:
-        """只删除本所有者实际登记的语音文件，不接收任意路径清理。
+        """只删除本所有者实际登记的临时附件，不接收任意路径清理。
 
         Args:
             paths: 当前端口允许关联的冻结能力路径集合。

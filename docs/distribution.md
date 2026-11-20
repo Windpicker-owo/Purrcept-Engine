@@ -39,7 +39,7 @@ uv build --no-sources
 构建产生 `dist/purrcept_engine-0.1.0.tar.gz` 和 wheel。普通用户可从克隆的仓库
 执行 `python -m pip install --find-links vendor .`，或配合 vendor 安装分发的 wheel。
 安装 extras 示例为 `python -m pip install '.[web,qq,time]'`。
-根目录本地 `plugins/`、真实配置、运行数据和构建临时目录不进入发行包。
+根目录 `plugins/` 中的插件、真实配置、运行数据和构建临时目录不进入发行包。
 内置 `src/purrcept_engine/plugins`、配置模板和静态资源必须在 wheel 中。
 
 ## 全新环境验证

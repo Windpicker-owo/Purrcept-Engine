@@ -93,20 +93,78 @@ code { font: var(--pc-font-mono); font-variant-numeric: tabular-nums; background
 .page > .empty-state { max-width: none; padding: var(--pc-space-xl); }
 .empty-state > h2 { margin: var(--pc-space-xs) 0 0; }
 
-/* API 用量：全局数字共用连续网格，明细保留模型间的列对齐。 */
-.usage-metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, calc(var(--pc-space-touch-target) * 2 + var(--pc-space-md))), 1fr)); gap: var(--pc-space-md); margin: 0; }
-.usage-metrics dt { font: var(--pc-font-caption); font-variant-numeric: tabular-nums; color: var(--pc-color-ink-muted); }
-.usage-metrics dd { margin: var(--pc-space-xxs) 0 0; font: var(--pc-font-title); font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
-.usage-metrics meter { display: block; width: 100%; max-width: calc(var(--pc-space-touch-target) * 3); height: var(--pc-space-sm); margin-top: var(--pc-space-xxs); }
-.usage-metrics meter::-webkit-meter-bar { border: 0; border-radius: var(--pc-radius-full); background: var(--pc-color-surface-sunken); }
-.usage-metrics meter::-webkit-meter-optimum-value { border-radius: var(--pc-radius-full); background: var(--pc-color-brand-fill); }
-.usage-breakdown { margin-top: var(--pc-space-md); padding-top: var(--pc-space-md); border-top: 1px solid var(--pc-color-outline-subtle); }
-.usage-breakdown dd { font: var(--pc-font-body); font-variant-numeric: tabular-nums; }
-.usage-table { width: 100%; table-layout: fixed; border-collapse: collapse; font: var(--pc-font-body); font-variant-numeric: tabular-nums; }
-.usage-table :is(th, td) { padding: var(--pc-space-sm) var(--pc-space-xxs); text-align: end; overflow-wrap: anywhere; }
-.usage-table thead { font: var(--pc-font-caption); font-variant-numeric: tabular-nums; color: var(--pc-color-ink-muted); }
-.usage-table tr > :first-child { width: 40%; padding-inline-start: 0; text-align: start; }
-.usage-table tbody tr { border-top: 1px solid var(--pc-color-outline-subtle); }
+/* ------------------------------------------------------------------------- */
+/* API 统计页：克制清透的单色系数据总览、时序趋势与规整明细表                  */
+/* ------------------------------------------------------------------------- */
+
+.usage-desk { display: flex; flex-direction: column; gap: var(--pc-space-lg); min-width: 0; }
+.usage-head-controls { display: flex; flex-wrap: wrap; align-items: center; gap: var(--pc-space-sm); }
+
+/* 顶部核心指标面板：清透白底 + 柔和细描边，底部附带一行轻量分项说明 */
+.usage-summary-panel { display: flex; flex-direction: column; border: 1.5px solid var(--pc-color-outline); border-radius: var(--pc-radius-xl); background: var(--pc-color-surface); box-shadow: var(--pc-shadow-control-surface); overflow: hidden; }
+.usage-hero-strip { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); }
+.usage-kpi-cell { display: flex; flex-direction: column; gap: 3px; min-width: 0; padding: var(--pc-space-md) var(--pc-space-lg); border-inline-start: 1px solid var(--pc-color-outline-subtle); }
+.usage-kpi-cell:first-child { border-inline-start: 0; }
+.usage-kpi-label { font: var(--pc-font-caption); font-variant-numeric: tabular-nums; color: var(--pc-color-ink-muted); }
+.usage-kpi-value { font: var(--pc-font-title); font-variant-numeric: tabular-nums; font-size: clamp(20px, 2vw, 24px); font-weight: 700; color: var(--pc-color-ink); line-height: 1.2; overflow-wrap: anywhere; }
+.usage-kpi-sub { font: var(--pc-font-caption); font-variant-numeric: tabular-nums; color: var(--pc-color-ink-secondary); overflow-wrap: anywhere; }
+
+.usage-sub-strip { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); margin: 0; border-top: 1px solid var(--pc-color-outline-subtle); background: var(--pc-color-surface-sunken); }
+.usage-sub-strip > div { display: flex; align-items: baseline; justify-content: space-between; gap: var(--pc-space-xs); padding: var(--pc-space-xs) var(--pc-space-lg); border-inline-start: 1px solid var(--pc-color-outline-subtle); font: var(--pc-font-caption); font-variant-numeric: tabular-nums; min-width: 0; }
+.usage-sub-strip > div:first-child { border-inline-start: 0; }
+.usage-sub-strip dt { color: var(--pc-color-ink-muted); white-space: nowrap; }
+.usage-sub-strip dd { margin: 0; font-weight: 600; color: var(--pc-color-ink); overflow-wrap: anywhere; }
+
+/* 趋势图面板：干净留白 + 深浅双阶清透蓝 */
+.usage-chart-panel { display: flex; flex-direction: column; gap: var(--pc-space-sm); padding: var(--pc-space-md) var(--pc-space-lg); border: 1.5px solid var(--pc-color-outline); border-radius: var(--pc-radius-xl); background: var(--pc-color-surface); box-shadow: var(--pc-shadow-control-surface); min-width: 0; }
+.usage-panel-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--pc-space-sm); }
+.usage-panel-head h2 { margin: 0; font: var(--pc-font-title); font-variant-numeric: tabular-nums; font-size: 16px; }
+.usage-panel-title-group { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--pc-space-xs) var(--pc-space-md); min-width: 0; }
+.usage-readout-inline { font: var(--pc-font-caption); font-variant-numeric: tabular-nums; color: var(--pc-color-ink-secondary); }
+
+.usage-chart-frame { width: 100%; min-width: 0; overflow: hidden; padding-top: var(--pc-space-xxs); }
+.usage-svg { display: block; width: 100%; height: auto; overflow: visible; }
+.usage-axis-baseline { stroke: var(--pc-color-outline); stroke-width: 1; }
+.usage-axis-grid { stroke: var(--pc-color-outline-subtle); stroke-width: 1; stroke-dasharray: 3 3; }
+.usage-axis-label { fill: var(--pc-color-ink-muted); font: var(--pc-font-mono); font-variant-numeric: tabular-nums; font-size: 11px; }
+.usage-bucket-highlight { fill: var(--pc-color-surface-sunken); }
+.usage-bar-idle { fill: var(--pc-color-outline-subtle); }
+.usage-bar-soft { fill: var(--pc-color-brand-signal); opacity: 0.36; }
+.usage-bar-primary { fill: var(--pc-color-brand-fill); opacity: 0.88; }
+.usage-bar-fail { fill: var(--pc-color-failed-signal); opacity: 0.88; }
+.usage-lat-area { fill: var(--pc-color-brand-container); opacity: 0.42; }
+.usage-lat-p95-line { fill: none; stroke: var(--pc-color-ink-muted); stroke-width: 1.5; stroke-dasharray: 4 4; stroke-linecap: round; stroke-linejoin: round; opacity: 0.75; }
+.usage-lat-avg-line { fill: none; stroke: var(--pc-color-brand-fill); stroke-width: 2.2; stroke-linecap: round; stroke-linejoin: round; }
+.usage-lat-avg-dot { fill: var(--pc-color-surface); stroke: var(--pc-color-brand-fill); stroke-width: 2; }
+.usage-hit-col { fill: transparent; cursor: pointer; outline: none; }
+.usage-hit-col:focus-visible { stroke: var(--pc-color-focus-ring); stroke-width: 1.5; rx: var(--pc-radius-xs); }
+
+.usage-chart-legend { display: flex; flex-wrap: wrap; align-items: center; gap: var(--pc-space-md); font: var(--pc-font-caption); font-variant-numeric: tabular-nums; color: var(--pc-color-ink-muted); }
+.usage-chart-legend > span { display: inline-flex; align-items: center; gap: 6px; }
+.usage-dot { display: inline-block; width: 8px; height: 8px; border-radius: var(--pc-radius-full); flex-shrink: 0; }
+.usage-dot-primary { background-color: var(--pc-color-brand-fill); }
+.usage-dot-soft { background-color: var(--pc-color-brand-signal); opacity: 0.45; }
+.usage-dot-muted { background-color: var(--pc-color-ink-muted); opacity: 0.7; }
+.usage-dot-fail { background-color: var(--pc-color-failed-signal); }
+
+/* 统计明细表：纯粹清晰的数值右对齐表格 */
+.usage-detail-section { display: flex; flex-direction: column; gap: var(--pc-space-sm); min-width: 0; }
+.usage-table-wrap { width: 100%; overflow-x: auto; border: 1.5px solid var(--pc-color-outline); border-radius: var(--pc-radius-xl); background: var(--pc-color-surface); box-shadow: var(--pc-shadow-control-surface); }
+.usage-data-table { width: 100%; min-width: 640px; border-collapse: collapse; font: var(--pc-font-body); font-variant-numeric: tabular-nums; }
+.usage-data-table thead th { padding: var(--pc-space-sm) var(--pc-space-md); border-bottom: 1px solid var(--pc-color-outline); background: var(--pc-color-surface-sunken); color: var(--pc-color-ink-muted); font: var(--pc-font-caption); font-weight: 600; font-variant-numeric: tabular-nums; text-align: end; white-space: nowrap; }
+.usage-data-table thead th:first-child { text-align: start; }
+.usage-data-table tbody tr { border-top: 1px solid var(--pc-color-outline-subtle); transition: background-color var(--pc-motion-color-duration) var(--pc-motion-color-easing); }
+.usage-data-table tbody tr:first-child { border-top: 0; }
+.usage-data-table :is(td, tbody th) { padding: var(--pc-space-sm) var(--pc-space-md); vertical-align: middle; text-align: end; font-weight: 400; color: var(--pc-color-ink); }
+.usage-data-table tbody th { text-align: start; font-weight: 600; }
+.usage-col-name { text-align: start; min-width: 160px; }
+.usage-data-table td.usage-col-name, .usage-data-table td.usage-col-text { text-align: start; }
+.usage-col-time { white-space: nowrap; font: var(--pc-font-caption); font-variant-numeric: tabular-nums; }
+.usage-col-status { white-space: nowrap; }
+.usage-mono-name { font: var(--pc-font-mono); font-variant-numeric: tabular-nums; font-weight: 600; color: var(--pc-color-ink); }
+.usage-cell-sub { font: var(--pc-font-caption); font-variant-numeric: tabular-nums; color: var(--pc-color-ink-muted); margin-top: 1px; }
+.usage-row-bar { width: 100%; max-width: 120px; height: 3px; margin-top: 5px; border-radius: var(--pc-radius-full); background: var(--pc-color-surface-sunken); overflow: hidden; }
+.usage-row-bar > span { display: block; height: 100%; border-radius: var(--pc-radius-full); background: var(--pc-color-brand-signal); }
 
 /* ------------------------------------------------------------------------- */
 /* 首页：开放式学园桌案 + 探头遮挡前景状态横幅 + 左竖线时间流 + 右侧手账册    */
@@ -608,6 +666,7 @@ select:disabled { color: var(--pc-color-ink-muted); background: var(--pc-color-s
   .pc-panel[data-surface="notebook"] .item-row[data-interactive="true"]:hover { background: var(--pc-color-paper-sunken); }
   .chat-starter-card:hover { background: var(--pc-color-surface-sunken); border-color: var(--pc-color-brand-signal); transform: translateY(-2px); }
   .notebook-entry:not([aria-current="true"]):hover { background: var(--pc-color-paper-sunken); transform: translateY(-2px); }
+  .usage-data-table tbody tr:hover { background: var(--pc-color-surface-sunken); }
 }
 
 .spine-item:active { transform: translateX(1px); box-shadow: none; transition-duration: var(--pc-motion-hit-duration); }
@@ -618,14 +677,19 @@ select:disabled { color: var(--pc-color-ink-muted); background: var(--pc-color-s
 
 @media (--pc-workspace) {
   .desk-split { grid-template-columns: minmax(0, 1fr); gap: var(--pc-space-lg); }
+  .usage-hero-strip, .usage-sub-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .usage-kpi-cell, .usage-sub-strip > div { border-top: 1px solid var(--pc-color-outline-subtle); }
+  .usage-kpi-cell:nth-child(-n+2) { border-top: 0; }
+  .usage-kpi-cell:nth-child(odd), .usage-sub-strip > div:nth-child(odd) { border-inline-start: 0; }
 }
 @media (--pc-navigation) {
-  .usage-period { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); width: min(100%, calc(var(--pc-space-touch-target) * 8)); box-sizing: border-box; border-radius: var(--pc-radius-xl); }
-  .usage-period > .filter { padding-inline: var(--pc-space-xs); text-align: center; }
-  .usage-table { font: var(--pc-font-caption); font-variant-numeric: tabular-nums; }
-  .usage-table tr > :first-child { width: 34%; }
-  .usage-table tr > :nth-child(2) { width: 17%; }
-  .usage-table tr > :nth-child(3) { width: 25%; }
+  .toolbar { border-radius: var(--pc-radius-xl); }
+  .usage-head-controls { width: 100%; }
+  .usage-period-bar { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); flex: 1 1 220px; box-sizing: border-box; border-radius: var(--pc-radius-xl); }
+  .usage-hero-strip, .usage-sub-strip { grid-template-columns: minmax(0, 1fr); }
+  .usage-kpi-cell, .usage-sub-strip > div { border-inline-start: 0; border-top: 1px solid var(--pc-color-outline-subtle); padding-inline: var(--pc-space-md); }
+  .usage-kpi-cell:first-child { border-top: 0; }
+  .usage-chart-panel { padding: var(--pc-space-sm) var(--pc-space-md); }
   .panel-shell { grid-template-columns: minmax(0, 1fr); gap: var(--pc-space-xs); padding: var(--pc-space-xs) var(--pc-space-xs) calc(var(--pc-space-3xl) + var(--pc-space-lg) + env(safe-area-inset-bottom)); }
   .navigation { position: fixed; top: auto; left: var(--pc-space-xs); right: var(--pc-space-xs); bottom: calc(var(--pc-space-xs) + env(safe-area-inset-bottom)); height: auto; flex-direction: row; align-items: stretch; justify-content: space-around; gap: 0; overflow: visible; padding: var(--pc-space-xxs); }
   .wordmark { display: none; }

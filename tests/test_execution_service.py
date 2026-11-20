@@ -168,6 +168,22 @@ async def test_script_failure_preserves_prior_effect(rig: _Rig) -> None:
     assert (await rig.store.pending_call_receipts())[0].call_id == result.calls[0].call_id
 
 
+async def test_local_helpers_and_optional_call_failure_preserve_later_steps(rig: _Rig) -> None:
+    """实际 Worker 捕获次要调用失败后，仍按顺序完成后续调用并保留两份回执。"""
+    result = await rig.service.execute(
+        "from world import me, RemoteCapabilityError\n"
+        "def smallest(labels):\n    return min(labels, key=lambda label: len(label))\n"
+        "try:\n    await me.console.echo(text='bug')\n"
+        "except RemoteCapabilityError as error:\n    optional_error = error.error_type\n"
+        "value = await me.console.echo(text=smallest(['large', 'ok']))\n"
+        "return {'error': optional_error, 'text': value.text}"
+    )
+    assert result.state == "completed"
+    assert json.loads(result.result_json or "null") == {"error": "RuntimeError", "text": "ok"}
+    assert [call.state for call in result.calls] == ["failed", "confirmed"]
+    assert rig.effects == ["ok"]
+
+
 async def test_waiter_cancellation_does_not_cancel_started_action(rig: _Rig) -> None:
     waiter = asyncio.create_task(
         rig.service.execute('from world import me\nreturn await me.console.echo(text="hold")')

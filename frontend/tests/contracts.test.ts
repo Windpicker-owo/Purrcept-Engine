@@ -1,6 +1,6 @@
 /** 展示边界和恢复资格测试，专门守住未知不能被渲染成成功/空闲的语义。 */
 import { describe, expect, it } from "vitest";
-import { ContractError, action, controlRequest, jsonObject, snapshot } from "../src/contracts";
+import { ContractError, action, controlRequest, jsonObject, modelUsage, snapshot } from "../src/contracts";
 import { activityReason, controlMark, mark } from "../src/semantics";
 import { awaiting } from "../src/client";
 import { host, paused, request, result } from "./fixtures";
@@ -55,5 +55,116 @@ describe("受理与实际结束", () => {
     expect(activityReason({ ...paused, remaining_seconds: 0 }, "resume")).toContain("用完");
     expect(activityReason({ ...paused, state: "pause_requested" }, "resume")).toContain("停稳");
     expect(activityReason({ ...paused, state: "completed" }, "end")).toContain("已经结束");
+  });
+  it("校验模型遥测扩展字段并兼容最小旧版载荷，拒绝越界比率", () => {
+    const legacy = modelUsage({
+      total: {
+        attempts: 2,
+        reported_attempts: 2,
+        input_tokens: 100,
+        output_tokens: 40,
+        total_tokens: 140,
+        cached_input_tokens: 50,
+        cache_write_input_tokens: 0,
+        reasoning_tokens: 10,
+        cache_hit_rate: 0.5,
+      },
+      models: [],
+    });
+    expect(legacy.overview.requests).toBe(2);
+    expect(legacy.series).toEqual([]);
+
+    const enriched = modelUsage({
+      total: legacy.total,
+      models: [{ model: "openai/gpt-4.1", ...legacy.total }],
+      overview: {
+        requests: 2,
+        succeeded_attempts: 2,
+        failed_attempts: 0,
+        timed_out_attempts: 0,
+        running_attempts: 0,
+        retry_attempts: 0,
+        success_rate: 1.0,
+        avg_latency_ms: 420.5,
+        p50_latency_ms: 400.0,
+        p95_latency_ms: 510.0,
+        min_latency_ms: 330.0,
+        max_latency_ms: 511.0,
+        avg_tokens_per_second: 47.6,
+        since: 0,
+        observed_at: 1800000100,
+        bucket_seconds: 3600,
+        first_attempt_at: 1800000000,
+        last_attempt_at: 1800000050,
+      },
+      series: [
+        {
+          start_at: 1800000000,
+          end_at: 1800003600,
+          ...legacy.total,
+          succeeded_attempts: 2,
+          failed_attempts: 0,
+          retry_attempts: 0,
+          avg_latency_ms: 420.5,
+          p95_latency_ms: 510.0,
+        },
+      ],
+      model_metrics: [
+        {
+          model: "openai/gpt-4.1",
+          requests: 2,
+          ...legacy.total,
+          succeeded_attempts: 2,
+          failed_attempts: 0,
+          timed_out_attempts: 0,
+          running_attempts: 0,
+          retry_attempts: 0,
+          success_rate: 1.0,
+          avg_latency_ms: 420.5,
+          p50_latency_ms: 400.0,
+          p95_latency_ms: 510.0,
+          max_latency_ms: 511.0,
+          avg_tokens_per_second: 47.6,
+          last_used_at: 1800000050,
+        },
+      ],
+      scopes: [
+        {
+          scope: "foreground",
+          requests: 2,
+          ...legacy.total,
+          succeeded_attempts: 2,
+          failed_attempts: 0,
+          retry_attempts: 0,
+          success_rate: 1.0,
+          avg_latency_ms: 420.5,
+          p95_latency_ms: 510.0,
+        },
+      ],
+      recent_attempts: [
+        {
+          attempt_id: "att-1",
+          request_id: "req-1",
+          model: "openai/gpt-4.1",
+          scope: "foreground",
+          kind: "generation",
+          sequence: 1,
+          outcome: "succeeded",
+          created_at: 1800000050,
+          latency_ms: 420.5,
+          has_usage: true,
+          input_tokens: 50,
+          output_tokens: 20,
+          total_tokens: 70,
+          cached_input_tokens: 25,
+          reasoning_tokens: 5,
+        },
+      ],
+    });
+    expect(enriched.overview.p95_latency_ms).toBe(510.0);
+    expect(enriched.scopes[0]?.scope).toBe("foreground");
+    expect(() =>
+      modelUsage({ ...enriched, overview: { ...enriched.overview, success_rate: 1.2 } }),
+    ).toThrow(ContractError);
   });
 });

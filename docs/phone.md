@@ -75,14 +75,20 @@ WebUI 刷新后旧文件中的邀请失效，日常配对请以 WebUI 当前二�
 await me.phone.chat.send(text="你好，我在这里。")
 await me.phone.connect()
 screen = await me.phone.screen()
-await me.phone.tap(frame_id=screen["data"]["frame_id"], element_id=1)
+tap = await me.phone.tap(frame_id=screen["data"]["frame_id"], element_id=1, snapshot=True)
+next_screen = tap["data"].get("screen")
+if next_screen is None:
+    next_screen = (await me.phone.screen())["data"]
 await me.phone.disconnect()
 ```
 
 实际能力结果的包装以行动工具交付为准。设备操作还包括 `apps`、`open_app`、
 `foreground`、`screenshot`、`input_text`、`swipe` 和 `key`；参数由冻结目录
-列出。`screen` 元素编号只在对应 frame_id 有效；每次已接受的界面操作后
-重新读取 screen。Android 执行前重读并比对有界可见树，未发生实际变化的
+列出。新版 Android 客户端省略没有文字、描述或操作用途的空布局节点，仍遍历其子节点。
+`screen` 元素编号只在对应 `frame_id` 有效。`tap` 和 `swipe` 可传 `snapshot=True`，
+从 `data.screen` 读取手势完成后的新快照。客户端最多额外等待 750 毫秒再采集。
+旧版客户端或采集失败时回执可能没有 `data.screen`，可单独读取 `screen()`。
+Android 执行前重读并比对有界可见树，未发生实际变化的
 普通内容通知不会直接使快照失效；窗口切换和当前窗口滚动则立即撤销。
 `stale_frame` 表示必须读取新 screen 并按新元素重新决定，不能原样自动
 重试。回执的 `data.stale_reason` 提供树变化、窗口变化、滚动、操作后撤销

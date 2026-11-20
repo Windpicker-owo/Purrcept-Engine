@@ -17,6 +17,7 @@ from purrcept_engine.plugin_system import TimeError, resolve_timezone
 from purrcept_engine.values import JsonObject, decode_object
 
 BASE_URL = "https://cnmeme.wiki"
+DEFAULT_STATE_MAX_MIB = 64
 
 
 class MemeSettings(BaseModel):
@@ -31,6 +32,7 @@ class MemeSettings(BaseModel):
     computer_id: str = Field(default="computer", pattern=r"^[A-Za-z][A-Za-z0-9_]*$")
     meme_id: str = Field(default="meme", pattern=r"^[A-Za-z][A-Za-z0-9_]*$")
     state_dir: Path = Field(default=Path(".purrcept/meme"), strict=False)
+    state_max_mib: int = Field(default=DEFAULT_STATE_MAX_MIB, ge=8, le=256)
     daily_enabled: bool = True
     daily_at: str = Field(default="09:00", pattern=r"^(?:[01]\d|2[0-3]):[0-5]\d$")
     timezone: str = "Asia/Shanghai"

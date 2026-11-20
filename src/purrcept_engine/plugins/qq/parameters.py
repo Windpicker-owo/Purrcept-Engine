@@ -79,6 +79,14 @@ class Send(Target):
         return self
 
 
+class SendBilibili(Target):
+    """向指定群聊或私聊分享视频，由宿主取得签名卡片。"""
+
+    video: str = Field(
+        min_length=1, max_length=2048, pattern=r"\S", description="BV 号或 B 站视频链接。"
+    )
+
+
 class Read(Parameters):
     """首读的 count 省略为 20；每页有界，续读只允许原宿主 cursor。"""
 

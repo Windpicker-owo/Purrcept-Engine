@@ -1,7 +1,7 @@
 """检查行动的受限 Python，并生成仅由 Worker 编译的异步函数。
 
 宿主预检用于提前反馈，Worker 必须独立复检；AST 约束不替代进程资源限制。
-允许结果复用、条件、循环、异常处理及受控并行，禁止真实 I/O 导入、动态代码、
+允许局部函数、结果复用、条件、循环、异常处理及受控并行，禁止真实 I/O 导入、动态代码、
 私有对象图和帧反射。运行期模块与 builtin 白名单由 Worker 再次限制。
 """
 
@@ -63,9 +63,7 @@ _BANNED_NODES = (
     ast.AsyncWith,
     ast.ClassDef,
     ast.Delete,
-    ast.FunctionDef,
     ast.Global,
-    ast.Lambda,
     ast.Match,
     ast.Nonlocal,
     ast.With,
@@ -126,6 +124,11 @@ def _rejection(node: ast.AST) -> str | None:
         return f"不支持 {type(node).__name__}"
     if isinstance(node, ast.Name) and node.id.startswith("_"):
         return "不允许私有名字"
+    # 函数名和形参是 AST 上的字符串，不经过 Name 节点的私有名检查。
+    if isinstance(node, ast.FunctionDef) and node.name.startswith("_"):
+        return "不允许私有函数名"
+    if isinstance(node, ast.arg) and node.arg.startswith("_"):
+        return "不允许私有形参名"
     if isinstance(node, ast.Attribute):
         # Security: format 字段可以在 AST 看不到的字符串中遍历私有对象图。
         # 帧、协程和 Future 的公开反射入口也不能因名称无下划线而放行。

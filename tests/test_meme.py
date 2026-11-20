@@ -36,7 +36,7 @@ from purrcept_engine.plugins.meme.client import MemeAPIError, MemeClient
 from purrcept_engine.plugins.meme.models import MemeSettings
 from purrcept_engine.plugins.meme.plugin import factory
 from purrcept_engine.plugins.meme.runtime import MemeRuntime, load_state
-from purrcept_engine.values import JsonObject, decode_object
+from purrcept_engine.values import JsonObject, decode_object, encode_json
 
 NOW = datetime(2026, 10, 26, 2, tzinfo=UTC)
 
@@ -139,7 +139,13 @@ def runtime(tmp_path: Path, inputs: InputPort, **settings: object) -> MemeRuntim
     configuration = MemeSettings.model_validate({"timezone": "UTC", **settings})
     path = tmp_path / "meme.json"
     return MemeRuntime(
-        "meme", configuration, MemeClient(2), inputs, path, load_state(path), now=lambda: NOW
+        "meme",
+        configuration,
+        MemeClient(2),
+        inputs,
+        path,
+        load_state(path, max_mib=configuration.state_max_mib),
+        now=lambda: NOW,
     )
 
 
@@ -391,6 +397,38 @@ def test_bad_state_and_bad_configuration_do_not_overwrite_favorites(tmp_path: Pa
     for settings in ({"daily_at": "24:00"}, {"timezone": "missing/zone"}, {"max_pages": True}):
         with pytest.raises(ValidationError):
             MemeSettings.model_validate(settings)
+
+
+async def test_full_legacy_library_can_grow_after_restart(api: API, tmp_path: Path) -> None:
+    """同一份旧格式收藏在旧上限失败后可直接用新默认值继续写入。"""
+    api.items = [{**item("new"), "summary": "x" * 6000}]
+    legacy_content = "x" * (2 * 1024 * 1024 - 1000)
+    legacy_favorites = {
+        slug: {**item(slug), "content_html": legacy_content} for slug in ("a", "b", "c", "d")
+    }
+    legacy = encode_json({"version": 1, "favorites": legacy_favorites})
+    path = tmp_path / "meme.json"
+    path.write_bytes(legacy)
+    store = await Store.open(tmp_path / "engine.sqlite3")
+    try:
+        inputs = Inputs(store)
+        limited = runtime(tmp_path, inputs, state_max_mib=8)
+        try:
+            with pytest.raises(OSError, match="state_max_mib"):
+                await limited.favorite("new")
+            assert path.read_bytes() == legacy
+        finally:
+            await limited.close()
+
+        expanded = runtime(tmp_path, inputs)
+        try:
+            assert (await expanded.favorite("new"))["added"] is True
+        finally:
+            await expanded.close()
+        assert path.stat().st_size > 8 * 1024 * 1024
+        assert list(load_state(path).favorites) == ["a", "b", "c", "d", "new"]
+    finally:
+        await store.close()
 
 
 def test_pure_declaration_requires_computer_parent_and_uses_custom_visible_path(

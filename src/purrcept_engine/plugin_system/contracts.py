@@ -170,6 +170,10 @@ class EvidencePort(Protocol):
         """
         ...
 
+    async def get_media(self, media_id: str) -> bytes | None:
+        """按已知内容摘要读取同库原件，供显式媒体工具复用；缺失返回 None。"""
+        ...
+
     async def put_evidence(
         self, snapshot: EvidenceSnapshot, *, needs_reflection: bool = False
     ) -> EvidenceSnapshot:

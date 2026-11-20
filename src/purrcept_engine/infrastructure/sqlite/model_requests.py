@@ -375,50 +375,494 @@ def get_request(connection: sqlite3.Connection, request_id: str) -> RequestRecor
         )
 
 
+_USAGE_COUNT_FIELDS = (
+    "attempts",
+    "reported_attempts",
+    "input_tokens",
+    "output_tokens",
+    "cached_input_tokens",
+    "cache_write_input_tokens",
+    "reasoning_tokens",
+)
+
+_BUCKET_STEPS_SECONDS = (
+    300,
+    900,
+    1800,
+    3600,
+    7200,
+    21600,
+    43200,
+    86400,
+    2 * 86400,
+    7 * 86400,
+    14 * 86400,
+    30 * 86400,
+)
+
+
+def _zero_counts() -> dict[str, int]:
+    return dict.fromkeys(_USAGE_COUNT_FIELDS, 0)
+
+
+def _percentile_ms(sorted_values: list[float], q: float) -> float | None:
+    if not sorted_values:
+        return None
+    if len(sorted_values) == 1:
+        return round(sorted_values[0], 1)
+    pos = (len(sorted_values) - 1) * q
+    lo = int(pos)
+    hi = min(lo + 1, len(sorted_values) - 1)
+    frac = pos - lo
+    return round(sorted_values[lo] * (1.0 - frac) + sorted_values[hi] * frac, 1)
+
+
+def _latency_summary(latencies_ms: list[float]) -> JsonObject:
+    if not latencies_ms:
+        return {
+            "avg_latency_ms": None,
+            "p50_latency_ms": None,
+            "p95_latency_ms": None,
+            "min_latency_ms": None,
+            "max_latency_ms": None,
+        }
+    ordered = sorted(latencies_ms)
+    return {
+        "avg_latency_ms": round(sum(ordered) / len(ordered), 1),
+        "p50_latency_ms": _percentile_ms(ordered, 0.50),
+        "p95_latency_ms": _percentile_ms(ordered, 0.95),
+        "min_latency_ms": round(ordered[0], 1),
+        "max_latency_ms": round(ordered[-1], 1),
+    }
+
+
+def _select_bucket_grid(
+    *, since: float, now: float, first_at: float | None, last_at: float | None
+) -> tuple[float, int, int]:
+    """返回 (grid_start, bucket_seconds, bucket_count)，覆盖所选查询时间窗。"""
+    end_anchor = max(now, since, last_at if last_at is not None else now)
+    if since > 0.0:
+        span = max(end_anchor - since, 300.0)
+        if span <= 2 * 3600:
+            step = 300
+        elif span <= 36 * 3600:
+            step = 3600
+        elif span <= 10 * 86400:
+            step = 21600
+        elif span <= 45 * 86400:
+            step = 86400
+        else:
+            step = next((s for s in _BUCKET_STEPS_SECONDS if math.ceil(span / s) <= 28), 30 * 86400)
+        count = max(1, min(32, int(math.ceil(span / step))))
+        return max(0.0, end_anchor - count * step), step, count
+
+    if first_at is None:
+        step = 7200
+        count = 12
+        return max(0.0, end_anchor - count * step), step, count
+
+    raw_span = max(end_anchor - first_at, 3600.0)
+    step = next(
+        (s for s in _BUCKET_STEPS_SECONDS if math.ceil(raw_span / s) <= 24),
+        max(30 * 86400, int(math.ceil(raw_span / 24.0))),
+    )
+    count = max(8, min(28, int(math.ceil(raw_span / step))))
+    return max(0.0, end_anchor - count * step), step, count
+
+
+class _TelemetryBucket:
+    __slots__ = (
+        "counts",
+        "requests",
+        "succeeded_attempts",
+        "failed_attempts",
+        "timed_out_attempts",
+        "running_attempts",
+        "retry_attempts",
+        "latencies_ms",
+        "gen_output_tokens",
+        "gen_duration_s",
+        "last_used_at",
+    )
+
+    def __init__(self) -> None:
+        self.counts: dict[str, int] = _zero_counts()
+        self.requests: set[str] = set()
+        self.succeeded_attempts = 0
+        self.failed_attempts = 0
+        self.timed_out_attempts = 0
+        self.running_attempts = 0
+        self.retry_attempts = 0
+        self.latencies_ms: list[float] = []
+        self.gen_output_tokens = 0
+        self.gen_duration_s = 0.0
+        self.last_used_at: float | None = None
+
+    def add(
+        self,
+        *,
+        request_id: str,
+        sequence: int,
+        created_at: float,
+        duration_s: float | None,
+        state: str | None,
+        has_usage: bool,
+        in_tok: int,
+        out_tok: int,
+        cached_tok: int,
+        cache_write_tok: int,
+        reasoning_tok: int,
+    ) -> None:
+        self.requests.add(request_id)
+        self.counts["attempts"] += 1
+        if has_usage:
+            self.counts["reported_attempts"] += 1
+            self.counts["input_tokens"] += in_tok
+            self.counts["output_tokens"] += out_tok
+            self.counts["cached_input_tokens"] += cached_tok
+            self.counts["cache_write_input_tokens"] += cache_write_tok
+            self.counts["reasoning_tokens"] += reasoning_tok
+        if sequence > 1:
+            self.retry_attempts += 1
+        if state is None:
+            self.running_attempts += 1
+        elif state == "succeeded":
+            self.succeeded_attempts += 1
+        else:
+            self.failed_attempts += 1
+            if state == "timed_out":
+                self.timed_out_attempts += 1
+        if duration_s is not None:
+            self.latencies_ms.append(duration_s * 1000.0)
+            if has_usage and out_tok > 0 and duration_s > 0.001:
+                self.gen_output_tokens += out_tok
+                self.gen_duration_s += duration_s
+        if self.last_used_at is None or created_at > self.last_used_at:
+            self.last_used_at = created_at
+
+    def success_rate(self) -> float | None:
+        finished = self.succeeded_attempts + self.failed_attempts
+        return round(self.succeeded_attempts / finished, 4) if finished > 0 else None
+
+    def avg_tokens_per_second(self) -> float | None:
+        if self.gen_duration_s <= 0.0 or self.gen_output_tokens <= 0:
+            return None
+        return round(self.gen_output_tokens / self.gen_duration_s, 1)
+
+
 def usage_statistics(connection: sqlite3.Connection, *, since: float) -> JsonObject:
-    """按尝试的开始时间汇总模型用量，since 为含边界的 Unix 时间戳。"""
-    # 一次 SELECT 保证各模型与总览使用同一批记录。重试计作独立尝试，只在
-    # 有用量回执时累加 token。正文和诊断的保留策略不会影响此查询。
+    """按尝试的开始时间汇总模型用量、延迟分位、时序趋势与认知回路分布。"""
+    # 单次 SELECT 快照保证 total、models、series、scopes 与 recent_attempts 完全同源。
+    # 重试计作独立尝试，只在有用量回执时累加 token；正文与诊断过期清理不影响此查询。
+    now = float(time.time())
     rows: list[tuple[object, ...]] = connection.execute(
         """
-        WITH attempt_usage AS (
-            SELECT request_id, json_extract(result_json, '$.usage_json') AS usage
-            FROM model_attempts
-            WHERE created_at >= ?
+        WITH attempt_rows AS (
+            SELECT a.attempt_id AS attempt_id,
+                   a.request_id AS request_id,
+                   a.sequence AS sequence,
+                   a.created_at AS created_at,
+                   a.finished_at AS finished_at,
+                   json_extract(a.result_json, '$.state') AS state,
+                   json_extract(a.result_json, '$.usage_json') AS usage,
+                   json_extract(r.evidence_json, '$.model') AS model,
+                   coalesce(json_extract(r.evidence_json, '$.scope.owner_id'), 'other') AS scope,
+                   coalesce(json_extract(r.evidence_json, '$.kind'), 'generation') AS kind
+            FROM model_attempts a
+            JOIN model_requests r ON r.request_id = a.request_id
+            WHERE a.created_at >= ?
         )
-        SELECT json_extract(r.evidence_json, '$.model') AS model,
-               count(*) AS attempts, count(u.usage) AS reported_attempts,
-               coalesce(sum(json_extract(u.usage, '$.input_tokens')), 0) AS input_tokens,
-               coalesce(sum(json_extract(u.usage, '$.output_tokens')), 0) AS output_tokens,
-               coalesce(sum(json_extract(u.usage, '$.cached_input_tokens')), 0),
-               coalesce(sum(json_extract(u.usage, '$.cache_write_input_tokens')), 0),
-               coalesce(sum(json_extract(u.usage, '$.reasoning_tokens')), 0)
-        FROM attempt_usage u JOIN model_requests r ON r.request_id = u.request_id
-        GROUP BY model
-        ORDER BY input_tokens + output_tokens DESC, model
+        SELECT attempt_id,
+               request_id,
+               sequence,
+               created_at,
+               finished_at,
+               state,
+               usage IS NOT NULL AS has_usage,
+               coalesce(json_extract(usage, '$.input_tokens'), 0) AS input_tokens,
+               coalesce(json_extract(usage, '$.output_tokens'), 0) AS output_tokens,
+               coalesce(json_extract(usage, '$.cached_input_tokens'), 0) AS cached_input_tokens,
+               coalesce(json_extract(usage, '$.cache_write_input_tokens'), 0) AS cache_write_input_tokens,
+               coalesce(json_extract(usage, '$.reasoning_tokens'), 0) AS reasoning_tokens,
+               model,
+               scope,
+               kind
+        FROM attempt_rows
+        ORDER BY created_at ASC, sequence ASC, attempt_id ASC
         """,
         (since,),
     ).fetchall()
-    # 汇总字段顺序与 SELECT 中的计数列一致。
-    totals: dict[str, int] = dict.fromkeys(
-        (
-            "attempts",
-            "reported_attempts",
-            "input_tokens",
-            "output_tokens",
-            "cached_input_tokens",
-            "cache_write_input_tokens",
-            "reasoning_tokens",
-        ),
-        0,
+
+    overall = _TelemetryBucket()
+    by_model: dict[str, _TelemetryBucket] = {}
+    by_scope: dict[str, _TelemetryBucket] = {}
+
+    parsed_rows: list[tuple[str, str, int, float, float | None, str | None, bool, int, int, int, int, int, str, str, str]] = []
+    for raw in rows:
+        attempt_id = as_text(raw[0])
+        request_id = as_text(raw[1])
+        sequence = as_int(raw[2])
+        created_at = float(_number(raw[3]))
+        finished_at = _optional_number(raw[4])
+        duration_s = (
+            finished_at - created_at
+            if finished_at is not None and finished_at >= created_at
+            else None
+        )
+        state = as_opt_text(raw[5])
+        has_usage = as_int(raw[6]) != 0
+        in_tok = as_int(raw[7])
+        out_tok = as_int(raw[8])
+        cached_tok = as_int(raw[9])
+        cache_write_tok = as_int(raw[10])
+        reasoning_tok = as_int(raw[11])
+        model_name = as_text(raw[12])
+        scope_name = as_text(raw[13]) or "other"
+        kind_name = as_text(raw[14]) or "generation"
+
+        parsed_rows.append(
+            (
+                attempt_id,
+                request_id,
+                sequence,
+                created_at,
+                duration_s,
+                state,
+                has_usage,
+                in_tok,
+                out_tok,
+                cached_tok,
+                cache_write_tok,
+                reasoning_tok,
+                model_name,
+                scope_name,
+                kind_name,
+            )
+        )
+        overall.add(
+            request_id=request_id,
+            sequence=sequence,
+            created_at=created_at,
+            duration_s=duration_s,
+            state=state,
+            has_usage=has_usage,
+            in_tok=in_tok,
+            out_tok=out_tok,
+            cached_tok=cached_tok,
+            cache_write_tok=cache_write_tok,
+            reasoning_tok=reasoning_tok,
+        )
+        by_model.setdefault(model_name, _TelemetryBucket()).add(
+            request_id=request_id,
+            sequence=sequence,
+            created_at=created_at,
+            duration_s=duration_s,
+            state=state,
+            has_usage=has_usage,
+            in_tok=in_tok,
+            out_tok=out_tok,
+            cached_tok=cached_tok,
+            cache_write_tok=cache_write_tok,
+            reasoning_tok=reasoning_tok,
+        )
+        by_scope.setdefault(scope_name, _TelemetryBucket()).add(
+            request_id=request_id,
+            sequence=sequence,
+            created_at=created_at,
+            duration_s=duration_s,
+            state=state,
+            has_usage=has_usage,
+            in_tok=in_tok,
+            out_tok=out_tok,
+            cached_tok=cached_tok,
+            cache_write_tok=cache_write_tok,
+            reasoning_tok=reasoning_tok,
+        )
+
+    first_at = parsed_rows[0][3] if parsed_rows else None
+    last_at = parsed_rows[-1][3] if parsed_rows else None
+    grid_start, bucket_seconds, bucket_count = _select_bucket_grid(
+        since=since, now=now, first_at=first_at, last_at=last_at
     )
-    models: list[JsonValue] = []
-    for model, *values in rows:
-        counts = {field: as_int(value) for field, value in zip(totals, values, strict=True)}
-        models.append({"model": as_text(model), **_usage_summary(counts)})
-        for field, count in counts.items():
-            totals[field] += count
-    return {"total": _usage_summary(totals), "models": models}
+    time_buckets = [_TelemetryBucket() for _ in range(bucket_count)]
+    for item in parsed_rows:
+        (
+            _aid,
+            req_id,
+            seq,
+            c_at,
+            dur_s,
+            st,
+            has_u,
+            i_tok,
+            o_tok,
+            c_tok,
+            cw_tok,
+            r_tok,
+            _m,
+            _sc,
+            _k,
+        ) = item
+        idx = int((c_at - grid_start) // bucket_seconds)
+        clamped_idx = min(bucket_count - 1, max(0, idx))
+        time_buckets[clamped_idx].add(
+            request_id=req_id,
+            sequence=seq,
+            created_at=c_at,
+            duration_s=dur_s,
+            state=st,
+            has_usage=has_u,
+            in_tok=i_tok,
+            out_tok=o_tok,
+            cached_tok=c_tok,
+            cache_write_tok=cw_tok,
+            reasoning_tok=r_tok,
+        )
+
+    sorted_model_names = sorted(
+        by_model,
+        key=lambda m: (
+            -(by_model[m].counts["input_tokens"] + by_model[m].counts["output_tokens"]),
+            m,
+        ),
+    )
+    models: list[JsonValue] = [
+        {"model": m, **_usage_summary(by_model[m].counts)} for m in sorted_model_names
+    ]
+    model_metrics: list[JsonValue] = []
+    for m in sorted_model_names:
+        mb = by_model[m]
+        lat = _latency_summary(mb.latencies_ms)
+        model_metrics.append(
+            {
+                "model": m,
+                "requests": len(mb.requests),
+                **_usage_summary(mb.counts),
+                "succeeded_attempts": mb.succeeded_attempts,
+                "failed_attempts": mb.failed_attempts,
+                "timed_out_attempts": mb.timed_out_attempts,
+                "running_attempts": mb.running_attempts,
+                "retry_attempts": mb.retry_attempts,
+                "success_rate": mb.success_rate(),
+                "avg_latency_ms": lat["avg_latency_ms"],
+                "p50_latency_ms": lat["p50_latency_ms"],
+                "p95_latency_ms": lat["p95_latency_ms"],
+                "max_latency_ms": lat["max_latency_ms"],
+                "avg_tokens_per_second": mb.avg_tokens_per_second(),
+                "last_used_at": mb.last_used_at,
+            }
+        )
+
+    sorted_scope_names = sorted(
+        by_scope,
+        key=lambda s: (
+            -(by_scope[s].counts["input_tokens"] + by_scope[s].counts["output_tokens"]),
+            -by_scope[s].counts["attempts"],
+            s,
+        ),
+    )
+    scopes: list[JsonValue] = []
+    for s in sorted_scope_names:
+        sb = by_scope[s]
+        lat = _latency_summary(sb.latencies_ms)
+        scopes.append(
+            {
+                "scope": s,
+                "requests": len(sb.requests),
+                **_usage_summary(sb.counts),
+                "succeeded_attempts": sb.succeeded_attempts,
+                "failed_attempts": sb.failed_attempts,
+                "retry_attempts": sb.retry_attempts,
+                "success_rate": sb.success_rate(),
+                "avg_latency_ms": lat["avg_latency_ms"],
+                "p95_latency_ms": lat["p95_latency_ms"],
+            }
+        )
+
+    series: list[JsonValue] = []
+    for i, tb in enumerate(time_buckets):
+        b_start = round(grid_start + i * bucket_seconds, 3)
+        b_end = round(b_start + bucket_seconds, 3)
+        lat = _latency_summary(tb.latencies_ms)
+        series.append(
+            {
+                "start_at": b_start,
+                "end_at": b_end,
+                **_usage_summary(tb.counts),
+                "succeeded_attempts": tb.succeeded_attempts,
+                "failed_attempts": tb.failed_attempts,
+                "retry_attempts": tb.retry_attempts,
+                "avg_latency_ms": lat["avg_latency_ms"],
+                "p95_latency_ms": lat["p95_latency_ms"],
+            }
+        )
+
+    recent_attempts: list[JsonValue] = []
+    for item in reversed(parsed_rows[-12:]):
+        (
+            aid,
+            req_id,
+            seq,
+            c_at,
+            dur_s,
+            st,
+            has_u,
+            i_tok,
+            o_tok,
+            c_tok,
+            _cw_tok,
+            r_tok,
+            m_name,
+            sc_name,
+            k_name,
+        ) = item
+        recent_attempts.append(
+            {
+                "attempt_id": aid,
+                "request_id": req_id,
+                "model": m_name,
+                "scope": sc_name,
+                "kind": k_name,
+                "sequence": seq,
+                "outcome": st if st is not None else "running",
+                "created_at": c_at,
+                "latency_ms": round(dur_s * 1000.0, 1) if dur_s is not None else None,
+                "has_usage": has_u,
+                "input_tokens": i_tok,
+                "output_tokens": o_tok,
+                "total_tokens": i_tok + o_tok,
+                "cached_input_tokens": c_tok,
+                "reasoning_tokens": r_tok,
+            }
+        )
+
+    overall_lat = _latency_summary(overall.latencies_ms)
+    overview: JsonObject = {
+        "requests": len(overall.requests),
+        "succeeded_attempts": overall.succeeded_attempts,
+        "failed_attempts": overall.failed_attempts,
+        "timed_out_attempts": overall.timed_out_attempts,
+        "running_attempts": overall.running_attempts,
+        "retry_attempts": overall.retry_attempts,
+        "success_rate": overall.success_rate(),
+        **overall_lat,
+        "avg_tokens_per_second": overall.avg_tokens_per_second(),
+        "since": since,
+        "observed_at": now,
+        "bucket_seconds": bucket_seconds,
+        "first_attempt_at": first_at,
+        "last_attempt_at": last_at,
+    }
+
+    return {
+        "total": _usage_summary(overall.counts),
+        "models": models,
+        "overview": overview,
+        "series": series,
+        "model_metrics": model_metrics,
+        "scopes": scopes,
+        "recent_attempts": recent_attempts,
+    }
 
 
 def _usage_summary(counts: dict[str, int]) -> JsonObject:

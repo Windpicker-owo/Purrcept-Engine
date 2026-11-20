@@ -122,9 +122,11 @@ Markdown 是唯一可编辑的长期记忆。主体通过 `play_action` 使用 `
 省略路径按宿主本地日期写入 `journal/YYYY-MM-DD.md`。不要求预读哈希，单文件仍受 UTF-8
 字节额度约束；超额须显式选择新分片。未知回执先核对文件，不自动重复追加。
 
-动态尾部 `notes_index` 默认最多32条、摘要140字；优先最近两日日记和 `.overview.md`，
-不包含正文。`search(query, path="", limit=12)` 只搜索当前笔记；`read(level="summary" | "overview" | "content")`
-按需展开，正文分页绑定不可变快照。`description` 仍决定技能身份，`summary` 不会变成技能。
+动态尾部 `notes_index` 默认最多32条、摘要140字，优先展示分类活页，其次是最近两日日记和
+普通笔记的 `.overview.md`。每个普通一级目录最多再展示四条普通摘要，完整目录可搜索。
+旧版非分类的 `memory/` 页继续保存在原路径，可通过
+`search(query, path="memory")` 检索。`read(level="summary" | "overview" | "content")`
+按需展开，分类活页的概览直接读要点，正文分页绑定不可变快照。`description` 仍决定技能身份。
 附件不参与记忆整理。
 
 搜索接受最多512字的关键词或自然句。中文长句按相邻双字召回并使用 BM25 排序，
@@ -138,8 +140,13 @@ Markdown 是唯一可编辑的长期记忆。主体通过 `play_action` 使用 `
 
 Notebook 自己持有后台任务。启用时必须显式配置生成模型，默认三十分钟或32次源变更合批，
 每批最多32个来源、8次请求及600秒。整理以手写笔记为入口，只展开其中明确引用的
-`slice_ref`；不自动扫描全部刺激。后台只更新 `memory/` 中的专题页和概览，不修改原始日记。
-专题页区分感受、原话与实际效果，保留来源版本、时间与尚未确定的矛盾。
+`slice_ref`。日记、草稿和博客都可能提供来源，只提取有明确依据且以后会反复用到的事实
+或重要里程碑。没有值得增加或修正的内容时，后台直接结案。同一正文不会因重复来源而重写。
+
+后台增量维护 `memory/people/contacts.md`、`memory/events/milestones.md`、
+`memory/lessons/practice.md` 和 `memory/commitments/ongoing.md`，并可创建最多16张独立人物卡。
+按主题合并去重，每页要点最多1800字，文件另外保留一行检索摘要和可追溯来源。区分感受、
+原话与实际效果，保留必要的时间、适用条件和未决矛盾。原始材料及旧版专题均可继续读取。
 
 文件发布成功后登记任务；启动和周期扫描补发现外部编辑。相同内容重复读取幂等，未领取的
 旧版本合并到最新版本。生成期间输入或目标变化时拒绝迟到覆盖，失败持久冷却。
@@ -220,6 +227,18 @@ edited = await me.notebook.edit(
 `version`。版本过期、匹配失败或结果超过 UTF-8 字节额度时不发布任何修改。
 编辑沿用完整写入的串行所有权、最终版本核验与原子发布；原生发布未知时保留
 恢复文件及 `unknown` 回执，不自动重试。外部编辑器仍有最终核验后的竞争窗口。
+
+### QQ 分享 B 站视频
+
+```python
+await me.phone.qq.send_bilibili(chat="group", target_id="987654", video="BV1xx411c7m9")
+```
+
+也接受 B 站视频长链接和 `b23.tv` / `bili2233.cn` 短链。QQ 插件读取公开标题和封面，
+通过 [NapCat 的 get_mini_app_ark](https://napcat.napneko.icu/develop/#napcat-api)
+取得签名后发送原生卡片。长链接保留分 P 和播放时点。资料或签名不可用，或者 QQ 明确拒绝
+发送卡片时，能力发送一条普通链接。回执的 `format` 为 `bilibili_card` 或 `link`。
+卡片发送结果未知时保留原回执，等待迟到确认。QQ 发送确认与接收端实际渲染分别发生。
 
 ### QQ 附件与 Notebook
 

@@ -47,6 +47,8 @@ class Model:
         self.requests: list[tuple[Message, ...]] = []
         self.invalid_source = False
         self.target = "memory/people/小雨.md"
+        self.content = "- 主体与小雨一起喝过茶，周末看书的约定尚未完成。"
+        self.skip = False
         self.entered = asyncio.Event()
         self.release: asyncio.Event | None = None
 
@@ -66,6 +68,8 @@ class Model:
         self.entered.set()
         if self.release is not None:
             await self.release.wait()
+        if self.skip:
+            return ModelResponse(Message.assistant('{"revisions": [], "defer": false}'))
         material = json.loads(messages[0].text)
         target = next((doc for doc in material["targets"] if doc["path"] == self.target), None)
         proposal = {
@@ -74,8 +78,7 @@ class Model:
                     "path": self.target,
                     "expected_version": None if target is None else target["file_version"],
                     "summary": "小雨喜欢茶，周末一起看书。",
-                    "overview": "共同经历和仍需确认的约定。",
-                    "content": "主体记下了与小雨一起喝茶的经历；约定尚未完成。",
+                    "content": self.content,
                     "sources": ["slice:" + "0" * 64] if self.invalid_source else list(sources),
                 }
             ],
@@ -183,15 +186,16 @@ async def test_worker_publishes_only_generated_pages_and_keeps_sources(
     assert await access.pending() == ()
     assert (tmp_path / "notes" / source.document.path).read_bytes() == original
     generated = (tmp_path / "notes" / model.target).read_text(encoding="utf-8")
-    assert "## 概览" in generated and "slice:" in generated
+    assert "## 要点" in generated and "slice:" in generated
+    assert "## 概览" not in generated and generated.count(model.content) == 1
     assert "小雨" in str((await notebook.search("小雨"))["items"])
     overview = await notebook.read(model.target, level="overview")
-    assert overview["text"] == "共同经历和仍需确认的约定。"
+    assert overview["text"] == model.content
     assert await access.publications() == ()
     assert len(model.requests) == 1
 
 
-@pytest.mark.parametrize("violation", ["source", "path"])
+@pytest.mark.parametrize("violation", ["source", "path", "date", "wrapped", "long"])
 async def test_invalid_proposals_cool_down_without_writing(
     resources: tuple[Store, Notebook, NotebookAccess, Model], tmp_path: Path, violation: str
 ) -> None:
@@ -200,6 +204,12 @@ async def test_invalid_proposals_cool_down_without_writing(
     model.invalid_source = violation == "source"
     if violation == "path":
         model.target = "journal/forged.md"
+    elif violation == "date":
+        model.target = "memory/people/2026-11-16-凌晨.md"
+    elif violation == "wrapped":
+        model.content = "## 概览\n\n## 概览\n\n打印原文。"
+    elif violation == "long":
+        model.content = "扩写" * 1000
     worker = NotebookMemory(
         notebook, access, model, ConsolidationSettings(enabled=True, model="test")
     )
@@ -244,10 +254,114 @@ async def test_successive_consolidation_retains_historical_provenance(
     first = (tmp_path / "notes" / model.target).read_text(encoding="utf-8")
     old_source = first.rsplit("\n## 来源\n", 1)[-1].strip()
     await notebook.append("后来约定周末一起看书。")
+    model.content = "- 小雨与主体一起喝过茶。\n- 周末约好看书，仍待完成。"
     await worker.consolidate(await access.pending())
     second = (tmp_path / "notes" / model.target).read_text(encoding="utf-8")
     assert old_source in second and second.count("- slice:") == 2
     assert len(model.requests) == 2 and await access.pending() == ()
+
+
+async def test_blog_can_finish_without_writing_and_still_supply_durable_facts(
+    resources: tuple[Store, Notebook, NotebookAccess, Model], tmp_path: Path
+) -> None:
+    """草稿经过同一筛选。空提案结案，有长期价值时可引用草稿原文。"""
+    _, notebook, access, model = resources
+    await notebook.mkdir("blog")
+    await notebook.write("blog/surf-picks.md", "随手分享今天看到的三个链接。")
+    worker = NotebookMemory(
+        notebook, access, model, ConsolidationSettings(enabled=True, model="test")
+    )
+    model.skip = True
+    await worker.consolidate(await access.pending())
+    assert await access.pending() == () and await access.publications() == ()
+    assert not (tmp_path / "notes/memory").exists()
+    material = json.loads(model.requests[0][0].text)
+    assert material["source_pages"][0]["source"]["path"] == "blog/surf-picks.md"
+
+    await notebook.append("小雨说以后推荐她乌龙茶。", path="blog/surf-picks.md")
+    model.skip = False
+    model.content = "- 小雨希望以后推荐乌龙茶。"
+    await worker.consolidate(await access.pending())
+    assert (await notebook.read(model.target, level="overview"))["text"] == model.content
+    assert await access.pending() == ()
+
+
+async def test_unchanged_content_does_not_append_another_source(
+    resources: tuple[Store, Notebook, NotebookAccess, Model],
+) -> None:
+    """模型提议原样重写时只结案，本次引用不会让活页变长。"""
+    _, notebook, access, model = resources
+    worker = NotebookMemory(
+        notebook, access, model, ConsolidationSettings(enabled=True, model="test")
+    )
+    await notebook.append("初次一起喝茶。")
+    await worker.consolidate(await access.pending())
+    first = await notebook.read(model.target)
+    await notebook.append("再次提及一起喝茶。")
+    await worker.consolidate(await access.pending())
+    assert (await notebook.read(model.target))["version"] == first["version"]
+    assert await access.pending() == () and len(model.requests) == 2
+
+
+async def test_existing_people_are_reused_beyond_the_first_four_targets(
+    resources: tuple[Store, Notebook, NotebookAccess, Model],
+) -> None:
+    """模型取得确切人物卡全文，不因文件名排在后面就被迫另起一页。"""
+    _, notebook, access, model = resources
+    await notebook.mkdir("memory")
+    await notebook.mkdir("memory/people")
+    for name in (*(f"联系人{number}" for number in range(15)), "小雨"):
+        await notebook.write(f"memory/people/{name}.md", f"- {name}喜欢喝茶。")
+    await notebook.append("小雨明确说以后更喜欢乌龙茶。")
+    worker = NotebookMemory(
+        notebook, access, model, ConsolidationSettings(enabled=True, model="test")
+    )
+    model.content = "- 小雨更喜欢乌龙茶。"
+    await worker.consolidate(await access.pending())
+    assert (await notebook.read(model.target, level="overview"))["text"] == model.content
+    material = json.loads(model.requests[0][0].text)
+    assert {"path": model.target, "content": "- 小雨喜欢喝茶。"} in material["existing_pages"]
+    assert material["person_pages_remaining"] == 0
+    assert await access.pending() == ()
+
+    await notebook.append("新认识的小林明确说不吃辣。")
+    model.target = "memory/people/小林.md"
+    model.content = "- 小林不吃辣。"
+    await worker.consolidate(await access.pending())
+    assert len(await access.pending()) == 1
+    assert model.target not in {doc.path for doc in await access.documents()}
+
+    await notebook.append("小林希望每次点菜都避开辣椒。")
+    model.target = "memory/people/contacts.md"
+    await worker.consolidate(await access.pending())
+    assert (await notebook.read(model.target, level="overview"))["text"] == model.content
+    assert await access.pending() == ()
+
+
+async def test_legacy_fragments_remain_searchable_without_filling_notes_index(
+    resources: tuple[Store, Notebook, NotebookAccess, Model], tmp_path: Path
+) -> None:
+    """旧日期页保留原文和检索入口，动态目录只采纳稳定分类。"""
+    _, notebook, _, model = resources
+    memory = tmp_path / "notes/memory"
+    memory.mkdir()
+    for number in range(65):
+        (memory / f"2026-11-16-surf-{number}.md").write_text("旧冲浪记录", encoding="utf-8")
+    await notebook.mkdir("blog")
+    for number in range(6):
+        await notebook.write(f"blog/surf-{number}.md", f"草稿正文 {number}")
+    await notebook.mkdir("memory/people")
+    await notebook.write(model.target, "- 小雨喜欢喝茶。")
+    await notebook.write("ordinary.md", "共同经历。")
+
+    material = await notebook.prepare_request()
+    index = material["notes_index"]
+    assert isinstance(index, list)
+    paths = [str(note["path"]) for note in index if isinstance(note, dict)]
+    assert paths[0] == model.target and "ordinary.md" in paths
+    assert len(paths) == 6 and sum(path.startswith("blog/") for path in paths) == 4
+    assert material["notes_truncated"] is True
+    assert "2026-11-16-surf-" in str((await notebook.search("旧冲浪记录", path="memory"))["items"])
 
 
 async def test_optional_vectors_never_return_a_file_changed_during_query(
@@ -445,7 +559,6 @@ async def test_host_worker_action_and_next_foreground_share_only_notebook_files(
                                     "path": "memory/people/小雨.md",
                                     "expected_version": None,
                                     "summary": "与小雨喝茶的共同经历。",
-                                    "overview": "小雨与主体一起喝茶。",
                                     "content": "记录明确的共同经历，不推断长期人格。",
                                     "sources": [source],
                                 }

@@ -89,6 +89,9 @@ async def media_blocks(
                 "audio/mpeg" if reference.media_type == "audio/mp3" else reference.media_type
             )
             blocks.append(AudioBlock(AudioBytes(content, media_type)))
+        elif reference.media_type == "image/svg+xml":
+            # 矢量成图保留原件供附件交付；读取证据时只呈现媒体身份。
+            blocks.append(_media_reference(reference, None, reason="SVG 矢量图可作为文件获取。"))
         else:
             raise UnsupportedMaterial(f"当前原生材料路径不支持媒体类型 {reference.media_type}。")
     return tuple(blocks)

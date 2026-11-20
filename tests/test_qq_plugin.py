@@ -11,6 +11,7 @@ from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from pathlib import Path
 
+import httpx
 import pytest
 from pydantic import ValidationError
 from test_qq_transport import Connector, Socket
@@ -21,6 +22,15 @@ from purrcept_engine.domain.execution.models import ActionRecord
 from purrcept_engine.plugins.qq import factory
 from purrcept_engine.plugins.qq.plugin import factory_with_connector
 from purrcept_engine.values import JsonObject, JsonValue, decode_object, encode_json
+
+_BVID = "BV1xx411c7m9"
+_BILI_URL = f"https://www.bilibili.com/video/{_BVID}/"
+_ARK: JsonObject = {
+    "app": "com.tencent.miniapp_01",
+    "view": "view_8C8E89B49BE609866298ADDFF2DBABA4",
+    "meta": {"detail_1": {"title": "测试视频", "qqdocurl": _BILI_URL}},
+    "config": {"token": "synthetic-signature"},
+}
 
 
 def config(directory: Path, *, call_timeout: float = 15.0, page_chars: int = 8000) -> EngineConfig:
@@ -104,6 +114,7 @@ def test_pure_factory_declares_qq_paths_and_strict_params(tmp_path: Path) -> Non
     )
     names = {
         "send",
+        "send_bilibili",
         "read",
         "friends",
         "groups",
@@ -396,6 +407,203 @@ async def test_real_worker_uses_qq_capability_and_platform_identity(rig: Rig) ->
     action = await task
     assert action.state == "completed" and action.result_json == '"-999"'
     assert action.calls[0].state == "confirmed" and rig.socket.sent.empty()
+
+
+@pytest.fixture
+def bili_http(monkeypatch: pytest.MonkeyPatch) -> list[httpx.URL]:
+    """只允许访问已知 B 站短链和公开视频详情，记录每次真实 HTTP 请求。"""
+    seen: list[httpx.URL] = []
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        seen.append(request.url)
+        assert request.method == "GET" and "Cookie" not in request.headers
+        if request.url.host == "b23.tv":
+            if request.url.path == "/Other":
+                return httpx.Response(302, headers={"Location": "https://untrusted.example/video"})
+            assert request.url.path == "/Short"
+            return httpx.Response(302, headers={"Location": _BILI_URL + "?p=2&t=12&spm_id_from=x"})
+        assert (
+            request.url.host == "api.bilibili.com" and request.url.path == "/x/web-interface/view"
+        )
+        if request.url.params["bvid"] != _BVID:
+            return httpx.Response(503)
+        return httpx.Response(
+            200,
+            json={
+                "code": 0,
+                "data": {
+                    "bvid": _BVID,
+                    "title": "测试视频",
+                    "desc": "测试简介",
+                    "pic": "http://i0.hdslb.com/bfs/archive/example.jpg",
+                },
+            },
+        )
+
+    transport = httpx.MockTransport(handle)
+
+    def route(client: httpx.AsyncClient, url: httpx.URL) -> httpx.MockTransport:
+        del client, url
+        return transport
+
+    monkeypatch.setattr(httpx.AsyncClient, "_transport_for_url", route)
+    return seen
+
+
+async def test_worker_sends_signed_bilibili_card_for_short_link(
+    rig: Rig, bili_http: list[httpx.URL]
+) -> None:
+    """通过真实能力目录解析短链，用签名原文构造 OneBot JSON 段。"""
+    task = asyncio.create_task(
+        rig.host.execute(
+            "from world import me\n"
+            "return await me.phone.qq.send_bilibili("
+            "chat='group', target_id='123', video='https://b23.tv/Short')"
+        )
+    )
+    sign = await asyncio.wait_for(rig.socket.sent.get(), 5)
+    assert sign["action"] == "get_mini_app_ark"
+    link = _BILI_URL + "?p=2&t=12"
+    assert sign["params"] == {
+        "type": "bili",
+        "title": "测试视频",
+        "desc": "测试简介",
+        "picUrl": "https://i0.hdslb.com/bfs/archive/example.jpg",
+        "jumpUrl": link,
+        "webUrl": link,
+    }
+    rig.socket.reply(sign, {"data": _ARK})
+    send = await asyncio.wait_for(rig.socket.sent.get(), 5)
+    assert send["action"] == "send_group_msg"
+    assert send["params"] == {
+        "group_id": 123,
+        "message": [{"type": "json", "data": {"data": encode_json(_ARK).decode()}}],
+    }
+    rig.socket.reply(send, {"message_id": 543})
+    result = await task
+    assert result.state == "completed" and result.result_json is not None
+    value = decode_object(result.result_json.encode())
+    assert value["format"] == "bilibili_card" and value["message_id"] == "543"
+    assert value["url"] == link and isinstance(value["ark_ref"], str)
+    assert len(bili_http) == 2 and rig.socket.sent.empty()
+
+
+@pytest.mark.parametrize("failure", ["metadata", "signing", "malformed_ark", "card_send"])
+async def test_bilibili_falls_back_to_one_plain_link_on_definite_failure(
+    rig: Rig, bili_http: list[httpx.URL], failure: str
+) -> None:
+    """前置失败或明确发送拒绝时，用同一目标发送一条普通链接。"""
+    video = "BV1xx411c7m8" if failure == "metadata" else _BVID
+    link = f"https://www.bilibili.com/video/{video}/"
+    task = asyncio.create_task(
+        rig.host.invoke(
+            "me.phone.qq.send_bilibili", {"chat": "private", "target_id": "123", "video": video}
+        )
+    )
+    request = await asyncio.wait_for(rig.socket.sent.get(), 5)
+    if failure != "metadata":
+        assert request["action"] == "get_mini_app_ark"
+        if failure == "malformed_ark":
+            rig.socket.reply(request, {"data": {"ark": "Invalid JSON"}})
+        else:
+            if failure == "card_send":
+                # 文档也允许嵌套字符串，发送时保持其确切内容。
+                signed = encode_json(_ARK).decode() + "\n"
+                rig.socket.reply(request, {"data": {"ark": signed}})
+                request = await asyncio.wait_for(rig.socket.sent.get(), 5)
+                assert request["action"] == "send_private_msg"
+                assert request["params"] == {
+                    "user_id": 123,
+                    "message": [{"type": "json", "data": {"data": signed}}],
+                }
+            rig.socket.incoming.put_nowait(
+                encode_json(
+                    {
+                        "status": "failed",
+                        "retcode": 1200,
+                        "data": None,
+                        "echo": request["echo"],
+                        "message": "不支持该操作",
+                    }
+                ).decode()
+            )
+        request = await asyncio.wait_for(rig.socket.sent.get(), 5)
+    assert request["action"] == "send_private_msg"
+    assert request["params"] == {
+        "user_id": 123,
+        "message": [{"type": "text", "data": {"text": link}}],
+    }
+    rig.socket.reply(request, {"message_id": 44})
+    result = await task
+    assert result.calls[0].state == "confirmed" and result.calls[0].result_json is not None
+    value = decode_object(result.calls[0].result_json.encode())
+    assert value["format"] == "link" and value["message_id"] == "44"
+    fallback = value["fallback"]
+    expected = {"metadata": "video_metadata", "card_send": "card_send"}.get(failure, "ark_signing")
+    assert isinstance(fallback, dict) and fallback["stage"] == expected
+    assert len(bili_http) == 1 and rig.socket.sent.empty()
+
+
+@pytest.mark.parametrize("stage", ["signing", "card_send"])
+async def test_bilibili_timeout_fallback_distinguishes_signing_and_writing(
+    tmp_path: Path, bili_http: list[httpx.URL], stage: str
+) -> None:
+    """签名超时可降级，写入超时保留迟到确认，不能派发第二条消息。"""
+    socket = Socket()
+    connector = Connector((socket,))
+    host = EngineHost(
+        config(tmp_path, call_timeout=0.4),
+        plugin_factories={"qq-fixture": factory_with_connector(connector)},
+    )
+    await host.start()
+    await connector.connected.wait()
+    try:
+        task = asyncio.create_task(
+            host.invoke(
+                "me.phone.qq.send_bilibili",
+                {"chat": "private", "target_id": "123", "video": _BVID},
+            )
+        )
+        sign = await asyncio.wait_for(socket.sent.get(), 5)
+        assert sign["action"] == "get_mini_app_ark"
+        if stage == "card_send":
+            socket.reply(sign, {"data": _ARK})
+        send = await asyncio.wait_for(socket.sent.get(), 5)
+        assert send["action"] == "send_private_msg"
+        if stage == "signing":
+            assert send["params"] == {
+                "user_id": 123,
+                "message": [{"type": "text", "data": {"text": _BILI_URL}}],
+            }
+            socket.reply(send, {"message_id": 33})
+            assert (await task).calls[0].state == "confirmed"
+        else:
+            initial = await task
+            assert initial.calls[0].state == "unknown" and socket.sent.empty()
+            socket.reply(send, {"message_id": 99})
+            async with asyncio.timeout(5):
+                while True:
+                    current = await host.query_action(initial.action_id)
+                    if current is not None and current.calls[0].state == "confirmed":
+                        break
+                    await asyncio.sleep(0.005)
+            raw = current.calls[0].result_json
+            assert raw is not None and decode_object(raw.encode())["format"] == "bilibili_card"
+        assert len(bili_http) == 1 and socket.sent.empty()
+    finally:
+        await host.close()
+
+
+async def test_bilibili_rejects_short_link_to_unapproved_host(
+    rig: Rig, bili_http: list[httpx.URL]
+) -> None:
+    """跳转到站外时不继续联网，也不将已知站外目标作为链接发送。"""
+    result = await rig.host.invoke(
+        "me.phone.qq.send_bilibili",
+        {"chat": "private", "target_id": "123", "video": "https://b23.tv/Other"},
+    )
+    assert result.calls[0].state == "failed"
+    assert len(bili_http) == 1 and rig.socket.sent.empty()
 
 
 async def test_late_file_url_uses_same_protocol_validation(tmp_path: Path) -> None:

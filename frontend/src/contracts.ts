@@ -101,23 +101,253 @@ export interface UsageTotals {
   cache_hit_rate: number | null;
 }
 
+export interface ModelUsageOverview {
+  requests: number;
+  succeeded_attempts: number;
+  failed_attempts: number;
+  timed_out_attempts: number;
+  running_attempts: number;
+  retry_attempts: number;
+  success_rate: number | null;
+  avg_latency_ms: number | null;
+  p50_latency_ms: number | null;
+  p95_latency_ms: number | null;
+  min_latency_ms: number | null;
+  max_latency_ms: number | null;
+  avg_tokens_per_second: number | null;
+  since: number;
+  observed_at: number;
+  bucket_seconds: number;
+  first_attempt_at: number | null;
+  last_attempt_at: number | null;
+}
+
+export interface ModelUsageBucket extends UsageTotals {
+  start_at: number;
+  end_at: number;
+  succeeded_attempts: number;
+  failed_attempts: number;
+  retry_attempts: number;
+  avg_latency_ms: number | null;
+  p95_latency_ms: number | null;
+}
+
+export interface ModelPerformanceEntry extends UsageTotals {
+  model: string;
+  requests: number;
+  succeeded_attempts: number;
+  failed_attempts: number;
+  timed_out_attempts: number;
+  running_attempts: number;
+  retry_attempts: number;
+  success_rate: number | null;
+  avg_latency_ms: number | null;
+  p50_latency_ms: number | null;
+  p95_latency_ms: number | null;
+  max_latency_ms: number | null;
+  avg_tokens_per_second: number | null;
+  last_used_at: number | null;
+}
+
+export interface ModelScopeEntry extends UsageTotals {
+  scope: string;
+  requests: number;
+  succeeded_attempts: number;
+  failed_attempts: number;
+  retry_attempts: number;
+  success_rate: number | null;
+  avg_latency_ms: number | null;
+  p95_latency_ms: number | null;
+}
+
+export interface ModelRecentAttempt {
+  attempt_id: string;
+  request_id: string;
+  model: string;
+  scope: string;
+  kind: string;
+  sequence: number;
+  outcome: string;
+  created_at: number;
+  latency_ms: number | null;
+  has_usage: boolean;
+  input_tokens: number;
+  output_tokens: number;
+  total_tokens: number;
+  cached_input_tokens: number;
+  reasoning_tokens: number;
+}
+
 export interface ModelUsage {
   total: UsageTotals;
   models: (UsageTotals & { model: string })[];
+  overview: ModelUsageOverview;
+  series: ModelUsageBucket[];
+  model_metrics: ModelPerformanceEntry[];
+  scopes: ModelScopeEntry[];
+  recent_attempts: ModelRecentAttempt[];
 }
 
-/** 校验模型用量接口返回的全局汇总和按模型明细。 */
+function unitRate(value: unknown, field: string): number | null {
+  const rate = nullable(value, field, number);
+  if (rate !== null && rate > 1) throw new ContractError(field);
+  return rate;
+}
+
+/** 校验模型用量接口返回的全局汇总、时序趋势、延迟分位、认知回路与按模型明细。 */
 export function modelUsage(value: unknown): ModelUsage {
   const root = object(value, "model_usage");
   if (!Array.isArray(root.models)) throw new ContractError("model_usage.models");
-  return {
-    total: usageTotals(object(root.total, "model_usage.total"), "model_usage.total"),
-    models: root.models.map((entry: unknown, index: number) => {
-      const field = `model_usage.models[${index}]`;
-      const row = object(entry, field);
-      return { model: text(row.model, `${field}.model`), ...usageTotals(row, field) };
-    }),
-  };
+  const total = usageTotals(object(root.total, "model_usage.total"), "model_usage.total");
+  const models = root.models.map((entry: unknown, index: number) => {
+    const field = `model_usage.models[${index}]`;
+    const row = object(entry, field);
+    return { model: text(row.model, `${field}.model`), ...usageTotals(row, field) };
+  });
+
+  const overview: ModelUsageOverview = root.overview !== undefined
+    ? (() => {
+        const f = "model_usage.overview";
+        const o = object(root.overview, f);
+        const bucketSec = integer(o.bucket_seconds, `${f}.bucket_seconds`);
+        if (bucketSec <= 0) throw new ContractError(`${f}.bucket_seconds`);
+        return {
+          requests: integer(o.requests, `${f}.requests`),
+          succeeded_attempts: integer(o.succeeded_attempts, `${f}.succeeded_attempts`),
+          failed_attempts: integer(o.failed_attempts, `${f}.failed_attempts`),
+          timed_out_attempts: integer(o.timed_out_attempts, `${f}.timed_out_attempts`),
+          running_attempts: integer(o.running_attempts, `${f}.running_attempts`),
+          retry_attempts: integer(o.retry_attempts, `${f}.retry_attempts`),
+          success_rate: unitRate(o.success_rate, `${f}.success_rate`),
+          avg_latency_ms: nullable(o.avg_latency_ms, `${f}.avg_latency_ms`, number),
+          p50_latency_ms: nullable(o.p50_latency_ms, `${f}.p50_latency_ms`, number),
+          p95_latency_ms: nullable(o.p95_latency_ms, `${f}.p95_latency_ms`, number),
+          min_latency_ms: nullable(o.min_latency_ms, `${f}.min_latency_ms`, number),
+          max_latency_ms: nullable(o.max_latency_ms, `${f}.max_latency_ms`, number),
+          avg_tokens_per_second: nullable(o.avg_tokens_per_second, `${f}.avg_tokens_per_second`, number),
+          since: number(o.since, `${f}.since`),
+          observed_at: number(o.observed_at, `${f}.observed_at`),
+          bucket_seconds: bucketSec,
+          first_attempt_at: nullable(o.first_attempt_at, `${f}.first_attempt_at`, number),
+          last_attempt_at: nullable(o.last_attempt_at, `${f}.last_attempt_at`, number),
+        };
+      })()
+    : {
+        requests: total.attempts,
+        succeeded_attempts: total.reported_attempts,
+        failed_attempts: 0,
+        timed_out_attempts: 0,
+        running_attempts: 0,
+        retry_attempts: 0,
+        success_rate: null,
+        avg_latency_ms: null,
+        p50_latency_ms: null,
+        p95_latency_ms: null,
+        min_latency_ms: null,
+        max_latency_ms: null,
+        avg_tokens_per_second: null,
+        since: 0,
+        observed_at: 0,
+        bucket_seconds: 3600,
+        first_attempt_at: null,
+        last_attempt_at: null,
+      };
+
+  const series: ModelUsageBucket[] = root.series !== undefined
+    ? list(root.series, "model_usage.series", (entry, at) => {
+        const b = object(entry, at);
+        return {
+          start_at: number(b.start_at, `${at}.start_at`),
+          end_at: number(b.end_at, `${at}.end_at`),
+          ...usageTotals(b, at),
+          succeeded_attempts: integer(b.succeeded_attempts, `${at}.succeeded_attempts`),
+          failed_attempts: integer(b.failed_attempts, `${at}.failed_attempts`),
+          retry_attempts: integer(b.retry_attempts, `${at}.retry_attempts`),
+          avg_latency_ms: nullable(b.avg_latency_ms, `${at}.avg_latency_ms`, number),
+          p95_latency_ms: nullable(b.p95_latency_ms, `${at}.p95_latency_ms`, number),
+        };
+      })
+    : [];
+
+  const model_metrics: ModelPerformanceEntry[] = root.model_metrics !== undefined
+    ? list(root.model_metrics, "model_usage.model_metrics", (entry, at) => {
+        const m = object(entry, at);
+        return {
+          model: text(m.model, `${at}.model`),
+          requests: integer(m.requests, `${at}.requests`),
+          ...usageTotals(m, at),
+          succeeded_attempts: integer(m.succeeded_attempts, `${at}.succeeded_attempts`),
+          failed_attempts: integer(m.failed_attempts, `${at}.failed_attempts`),
+          timed_out_attempts: integer(m.timed_out_attempts, `${at}.timed_out_attempts`),
+          running_attempts: integer(m.running_attempts, `${at}.running_attempts`),
+          retry_attempts: integer(m.retry_attempts, `${at}.retry_attempts`),
+          success_rate: unitRate(m.success_rate, `${at}.success_rate`),
+          avg_latency_ms: nullable(m.avg_latency_ms, `${at}.avg_latency_ms`, number),
+          p50_latency_ms: nullable(m.p50_latency_ms, `${at}.p50_latency_ms`, number),
+          p95_latency_ms: nullable(m.p95_latency_ms, `${at}.p95_latency_ms`, number),
+          max_latency_ms: nullable(m.max_latency_ms, `${at}.max_latency_ms`, number),
+          avg_tokens_per_second: nullable(m.avg_tokens_per_second, `${at}.avg_tokens_per_second`, number),
+          last_used_at: nullable(m.last_used_at, `${at}.last_used_at`, number),
+        };
+      })
+    : models.map((m) => ({
+        ...m,
+        requests: m.attempts,
+        succeeded_attempts: m.reported_attempts,
+        failed_attempts: 0,
+        timed_out_attempts: 0,
+        running_attempts: 0,
+        retry_attempts: 0,
+        success_rate: null,
+        avg_latency_ms: null,
+        p50_latency_ms: null,
+        p95_latency_ms: null,
+        max_latency_ms: null,
+        avg_tokens_per_second: null,
+        last_used_at: null,
+      }));
+
+  const scopes: ModelScopeEntry[] = root.scopes !== undefined
+    ? list(root.scopes, "model_usage.scopes", (entry, at) => {
+        const s = object(entry, at);
+        return {
+          scope: text(s.scope, `${at}.scope`),
+          requests: integer(s.requests, `${at}.requests`),
+          ...usageTotals(s, at),
+          succeeded_attempts: integer(s.succeeded_attempts, `${at}.succeeded_attempts`),
+          failed_attempts: integer(s.failed_attempts, `${at}.failed_attempts`),
+          retry_attempts: integer(s.retry_attempts, `${at}.retry_attempts`),
+          success_rate: unitRate(s.success_rate, `${at}.success_rate`),
+          avg_latency_ms: nullable(s.avg_latency_ms, `${at}.avg_latency_ms`, number),
+          p95_latency_ms: nullable(s.p95_latency_ms, `${at}.p95_latency_ms`, number),
+        };
+      })
+    : [];
+
+  const recent_attempts: ModelRecentAttempt[] = root.recent_attempts !== undefined
+    ? list(root.recent_attempts, "model_usage.recent_attempts", (entry, at) => {
+        const a = object(entry, at);
+        return {
+          attempt_id: text(a.attempt_id, `${at}.attempt_id`),
+          request_id: text(a.request_id, `${at}.request_id`),
+          model: text(a.model, `${at}.model`),
+          scope: text(a.scope, `${at}.scope`),
+          kind: text(a.kind, `${at}.kind`),
+          sequence: integer(a.sequence, `${at}.sequence`),
+          outcome: text(a.outcome, `${at}.outcome`),
+          created_at: number(a.created_at, `${at}.created_at`),
+          latency_ms: nullable(a.latency_ms, `${at}.latency_ms`, number),
+          has_usage: bool(a.has_usage, `${at}.has_usage`),
+          input_tokens: integer(a.input_tokens, `${at}.input_tokens`),
+          output_tokens: integer(a.output_tokens, `${at}.output_tokens`),
+          total_tokens: integer(a.total_tokens, `${at}.total_tokens`),
+          cached_input_tokens: integer(a.cached_input_tokens, `${at}.cached_input_tokens`),
+          reasoning_tokens: integer(a.reasoning_tokens, `${at}.reasoning_tokens`),
+        };
+      })
+    : [];
+
+  return { total, models, overview, series, model_metrics, scopes, recent_attempts };
 }
 
 function usageTotals(row: Record<string, unknown>, field: string): UsageTotals {

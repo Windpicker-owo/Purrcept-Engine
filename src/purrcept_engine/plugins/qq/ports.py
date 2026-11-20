@@ -1,6 +1,7 @@
 """QQ 的有限传输边界：一次连接、接收帧与明确关停，不拥有主体或权威库。
 
 生产适配器沿原 Python websockets asyncio API；离线样例只替换这个外部传输口。
+附件准备与实际派发共用请求编码，以完整信封核算容量。
 连接异常与 RPC 阶段有不同意义，临时网络故障可恢复，协议/凭据错误不得循环。
 """
 
@@ -10,7 +11,19 @@ from typing import Literal, Protocol
 
 from purrcept_engine.errors import EngineError
 from purrcept_engine.plugins.qq.settings import QQSettings
-from purrcept_engine.values import JsonObject
+from purrcept_engine.values import JsonObject, JsonValue, encode_json
+
+
+def encode_request(action: str, params: JsonObject, *, echo: str = "0" * 32) -> bytes:
+    """编码实际 OneBot 请求；预估容量时为 UUID hex 回执预留同样字节。"""
+    return encode_json({"action": action, "params": params, "echo": echo})
+
+
+def message_request(chat: str, target_id: str, message: JsonValue) -> tuple[str, JsonObject]:
+    """为群聊和私聊生成附件打包与派发共用的 OneBot 信封。"""
+    if chat == "group":
+        return "send_group_msg", {"group_id": int(target_id), "message": message}
+    return "send_private_msg", {"user_id": int(target_id), "message": message}
 
 
 @dataclass(frozen=True, slots=True)

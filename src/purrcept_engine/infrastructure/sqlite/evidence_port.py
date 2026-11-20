@@ -130,6 +130,10 @@ class EvidenceLedger:
             writing=True,
         )
 
+    async def get_media(self, media_id: str) -> bytes | None:
+        """通过同库队列按摘要读取并校验完整媒体。"""
+        return await self._submit(lambda c: sql.read_media_blob(c, media_id))
+
     async def put_evidence(
         self, snapshot: evidence_models.EvidenceSnapshot, *, needs_reflection: bool = True
     ) -> evidence_models.EvidenceSnapshot:

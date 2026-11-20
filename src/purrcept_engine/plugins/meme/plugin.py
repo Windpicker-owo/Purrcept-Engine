@@ -130,7 +130,7 @@ def _declare(instance_id: str, settings: MemeSettings, base_dir: Path) -> Plugin
 
     async def build(ports: PluginPorts) -> PluginRuntime:
         """先读本地状态再取得客户端，避免坏收藏文件留下未归还的资源。"""
-        state = await asyncio.to_thread(load_state, path)
+        state = await asyncio.to_thread(load_state, path, max_mib=settings.state_max_mib)
         runtime = MemeRuntime(
             instance_id,
             settings,

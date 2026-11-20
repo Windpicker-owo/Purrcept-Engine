@@ -5,7 +5,6 @@ protected_input_ids 决定哪些旧轮次不得摘要，subject_work 提供每�
 未决材料。两者共用未知回执时间窗口，过期只释放自动保护，不修改执行账本。
 """
 
-import hashlib
 import json
 import sqlite3
 import time
@@ -560,16 +559,4 @@ class SessionStoreMixin(StoreBase):
     async def get_media(self, media_id: str) -> bytes | None:
         """读取内容寻址媒体 BLOB 并校验 SHA-256 摘要完整性。"""
         self._validate_id(media_id)
-        return await self._submit(lambda connection: self._get_media(connection, media_id))
-
-    @staticmethod
-    def _get_media(connection: sqlite3.Connection, media_id: str) -> bytes | None:
-        row: tuple[object, ...] | None = connection.execute(
-            "SELECT content FROM media WHERE media_id = ?", (media_id,)
-        ).fetchone()
-        if row is None:
-            return None
-        content = row[0]
-        if not isinstance(content, bytes) or hashlib.sha256(content).hexdigest() != media_id:
-            raise StorageError("正式媒体内容与摘要不符。", code="invalid_record")
-        return content
+        return await self._submit(lambda c: evidence_storage.read_media_blob(c, media_id))

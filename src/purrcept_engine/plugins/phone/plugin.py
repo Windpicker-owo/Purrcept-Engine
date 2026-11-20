@@ -149,6 +149,10 @@ class _Target(_Parameters):
     element_id: int = Field(ge=1, le=300)
 
 
+class _Tap(_Target):
+    snapshot: bool = Field(default=False, description="手势完成后短暂等待界面稳定并附上新快照。")
+
+
 class _TextInput(_Target):
     text: str = Field(max_length=32768)
 
@@ -156,6 +160,7 @@ class _TextInput(_Target):
 class _Swipe(_Parameters):
     frame_id: str = Field(min_length=1, max_length=128)
     direction: Literal["up", "down"]
+    snapshot: bool = Field(default=False, description="手势完成后短暂等待界面稳定并附上新快照。")
 
 
 class _Key(_Parameters):
@@ -248,7 +253,7 @@ def _declare(instance_id: str, settings: PhoneSettings, base_dir: Path) -> Plugi
         (
             "screen",
             _Empty,
-            "读取界面结构和新的 frame_id；窗口、内容变化或已接受的操作会使旧快照失效。",
+            "读取界面结构和新的 frame_id；新版手机省略无文字且不可操作的布局节点。",
             "await me.phone.screen()",
         ),
         (
@@ -259,9 +264,10 @@ def _declare(instance_id: str, settings: PhoneSettings, base_dir: Path) -> Plugi
         ),
         (
             "tap",
-            _Target,
-            "点击有效快照的元素，手势完成不代表应用业务成功。",
-            'await me.phone.tap(frame_id="快照身份", element_id=1)',
+            _Tap,
+            "点击有效快照的元素。snapshot=True 时等界面短暂稳定，新快照见 data.screen；"
+            "手势完成不代表应用业务成功。",
+            'await me.phone.tap(frame_id="快照身份", element_id=1, snapshot=True)',
         ),
         (
             "input_text",
@@ -272,8 +278,8 @@ def _declare(instance_id: str, settings: PhoneSettings, base_dir: Path) -> Plugi
         (
             "swipe",
             _Swipe,
-            "在有效快照对应窗口上下滑动。",
-            'await me.phone.swipe(frame_id="快照身份", direction="up")',
+            "在有效快照对应窗口上下滑动。snapshot=True 时等界面短暂稳定，新快照见 data.screen。",
+            'await me.phone.swipe(frame_id="快照身份", direction="up", snapshot=True)',
         ),
         (
             "key",
@@ -291,7 +297,7 @@ def _declare(instance_id: str, settings: PhoneSettings, base_dir: Path) -> Plugi
             parameters,
             30.0,
             example,
-            "未知结果禁止重放；每次已接受的界面操作后重新 screen。"
+            "未知结果禁止重放；后续操作使用回执附带的 data.screen 或重新读取 screen。"
             "stale_frame 时按新元素重新决定，禁止原样重试。",
             concurrency="target_serial",
         )

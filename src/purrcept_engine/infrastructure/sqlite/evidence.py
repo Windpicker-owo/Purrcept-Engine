@@ -141,6 +141,17 @@ def _one(
     return row
 
 
+def read_media_blob(connection: sqlite3.Connection, media_id: str) -> bytes | None:
+    """按内容摘要读取媒体原件并验证完整性，缺失与库内损坏分开处理。"""
+    row = _one(connection, "SELECT content FROM media WHERE media_id=?", (media_id,))
+    if row is None:
+        return None
+    content = row[0]
+    if not isinstance(content, bytes) or hashlib.sha256(content).hexdigest() != media_id:
+        raise StorageError("正式媒体内容与摘要不符。", code="invalid_record")
+    return content
+
+
 def _evidence(
     connection: sqlite3.Connection, evidence_id: str, version: int | None
 ) -> EvidenceSnapshot | None:

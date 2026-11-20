@@ -6,16 +6,19 @@ Markdown 内容归插件文件所有者；这里的值只定位文件版本、�
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping
 from typing import Annotated, Protocol
 
 from purrcept_core.models import Message, ModelResponse, SystemInstruction
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from purrcept_engine.domain.evidence.models import EvidenceSnapshot
 from purrcept_engine.domain.model_requests.service import RequestBudget
 from purrcept_engine.domain.notebook.settings import EmbeddingSettings
 from purrcept_engine.values import JsonObject
+
+MEMORY_CONTENT_CHARS = 1800
 
 
 class Document(BaseModel):
@@ -49,10 +52,35 @@ class Revision(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True, frozen=True)
     path: str
     expected_version: str | None
-    summary: Annotated[str, Field(min_length=1, max_length=140, pattern=r"^[^\r\n]+$")]
-    overview: Annotated[str, Field(min_length=1, pattern=r"\S")]
-    content: str
+    summary: Annotated[str, Field(min_length=1, max_length=140)]
+    content: Annotated[str, Field(min_length=1, max_length=MEMORY_CONTENT_CHARS, pattern=r"\S")]
     sources: tuple[str, ...] = Field(min_length=1, strict=False)
+
+    @field_validator("summary")
+    @classmethod
+    def summary_line(cls, value: str) -> str:
+        """摘要写入单行元数据，Unicode 换行也会改变后续文件解析。"""
+        if value.splitlines() != [value] or not value.strip():
+            raise ValueError("记忆摘要必须是非空的单行文本。")
+        return value.strip()
+
+    @field_validator("content")
+    @classmethod
+    def memory_points(cls, value: str) -> str:
+        """正文只承载事实；文件外壳和来源区由发布者统一写入。"""
+        text = value.strip()
+        if not text:
+            raise ValueError("记忆正文不能为空。")
+        if re.search(
+            r"^\s*(?:#{1,6}\s*(?:摘要|概览|要点|细节|来源|summary|overview|sources)\s*#*\s*$"
+            r"|(?:summary|overview)\s*[:：])",
+            text,
+            re.M | re.I,
+        ):
+            raise ValueError("记忆正文不能包含摘要、概览或来源包装。")
+        if text.splitlines()[0].strip() == "---":
+            raise ValueError("记忆正文不能包含文件元数据。")
+        return text.replace("\r\n", "\n")
 
 
 class Proposal(BaseModel):

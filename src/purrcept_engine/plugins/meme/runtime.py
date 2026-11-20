@@ -27,17 +27,24 @@ from purrcept_engine.plugin_system import (
     resolve_timezone,
 )
 from purrcept_engine.plugins.meme.client import MemeAPIError, MemeClient
-from purrcept_engine.plugins.meme.models import Meme, MemeSettings, MemeState, PendingDigest
+from purrcept_engine.plugins.meme.models import (
+    DEFAULT_STATE_MAX_MIB,
+    Meme,
+    MemeSettings,
+    MemeState,
+    PendingDigest,
+)
 from purrcept_engine.values import JsonObject, encode_json
 
-_STATE_MAX_BYTES = 8 * 1024 * 1024
+_MIB = 1024 * 1024
 
 
-def load_state(path: Path) -> MemeState:
+def load_state(path: Path, *, max_mib: int = DEFAULT_STATE_MAX_MIB) -> MemeState:
     """读取插件独占的完整状态；损坏时拒绝启动，不能覆盖成空收藏。
 
     Args:
         path: 工厂确定的实例状态文件绝对路径。
+        max_mib: 本实例读取和写入使用的同一状态大小上限。
 
     Returns:
         已校验状态；首次使用时为空状态。
@@ -46,21 +53,22 @@ def load_state(path: Path) -> MemeState:
         OSError: 文件读取失败或超过大小上限。
         ValueError: 文件结构或版本无效。
     """
+    max_bytes = max_mib * _MIB
     try:
         with path.open("rb") as source:
-            data = source.read(_STATE_MAX_BYTES + 1)
+            data = source.read(max_bytes + 1)
     except FileNotFoundError:
         return MemeState()
-    if len(data) > _STATE_MAX_BYTES:
-        raise OSError("梗收藏状态超过 8 MiB 上限，请归档后再启动。")
+    if len(data) > max_bytes:
+        raise OSError(f"梗收藏状态超过 {max_mib} MiB，请提高 state_max_mib 或备份归档后再启动。")
     return MemeState.model_validate_json(data)
 
 
-def _write_state(path: Path, state: MemeState) -> None:
+def _write_state(path: Path, state: MemeState, max_mib: int) -> None:
     """同目录原子发布；只替换完整文件，失败保留旧状态并清理临时文件。"""
     data = state.model_dump_json().encode("utf-8")
-    if len(data) > _STATE_MAX_BYTES:
-        raise OSError("梗收藏状态超过 8 MiB 上限，未修改原文件。")
+    if len(data) > max_mib * _MIB:
+        raise OSError(f"梗收藏状态超过 {max_mib} MiB，请提高 state_max_mib 或备份归档。")
     path.parent.mkdir(parents=True, exist_ok=True)
     descriptor, temporary = tempfile.mkstemp(prefix=".meme-", suffix=".tmp", dir=path.parent)
     try:
@@ -141,7 +149,7 @@ class MemeRuntime:
 
     async def _save(self, state: MemeState) -> None:
         """写线程完成后才发布内存状态；调用者须持有本实例操作锁和任务所有权。"""
-        await asyncio.to_thread(_write_state, self.path, state)
+        await asyncio.to_thread(_write_state, self.path, state, self.settings.state_max_mib)
         self.state = state
 
     async def favorite(self, slug: str) -> JsonObject:

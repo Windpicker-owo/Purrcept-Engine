@@ -7,10 +7,15 @@ body 字段而不重复交付整份正文。目录值交给实际请求前的异
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from pathlib import PurePosixPath
 
 from purrcept_engine.values import JsonObject
+
+MEMORY_POINTS = "## 要点\n"
+MEMORY_SOURCES = "\n## 来源\n"
+_SOURCE_LINE = re.compile(r"- (slice:[0-9a-f]{64})")
 
 
 @dataclass(frozen=True, slots=True)
@@ -128,9 +133,23 @@ def note_preview(note: ParsedNote, *, max_chars: int = 140) -> str:
     return ""
 
 
+def memory_sections(body: str) -> tuple[str, tuple[str, ...]]:
+    """分离专题正文和发布者附加的引用，保留普通手写的「来源」小节。"""
+    text = body.replace("\r\n", "\n").strip()
+    points, separator, source_text = text.rpartition(MEMORY_SOURCES)
+    lines = source_text.splitlines()
+    if separator and lines and all(_SOURCE_LINE.fullmatch(line) for line in lines):
+        return points.removeprefix(MEMORY_POINTS).strip(), tuple(line[2:] for line in lines)
+    return text.removeprefix(MEMORY_POINTS).strip(), ()
+
+
 def note_overview(note: ParsedNote) -> str:
-    """从整理页的固定概览区读取 L1；手写页没有概览时只返回目录摘要。"""
+    """专题页直接展示凝练正文；旧版概览与普通页按原约定读取。"""
+    body = note.content[note.body_start :].replace("\r\n", "\n").lstrip()
+    if note.path.startswith("memory/") and body.startswith(MEMORY_POINTS):
+        points, _ = memory_sections(body)
+        return points
     marker = "## 概览\n"
-    if marker in note.content:
-        return note.content.split(marker, 1)[1].split("\n## ", 1)[0].strip()
+    if marker in body:
+        return body.split(marker, 1)[1].split("\n## ", 1)[0].strip()
     return note_preview(note)

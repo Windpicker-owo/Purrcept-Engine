@@ -270,6 +270,118 @@ async def test_model_usage_uses_weighted_totals_after_response_expiry(
         await store.close()
 
 
+async def test_model_usage_projects_latency_percentiles_series_and_scopes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """遥测投影在保持 total/models 兼容的同时输出延迟分位、时序分桶、重试与认知作用域。"""
+    clock = [1_800_010_000.0]
+    monkeypatch.setattr(model_storage, "time", SimpleNamespace(time=lambda: clock[0]))
+    store = await Store.open(tmp_path / "telemetry.sqlite3")
+    try:
+        req1 = RequestEvidence(
+            "req-fg",
+            RequestScope("foreground", "t1"),
+            "generation",
+            "openai/gpt-4.1",
+            '{"payload":{}}',
+            "compiler",
+            2,
+            30,
+            60,
+        )
+        await store.begin_request(req1)
+        start_1a = AttemptStart("req-fg", "att-fg-1", 1, 10.0)
+        await store.begin_attempt(start_1a)
+        clock[0] += 0.4
+        await store.finish_attempt(
+            AttemptEvidence(start_1a, "timed_out", None, None, None, "[]", True, 0, 1.0)
+        )
+        clock[0] += 0.2
+        start_1b = AttemptStart("req-fg", "att-fg-2", 2, 20.0)
+        await store.begin_attempt(start_1b)
+        clock[0] += 1.2
+        await store.finish_attempt(
+            AttemptEvidence(
+                start_1b,
+                "succeeded",
+                encode(
+                    ModelResponse(
+                        Message.assistant("ok"),
+                        usage=TokenUsage(200, 60, cached_input_tokens=150, reasoning_tokens=12),
+                    )
+                ),
+                None,
+                "[]",
+                "[]",
+                True,
+                0,
+            )
+        )
+        await store.finish_request("req-fg", "succeeded")
+
+        clock[0] += 3600.0
+        req2 = RequestEvidence(
+            "req-att",
+            RequestScope("attention", "t2"),
+            "decision",
+            "openai/gpt-4.1-mini",
+            '{"payload":{}}',
+            "compiler",
+            1,
+            10,
+            20,
+        )
+        await store.begin_request(req2)
+        start_2 = AttemptStart("req-att", "att-2", 1, 30.0)
+        await store.begin_attempt(start_2)
+        clock[0] += 0.2
+        await store.finish_attempt(
+            AttemptEvidence(
+                start_2,
+                "succeeded",
+                encode(
+                    ModelResponse(
+                        Message.assistant('{"decision":"ignore"}'),
+                        usage=TokenUsage(50, 10, cached_input_tokens=0),
+                    )
+                ),
+                None,
+                "[]",
+                "[]",
+                True,
+                0,
+            )
+        )
+        await store.finish_request("req-att", "succeeded")
+
+        usage = await store.model_usage_statistics(since=clock[0] - 86400)
+        overview = usage["overview"]
+        assert isinstance(overview, dict)
+        assert overview["requests"] == 2
+        assert overview["succeeded_attempts"] == 2
+        assert overview["failed_attempts"] == 1
+        assert overview["timed_out_attempts"] == 1
+        assert overview["retry_attempts"] == 1
+        assert overview["avg_latency_ms"] == 600.0
+        assert overview["p50_latency_ms"] == 400.0
+        assert overview["p95_latency_ms"] == 1120.0
+        assert overview["max_latency_ms"] == 1200.0
+        assert overview["avg_tokens_per_second"] == 50.0
+
+        scopes = usage["scopes"]
+        assert isinstance(scopes, list) and [
+            s["scope"] for s in scopes if isinstance(s, dict)
+        ] == ["foreground", "attention"]
+        series = usage["series"]
+        assert isinstance(series, list) and len(series) == 24
+        assert sum(b["total_tokens"] for b in series if isinstance(b, dict)) == 320
+        recent = usage["recent_attempts"]
+        assert isinstance(recent, list) and len(recent) == 3
+        assert isinstance(recent[0], dict) and recent[0]["attempt_id"] == "att-2"
+    finally:
+        await store.close()
+
+
 async def test_running_request_survives_capacity_cleanup(tmp_path: Path) -> None:
     store = await Store.open(tmp_path / "engine.sqlite3")
     try:

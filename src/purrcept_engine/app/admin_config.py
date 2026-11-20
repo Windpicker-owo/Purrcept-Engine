@@ -28,7 +28,14 @@ from purrcept_engine.values import JsonObject, JsonValue
 
 _MASKED_SECRET = "********"
 _ENV_REFERENCE = re.compile(r"\$\{[A-Za-z_][A-Za-z0-9_]*(?::-)?\}")
-_CREDENTIAL_FIELDS = {"api_key", "access_token", "asr_api_key", "authorization", "password"}
+_CREDENTIAL_FIELDS = {
+    "api_key",
+    "access_token",
+    "asr_api_key",
+    "authorization",
+    "cookie",
+    "password",
+}
 
 
 def is_mapping(value: object) -> TypeGuard[Mapping[object, object]]:

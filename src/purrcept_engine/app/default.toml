@@ -186,6 +186,16 @@ notes = ""
 # private_key = ".purrcept/phone/phone-key.pem"
 
 
+# --- [插件 13] GPT Image：me.computer.gpt_image（依赖 computer 插件） ---
+# [[plugins]]
+# instance_id = "gpt_image"
+# entry = "gpt_image"
+# [plugins.config]
+# computer_id = "computer"
+# api_key = "${OPENAI_API_KEY}"
+# model = "gpt-image-2.6-flare"
+
+
 # ============================================================================
 # 4. 高级调优与资源配额（均已内置合理默认值，日常使用无需取消注释）
 # ============================================================================

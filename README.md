@@ -82,7 +82,9 @@ me.bed.rest(...)  # 睡觉：普通刺激只记历史
 音频读取支持本地路径或 HTTP(S) WAV/MP3，最多20 MiB、10分钟，模型端点须支持音频输入。
 外部插件通过已安装包的 `module:attribute`
 或配置目录下的 `local/包名:factory` 显式加载。根目录 `plugins/` 是使用者自己的
-插件工作区，不入库、不随包分发；`src/purrcept_engine/plugins/` 中的内置插件随包提供。
+插件工作区，其中 B 站插件随仓库提供但不随包分发；其他本地插件不入库；`src/purrcept_engine/plugins/` 中的内置插件随包提供。
+
+B 站本地插件提供只读推荐、搜索、分 P 观影和评论，配置见 [B 站插件说明](docs/bilibili.md)。
 
 ## 快速开始
 
@@ -111,7 +113,7 @@ uv sync --locked
 ```powershell
 uv run purrcept-engine init             # 交互式问答引导生成 purrcept.toml
 uv run purrcept-engine init --template  # 或跳过问答，直接生成带完整注释的模板
-uv run purrcept-engine plugins          # 查看全部 11 个内置插件目录
+uv run purrcept-engine plugins          # 查看内置插件目录
 uv run purrcept-engine plugins qq       # 查看指定插件的字段说明与可直接复制的 TOML 片段
 ```
 

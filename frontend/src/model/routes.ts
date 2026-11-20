@@ -38,7 +38,7 @@ export const PAGES: readonly PageMeta[] = [
   { id: "timeline", label: "时间线", icon: "timeline", description: "近期行动与操作回执", rail: true },
   { id: "reviews", label: "行为审查", icon: "inbox", description: "查看当轮刺激与代码并留下评价", rail: true },
   { id: "attention", label: "待处理", icon: "triangle", description: "需要你留意或核对的事项", rail: false },
-  { id: "model-usage", label: "API 统计", icon: "statistics", description: "模型调用、token 用量与缓存命中率", rail: true },
+  { id: "model-usage", label: "API 统计", icon: "statistics", description: "流量趋势、平均/P95 延迟与认知回路用量台账", rail: true },
   { id: "system", label: "设置", icon: "settings", description: "人设、模型、插件配置与系统健康", rail: true },
 ];
 

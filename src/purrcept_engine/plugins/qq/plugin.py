@@ -9,8 +9,10 @@ from __future__ import annotations
 
 import asyncio
 import base64
+from dataclasses import replace
 from pathlib import Path
 
+import httpx
 from pydantic import BaseModel
 
 from purrcept_engine.domain.stickers import StickerError
@@ -31,6 +33,13 @@ from purrcept_engine.plugin_system import (
     typed_factory,
 )
 from purrcept_engine.plugins.qq import parameters as p
+from purrcept_engine.plugins.qq.bilibili_card import (
+    BilibiliCardError,
+    card_parameters,
+    resolve_short_link,
+    signed_message,
+    video_link,
+)
 from purrcept_engine.plugins.qq.media import QQMediaError
 from purrcept_engine.plugins.qq.messages import (
     directory,
@@ -39,7 +48,12 @@ from purrcept_engine.plugins.qq.messages import (
     object_value,
     project_message,
 )
-from purrcept_engine.plugins.qq.ports import ConnectionRejected, Connector, QQCallError
+from purrcept_engine.plugins.qq.ports import (
+    ConnectionRejected,
+    Connector,
+    QQCallError,
+    message_request,
+)
 from purrcept_engine.plugins.qq.qzone import cards, write_result
 from purrcept_engine.plugins.qq.service import QQService
 from purrcept_engine.plugins.qq.settings import QQSettings
@@ -82,6 +96,14 @@ _SCHEMAS: tuple[tuple[str, type[BaseModel], str, str, str], ...] = (
             'target_id="987654", text="看这个", '
             'at="123456", reply="11111")'
         ),
+    ),
+    (
+        "send_bilibili",
+        p.SendBilibili,
+        "向指定 QQ 群聊或私聊发送 B 站视频原生分享卡片。",
+        "填写 BV 号、视频长链接或官方短链。卡片无法生成或确认未发出时发送普通链接，"
+        "回执 format 为 bilibili_card 或 link；结果未知时按实际回执核对。",
+        'await me.phone.qq.send_bilibili(chat="group", target_id="987654", video="BV1xx411c7m9")',
     ),
     (
         "read",
@@ -383,6 +405,8 @@ class QQCapabilities:
                 context,
                 temporary=temporary,
             )
+        if isinstance(parameters, p.SendBilibili):
+            return await self.send_bilibili(parameters, context)
         if isinstance(parameters, p.Empty):
             actions = {
                 "friends": "get_friend_list",
@@ -654,6 +678,7 @@ class QQCapabilities:
         *,
         temporary: tuple[Path, ...] = (),
         extra: JsonObject | None = None,
+        generation: int | None = None,
     ) -> CallOutcome:
         """已准备消息只派发一次。
 
@@ -663,7 +688,8 @@ class QQCapabilities:
             message: 已经按 OneBot 协议构造的文字或消息分段。
             context: 宿主或 Core 注入的可信调用上下文，不由模型自行填写。
             temporary: 本次调用持有的临时媒体路径，真实借用结束后才清理。 默认不附加此类条目。
-            extra: 显式附加的原生请求字段。
+            extra: 附加到确认回执的业务字段，迟到确认沿用同一内容。
+            generation: 签名等多阶段操作固定的连接代次。
 
         Returns:
             实际确认、失败或未知结论，以及可 JSON 化的业务值和原生媒体引用。
@@ -671,12 +697,8 @@ class QQCapabilities:
         Note:
             确认缺 message_id 时保留字段未知。
         """
-        action = "send_group_msg" if chat == "group" else "send_private_msg"
-        params: JsonObject = {
-            "group_id" if chat == "group" else "user_id": int(target_id),
-            "message": message,
-        }
-        generation = self.service.client.generation
+        action, params = message_request(chat, target_id, message)
+        send_generation = self.service.client.generation if generation is None else generation
 
         def result(data: JsonValue) -> JsonObject:
             """按原请求身份查询当前真实控制结果。"""
@@ -685,14 +707,14 @@ class QQCapabilities:
                 cached = project_message(
                     {
                         "message_id": message_id,
-                        "user_id": self.service.scope(generation),
-                        "self_id": self.service.scope(generation),
+                        "user_id": self.service.scope(send_generation),
+                        "self_id": self.service.scope(send_generation),
                         "message": message,
                     },
                     chat=chat,
                     target_id=target_id,
                 )
-                self.service.cache.remember(self.service.scope(generation), cached)
+                self.service.cache.remember(self.service.scope(send_generation), cached)
             outcome: JsonObject = {
                 "chat": chat,
                 "target_id": target_id,
@@ -703,7 +725,78 @@ class QQCapabilities:
                 outcome["unknown_fields"] = ["message_id"]
             return outcome
 
-        return await self.service.rpc(action, params, context, result, temporary=temporary)
+        return await self.service.rpc(
+            action, params, context, result, temporary=temporary, generation=generation
+        )
+
+    async def send_bilibili(self, parameters: p.SendBilibili, context: CallContext) -> CallOutcome:
+        """优先发送签名卡片；只有写入明确未发生时才切换到链接。"""
+        link, video_id = video_link(parameters.video)
+        service = self.service
+        generation = service.client.generation
+        now = asyncio.get_running_loop().time()
+        # 签名只是准备。共用较短的准备截止，留出普通链接发送的时间。
+        prepare_until = now + min(8.0, (context.deadline - now) / 2)
+        prepare = replace(context, deadline=prepare_until)
+        fallback: JsonObject = {}
+        stage = "video_metadata"
+        try:
+            async with (
+                asyncio.timeout_at(prepare_until),
+                httpx.AsyncClient(
+                    follow_redirects=False,
+                    trust_env=False,
+                    headers={
+                        "Referer": "https://www.bilibili.com/",
+                        "User-Agent": "Mozilla/5.0 (compatible; Purrcept-Engine)",
+                    },
+                ) as client,
+            ):
+                if video_id is None:
+                    link, video_id = await resolve_short_link(client, link)
+                request = await card_parameters(client, link, video_id)
+            stage = "ark_signing"
+            data, ark_ref = await service.lookup(
+                "get_mini_app_ark", request, prepare, generation=generation
+            )
+            message = signed_message(data)
+        except (
+            BilibiliCardError,
+            httpx.HTTPError,
+            TimeoutError,
+            QQCallError,
+            ConnectionRejected,
+        ) as error:
+            fallback = {"stage": stage, "reason": str(error) or "准备超时"}
+        else:
+            details: JsonObject = {
+                "format": "bilibili_card",
+                "url": str(link),
+                "ark_ref": ark_ref,
+            }
+            card = await self.send(
+                parameters.chat,
+                parameters.target_id,
+                message,
+                context,
+                extra=details,
+                generation=generation,
+            )
+            # 已派发的卡片超时后仍可能有迟到回执，同一调用不再发送第二条。
+            if card.state != "failed":
+                return replace(card, value={**details, **object_value(card.value)})
+            fallback = {"stage": "card_send", "reason": card.error, **object_value(card.value)}
+
+        details = {"format": "link", "url": str(link), "fallback": fallback}
+        plain = await self.send(
+            parameters.chat,
+            parameters.target_id,
+            [{"type": "text", "data": {"text": str(link)}}],
+            context,
+            extra=details,
+            generation=generation,
+        )
+        return replace(plain, value={**details, **object_value(plain.value)})
 
     def forward_result(self, data: JsonValue, chat: str, target: str) -> JsonObject:
         """保留实际转发身份，空 data 不以原输入消息身份补造新消息。
